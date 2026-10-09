@@ -32,7 +32,10 @@ per-SKU `aggregaterevision` and recovers with the
 [Export API](../../../http/inventory/exports/v1/openapi.yaml), not broker retention
 alone. Inventory must not publish a SKU availability fact until Search has registered
 that the corresponding Product-owned SKU document exists. Both topics retain public
-facts for at least 30 days; each consumer owns its retry and recovery policy. Order
-uses an inbox/DLQ; Search uses revision-guarded no-upsert writes and full rebuild.
+facts for exactly 30 days (`retention.ms` = 30 days, a floor and a ceiling, set when the
+topics are provisioned) so a consumer can size its own windows, such as a tombstone
+protection window, strictly above it; each consumer owns its retry and recovery policy. Order
+uses an inbox/DLQ; Search uses revision-guarded no-upsert writes and full rebuild
+([Inventory ADR-028](../../../../docs/inventory/decisions/ADR-028-post-implementation-audit-corrections.md)).
 
 Examples live in [`contracts/examples/events`](../../../examples/events).

@@ -60,6 +60,8 @@ public record InventoryProperties(
             Duration backlogRefreshInterval,
             Duration orphanScanInterval,
             Duration bucketScanInterval,
+            Duration availabilityAuditInterval,
+            int availabilityAuditBatchSize,
             String ledgerReplayCron,
             Duration retentionInterval) {
     }

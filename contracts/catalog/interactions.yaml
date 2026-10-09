@@ -111,11 +111,13 @@ interactions:
     provider: inventory-service
     consumers: [product-detail-bff]
     contract: http/inventory/read/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Internal mTLS batch read after Product resolves active SKU IDs. Inventory returns
       advisory IN_STOCK, OUT_OF_STOCK, or UNKNOWN only; timeout/503 degrades PDP SKU
       availability to UNKNOWN; Checkout uses allocation Preview and Order is the only Reserve caller.
+      Both sides exist; the BFF call stays off (PDP_INVENTORY_ENABLED=false in compose) until
+      the PDP rollout gate (load and freshness test) passes.
 
   - id: product-publishes-catalog-events
     protocol: kafka
@@ -290,7 +292,7 @@ interactions:
     provider: inventory-service
     consumers: [checkout-service]
     contract: http/inventory/workflow/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Preview is advisory, creates no hold, and returns ALLOCATABLE or REJECT_ALL.
 
   - id: order-commands-inventory-workflow
@@ -316,7 +318,7 @@ interactions:
     provider: inventory-service
     consumers: [api-gateway]
     contract: http/inventory/admin/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Gateway-routed /api/v1/admin/inventory for role ADMIN (MFA is a production gate):
       warehouse master, physical movement, return, inspection, disposition and read-only
@@ -388,21 +390,22 @@ interactions:
     provider: inventory-service
     consumers: [search-service, order-service]
     contract: events/inventory/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Search consumes one Inventory-owned per-SKU availability snapshot only after
       Search has registered Product-document readiness; Order consumes
       only physical-dispatch and selected-scope refund-inspection completion facts.
       Reservation command results use the Workflow HTTP contract and are not public events.
       Inspection completion is payout-independent and contains pass/fail counters. Delivery is
-      at-least-once with a 30-day minimum replay window.
+      at-least-once with a 30-day replay window (topic retention.ms = 30 days, floor and
+      ceiling, Inventory ADR-028).
 
   - id: search-exports-inventory-availability
     protocol: http
     provider: inventory-service
     consumers: [search-service]
     contract: http/inventory/exports/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Idempotent Product-document readiness register/revoke plus fixed-watermark
       per-SKU availability snapshot and ordered change feed. Inventory does not expose

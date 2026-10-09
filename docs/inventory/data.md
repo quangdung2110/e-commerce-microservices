@@ -17,7 +17,7 @@ Inventory owns the records below. State, command identity, immutable ledger/audi
 | `AvailabilityFanoutJob` | `fanout_job_id`; one active job per `(warehouse_id, warehouse_revision)` | Checkpointed scan of distinct SKU IDs at a warehouse after an `is_active`/`operational_state` change: `created_at`, cursor, completion. |
 | `SearchProjectionReadiness` | `sku_id`; greatest `catalog_revision` | Proof registered by Search that the Product-owned SKU document exists; publication/export gate only. |
 | `ReadinessPublicationTask` | `(sku_id, catalog_revision)` | Durable task created atomically with a readiness registration to publish the current snapshot even without a later stock change. |
-| `SnapshotSession` | `snapshot_id` | Search snapshot session: `export_watermark`, `created_at`, `expires_at` (24 h); holds no copy of state. |
+| `SnapshotSession` | `snapshot_id` | Search snapshot session: `export_watermark`, `created_at`, `expires_at` (24 h); holds no copy of state. The hourly retention pass deletes expired sessions; a read is `410` until then and `404` afterwards. |
 | `OrderReservation` | `order_id` | Derived root state, `accepted_at`, advisory `expires_at`, stored `allocation_plan_id`, immutable `ReleaseReservation` reason (kept after recovery), separate committed-release reason `ADMIN_FORCE_REFUND_BEFORE_DISPATCH`, commit/recovery `payment_reference`, correlation. |
 | `ReservationLine` | `(order_id, order_line_id)` | Immutable SKU, quantity, selected warehouse, line state (`RESERVED`/`COMMITTED`/`DISPATCHED`/`RELEASED`), `committed_at` and dispatch reference. |
 | `PhysicalDispatch` | `(warehouse_id, dispatch_id, dispatch_line_id)`; one per `(order_id, order_line_id)` | Whole-line dispatch fact: handover reference/time, evidence reference, actor and movement link; source of the dispatch event and query fields. |
@@ -94,9 +94,11 @@ Inventory groups planned quantities by `(warehouse_id, sku_id)`, locks the exact
 
 Commit locks the root and lines and requires only root state `RESERVED`; it does not compare the clock with `expires_at`. Release stores its reason immutably on the root ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
 
+Reserve first takes a transaction-scoped lock keyed by `order_id`, then looks for an existing root. Two Reserve commands for one order under different command IDs therefore run one after the other, and the second answers `RESERVATION_ALREADY_EXISTS` instead of evaluating stock the first already reserved ([ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)).
+
 ### Required lock order
 
-1. `CommandExecution` and `OperationIdentity`;
+1. `CommandExecution` (claimed first; a concurrent same-key request waits on it) and, for Reserve, the per-order key. `OperationIdentity` is checked first with an unlocked read and claimed by insert once the target aggregates are locked: the unique key makes a concurrent winner the durable `OPERATION_IDENTITY_CONFLICT`, and the claim cannot form a wait cycle because two commands with the same key already contend on the same aggregate rows, locked in the order below;
 2. Warehouse only when configuration/allocation needs it;
 3. OrderReservation root and lines;
 4. Refund Scope, line, receipt, inspection, and disposition records;
@@ -169,7 +171,9 @@ The Availability Read API serves Product Detail BFF from this Inventory-owned st
 a 30-second freshness budget ([ADR-025](decisions/ADR-025-pdp-availability-staleness-budget.md)).
 A SKU returns `UNKNOWN` when it has no completed state, or when its oldest pending work
 is older than 30 seconds: `SkuAvailabilityDirty.first_marked_at`, or the `created_at` of
-an unfinished `AvailabilityFanoutJob` for a warehouse where the SKU has a position.
+an unfinished `AvailabilityFanoutJob` for a warehouse where the SKU has a position and the
+job's cursor has not yet reached it (once the job marks the SKU, its own dirty mark carries
+the same age until the projector recomputes it).
 Otherwise the response contains the last completed boolean, its `availability_revision`,
 and `evaluated_at`, even while younger work is pending. The
 API never exposes `available_to_sell`, raw quantity, warehouse, reservation, or outbox
@@ -180,7 +184,7 @@ pending. An idempotent readiness registration atomically stores the greatest Pro
 `catalog_revision` plus a durable publication task for the current snapshot; it returns
 success only after both are durable. Only a new registration or a greater
 `catalog_revision` creates the task; after revocation only a greater revision registers
-again. A SKU with no state is evaluated (`false`, revision 1) before publication. Search
+again. A SKU with no state is evaluated from current stock (`false` when it has none) as revision 1 before publication. Search
 revokes it after tombstone and before purge; an older revision cannot revoke a newer
 lifecycle ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 
@@ -194,7 +198,7 @@ Search applies a strict per-SKU availability revision guard without upsert, retr
 document-readiness violations without ACK, and uses snapshot/change-feed rebuild for
 recovery.
 
-Public/export events are retained for at least 30 days from durable creation. An undelivered event remains durable past ordinary cleanup. If retained outbox growth threatens capacity or the replay guarantee, Inventory fails new mutations closed rather than dropping evidence: more than `inventory.outbox.max-unsequenced` (default 100 000) unsequenced `OutboxEvent` rows make every mutation return `503 INVENTORY_UNAVAILABLE` ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
+Public/export events are retained for 30 days from durable creation (`inventory.outbox.retention`): the hourly retention pass deletes sequenced facts older than that, raises the retention floor in the same transaction, and never deletes an unsequenced `OutboxEvent`. The floor also bounds the snapshot watermark from below, so a purge of every fact cannot make a fresh snapshot's `after_sequence` answer `410`. Both Kafka topics are provisioned with `retention.ms` = 30 days as a floor **and** a ceiling, so consumers can size their own windows (for example Search's tombstone protection window) strictly above it ([ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)). An undelivered event remains durable past ordinary cleanup. If retained outbox growth threatens capacity or the replay guarantee, Inventory fails new mutations closed rather than dropping evidence: more than `inventory.outbox.max-unsequenced` (default 100 000) unsequenced `OutboxEvent` rows make every mutation return `503 INVENTORY_UNAVAILABLE` ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 
 ## 7. Cache, projection, and recovery classification
 

@@ -71,6 +71,16 @@ public class ReservationStore {
                 line.warehouseId(), line.state().name(), ts(line.committedAt()));
     }
 
+    /**
+     * Serializes Reserve commands that carry different command IDs for the same order, so the
+     * loser sees the winner's committed root ({@code RESERVATION_ALREADY_EXISTS}) instead of
+     * evaluating the stock the winner already took and answering {@code REJECT_ALL}.
+     */
+    public void lockOrderKey(String orderId) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended('order-reserve:' || ?, 0))",
+                Object.class, orderId);
+    }
+
     public Optional<Root> find(String orderId) {
         return jdbc.query("SELECT " + ROOT_COLUMNS + " FROM order_reservation WHERE order_id = ?", ROOT, orderId)
                 .stream().findFirst();

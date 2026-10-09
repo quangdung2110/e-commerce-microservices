@@ -26,7 +26,7 @@ There is no public customer Inventory write API. Every mutation requires authent
 | `X-Causation-ID` | Required where a prior workflow/event caused this command; otherwise a newly created root cause ID. |
 | `traceparent` | Propagated when present according to W3C Trace Context; it does not replace the business correlation/causation IDs. |
 | Actor context | Service identity for Saga, interactive ADMIN identity/role for physical commands. It is written to audit. |
-| `X-Service-Identity` | Required on Workflow, Read and Export calls: the caller's ServiceAccount name, checked against a per-path allowlist as defense-in-depth behind the mesh (`401` when missing, `403` for another service). |
+| `X-Service-Identity` | Required on Workflow, Read and Export calls: the caller's ServiceAccount name, checked against a per-path allowlist as defense-in-depth behind the mesh (`401` when missing, `403` for another service). The check, like the ADMIN role check, is made on the decoded path without `;` parameters, so percent-encoding or path parameters cannot reach a controller unchecked ([ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)). |
 
 An accepted command persists its terminal result. Same command ID/payload returns that result. Same ID with a different payload returns `409 IDEMPOTENCY_KEY_REUSED`. A business rejection records the command result but does **not** permanently claim the operation identity, so a corrected new command may later succeed.
 
@@ -71,12 +71,12 @@ looks it up, and revalidates exactly the submitted per-line warehouse plan
 
 | Command | Endpoint | Essential guard / terminal result |
 |---|---|---|
-| Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, `allocation_plan_id` (stored, not looked up), order lines with exact preview warehouse. Returns `RESERVED` or `REJECT_ALL`; all lines or none. |
+| Reserve whole order | `POST /internal/inventory/v1/reservations` | Immutable `order_id`, `allocation_plan_id` (stored, not looked up), order lines with exact preview warehouse. Returns `RESERVED` or `REJECT_ALL`; all lines or none. An `order_id` that already has a root is `409 RESERVATION_ALREADY_EXISTS` under any other command ID, also when two such commands race: Reserve commands of one order are serialized, so the loser never evaluates the stock the winner took ([ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)). |
 | Commit payment | `POST /internal/inventory/v1/reservations/{order_id}/commit` | Root must be `RESERVED`; no wall-clock deadline applies. Moves all lines to `COMMITTED`; otherwise durable `409 RESERVATION_NOT_RESERVED`. |
 | Release reservation | `POST /internal/inventory/v1/reservations/{order_id}/release` | Only `RESERVED`; releases the whole root with one immutable reason: `PAYMENT_FAILED`, `RESERVATION_EXPIRED`, `BUYER_CANCELLED`, `ADMIN_CANCELLED`, or `PRE_PAYMENT_SAGA_FAILED`. |
 | Recover timed-out payment | `POST /internal/inventory/v1/reservations/{order_id}/recover-timed-out-payment` | Only this root was released for `RESERVATION_EXPIRED`; no dispatch and the full original plan is still available. Atomically restores the whole root `RELEASED -> COMMITTED`; any guard failure is durable `409`, no movement. Not invoked by Order Release 1 (Order ADR-014/ADR-020). |
 | Release committed order before dispatch | `POST /internal/inventory/v1/reservations/{order_id}/release-committed-before-dispatch` | Admin automatic refund only; atomically releases every committed undispatched line or releases none. |
-| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines, each already `DISPATCHED` (`409 REFUND_SCOPE_LINE_NOT_DISPATCHED` otherwise); rejects a second scope for the order even after closure. |
+| Register Refund Scope | `POST /internal/inventory/v1/refund-scopes` | Immutable selected full-quantity order lines, each already `DISPATCHED` (`409 REFUND_SCOPE_LINE_NOT_DISPATCHED` otherwise); rejects a second scope for the order even after closure. Registering the same `(order_id, refund_request_id)` with identical lines under a new command ID returns the existing scope (`outcome: REGISTERED`) with its **current** `scope_revision` and never creates a second one ([ADR-018](decisions/ADR-018-selected-line-refund-scope-and-pre-dispatch-release.md), [ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)). |
 | Cancel scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/cancel` | Only `REGISTERED` and no receipt. |
 | Close completed scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close` | Only `INSPECTION_COMPLETED`; carries terminal Order reason. |
 | Close incomplete scope | `POST /internal/inventory/v1/refund-scopes/{refund_scope_id}/close-incomplete` | Only `IN_PROGRESS`, all received final-inspected, and some expected quantity missing. |
@@ -188,18 +188,27 @@ environments run without MFA ([ADR-024](decisions/ADR-024-admin-surface-and-erro
 
 Allowed receipt reasons are `INITIAL_STOCK_LOAD` and `SUPPLIER_RECEIPT`. Adjustment reasons are `COUNT_GAIN`, `COUNT_LOSS`, `DAMAGE_REMOVAL`, `EXPIRY_REMOVAL`, and `DATA_CORRECTION`. Sellable reversal reasons are `DUPLICATE_ENTRY`, `WRONG_QUANTITY`, `WRONG_SKU`, `WRONG_WAREHOUSE`, and `SOURCE_DOCUMENT_VOIDED`. Disposition reversal reasons are `WRONG_RECORD`, `DISPOSAL_ABORTED`, and `SUPPLIER_RETURNED`. There is no catch-all `OTHER`. Inspection fail reasons and disposition reasons are enumerated in [domain.md](domain.md).
 
-Read-only operational queries are cursor-paginated (`limit <= 100`), never mutate state
-and return no customer PII:
+Read-only operational queries never mutate state and return no customer PII. The list and
+queue queries are cursor-paginated (`limit <= 100`); the resource reads address one record by
+its identifier:
 
 | Query | Purpose |
 |---|---|
 | `GET /api/v1/admin/inventory/warehouses` | List warehouses; optional `is_active`. |
+| `GET /api/v1/admin/inventory/warehouses/{warehouse_id}` | One warehouse with its current `revision` (the value `expected_revision` must match). |
 | `GET /api/v1/admin/inventory/stock-positions` | Positions filtered by `warehouse_id` and/or `sku_id` (at least one). |
+| `GET /api/v1/admin/inventory/stock-positions/{warehouse_id}/{sku_id}` | All five authoritative buckets of one position. |
 | `GET /api/v1/admin/inventory/dispatch-queue?warehouse_id=` | `COMMITTED`, undispatched lines allocated to the warehouse, oldest commit first. |
 | `GET /api/v1/admin/inventory/inspection-queue?warehouse_id=` | Return receipt lines with uninspected quantity at the warehouse. |
 | `GET /api/v1/admin/inventory/quarantine-items?warehouse_id=` | Failed-inspection quantity not yet disposed out, with the latest `HOLD` reason. |
 | `GET /api/v1/admin/inventory/refund-scopes?order_id=` | Resolve the order's lifetime scope. |
+| `GET /api/v1/admin/inventory/refund-scopes/{refund_scope_id}` | Expected, received, passed and failed quantity per selected line, with scope state and revision. |
 | `GET /api/v1/admin/inventory/stock-movements` | Movement evidence by `warehouse_id`, `sku_id` and `recorded_from`/`recorded_to`. |
+| `GET /api/v1/admin/inventory/stock-movements/{movement_id}` | One immutable movement (the target of a sellable reversal). |
+| `GET /api/v1/admin/inventory/reservations/{order_id}` | Allocation facts (root state, lines, warehouses) needed to dispatch; no payment or customer data. |
+| `GET /api/v1/admin/inventory/commands/{command_id}` | The durable outcome of an ADMIN command, read in the shared `admin` namespace (`result: ACCEPTED`/`REJECTED`, `http_status`, `error_code`). |
+
+An unknown identifier is `404 NOT_FOUND`; a store outage on any query is `503 INVENTORY_UNAVAILABLE`.
 
 ## 5. Errors and retries
 
@@ -258,7 +267,9 @@ every mutation ([operations.md](operations.md)).
 as `result: ACCEPTED`, `outcome: REJECT_ALL`, `http_status: 200`. The Export surface adds
 `SNAPSHOT_SESSION_EXPIRED` and `REPLAY_WINDOW_EXPIRED` (`410`) and
 `READINESS_REVISION_CONFLICT` (`409`, stale readiness revocation), and the Read surface uses
-`INVENTORY_AVAILABILITY_UNAVAILABLE` (`503`).
+`INVENTORY_AVAILABILITY_UNAVAILABLE` (`503`). An expired snapshot session answers
+`410 SNAPSHOT_SESSION_EXPIRED` until the hourly retention pass deletes it, and `404 NOT_FOUND`
+afterwards; both mean the session is gone and Search creates a new one.
 
 The table above governs workflow/admin commands and their recovery queries. The BFF
 availability read is defined by its own OpenAPI: it has no idempotency key or business
@@ -333,12 +344,14 @@ boolean as checkout authority.
    emits the current snapshot when registration succeeds. Only a new registration or a
    greater `catalog_revision` creates a publication task; an equal/lower revision returns the
    stored registration. After revocation only a greater revision re-registers. A SKU with no
-   state is evaluated first (`false`, revision 1), then published.
+   state is evaluated first from current stock (`false` when it has none), as revision 1,
+   then published.
 2. After tombstone and before purge, Search calls `DELETE` on the same resource with the
    tombstone `catalog_revision`; a revision lower than the stored one returns `409`, an
    absent registration `204`.
 3. `POST /exports/inventory/v1/snapshot-sessions` returns a `snapshot_id`, fixed export
-   watermark (the greatest assigned sequence at creation), and 24-hour session expiry.
+   watermark (the greatest assigned sequence at creation, never below the retention floor, so
+   `changes?after_sequence=<watermark>` is always answerable), and 24-hour session expiry.
 4. Paginate registered per-SKU availability snapshots. Each row is the current state
    with its `availability_revision`, so it may be newer than the watermark but never
    older; Search's strict revision guard makes the overlap safe

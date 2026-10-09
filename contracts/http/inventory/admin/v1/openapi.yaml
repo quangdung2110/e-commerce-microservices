@@ -31,7 +31,7 @@ paths:
         - { name: is_active, in: query, required: false, schema: { type: boolean } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Warehouse page., content: { application/json: { schema: { $ref: '#/components/schemas/WarehousePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Warehouse page., content: { application/json: { schema: { $ref: '#/components/schemas/WarehousePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
     post:
       tags: [Warehouses]
       operationId: createWarehouse
@@ -46,7 +46,7 @@ paths:
       operationId: getWarehouse
       summary: Read warehouse master data
       parameters: [{ $ref: '#/components/parameters/WarehouseId' }]
-      responses: { '200': { description: Warehouse., content: { application/json: { schema: { $ref: '#/components/schemas/Warehouse' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Warehouse., content: { application/json: { schema: { $ref: '#/components/schemas/Warehouse' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
     patch:
       tags: [Warehouses]
       operationId: updateWarehouse
@@ -175,7 +175,7 @@ paths:
         - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Stock position page., content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Stock position page., content: { application/json: { schema: { $ref: '#/components/schemas/StockPositionPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/stock-movements:
     get:
@@ -190,7 +190,7 @@ paths:
         - { name: recorded_to, in: query, required: false, schema: { type: string, format: date-time } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Movement page., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovementPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Movement page., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovementPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/dispatch-queue:
     get:
@@ -202,7 +202,7 @@ paths:
         - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Dispatch queue page., content: { application/json: { schema: { $ref: '#/components/schemas/DispatchQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Dispatch queue page., content: { application/json: { schema: { $ref: '#/components/schemas/DispatchQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/inspection-queue:
     get:
@@ -213,7 +213,7 @@ paths:
         - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Inspection queue page., content: { application/json: { schema: { $ref: '#/components/schemas/InspectionQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Inspection queue page., content: { application/json: { schema: { $ref: '#/components/schemas/InspectionQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/quarantine-items:
     get:
@@ -224,7 +224,7 @@ paths:
         - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
-      responses: { '200': { description: Quarantine item page., content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineItemPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' } }
+      responses: { '200': { description: Quarantine item page., content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineItemPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/refund-scopes:
     get:
@@ -233,7 +233,7 @@ paths:
       summary: Resolve the lifetime Refund Scope of an order
       parameters:
         - { name: order_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
-      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/stock-positions/{warehouse_id}/{sku_id}:
     get:
@@ -241,7 +241,7 @@ paths:
       operationId: getStockPosition
       summary: Read all authoritative buckets for warehouse operations
       parameters: [{ $ref: '#/components/parameters/WarehouseId' }, { $ref: '#/components/parameters/SkuId' }]
-      responses: { '200': { description: Stock position., content: { application/json: { schema: { $ref: '#/components/schemas/StockPosition' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Stock position., content: { application/json: { schema: { $ref: '#/components/schemas/StockPosition' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/stock-movements/{movement_id}:
     get:
@@ -249,7 +249,7 @@ paths:
       operationId: getStockMovement
       summary: Read immutable movement evidence
       parameters: [{ $ref: '#/components/parameters/MovementId' }]
-      responses: { '200': { description: Movement evidence., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovement' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Movement evidence., content: { application/json: { schema: { $ref: '#/components/schemas/StockMovement' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/commands/{command_id}:
     get:
@@ -257,7 +257,7 @@ paths:
       operationId: getAdminCommandOutcome
       summary: Read a durable ADMIN command outcome
       parameters: [{ $ref: '#/components/parameters/CommandId' }]
-      responses: { '200': { description: Command outcome., content: { application/json: { schema: { $ref: '#/components/schemas/AdminCommandOutcome' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Command outcome., content: { application/json: { schema: { $ref: '#/components/schemas/AdminCommandOutcome' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/reservations/{order_id}:
     get:
@@ -265,7 +265,7 @@ paths:
       operationId: getAdminReservationFact
       summary: Read allocation facts needed for warehouse operations
       parameters: [{ $ref: '#/components/parameters/OrderId' }]
-      responses: { '200': { description: Reservation operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminReservation' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Reservation operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminReservation' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/refund-scopes/{refund_scope_id}:
     get:
@@ -273,7 +273,7 @@ paths:
       operationId: getAdminRefundScopeFact
       summary: Read immutable expected-return and inspection progress
       parameters: [{ $ref: '#/components/parameters/RefundScopeId' }]
-      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' } }
+      responses: { '200': { description: Refund Scope operational view., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScope' } } } }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '404': { $ref: '#/components/responses/NotFound' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
 components:
   securitySchemes:

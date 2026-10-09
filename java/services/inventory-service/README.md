@@ -28,7 +28,9 @@ CHECK constraint; `stock_movement` và `audit_entry` có trigger chặn UPDATE/D
 | `INVENTORY_OUTBOX_MAX_UNSEQUENCED` | `100000` | Ngưỡng backpressure của outbox chưa được sequence. |
 | `WORKERS_ENABLED` | `true` | `false` chạy profile chỉ phục vụ API; worker có thể chạy ở process riêng cùng artifact. |
 
-Allowlist service identity nằm ở `inventory.identity.*` trong `application.yml`.
+Allowlist service identity nằm ở `inventory.identity.*` trong `application.yml`; filter kiểm trên path đã decode (không
+phụ thuộc `%xx` hay `;param`). Audit availability liên tục chạy theo `inventory.workers.availability-audit-interval`
+(mặc định `PT1M`) và `availability-audit-batch-size` (mặc định 500); chỉ phát hiện, không sửa state (ADR-028).
 
 ## Chạy local
 
@@ -55,7 +57,9 @@ dispatch, hot-SKU không oversell, ADMIN warehouse/receipt/adjustment/reversal, 
 tới `INSPECTION_COMPLETED`/`CLOSED`/`CLOSED_INCOMPLETE`/`CANCELLED`, quarantine
 HOLD/DISPOSE/reversal, BFF read với ngân sách 30 giây, fan-out, readiness, sequencer có
 fencing, snapshot/change feed, write freeze và CloudEvent khớp JSON Schema trong
-`contracts/`.
+`contracts/`. `AuditCorrectionsIT` (ADR-028) khoá các lỗi audit 2026-10-09: kiểm identity trên path mã hoá, watermark
+sau khi retention xoá hết fact, Reserve trùng đơn song song, replay đăng ký scope, audit availability và mã hết hạn của
+snapshot session. `mvn test` chạy cả `*Test` lẫn `*IT` (cần Docker cho Testcontainers).
 
 ```bash
 MSYS_NO_PATHCONV=1 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "//c/Users/ASUS/MyProjects/e-commerce-microservices://repo" -v "inventory-mvn-repo://root/.m2" --add-host=host.docker.internal:host-gateway -e DOCKER_HOST=unix:///var/run/docker.sock -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal -e TESTCONTAINERS_RYUK_DISABLED=true -w //repo/java/services/inventory-service maven:3.9-eclipse-temurin-21 mvn -B test '-DargLine=-Dapi.version=1.44'

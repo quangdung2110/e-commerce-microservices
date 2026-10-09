@@ -13,6 +13,12 @@ commit — và không bao giờ đọc `outbox_event` (fact chưa được seque
 - Retry vô hạn với backoff tối đa 5 phút (`errors.retry.delay.max.ms`), khớp
   [operations.md §4](../../../../../../../docs/inventory/operations.md).
 
+- Retention của hai topic là **đúng 30 ngày** (`retention.ms=2592000000`, vừa là sàn vừa là trần) theo
+  [ADR-028](../../../../../../../docs/inventory/decisions/ADR-028-post-implementation-audit-corrections.md) để consumer
+  (ví dụ cửa sổ bảo vệ tombstone của Search) chọn được cửa sổ dài hơn hẳn. Compose local bật auto-create topic và dùng
+  retention mặc định của broker nên chưa đạt; Platform phải tạo tường minh `t.inventory.stock.events.v1` và
+  `t.inventory.order.events.v1` (gate production trong [development.md](../../../../../../../docs/inventory/development.md)).
+
 Kafka Connect không tự thay placeholder `${VAR:default}`, nên thay bằng biến môi trường
 (hoặc giá trị mặc định) trước khi đăng ký trên stack local (Kafka Connect publish cổng host
 `8084`):

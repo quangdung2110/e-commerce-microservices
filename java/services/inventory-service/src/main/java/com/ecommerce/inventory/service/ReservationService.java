@@ -64,6 +64,7 @@ public class ReservationService {
      */
     public Accepted reserve(WorkflowDtos.ReserveOrderRequest request, CommandContext context) {
         String orderId = request.orderId();
+        reservations.lockOrderKey(orderId);
         if (reservations.find(orderId).isPresent()) {
             throw new DomainRejection(ErrorCode.RESERVATION_ALREADY_EXISTS,
                     "A reservation already exists for this order under another command");

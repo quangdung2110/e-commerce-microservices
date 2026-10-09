@@ -13,7 +13,7 @@
 | Runtime baseline (ADR-023) | Java 21, Spring Boot 3.3, PostgreSQL 16, Flyway `V1__inventory_baseline.sql`, explicit SQL on the locked write path, Debezium connector `src/main/resources/kafka/debezium-connector-inventory-outbox.json`. |
 | Command transaction (data.md §4) | `CommandExecutor`: command claim, write guard, savepoint, durable accepted/rejected result, `lock_timeout` 2 s, two internal retries then `503 INVENTORY_BUSY`. Bucket equation and scope counters are database CHECK constraints; movement/audit are append-only by trigger. |
 | Workflow, ADMIN, Read and Export surfaces | All operations of the four OpenAPI documents, `X-Service-Identity` allowlist and `X-User-Roles: ADMIN`. |
-| Workers | Availability projector, warehouse fan-out, readiness publisher, fenced export sequencer, detection-only reconciliation, retention and outbox backpressure. |
+| Workers | Availability projector, warehouse fan-out, readiness publisher, fenced export sequencer, detection-only reconciliation (hourly bucket scan, daily ledger replay, 5-minute orphan scan, continuous availability audit), retention and outbox backpressure. |
 | Automated tests | Domain/property tests and Testcontainers integration tests listed in the service README, including emitted CloudEvents validated against `contracts/events/inventory/v1`. |
 | Relay smoke test | Throwaway PostgreSQL + Kafka + `debezium/connect:3.0.0.Final`: `published_event` rows reach `t.inventory.stock.events.v1`/`t.inventory.order.events.v1` with the documented key and full sequenced CloudEvent. |
 
@@ -26,6 +26,7 @@ below are production gates.
 - [x] Contract owners accept [interfaces.md](interfaces.md), including idempotency, `REJECT_ALL`, the BFF availability read, event consumers, and the 90-day breaking-change policy.
 - [ ] Platform demonstrates a relational-primary deployment proposal capable of atomic state/audit/command/outbox commit, RPO=0 target, and RTO <= 60 minutes.
 - [ ] Compliance/Legal validates the seven-year audit/evidence retention policy.
+- [ ] Platform provisions `t.inventory.stock.events.v1` and `t.inventory.order.events.v1` with `retention.ms` = 30 days (floor and ceiling, ADR-028) and Search sizes its tombstone protection window strictly above it; the local compose relies on broker auto-creation and does not meet this.
 - [ ] Before production: an Auth/gateway ADR issues and forwards an MFA assertion for ADMIN, and Inventory verifies it on every ADMIN mutation ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)).
 - [ ] Load-test plan exercises the agreed envelope: 600 Reserve attempts/minute, p95 eight items/order, up to eight warehouses/SKU, 10% hot-SKU traffic, and 9,000 concurrent reservations as an estimated baseline.
 - [ ] Failure test plan covers primary loss, broker outage, duplicate commands/events, deadlock, stale preview, release/dispatch race, fenced late payment recovery (including every rejected guard), and return/inspection retries.
@@ -60,8 +61,12 @@ disposable and disposition reversal returns to quarantine only; reversal sequenc
 cumulative limits; BFF `UNKNOWN` for missing or > 30 s pending work including warehouse
 fan-out; no publication before readiness, registration publishes the current snapshot,
 stale revocation conflict; fenced stale sequencer; snapshot plus change feed; write freeze;
-emitted CloudEvents valid against their schemas. Load, failover/restore, MFA and
-cross-service consumer contract tests remain open.
+emitted CloudEvents valid against their schemas. The audit corrections of
+[ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md) are covered by
+`AuditCorrectionsIT`: identity checks on encoded and `;` paths, a snapshot watermark that
+survives a full retention purge, concurrent duplicate-order Reserve, replayed scope
+registration, the availability audit and snapshot-session expiry codes. Load,
+failover/restore, MFA and cross-service consumer contract tests remain open.
 
 - Command-result/publication contract gates under
   [ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md): exactly two

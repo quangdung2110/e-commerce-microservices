@@ -4,11 +4,16 @@
 sellable receipts/adjustments, physical dispatch, return receipt, final inspection,
 quarantine disposition, append-only reversal, and the read-only operational queues
 (warehouses, stock positions, movements, dispatch queue, inspection queue, quarantine
-items, Refund Scope by order).
+items, Refund Scope by order) plus the resource reads that address one record by
+identifier: warehouse, stock position, stock movement, reservation facts, Refund Scope and
+the durable outcome of an ADMIN command. Every query can answer `503` when the store is
+unavailable.
 
 The surface is `/api/v1/admin/inventory/**` behind the API Gateway. The caller must be
 an authenticated interactive user whose `X-User-Roles` contains `ADMIN`; actor identity
 comes from the gateway-injected `X-User-Id`/`X-User-Session-Id`, never the request body.
+The role check runs on the decoded request path, so percent-encoded or `;`-parameterised
+variants of the prefix are checked like the canonical one.
 There is no non-interactive ADMIN principal. MFA is mandatory for production and is a
 release gate until an Auth/gateway decision forwards an MFA assertion
 ([Inventory ADR-024](../../../../../docs/inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)).

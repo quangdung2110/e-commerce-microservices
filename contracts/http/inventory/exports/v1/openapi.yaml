@@ -72,7 +72,10 @@ paths:
     post:
       operationId: createInventorySnapshotSession
       summary: Create a point-in-time per-SKU availability snapshot
-      description: The session expires 24 hours after creation.
+      description: >-
+        The session expires 24 hours after creation. export_watermark is the greatest assigned
+        export sequence at creation and never falls below the retention floor, so
+        changes?after_sequence=<export_watermark> is always answerable.
       responses:
         '201':
           description: Snapshot session created.
@@ -113,7 +116,7 @@ paths:
         The feed contains only sku-availability.changed facts. Export sequence is
         assigned after commit by a single fenced sequencer, so it follows commit order:
         a fact with a sequence at or below an already returned sequence never appears
-        later. Gaps are permanent and safe to skip. Retention is at least 30 days; an
+        later. Gaps are permanent and safe to skip. Retention is 30 days (Inventory ADR-028); an
         older cursor returns REPLAY_WINDOW_EXPIRED.
       parameters:
         - name: after_sequence
@@ -210,7 +213,7 @@ components:
     BadRequest: { description: INVALID_REQUEST., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Unauthorized: { description: Missing or invalid workload identity., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Forbidden: { description: Caller is not the registered Search projection., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
-    NotFound: { description: Snapshot session not found., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
+    NotFound: { description: 'Snapshot session not found. An expired session answers 410 SNAPSHOT_SESSION_EXPIRED until the hourly retention pass deletes it and 404 afterwards; both mean create a new session.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     Conflict: { description: 'READINESS_REVISION_CONFLICT; a stale catalog revision cannot revoke newer readiness.', content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     SnapshotExpired: { description: SNAPSHOT_SESSION_EXPIRED; create a new snapshot session., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }
     ReplayWindowExpired: { description: REPLAY_WINDOW_EXPIRED; rebuild availability in the existing Product index from a new snapshot., content: { application/problem+json: { schema: { $ref: '#/components/schemas/InventoryProblem' } } } }

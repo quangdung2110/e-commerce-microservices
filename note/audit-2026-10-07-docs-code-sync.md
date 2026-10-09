@@ -26,7 +26,7 @@
 
 | Nhóm | Đánh giá |
 |---|---|
-| Đồng bộ tốt nhất | Inventory, Review, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. Review/Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. |
+| Đồng bộ tốt nhất | Inventory, Review, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. Review/Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
 | Lệch nhiều nhất | Auth, User, Promotion, Search: docs cũ/tự mâu thuẫn và có bug thật trong code. |
 | Lỗi lặp lại khắp nơi | Nhãn trạng thái cũ ("proposed", "chưa có implementation") trong `docs/README.md`, `contracts/catalog/services.yaml`, `contracts/ADOPTION.md`, `interactions.yaml` và frontmatter nhiều file. |
 
@@ -49,7 +49,8 @@
 | A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát |
 | N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý |
 | U9 | User | Profile đã xoá (ẩn danh) vẫn ghi lại được PII |
-| S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt |
+| S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt *(phía Inventory đã sửa 2026-10-09: retention đúng 30d, xem I8; Search chưa)* |
+| I3 | Inventory | Kiểm role ADMIN/allowlist trên URI thô → né được bằng `%xx`/`;` *(đã sửa 2026-10-09)* |
 | S6 | Search | URL Product mặc định `:8080`, Product chạy `:8081` → full reindex lỗi ở compose |
 | X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call |
 
@@ -396,13 +397,54 @@
 
 Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
-### I1 🟡 Thư mục `brainstorm/` gắn nhãn sai
+> **Kiểm tra lại 2026-10-09** (đọc toàn bộ `docs/inventory` gồm 28 ADR, 4 OpenAPI + AsyncAPI + schema, toàn bộ code,
+> migration, test và client Order/Checkout/PDP BFF/Search/frontend): nhận định "khớp route, mã lỗi, config" ở trên
+> **đúng**, I2 **đúng**, I1 để nguyên theo quyết định của chủ dự án. Nhưng báo cáo **chưa đầy đủ**: còn thiếu I3–I11
+> bên dưới (1 lỗ hổng bảo mật, 3 bug runtime, 1 chức năng docs hứa mà code chưa có). Bốn lỗi code đã được tái hiện bằng
+> test đỏ trên code cũ (`AuditCorrectionsIT`) rồi mới sửa. Quyết định gom ở
+> [ADR-028](../docs/inventory/decisions/ADR-028-post-implementation-audit-corrections.md).
+
+### I1 🟡 Thư mục `brainstorm/` gắn nhãn sai — ⏸ không sửa theo quyết định của chủ dự án (brainstorm là ý tưởng ban đầu)
 - Frontmatter các file `docs/inventory/brainstorm/*.md` ghi `scope: target, status: proposed` (riêng `design-charter.md` frontmatter hỏng: `## doc_id`), trong khi nội dung trái với thiết kế đã chốt: release `STOCK_DISCREPANCY` + `order_exception_id`, Commit bị chặn sau `expires_at` (INV-DOM-010), path dạng `reservations:reserve`, `{order_id}:release`, release một line `POST_DISPATCH_EXCEPTION`.
 - README nói brainstorm "là evidence, không phải nguồn chuẩn".
 - Sửa: đổi frontmatter thành `status: superseded` / `historical` (hoặc thêm banner) và sửa frontmatter hỏng.
 
-### I2 🟡 `interfaces.md` §4 thiếu endpoint ADMIN
+### I2 🟡 `interfaces.md` §4 thiếu endpoint ADMIN — ✅ đã kiểm chứng đúng và sửa 2026-10-09
 - Thiếu: `GET /warehouses/{warehouse_id}`, `/stock-positions/{warehouse_id}/{sku_id}`, `/stock-movements/{movement_id}`, `/commands/{command_id}`, `/reservations/{order_id}`, `/refund-scopes/{refund_scope_id}` (có trong ADMIN OpenAPI và `AdminController`).
+- Đã sửa: `interfaces.md` §4 liệt kê đủ 13 query; ADMIN README nêu nhóm đọc theo định danh.
+
+### I3 🔴 [SECURITY] `IdentityFilter` so khớp URI thô — ✅ phát hiện mới 2026-10-09, đã sửa
+- `IdentityFilter` so `request.getRequestURI()` với prefix ADMIN/service, còn Spring MVC route theo path đã decode và bỏ `;param`. `GET /api/v1/admin/inventor%79/warehouses` hoặc `/api/v1/admin/inventory;x=1/warehouses` né cả kiểm role `ADMIN` lẫn allowlist `X-Service-Identity`: test đỏ trên code cũ cho `200` với user `USER`. Mutation chỉ hỏng vì thiếu idempotency namespace; mọi query (kho, tồn, movement, reservation, scope) bị lộ.
+- Sửa: kiểm trên `UrlPathHelper.getPathWithinApplication`. Cùng mẫu `getRequestURI()` còn ở filter của Order, Product, Promotion, Review — chưa sửa (ngoài phạm vi Inventory).
+
+### I4 🟠 [BUG] Watermark snapshot = 0 sau khi retention xoá hết fact — ✅ phát hiện mới, đã sửa
+- `OutboxStore.latestSequence()` = `max(sequence)` của `published_event`; sau 30 ngày yên tĩnh retention xoá hết nên giá trị `NULL → 0` trong khi `retention_floor > 0`. Snapshot mới có watermark 0, `changes?after_sequence=0` trả `410 REPLAY_WINDOW_EXPIRED` ngay → Search bootstrap lặp vô hạn.
+- Sửa: `GREATEST(max(sequence), retention_floor)`; docs `interfaces.md` §7, `data.md` §6, Export OpenAPI.
+
+### I5 🟠 [BUG] Reserve trùng `order_id` song song có thể trả `REJECT_ALL` — ✅ phát hiện mới, đã sửa
+- Hai Reserve cùng đơn, khác command ID, cùng qua bước "đã có root?"; lệnh sau chờ khoá position, thấy hết hàng và ghi bền `REJECT_ALL` cho đơn đã có root thay vì `RESERVATION_ALREADY_EXISTS`.
+- Sửa: khoá advisory theo `order_id` ở đầu Reserve; `data.md` §4, Workflow OpenAPI/README.
+
+### I6 🟡 Đăng ký lại Refund Scope trả `scope_revision` cũ — ✅ phát hiện mới, đã sửa
+- ADR-018 cho phép đăng ký lại cùng `(order_id, refund_request_id)` + dòng và trả scope hiện có, nhưng code luôn trả `scope_revision: 1` dù scope đã tiến triển, và `interfaces.md`/OpenAPI không ghi hành vi này.
+- Sửa: trả revision hiện tại; ghi vào `interfaces.md` §2, Workflow OpenAPI/README.
+
+### I7 🟠 `operations.md` §3 hứa kiểm tra mà code không có — ✅ phát hiện mới, đã sửa (implement)
+- "Continuous: recompute sampled `SkuAvailabilityState`" và "readiness-suppressed facts" không có trong code (chỉ có gauge backlog/age).
+- Sửa: `Reconciliation.auditAvailability()` (detection-only, quét vòng theo `sku_id`, bỏ qua SKU còn dirty/fan-out) + gauge `inventory_integrity_availability_mismatches`, `inventory_availability_readiness_suppressed`; cấu hình `availability-audit-*`; docs `operations.md` §3.
+
+### I8 🟡 Retention topic "30d-minimum" không có trần (nửa Inventory của S4) — ✅ đã sửa phía Inventory 2026-10-09
+- AsyncAPI khai `x-retention: 30d-minimum`, không nơi nào provision topic (compose để broker auto-create, mặc định ngắn hơn). Consumer không thể chọn cửa sổ "dài hơn retention".
+- Sửa: retention topic là đúng 30 ngày (sàn và trần); AsyncAPI/README/`data.md`/`operations.md`/kafka README; thêm gate production "Platform provision topic" trong `development.md`. **Còn mở (Search):** `search.tombstone.protection-window` vẫn 30d và comment ghi "14d" — phải dài hơn 30d.
+
+### I9 🟡 README ghi `mvn test` chạy integration test nhưng surefire bỏ qua `*IT` — ✅ phát hiện mới, đã sửa
+- Lệnh trong README chỉ chạy 7 `DomainRulesTest`. Sửa `pom.xml`: include `**/*Test.java` và `**/*IT.java` (như Order); README cập nhật.
+
+### I10 🟡 Catalog/ADOPTION cũ — ✅ phát hiện mới, đã sửa
+- `interactions.yaml`: 5 interaction Inventory còn `proposed` dù cả hai phía đã chạy (`checkout-previews-inventory-allocation`, `warehouse-admin-operates-inventory`, `product-detail-bff-queries-inventory-availability`, `inventory-publishes-public-facts`, `search-exports-inventory-availability`). `ADOPTION.md` ghi "Consumer Order chưa có" (Order có `FulfillmentIntake`/`InspectionIntake`) và "UI còn phải sinh lại type" (đã có `inventory-admin.ts` theo ADR-027).
+
+### I11 🟡 Chỗ docs/contract lệch nhỏ — ✅ phát hiện mới, đã sửa
+- Workflow `cancel` thiếu `400`; các query (Workflow + 13 GET ADMIN) thiếu `503`; snapshot session đã bị retention xoá trả `404` (Search xử lý như hết hạn) nhưng contract chỉ nói `410`; "SKU chưa có state được evaluate `false`, revision 1" (thực tế tính từ stock); fan-out pending chỉ tính SKU cursor chưa tới; thứ tự khoá nói `OperationIdentity` đứng đầu nhưng code kiểm bằng đọc không khoá rồi claim sau khi khoá aggregate; `operations.md` §5 ghi `X-Service-Identity` "chỉ để attribution" trong khi service áp allowlist `401/403`.
 
 Đã khớp: 4 surface (workflow/admin/read/export) == OpenAPI; `ErrorCode` == bảng §5; config (lock 2s, 2 retry, 15m, orphan 60m, freshness 30s, backpressure 100k, snapshot 24h, write-freeze) == docs; topic/key == AsyncAPI; Checkout gửi đủ `X-Correlation-ID` + `X-Causation-ID`; mapping `cancel_reason` của Order khớp lý do release.
 
@@ -425,6 +467,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 ### S4 🔴 Tombstone protection window không dài hơn retention topic
 - Quy tắc SEARCH-INV-006 / ADR-011 / `data.md`: cửa sổ bảo vệ tombstone "phải dài hơn retention của mọi topic Search tiêu thụ".
 - `application.yml` `search.tombstone.protection-window: 30d` (comment ghi "topic là 14d"), nhưng `t.inventory.stock.events.v1` retention là **"30d-minimum"** (Inventory AsyncAPI).
+- **2026-10-09 — kiểm chứng đúng; đã xử lý phía Inventory** (retention topic đúng 30d, sàn và trần; xem I8). **Còn mở phía Search:** nâng `protection-window` lên dài hơn 30d (ví dụ 35d) và sửa comment "14d".
 - Hệ quả: sau purge, event availability được replay gặp document không tồn tại → bị coi là vi phạm readiness → Search không ACK → partition kẹt.
 - Sửa: tăng window (> 30d, ví dụ 45d) và/hoặc xử lý riêng trường hợp document đã purge; cập nhật comment + docs.
 
