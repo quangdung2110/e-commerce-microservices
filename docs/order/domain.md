@@ -283,7 +283,9 @@ trực tiếp từ một master/line state đơn lẻ.
   `POST /internal/v1/checkout-order-submissions` —
   [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
   public client không được giả mạo trusted headers hoặc signal, và `X-Service-Identity` chỉ là
-  attribution.
+  attribution. `IdentityFilter` chọn nhánh bảo vệ (Buyer / ADMIN / internal) theo path đã decode và
+  bỏ `;param` — đúng path Spring MVC route — chứ không theo URI thô, nên `/api/v1/%61dmin/...` hay
+  `/api/v1/admin;x=1/...` không né được kiểm role (`IdentityFilterPathTest`).
 
 ## 7. Lỗi miền nghiệp vụ
 

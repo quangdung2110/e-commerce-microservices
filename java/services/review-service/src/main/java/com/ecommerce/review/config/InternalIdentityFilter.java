@@ -11,6 +11,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -50,7 +51,10 @@ public class InternalIdentityFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
         RequestContext.setCorrelationId(request.getHeader(properties.gateway().requestIdHeader()));
         try {
-            String path = request.getRequestURI();
+            // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw
+            // URI would let "/internal/v1;x=1/..." or "/%69nternal/v1/..." reach a controller without
+            // a service token.
+            String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
             if (path.startsWith(INTERNAL_PREFIX) && !authorizeInternal(path, request, response)) {
                 return;
             }

@@ -43,7 +43,7 @@ trước, producer phát sau (xem `contracts/CHANGELOG.md`).
 
 | Loại | Bao phủ |
 |---|---|
-| Unit | Công thức markdown, clamp giá, state machine admin-only, cursor, validator attribute, allowlist theo route (`TrustedIdentityFilterTest`), mapping lỗi và `Retry-After` (`GlobalExceptionHandlerTest`) |
+| Unit | Công thức markdown, clamp giá, state machine admin-only, cursor, validator attribute, allowlist theo route (`TrustedIdentityFilterTest`, và `TrustedIdentityFilterPathTest` cho path mã hoá `%xx` / `;param`), mapping lỗi và `Retry-After` (`GlobalExceptionHandlerTest`) |
 | Integration DB | Constraint, Product → SKU lock order, hard delete/tombstone, catalog revision, export và replay offsets, `facet_definitions` trong snapshot và export |
 | Kafka | Outbox/CDC CloudEvents, catalog/category revision guard, event replay, `source_revision` cũ/trùng, ACTIVE→INACTIVE, missing Product, retry/DLQ và replay snapshot từ Promotion |
 | Contract | gRPC, Product event snapshot/revision/effective thumbnail (`CatalogEventContractTest` validate JSON Schema), buyer-read validate với `BuyerProductDetail` trong OpenAPI, Promotion ACTIVE full payload và INACTIVE tombstone, bản copy proto (`ProtoCopyDriftTest`) |

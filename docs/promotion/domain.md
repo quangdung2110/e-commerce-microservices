@@ -229,7 +229,9 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
   (`X-Service-Identity: order-service`). Việc chỉ Checkout/Order chạm được các route này do
   service mesh thực thi theo principal ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
   header do caller tự đặt và không được mesh xác minh, nên `TrustedIdentityFilter` allowlist theo
-  nhóm route chỉ là defense-in-depth.
+  nhóm route chỉ là defense-in-depth. Filter so khớp trên path đã decode và bỏ `;param` (đúng path
+  Spring MVC route), không phải URI thô, để `/api/v1/admin;x=1/...` hay `/%69nternal/v1/...` không né
+  được role ADMIN / allowlist (`TrustedIdentityFilterPathTest`).
 - Order/Temporal gọi reserve/confirm/cancel only. `cancel-confirmed` requires the separate legacy-migrator capability and proof.
 - Consumer validate broker ACL, schema, event identity và business guard.
 

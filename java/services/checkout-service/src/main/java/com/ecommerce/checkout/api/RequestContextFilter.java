@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.server.PathContainer;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.HandlerMapping;
 import org.springframework.web.server.ServerWebExchange;
@@ -43,7 +44,7 @@ public class RequestContextFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        String path = exchange.getRequest().getPath().value();
+        String path = routedPath(exchange);
         if (!path.startsWith("/api/")) {
             return chain.filter(exchange);
         }
@@ -61,6 +62,19 @@ public class RequestContextFilter implements WebFilter {
                     RequestIds.traceparent(reactorContext, headers), null, deadline));
             return chain.filter(exchange);
         }).doFinally(signal -> accessLog(exchange, startedAt));
+    }
+
+    /**
+     * The path WebFlux routes on: each segment decoded and without {@code ;param}. The raw path would
+     * leave {@code /%61pi/v1/checkout/preview} outside the {@code /api/} branch, so the controller would
+     * run without a request context, and {@code /api/v1/checkout/%70review} on the Submit budget.
+     */
+    private static String routedPath(ServerWebExchange exchange) {
+        StringBuilder path = new StringBuilder();
+        for (PathContainer.Element element : exchange.getRequest().getPath().pathWithinApplication().elements()) {
+            path.append(element instanceof PathContainer.PathSegment segment ? segment.valueToMatch() : element.value());
+        }
+        return path.toString();
     }
 
     /** Deadlines of ADR-014: Preview 5 s, voucher options 1.5 s, Submit and status 20 s. */

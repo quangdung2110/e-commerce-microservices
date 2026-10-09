@@ -12,6 +12,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -69,7 +70,9 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
         EventContext.set(request.getHeader(TRACEPARENT_HEADER), request.getHeader(REQUEST_ID_HEADER));
         try {
-            String path = request.getRequestURI();
+            // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw
+            // URI would let "/%61pi/v1/..." or "/internal/v1;x=1/..." reach a controller unchecked.
+            String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
             if (path.startsWith(ADMIN_PATH) && !authorizeAdmin(request, response)) {
                 return;
             }

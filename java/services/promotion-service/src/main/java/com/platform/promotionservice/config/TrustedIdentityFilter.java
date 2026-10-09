@@ -12,6 +12,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -57,7 +58,10 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
         try {
-            String path = request.getRequestURI();
+            // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw
+            // URI would let "/api/v1/admin;x=1/..." skip the ADMIN role and "/%69nternal/v1/..." skip
+            // the service allowlist while still reaching the controller.
+            String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
             if (path.startsWith(INTERNAL_PATH)) {
                 if (!authorizeInternal(path, request, response)) {
                     return;

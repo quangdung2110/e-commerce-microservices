@@ -13,6 +13,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -47,14 +48,17 @@ public class IdentityFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String path = request.getRequestURI();
+        // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw URI
+        // would let "/api/v1/%61dmin/..." or "/api/v1/admin;x=1/..." reach a controller without the
+        // role check (Inventory audit I3, ADR-028).
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
         try {
             if (path.startsWith("/internal/v1/checkout-order-submissions")) {
-                if (!service(request, response, identity.checkoutClients(), Caller.Kind.CHECKOUT, false)) {
+                if (!service(request, response, path, identity.checkoutClients(), Caller.Kind.CHECKOUT, false)) {
                     return;
                 }
             } else if (path.startsWith("/internal/v1/orders/")) {
-                if (!service(request, response, identity.financeClients(), Caller.Kind.FINANCE,
+                if (!service(request, response, path, identity.financeClients(), Caller.Kind.FINANCE,
                         "POST".equals(request.getMethod()))) {
                     return;
                 }
@@ -84,9 +88,8 @@ public class IdentityFilter extends OncePerRequestFilter {
         }
     }
 
-    private boolean service(HttpServletRequest request, HttpServletResponse response, List<String> allowed,
-                            Caller.Kind kind, boolean requireActor) throws IOException {
-        String path = request.getRequestURI();
+    private boolean service(HttpServletRequest request, HttpServletResponse response, String path,
+                            List<String> allowed, Caller.Kind kind, boolean requireActor) throws IOException {
         String service = trim(request.getHeader(identity.serviceHeader()));
         if (service == null) {
             reject(response, path, ErrorCode.UNAUTHENTICATED, "Missing " + identity.serviceHeader());

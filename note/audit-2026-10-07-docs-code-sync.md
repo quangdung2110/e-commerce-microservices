@@ -17,7 +17,7 @@
 > - 🟡 **Thấp**: docs cũ, tự mâu thuẫn, thiếu thông tin; không đổi hành vi runtime.
 >
 > Quy ước khi sửa (theo memory dự án): refactor docs phải grep toàn bộ `docs/` + `contracts/`
-> cho thuật ngữ cũ; quyết định lớn → ADR mới. `payment-service` và `review-service` chưa được
+> cho thuật ngữ cũ; quyết định lớn → ADR mới. `payment-service` chưa được
 > git theo dõi → backup trước khi sửa.
 
 ---
@@ -446,7 +446,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ### I3 🔴 [SECURITY] `IdentityFilter` so khớp URI thô — ✅ phát hiện mới 2026-10-09, đã sửa
 - `IdentityFilter` so `request.getRequestURI()` với prefix ADMIN/service, còn Spring MVC route theo path đã decode và bỏ `;param`. `GET /api/v1/admin/inventor%79/warehouses` hoặc `/api/v1/admin/inventory;x=1/warehouses` né cả kiểm role `ADMIN` lẫn allowlist `X-Service-Identity`: test đỏ trên code cũ cho `200` với user `USER`. Mutation chỉ hỏng vì thiếu idempotency namespace; mọi query (kho, tồn, movement, reservation, scope) bị lộ.
-- Sửa: kiểm trên `UrlPathHelper.getPathWithinApplication`. Cùng mẫu `getRequestURI()` còn ở filter của Order, Product, Promotion, Review — chưa sửa (ngoài phạm vi Inventory).
+- Sửa: kiểm trên `UrlPathHelper.getPathWithinApplication`. Cùng mẫu `getRequestURI()` ở filter của Order, Product, Promotion, Review đã được rà và sửa riêng — xem X5.
 
 ### I4 🟠 [BUG] Watermark snapshot = 0 sau khi retention xoá hết fact — ✅ phát hiện mới, đã sửa
 - `OutboxStore.latestSequence()` = `max(sequence)` của `published_event`; sau 30 ngày yên tĩnh retention xoá hết nên giá trị `NULL → 0` trong khi `retention_floor > 0`. Snapshot mới có watermark 0, `changes?after_sequence=0` trả `410 REPLAY_WINDOW_EXPIRED` ngay → Search bootstrap lặp vô hạn.
@@ -466,7 +466,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ### I8 🟡 Retention topic "30d-minimum" không có trần (nửa Inventory của S4) — ✅ đã sửa phía Inventory 2026-10-09
 - AsyncAPI khai `x-retention: 30d-minimum`, không nơi nào provision topic (compose để broker auto-create, mặc định ngắn hơn). Consumer không thể chọn cửa sổ "dài hơn retention".
-- Sửa: retention topic là đúng 30 ngày (sàn và trần); AsyncAPI/README/`data.md`/`operations.md`/kafka README; thêm gate production "Platform provision topic" trong `development.md`. **Còn mở (Search):** `search.tombstone.protection-window` vẫn 30d và comment ghi "14d" — phải dài hơn 30d.
+- Sửa: retention topic là đúng 30 ngày (sàn và trần); AsyncAPI/README/`data.md`/`operations.md`/kafka README; thêm gate production "Platform provision topic" trong `development.md`. **Search (xong 2026-10-09):** `search.tombstone.protection-window` đã nâng lên 35d (ADR-021).
 
 ### I9 🟡 README ghi `mvn test` chạy integration test nhưng surefire bỏ qua `*IT` — ✅ phát hiện mới, đã sửa
 - Lệnh trong README chỉ chạy 7 `DomainRulesTest`. Sửa `pom.xml`: include `**/*Test.java` và `**/*IT.java` (như Order); README cập nhật.
@@ -535,7 +535,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 ### S4 🔴 Tombstone protection window không dài hơn retention topic
 - Quy tắc SEARCH-INV-006 / ADR-011 / `data.md`: cửa sổ bảo vệ tombstone "phải dài hơn retention của mọi topic Search tiêu thụ".
 - `application.yml` `search.tombstone.protection-window: 30d` (comment ghi "topic là 14d"), nhưng `t.inventory.stock.events.v1` retention là **"30d-minimum"** (Inventory AsyncAPI).
-- **2026-10-09 — kiểm chứng đúng; đã xử lý phía Inventory** (retention topic đúng 30d, sàn và trần; xem I8). **Còn mở phía Search:** nâng `protection-window` lên dài hơn 30d (ví dụ 35d) và sửa comment "14d".
+- **2026-10-09 — kiểm chứng đúng; đã xử lý phía Inventory** (retention topic đúng 30d, sàn và trần; xem I8). **Phía Search đã xử lý 2026-10-09:** `protection-window` nâng lên 35d (default record + `application.yml`), sửa comment "14d" (retention dài nhất thật là 30d của topic Inventory, các topic khác 14d), đồng bộ docs Search, ADR-021 mở rộng ADR-011, thêm `TombstoneProtectionWindowTest`.
 - Hệ quả: sau purge, event availability được replay gặp document không tồn tại → bị coi là vi phạm readiness → Search không ACK → partition kẹt.
 - Sửa: tăng window (> 30d, ví dụ 45d) và/hoặc xử lý riêng trường hợp document đã purge; cập nhật comment + docs.
 
@@ -684,6 +684,28 @@ Docs mới nhất, khớp code.
 ### X4 🟡 Bảng mã lỗi không được liệt kê trong OpenAPI
 - Đa số OpenAPI chỉ mô tả response, không enum `code`; docs domain thiếu nhiều mã (A1, U3, C8, P3, PR7). Đề xuất mỗi service có "error catalog" đầy đủ (code, HTTP, retryable) trong `interfaces.md`, như Inventory và Checkout đã làm.
 
+### X5 🔴 [SECURITY] Filter quyết định bảo vệ route bằng `request.getRequestURI()` (URI thô) — ✅ phát hiện 2026-10-09 khi rà theo I3, đã sửa ở 4 service
+- Gốc: I3 (Inventory). Spring MVC route theo path đã decode và bỏ `;param`, còn filter so URI thô, nên `/%61pi/v1/...`, `/internal/v1;x=1/...`, `/api/v1/admin;x=1/...` né kiểm quyền mà vẫn tới controller. Dự án không dùng Spring Security (không service nào có `spring-boot-starter-security`), nên không có `StrictHttpFirewall` che.
+- Cách tái hiện: mỗi service có test `*PathTest` dùng MockMvc standalone + controller giả đặt ở route thật + filter thật, gọi bằng `URI.create("/%61pi/...")` và biến thể `;x=1`. `200` nghĩa là request lọt tới handler. Chạy trên code cũ đều ĐỎ vì đúng lý do đó; sau sửa XANH. Test không cần DB/Docker nên chạy cùng unit test. (Chưa chứng minh qua Tomcat thật; I3 đã chứng minh Tomcat chuyển nguyên URI thô tới filter.)
+- Sửa: `UrlPathHelper.defaultInstance.getPathWithinApplication(request)` như Inventory; path chuẩn giữ nguyên hành vi (các test cũ của filter vẫn xanh).
+
+| Service | Filter | Hệ quả trên code cũ | Trạng thái |
+|---|---|---|---|
+| Order | `web/IdentityFilter` | `/api/v1/admin;x=1/orders` và `/api/v1/%61dmin/orders` không khớp nhánh nào → **không cần cả X-User-Id lẫn role ADMIN**; `/%61pi/v1/orders/..` mất kiểm buyer; `/internal/v1;x=1/checkout-order-submissions/..` mất allowlist checkout/finance | ✅ sửa, `IdentityFilterPathTest` |
+| Product | `config/TrustedIdentityFilter` | `/%61pi/v1/products` (non-admin → 200), `/api/v1;x=1/..`, `/internal/v1;x=1/products/export` (không cần service identity). Spelling mã hoá của route hợp lệ (`product%2Ddetails`) bị 403 (fail-closed) | ✅ sửa, `TrustedIdentityFilterPathTest` |
+| Promotion | `config/TrustedIdentityFilter` | `/api/v1/admin;x=1/promotion-campaigns` rơi xuống nhánh "user thường" → **user không phải ADMIN vào được route admin**; `/%61pi/..`, `/internal/v1;x=1/..` mất kiểm | ✅ sửa, `TrustedIdentityFilterPathTest` |
+| Review | `config/InternalIdentityFilter` | `/internal/v1;x=1/reviews/..` và `/%69nternal/..` không cần bearer token (cả PDP lẫn export) | ✅ sửa, `InternalIdentityFilterPathTest`. Chỉ `/internal/v1/**` dùng filter; route public/admin của Review kiểm header trong controller nên không phụ thuộc path |
+| Checkout | `api/RequestContextFilter` (WebFlux) | **Không phải quyết định bảo vệ** — Checkout kiểm `X-User-Id` trong controller. Nhưng path thô làm `/%61pi/v1/checkout/preview` bỏ qua filter: controller chạy không có request context (`getRequiredAttribute` → 500), thiếu `Cache-Control: private, no-store`, và `/api/v1/checkout/%70review` nhận budget Submit 20s thay vì Preview 5s. Fail-closed nên không có lỗ hổng | ✅ sửa nhẹ (path từng segment `valueToMatch()`), `RequestContextFilterPathTest` |
+| Search | `config/RequestIdFilter`; `ReindexRunController.requireAdmin` | Filter chỉ gắn request id vào MDC, không dựa vào path; admin kiểm bằng header ngay trong handler (bị route tới mới chạy) | ✔ an toàn, không sửa |
+| Payment | `PaymentController` | Mỗi handler tự kiểm `X-Service-Identity` (`validCommonHeaders`), không có filter theo path | ✔ an toàn, không sửa |
+| Product Detail BFF | — | Không có filter/interceptor kiểm quyền (không có `X-User-Id`/`X-Service-Identity` trong `src/main`) | ✔ không áp dụng |
+| Go: cart, auth, user, notification | gin `Group.Use(...)` (`Identity`, `ServiceIdentity`, rate limit) | **Không có lỗ hổng cùng mẫu.** Không middleware nào chọn nhánh bảo vệ bằng chuỗi path: guard gắn vào route group nên chạy đúng guard của route mà gin khớp, và gin khớp trên `URL.Path` đã decode (không service nào bật `UseRawPath`/`RemoveExtraSlash`). `%69nternal` decode về route thật nên vẫn bị guard; `;x=1`, `//` không khớp route nào → 404. Mọi `URL.Path`/`RequestURI` còn lại chỉ dùng cho `instance` của problem, log, hash idempotency (notification `RequestHash`) | ✔ an toàn; thêm test chốt hành vi `cart-service/.../router/router_path_test.go` (xanh, không sửa code) |
+| Go: gateway-auth | `http.ServeMux`, chỉ `/verify` + health | `VerifyHandler` xác thực token, không phân nhánh theo path; `instancePath` (từ `X-Forwarded-Uri`/`URL.Path`) chỉ điền `instance` của lỗi | ✔ an toàn |
+| Gateway (Traefik v3.7.1) | routers trong `api-gateway/config/service-labels.env`, `dynamic.yml` | Quyết định "route nào cần ForwardAuth" nằm ở router, không ở backend. Mọi router tới backend Java đều có chain `authenticated`; chỉ `auth-api`/`auth-jwks`/`auth-oidc` công khai và chúng chỉ tới auth-service (gin, khớp theo path decode giống Traefik). Không có `stripPrefix`/`addPrefix`; `replacePathRegex` chỉ cho `/media/`. Nên không có đường để một path được định tuyến sang router không xác thực nhưng backend hiểu thành route khác. Chưa kiểm hành vi thực của Traefik với `;`/`%xx` (chỉ đọc cấu hình) | ✔ đọc cấu hình, không thấy vấn đề |
+
+- Kiểm chứng: `mvn verify` từ container Maven với công thức Testcontainers — checkout 138, promotion 39, product 164, order 37, review 151 test, 0 lỗi. review-service hiện đã được git theo dõi (file `M`, có phiên khác đang sửa); chỉ Edit có điểm neo vào `InternalIdentityFilter` và thêm một test mới, đã backup filter trước khi sửa.
+- Docs đã thêm một câu: `docs/order/domain.md` §6, `docs/product/architecture.md` (+ `development.md`), `docs/promotion/domain.md` §9 (+ `development.md`), `docs/review/interfaces.md` (internal auth). Checkout/Search/Payment/BFF không có docs về allowlist cần cập nhật.
+
 ---
 
 ## 17. Checklist sửa (đánh dấu khi xong)
@@ -703,7 +725,7 @@ Docs mới nhất, khớp code.
 - [x] U5 User: consumer `complaint-received` trên `t.notification.outcomes.v1` (ADR-009). *(2026-10-09)*
 - [x] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`). *(2026-10-09)*
 - [x] C12 Cart: consumer `USER_DELETED` + `purge_cart.lua` (ADR-014); Auth contract/docs/catalog đã thêm Cart vào consumers. *(2026-10-09)*
-- [ ] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge.
+- [x] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge. *(2026-10-09: `protection-window` = 35d, ADR-021, `TombstoneProtectionWindowTest`)*
 - [x] S6 Search: default URL Product `:8081` (yml, `SearchProperties`, compose gốc + compose riêng của Search). *(2026-10-09)*
 - [ ] S7 Search: bỏ `/` cuối ở default CDN URL.
 - [x] P5 Product: tách allowlist snapshot cho Promotion (`snapshot-clients`, Promotion không còn đọc được export). *(2026-10-09)*
@@ -712,6 +734,8 @@ Docs mới nhất, khớp code.
 - [x] N4 Notification: gửi `X-Service-Identity` khi gọi Auth. *(báo cáo sai: đã gửi từ trước, không cần sửa)*
 - [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; còn Notification)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
+- [x] X5 Order/Product/Promotion/Review: filter kiểm quyền theo path đã decode + bỏ `;param` (`UrlPathHelper`), mỗi service một `*PathTest` (đỏ → xanh); Checkout `RequestContextFilter` cùng cách (không phải lỗi bảo vệ). *(2026-10-09)*
+- [x] X5 Go: đã rà middleware gin của cart/auth/user/notification + gateway-auth + cấu hình Traefik — không có lỗ hổng cùng mẫu, chỉ thêm `cart-service/.../router_path_test.go`. *(2026-10-09)*
 
 ### Contract / catalog
 - [ ] PR4 sửa tham số `LegacyMigrationProof`.

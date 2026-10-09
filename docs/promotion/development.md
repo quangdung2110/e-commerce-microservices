@@ -78,6 +78,7 @@ Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
 |---|---|
 | `RuleEvaluatorTest`, `DomainRulesTest` | AST operators/missing/empty/numeric, validator reject, discount math, phase `[start,end)`, ba validity mode |
 | `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route |
+| `TrustedIdentityFilterPathTest` | Cùng các kiểm quyền đó với path mã hoá `%xx` / `;param` (MockMvc standalone, controller giả ở route thật) |
 | `MarkdownSnapshotContractTest` | CloudEvent ACTIVE (percentage/fixed) và INACTIVE hợp lệ với JSON Schema trong `contracts/`; causal dedup key |
 | `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
 | `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair; migration proof/capability enforcement; final command không ghi outbox; refund no-op |

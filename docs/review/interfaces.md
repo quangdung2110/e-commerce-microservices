@@ -183,7 +183,9 @@ The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
 request with no `Authorization: Bearer` header is `401 UNAUTHENTICATED`; a token that is not on
 the allowlist of the route's group is `403 FORBIDDEN`, so the PDP token cannot page the export
 and the export token cannot read the PDP summary. An internal route that belongs to no group
-rejects every caller.
+rejects every caller. The filter matches the decoded path without `;` parameters (the path
+Spring MVC routes on), not the raw URI, so `/%69nternal/v1/...` or `/internal/v1;x=1/...` cannot
+skip the token check (`InternalIdentityFilterPathTest`).
 
 ### PDP summary
 
