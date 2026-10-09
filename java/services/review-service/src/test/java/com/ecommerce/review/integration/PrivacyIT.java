@@ -237,6 +237,107 @@ class PrivacyIT extends AbstractReviewIT {
     }
 
     /**
+     * Makes the purge of one subject fail inside its transaction, the way a lock timeout or
+     * a lost connection would, without touching the schema the other tests rely on.
+     */
+    private void failEveryPurgeOf(UUID owner) {
+        jdbc.sql("""
+                CREATE OR REPLACE FUNCTION review.fail_purge() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'simulated purge failure';
+                END $$
+                """).update();
+        jdbc.sql("CREATE TRIGGER trg_fail_purge BEFORE UPDATE OF owner_user_id ON review_eligibilities "
+                + "FOR EACH ROW WHEN (OLD.owner_user_id = '" + owner + "'::uuid AND NEW.owner_user_id IS NULL) "
+                + "EXECUTE FUNCTION review.fail_purge()").update();
+    }
+
+    private void stopFailingPurges() {
+        jdbc.sql("DROP TRIGGER IF EXISTS trg_fail_purge ON review_eligibilities").update();
+    }
+
+    private String requestStatus(UUID owner) {
+        return jdbc.sql("""
+                SELECT status FROM privacy_erasure_requests
+                 WHERE subject_match_key = ?
+                """).param(identityHmac.subjectKey(owner).bytes()).query(String.class).single();
+    }
+
+    /**
+     * A failed purge is retried, not parked: it is due again on the next pass, and it stays
+     * counted by the overdue alert until it reaches PURGED so a failure retrying cannot fix
+     * remains visible (WF-REVIEW-010, ADR-013).
+     */
+    @Test
+    void aFailedPurgeIsRetriedOnTheNextPassAndStaysOverdueUntilThen() {
+        UUID eligibilityId = grantEntitlement("order-fail", "p-1", "sku-1", subject);
+        deleteUser(subject, Instant.now().minus(1, ChronoUnit.DAYS));
+
+        failEveryPurgeOf(subject);
+        try {
+            assertThat(privacyService.purgeDue(10)).isZero();
+
+            assertThat(requestStatus(subject)).isEqualTo("FAILED");
+            assertThat(privacyService.countOverdue()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT owner_user_id IS NOT NULL FROM review_eligibilities WHERE id = ?")
+                    .param(eligibilityId).query(Boolean.class).single()).isTrue();
+            // The guard survives a failed purge: nothing can write the identifier back.
+            entitlements.apply(UUID.randomUUID(),
+                    new com.ecommerce.review.messaging.OrderCompletedPayload("order-late", subject, Instant.now(),
+                            java.util.List.of(new com.ecommerce.review.messaging.OrderCompletedPayload.Item(
+                                    "p-1", "sku-2", null, null, null, 1))),
+                    properties.topics().order(), 0, nextOffset());
+            assertThat(jdbc.sql("SELECT count(*) FROM review_eligibilities WHERE order_id = 'order-late'")
+                    .query(Long.class).single()).isZero();
+        } finally {
+            stopFailingPurges();
+        }
+
+        assertThat(privacyService.purgeDue(10)).isEqualTo(1);
+
+        assertThat(requestStatus(subject)).isEqualTo("PURGED");
+        assertThat(privacyService.countOverdue()).isZero();
+        assertThat(jdbc.sql("SELECT failure_detail FROM privacy_erasure_requests").query(String.class).single())
+                .isNull();
+        assertThat(jdbc.sql("SELECT owner_user_id IS NULL AND owner_erased_at IS NOT NULL "
+                + "FROM review_eligibilities WHERE id = ?").param(eligibilityId).query(Boolean.class).single())
+                .isTrue();
+    }
+
+    /**
+     * One pass visits every due request once, so a subject whose purge keeps failing cannot
+     * hold back the subjects queued behind it, even when pages are one request long.
+     */
+    @Test
+    void aSubjectWhosePurgeFailsDoesNotStarveTheOnesBehindIt() {
+        UUID other = UUID.randomUUID();
+        grantEntitlement("order-first", "p-1", "sku-1", subject);
+        grantEntitlement("order-second", "p-1", "sku-2", other);
+        deleteUser(subject, Instant.now().minus(2, ChronoUnit.DAYS));
+        deleteUser(other, Instant.now().minus(1, ChronoUnit.DAYS));
+
+        failEveryPurgeOf(subject);
+        try {
+            assertThat(privacyService.purgeDue(1)).isEqualTo(1);
+        } finally {
+            stopFailingPurges();
+        }
+
+        assertThat(requestStatus(subject)).isEqualTo("FAILED");
+        assertThat(requestStatus(other)).isEqualTo("PURGED");
+    }
+
+    /** A request that is not yet due is left alone, whatever its state. */
+    @Test
+    void aRequestBeforeItsDeadlineIsNotPurged() {
+        grantEntitlement("order-early", "p-1", "sku-1", subject);
+        deleteUser(subject, Instant.now().plus(5, ChronoUnit.DAYS));
+
+        assertThat(privacyService.purgeDue(10)).isZero();
+        assertThat(requestStatus(subject)).isEqualTo("ANONYMIZED");
+    }
+
+    /**
      * The paired CHECKs are what make a half-written purge impossible. Clearing an
      * identifier without its {@code *_erased_at} is rejected, so the failure is loud and
      * deterministic rather than a silently incomplete erasure.

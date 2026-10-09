@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
 /**
- * Two mappers with deliberately different null handling.
+ * Two mappers with deliberately different null handling and unknown-field handling.
  *
  * <p>The HTTP mapper must emit nulls: {@code next_cursor}, {@code content},
  * {@code variant_name}, {@code admin_reply}, {@code hidden_at} and
@@ -26,12 +26,23 @@ import org.springframework.context.annotation.Primary;
 @Configuration
 public class JacksonConfig {
 
+    /**
+     * Strict on input: every request body schema is {@code additionalProperties: false}, so
+     * a field the contract does not define is answered 400 instead of being silently
+     * dropped (the same rule PATCH already applies to its raw body).
+     */
     @Bean
     @Primary
     public ObjectMapper objectMapper() {
-        return base().setSerializationInclusion(JsonInclude.Include.ALWAYS);
+        return base()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+                .setSerializationInclusion(JsonInclude.Include.ALWAYS);
     }
 
+    /**
+     * Tolerant on input: events from other services may gain optional fields, and a
+     * consumer must keep working when they do.
+     */
     @Bean("eventObjectMapper")
     public ObjectMapper eventObjectMapper() {
         return base().setSerializationInclusion(JsonInclude.Include.NON_NULL);

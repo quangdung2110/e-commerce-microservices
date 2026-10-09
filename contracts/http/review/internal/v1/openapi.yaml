@@ -5,8 +5,11 @@ info:
   description: >-
     Contract nội bộ để Product Detail BFF đọc rating/preview và để Search tạo export
     session, bootstrap hoặc phục hồi rating projection. Chỉ service identity được gọi;
-    các endpoint không expose qua API Gateway.
-x-adoption-status: proposed
+    các endpoint không expose qua API Gateway. Do `java/services/review-service` triển
+    khai; `HttpContractIT` kiểm tập route bằng đúng tập operation ở đây và validate từng
+    response với schema tương ứng. Lỗi là `application/problem+json`; danh mục đầy đủ ở
+    docs/review/interfaces.md mục 7.
+x-adoption-status: implemented
 servers:
   - url: http://review-service:8080
     description: Internal cluster endpoint
@@ -38,10 +41,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProductReviewPdpSummary' }
-        '400': { description: product_id hoặc preview_limit không hợp lệ. }
-        '401': { description: Missing or invalid service identity. }
-        '403': { description: Caller is not Product Detail BFF. }
-        '503': { description: Review read store không sẵn sàng; BFF phải degrade review section, không retry trong hot path. }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/ForbiddenRoute' }
+        '503':
+          description: Review read store không sẵn sàng; BFF phải degrade review section, không retry trong hot path.
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
 
   /internal/v1/reviews/rating-aggregate-exports:
     post:
@@ -58,9 +65,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RatingAggregateExportSession' }
-        '401': { description: Missing or invalid service identity. }
-        '403': { description: Caller is not authorized to export review rating aggregates. }
-        '503': { description: Review cannot capture Kafka offsets or persist the export session. }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/ForbiddenRoute' }
+        '503':
+          description: Review cannot capture Kafka offsets or persist the export session (EXPORT_SESSION_UNAVAILABLE).
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
 
   /internal/v1/reviews/rating-aggregate-exports/{session_id}:
     get:
@@ -90,11 +101,20 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RatingAggregateExportPage' }
-        '401': { description: Missing or invalid service identity. }
-        '403': { description: Caller is not authorized to export review rating aggregates. }
-        '404': { description: Export session does not exist. }
-        '410': { description: Export session expired; Search must start a new export. }
-        '503': { description: Review read store không sẵn sàng; Search must restart the run. }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/ForbiddenRoute' }
+        '404':
+          description: Export session does not exist (EXPORT_SESSION_NOT_FOUND).
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+        '410':
+          description: Export session expired (EXPORT_SESSION_EXPIRED); Search must start a new export.
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+        '503':
+          description: Review read store không sẵn sàng; Search must restart the run.
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1 } }
+          content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
 
 components:
   securitySchemes:
@@ -108,7 +128,23 @@ components:
         route do service mesh thực thi theo principal product-detail-bff / search-service
         (docs/mesh/runtime-contract.md mục 5.2); principal sai bị mesh trả 403 text/plain
         trước khi tới Review. Hợp nhất sang header X-Service-Identity chung là việc riêng.
+  responses:
+    InvalidRequest:
+      description: >-
+        INVALID_REQUEST: product_id, preview_limit, session_id, after_product_id or limit is
+        not valid; errors[].field names it.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Unauthenticated:
+      description: UNAUTHENTICATED; no Authorization bearer token.
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    ForbiddenRoute:
+      description: >-
+        FORBIDDEN; the token is not on the allowlist of this route group (the PDP token cannot
+        reach the export and the export token cannot reach the PDP summary).
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
   schemas:
+    Problem:
+      $ref: '../../../../shared/json-schema/v1/problem.schema.json'
     ProductReviewPdpSummary:
       type: object
       additionalProperties: false
@@ -131,11 +167,11 @@ components:
     ProductReviewPreviewItem:
       type: object
       additionalProperties: false
-      required: [review_id, rating, author_name, variant_name, has_media, created_at]
+      required: [review_id, rating, content, author_name, variant_name, has_media, created_at]
       properties:
         review_id: { type: string, format: uuid }
         rating: { type: integer, minimum: 1, maximum: 5 }
-        content: { type: [string, 'null'] }
+        content: { type: [string, 'null'], maxLength: 5000 }
         author_name: { type: string, minLength: 1, maxLength: 255 }
         variant_name: { type: [string, 'null'], maxLength: 255 }
         has_media: { type: boolean }
@@ -171,7 +207,7 @@ components:
     RatingAggregateSnapshot:
       type: object
       additionalProperties: false
-      required: [product_id, average_rating, total_reviews, review_revision, observed_at]
+      required: [product_id, average_rating, total_reviews, total_with_media, review_revision, observed_at]
       properties:
         product_id: { type: string, minLength: 1, maxLength: 64 }
         average_rating: { type: number, minimum: 0, maximum: 5 }

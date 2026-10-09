@@ -99,7 +99,7 @@ interactions:
     provider: review-service
     consumers: [product-detail-bff]
     contract: http/review/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Internal service-identity PDP read after Product resolves product_id; BFF sends
       the static Bearer token from PDP_REVIEW_SERVICE_TOKEN and preview_limit=3. Review
@@ -423,7 +423,7 @@ interactions:
     provider: review-service
     consumers: [api-gateway]
     contract: http/review/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Public list/pagination and all Review commands (create, edit, media, report,
       reply, moderation, takedown) route directly to Review Service, never through
@@ -436,7 +436,7 @@ interactions:
     provider: review-service
     consumers: [search-service]
     contract: events/review/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Review phát rating aggregate snapshot theo product_id, guarded bằng
       review_revision. Search VNext chỉ consume event metrics này, không consume
@@ -447,7 +447,7 @@ interactions:
     provider: review-service
     consumers: [review-service]
     contract: events/review/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Review's idempotent rating aggregator self-consumes created, updated, hidden,
       restored and removed facts. Metrics snapshots and notification requests are ACKed
@@ -458,7 +458,7 @@ interactions:
     provider: review-service
     consumers: [notification-service]
     contract: events/review/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Notification receives only first-official-reply and legal-removal requests.
       Payloads exclude reply content, legal case/reason and administrator identity.
@@ -468,7 +468,7 @@ interactions:
     provider: review-service
     consumers: [search-service]
     contract: http/review/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Internal service-identity export cho full reindex. POST tạo durable session và
       chụp Review Kafka offsets trước scan; Search import page snapshot rồi replay

@@ -72,7 +72,6 @@ review:
   export-session-ttl: ${REVIEW_EXPORT_SESSION_TTL:30m}
   # Must stay above Kafka retention (14d) plus a replay safety margin.
   event-receipt-retention-days: ${REVIEW_EVENT_RECEIPT_RETENTION_DAYS:30}
-  outbox-retention-days: ${REVIEW_OUTBOX_RETENTION_DAYS:30}
 
   secrets:
     # Both are required at startup; readiness fails without them

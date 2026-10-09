@@ -1,14 +1,19 @@
 ---
 doc_id: review-architecture
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
@@ -55,12 +60,12 @@ flowchart TB
 |---|---|
 | API/application service | Validate request, authorize caller, take the caller's privacy subject lock and reject an active deletion guard; then generate author pseudonym, verify submitted media object metadata and keep domain mutation/counter/outbox in one PostgreSQL transaction. For admin reply/takedown, it takes the eligibility owner's subject lock, re-checks the deletion guard and suppresses only the notification outbox row when a guard exists; the reply/takedown itself still commits. |
 | Order consumer | Take the event buyer's privacy subject lock; store receipt then suppress a guarded subject or insert entitlement from self-contained `ORDER_COMPLETED` snapshot |
-| Privacy consumer | Take the subject lock; store receipt/request and durable HMAC deletion guard, anonymize author immediately; hard-purge worker removes direct IDs at deadline but retains the guard |
+| Privacy consumer | Take the subject lock; store receipt/request and durable HMAC deletion guard, anonymize author immediately; hard-purge worker removes direct IDs at deadline but retains the guard. It has its own Kafka error handler: a transient failure is retried without a time limit, only a contract violation is dead-lettered ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)) |
 | Rating aggregator | Self-consume lifecycle facts, store receipt, apply aggregate delta, increment revision and write metric outbox atomically |
 | Notification consumer | Consume only reply/removal notification requests and deduplicate by CloudEvents ID; no legal reason, admin identity or reply content is published |
 | Export-session API | Capture Kafka end offsets, persist session/offsets, serve short keyset pages |
 | Asset verifier/deleter | Verify object before attach; after a `DELETE_PENDING` commit, delete the storage object and mark `DELETED` only on confirmation (including object-not-found) |
-| Scheduler | Expire entitlement/assets/sessions; send expired unattached assets to cleanup, purge privacy IDs, reconcile aggregate, maintain outbox partitions |
+| Scheduler | Expire entitlement/assets/sessions; send expired unattached assets to cleanup, purge privacy IDs (a failed purge is retried on the next pass), reconcile aggregate, create outbox partitions. It does not drop partitions |
 
 ## 3. Transaction boundaries
 
@@ -132,7 +137,8 @@ and legal-removal requests defined by Review AsyncAPI.
 - No cache in Review read path.
 - No synchronous cross-service call in a write path.
 - Outbox is not a database queue with per-row `published_at`; health is observed via
-  Debezium/Kafka Connect/replication slot telemetry.
+  Debezium/Kafka Connect/replication slot telemetry. Old monthly partitions are dropped by an
+  operator, never by Review.
 - Review data is public only when `status='APPROVED'`; all public query indexes encode
   that predicate.
 - A privacy hard purge removes direct customer identifiers, not review rating/content
@@ -140,4 +146,5 @@ and legal-removal requests defined by Review AsyncAPI.
 - `USER_DELETED` delivery is intentionally only the current Auth best-effort publish
   after commit with at most three retries. Review cannot create a guard for an event it never
   receives and has no synchronous Auth lookup; Auth operational reconciliation/redrive
-  is required when that publish fails. This does not introduce an Auth outbox.
+  is required when that publish fails. This does not introduce an Auth outbox. Once the
+  event reaches Review it is never dropped for a transient fault ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)).

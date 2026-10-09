@@ -11,7 +11,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * The storage half of the media lifecycle: deleting bytes after the database said so.
@@ -45,36 +47,56 @@ public class MediaCleanupService {
     }
 
     /**
-     * Processes the cleanup backlog regardless of why each asset entered it.
+     * Processes the whole cleanup backlog, in pages of {@code batchSize}, regardless of why
+     * each asset entered it.
      *
      * <p>A storage "object not found" is a successful, idempotent outcome: an
      * {@code UNATTACHED_EXPIRED} asset may never have been uploaded at all, and treating
      * that as a failure would retry it until someone intervened. A genuine storage
-     * failure leaves the asset {@code DELETE_PENDING} for a safe retry, which is what the
-     * backlog metric and the runbook are for.
+     * failure leaves the asset {@code DELETE_PENDING} for a safe retry on the next pass,
+     * which is what the backlog metric and the runbook are for.
      *
      * @return how many assets reached {@code DELETED}
      */
     public int processDeletePending(int batchSize) {
-        List<MediaAsset> pending = transactions.execute(status -> mediaAssets.listDeletePending(batchSize));
         int deleted = 0;
-        for (MediaAsset asset : pending) {
-            String reason = asset.deletionReason() == null ? "UNKNOWN" : asset.deletionReason().name();
-            try {
-                ReviewObjectStorage.DeleteOutcome outcome = storage.delete(asset.objectKey());
-                transactions.executeWithoutResult(status -> mediaAssets.markDeleted(asset.id(), clock.now()));
-                metrics.mediaCleanup(reason,
-                        outcome == ReviewObjectStorage.DeleteOutcome.NOT_FOUND
-                                ? "object_not_found_success" : "deleted");
-                deleted++;
-            } catch (StorageUnavailableException e) {
-                // Left DELETE_PENDING on purpose: public access was already revoked when
-                // the asset was detached, so a retry is safe and a forced DELETED is not.
-                metrics.mediaCleanup(reason, "storage_failure");
-                log.warn("review media cleanup deferred for one asset: {}", e.getMessage());
+        Instant afterRequestedAt = null;
+        UUID afterId = null;
+        List<MediaAsset> pending;
+        do {
+            Instant cursorTime = afterRequestedAt;
+            UUID cursorId = afterId;
+            pending = transactions.execute(status -> mediaAssets.listDeletePending(cursorTime, cursorId, batchSize));
+            for (MediaAsset asset : pending) {
+                if (deleteOne(asset)) {
+                    deleted++;
+                }
             }
-        }
+            if (!pending.isEmpty()) {
+                MediaAsset last = pending.get(pending.size() - 1);
+                afterRequestedAt = last.deleteRequestedAt();
+                afterId = last.id();
+            }
+        } while (pending.size() == batchSize);
         metrics.mediaPendingDelete(transactions.execute(status -> mediaAssets.countDeletePending()));
         return deleted;
+    }
+
+    private boolean deleteOne(MediaAsset asset) {
+        String reason = asset.deletionReason() == null ? "UNKNOWN" : asset.deletionReason().name();
+        try {
+            ReviewObjectStorage.DeleteOutcome outcome = storage.delete(asset.objectKey());
+            transactions.executeWithoutResult(status -> mediaAssets.markDeleted(asset.id(), clock.now()));
+            metrics.mediaCleanup(reason,
+                    outcome == ReviewObjectStorage.DeleteOutcome.NOT_FOUND
+                            ? "object_not_found_success" : "deleted");
+            return true;
+        } catch (StorageUnavailableException e) {
+            // Left DELETE_PENDING on purpose: public access was already revoked when
+            // the asset was detached, so a retry is safe and a forced DELETED is not.
+            metrics.mediaCleanup(reason, "storage_failure");
+            log.warn("review media cleanup deferred for one asset: {}", e.getMessage());
+            return false;
+        }
     }
 }

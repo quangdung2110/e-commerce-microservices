@@ -194,6 +194,7 @@ Service Contract Matrix legacy đã bị xóa.
 |---|---|---|
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
 | Cart | `t.cart.events` (`com.ecommerce.cart.abandoned.v1`, event Cart duy nhất phát) | Notification |
+| Review | `t.review.events` (tám type qua outbox + Debezium, key `product_id`: năm lifecycle fact `created`/`updated`/`hidden`/`approved`/`removed`, `metrics-updated`, `reply-notification-requested`, `removal-notification-requested`) | Review (aggregator tự consume năm lifecycle fact), Search (chỉ `metrics-updated`), Notification (chỉ hai notification request) |
 | Auth | `t.auth.events` (`com.ecommerce.auth.user-deleted.v1` cho mọi PII owner; `user-verified-success.v1` chỉ cho User) | User, Notification, Review, Chat, Cart |
 | User | `t.user.events` (`com.ecommerce.user.profile-updated.v1`, `com.ecommerce.user.preferences-updated.v1`; không republish `USER_DELETED`) | Chat (profile), Notification (preferences) |
 | Notification | `t.notification.outcomes.v1` (`delivered`, `bounced`, `failed`, `complaint-received`) | Analytics; User chỉ consume `complaint-received` để tắt `marketing_enabled` ở nguồn |
@@ -251,7 +252,7 @@ Service Contract Matrix legacy đã bị xóa.
 |---|---|
 | [auth/README.md](./auth/README.md) | Auth Service — Identity Provider đã implement (`go/services/auth-service`), `scope: current`: account, session, JWKS, listener internal cho Notification; ADR-001..009 (gồm thứ tự publish/marker, mesh cho listener internal, compare-and-set account, đăng nhập kiểm mật khẩu trước trạng thái). Contract còn `proposed` trong `contracts/ADOPTION.md`. |
 | [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
-| [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [review/README.md](./review/README.md) | Review Service — entitlement, review, media, moderation, legal takedown, privacy erasure và rating aggregate; đã đồng bộ với `java/services/review-service` theo `docs/_templates/service-documentation` (ADR-001..013); HTTP v1, internal v1 và Events v1 `implemented`, `HttpContractIT` kiểm route và response với OpenAPI. |
 | [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [notification/README.md](./notification/README.md) | Notification Service — thiết kế `proposed`, runtime Go: lane ưu tiên, pipeline hai ranh giới, tracking SES, idempotency, ordering, backpressure, catalog template, Decide, data model, contract và interface (`contracts/events/notification/v1`, `contracts/http/notification`). |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |

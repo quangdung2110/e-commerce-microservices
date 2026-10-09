@@ -45,9 +45,17 @@ Client không được tự gửi chúng; Review vẫn phải authorize ownershi
   và owner read vẫn không cấp URL cho media đó.
 - `201`/`200` của domain command xác nhận database và outbox đã commit, không xác nhận
   Kafka publication/consumer processing hoàn thành.
+- Mọi lỗi là `application/problem+json` với `code` ổn định; danh mục đầy đủ (HTTP status,
+  `retryable`) ở [docs/review/interfaces.md mục 7](../../../../docs/review/interfaces.md#7-error-catalog).
+  `404 NOT_FOUND`, `405 METHOD_NOT_ALLOWED` và `415 UNSUPPORTED_MEDIA_TYPE` áp dụng cho mọi
+  đường dẫn nên không lặp ở từng operation.
 
 ## Compatibility
 
-Contract đang `proposed`. Thay đổi path, security, status/error code hoặc semantics
+Contract đang `implemented` (xem [ADOPTION](../../../ADOPTION.md)): `java/services/review-service`
+phục vụ đủ 14 operation và `HttpContractIT` kiểm tập route bằng đúng tập operation của file này
+và validate từng response với schema tương ứng. Chưa `verified` vì chưa có consumer contract
+test. Request body là `additionalProperties: false` và được thực thi: field lạ bị `400`.
+Thay đổi path, security, status/error code hoặc semantics
 missing/null là breaking và phải có HTTP major version mới theo
 [`contracts/conventions/compatibility.md`](../../../conventions/compatibility.md).

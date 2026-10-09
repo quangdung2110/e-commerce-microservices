@@ -1,14 +1,19 @@
 ---
 doc_id: review-domain
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
@@ -167,6 +172,11 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 
 ## 7. Error model
 
+Bảng này là các lỗi nghiệp vụ và ý nghĩa của chúng. Danh mục đầy đủ mà API thực sự trả —
+kèm lỗi chung (`INVALID_REQUEST`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`…) và lỗi hạ tầng
+(`REVIEW_STORE_UNAVAILABLE`, `MEDIA_STORAGE_UNAVAILABLE`, `INTERNAL_ERROR`), cùng `retryable` —
+nằm ở [interfaces.md mục 7](./interfaces.md#7-error-catalog).
+
 | Error | HTTP | Ý nghĩa |
 |---|---:|---|
 | `ELIGIBILITY_NOT_FOUND` | 404 | Không có entitlement |
@@ -181,8 +191,8 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 | `INVALID_MEDIA_REFERENCE` | 409 | `asset_id` không giải được thành asset khả dụng của caller. Không tồn tại và thuộc người khác trả cùng một code, cố ý không phân biệt để không thành existence oracle |
 | `MEDIA_QUOTA_EXCEEDED` | 429 | Đã chạm quota asset chưa attach hoặc byte upload của caller |
 | `ALREADY_REPORTED` | 409 | Partial unique guard từ chối report active trùng |
-| `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author hoặc không còn report identity |
-| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress. **Không phát sinh ở v1**: review không `APPROVED` thì không tồn tại trên surface public, nên report nó trả `REVIEW_NOT_FOUND`. Một code riêng cho "đã bị ẩn" sẽ nói đúng điều mà response 202 trung tính cố ý không nói (ADR-008) |
+| `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author của review. Caller đã có deletion guard không nhận mã này mà nhận `FORBIDDEN` chung, để API không thành oracle cho việc xóa tài khoản |
+| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress. **Dành riêng, không được phát ở v1**: review không `APPROVED` thì không tồn tại trên surface public, nên report nó trả `REVIEW_NOT_FOUND`. Một code riêng cho "đã bị ẩn" sẽ nói đúng điều mà response 202 trung tính cố ý không nói (ADR-008) |
 | `REVIEW_NOT_REPLYABLE` | 409 | Review không ở state `APPROVED` |
 | `TAKEDOWN_ALREADY_EXISTS` | 409 | Review đã có legal takedown; takedown không thể lặp hay đảo ngược |
 | `EXPORT_SESSION_NOT_FOUND` | 404 | Không có export session |

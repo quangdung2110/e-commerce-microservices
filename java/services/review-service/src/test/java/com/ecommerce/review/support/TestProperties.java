@@ -17,7 +17,7 @@ public final class TestProperties {
     }
 
     public static ReviewProperties withSecrets(String aliasSecret, String guardSecret) {
-        return new ReviewProperties(30, 5000, 9, 10, Duration.ofMinutes(30), 30, 30,
+        return new ReviewProperties(30, 5000, 9, 10, Duration.ofMinutes(30), 30,
                 new ReviewProperties.Secrets(aliasSecret, guardSecret),
                 new ReviewProperties.Media(Duration.ofMinutes(15), 18, 536870912L, 10485760L, 104857600L,
                         Set.of("image/jpeg", "image/png"), Set.of("video/mp4"),

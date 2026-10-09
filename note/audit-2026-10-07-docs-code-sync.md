@@ -26,7 +26,7 @@
 
 | Nhóm | Đánh giá |
 |---|---|
-| Đồng bộ tốt nhất | Inventory, Review, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. Review/Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
+| Đồng bộ tốt nhất | Inventory, Product Detail BFF, Checkout: code khớp contract gần như từng route, mã lỗi và config. (Review từng bị xếp vào nhóm này nhưng kiểm chứng 2026-10-09 cho thấy sai: xem mục 9.) Search/Cart có schema, script, Lua trong docs giống hệt từng byte với code. *(Inventory: nhận định đúng về route/mã lỗi/config, nhưng kiểm tra lại 2026-10-09 tìm thêm I3–I11 gồm 1 lỗ hổng bảo mật và 3 bug runtime — đã sửa.)* |
 | Lệch nhiều nhất | Auth, User, Promotion, Search: docs cũ/tự mâu thuẫn và có bug thật trong code. |
 | Lỗi lặp lại khắp nơi | Nhãn trạng thái cũ ("proposed", "chưa có implementation") trong `docs/README.md`, `contracts/catalog/services.yaml`, `contracts/ADOPTION.md`, `interactions.yaml` và frontmatter nhiều file. |
 
@@ -483,13 +483,50 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ## 9. Review (`docs/review`, `contracts/http/review/**`, `contracts/events/review/v1`, `java/services/review-service`)
 
-### R1 🟡 Nhãn trạng thái
-- Frontmatter `status: proposed` (README/interfaces/development); `interfaces.md` §6 "All contracts remain proposed"; ADOPTION "Service chưa có runtime" — trong khi README nói đã implement.
+> **Kiểm chứng và sửa xong 2026-10-09 (mục Review).** R1, R2 đúng nhưng báo cáo gốc **thiếu nhiều lỗi** và nhận định
+> "khớp từng route, mã lỗi, config" là sai: audit chỉ đọc, còn Review không có test HTTP nào. Lần này chạy service thật
+> (Testcontainers: PostgreSQL, Kafka, MinIO) và thêm `HttpContractIT` kiểm tập route bằng đúng tập operation của hai
+> OpenAPI (hai chiều) và validate từng response với schema khai báo. Quyết định: [Review ADR-013](../docs/review/decisions/ADR-013-privacy-failure-handling.md);
+> chi tiết wire ở `contracts/CHANGELOG.md` (2026-10-09 Review sync). Test: `HttpContractIT` 13, `PrivacyConsumerIT` 2, `PrivacyIT` 17,
+> `IndexUsageIT` 11, `MediaAssetIT` 15, `OutboxPartitionWindowIT` 3, cùng unit `SchemaSyncTest`/`ArchitectureTest`/`StorageConfigTest`
+> đều pass. Lần chạy `mvn verify` toàn bộ bị Docker ngắt (`unexpected EOF`) nên chưa có kết quả trọn bộ.
+> `review-service` đã được git theo dõi (câu "chưa được git theo dõi" ở đầu file không còn đúng cho Review).
 
-### R2 🟡 README mô tả schema thiếu V2
-- README: "schema the service runs is byte-identical to `0001_initial_review_schema.sql`" — service còn chạy V2 (`V2__eligibility_product_snapshot.sql` == `docs/review/schema/0002_eligibility_product_snapshot.sql`).
+### R1 🟡 Nhãn trạng thái — ✅ đã kiểm chứng đúng và sửa
+- Frontmatter `status: proposed` (README/interfaces/development); `interfaces.md` §6 "All contracts remain proposed"; ADOPTION "Service chưa có runtime". Sửa thêm: `decisions/README.md` ("Review Service hiện chưa có implementation" — báo cáo bỏ sót), ba `x-adoption-status`, README contract, `ADOPTION.md` (thêm hai dòng Internal HTTP và Events), 6 interaction trong `interactions.yaml`, hàng Review còn thiếu ở bảng topic của `docs/README.md`. Chuyển `implemented` sau khi có `HttpContractIT` (chưa `verified`: thiếu consumer contract test).
 
-Đã khớp: toàn bộ path public/admin/internal; V1/V2 == SQL docs; topic `t.review.events`/`t.order.events`/`t.auth.events`; consumer group; bảng env var == `application.yml` (window 30 ngày, threshold 10, giới hạn media...); event catalog.
+### R2 🟡 README mô tả schema thiếu V2 — ✅ đúng và sửa (nay là V1–V3, `SchemaSyncTest` kiểm cả ba)
+
+### R3 🔴 [BUG] Tham số vi phạm validation trả 500 thay vì 400 — ✅ phát hiện mới, đã sửa
+- `limit=0`, `limit=51`, `rating=9`, `preview_limit=9`, admin `limit=101`, `product_id` quá dài… ném `ConstraintViolationException` (controller `@Validated`) mà `ProblemExceptionHandler` không bắt → `500 INTERNAL_ERROR`. Contract khai 400. Sửa handler; test `parameterViolationsAreBadRequestsNamingTheField`.
+
+### R4 🟠 Route sai / method sai / content-type sai trả 500 — ✅ phát hiện mới, đã sửa
+- `404`, `405`, `415` rơi vào handler `Exception` → 500. Thêm mã `NOT_FOUND`, `METHOD_NOT_ALLOWED` (kèm `Allow`), `UNSUPPORTED_MEDIA_TYPE`; lock timeout/deadlock nay là `503 REVIEW_STORE_UNAVAILABLE` đúng như OpenAPI khai.
+
+### R5 🟠 Body 400 lộ chữ ký method Spring; `trace_id` vi phạm Problem schema — ✅ phát hiện mới, đã sửa
+- `detail` chứa `com.ecommerce…createReview(…)` (trái `conventions/http.md`); `trace_id` echo nguyên `X-Request-Id` 8–200 ký tự trong khi schema đòi 16–64. Nay detail/`errors[]` do Review viết, `trace_id` chỉ echo khi 16–64.
+
+### R6 🟠 Request body field lạ bị bỏ qua dù `additionalProperties: false` — ✅ phát hiện mới, đã sửa (chủ dự án chọn "từ chối 400")
+- `author_name` trên create, `approved_by_admin_id` trên takedown bị âm thầm bỏ; chỉ PATCH từ chối. Mapper HTTP nay strict (mapper event vẫn tolerant).
+
+### R7 🔴 Purge privacy `FAILED` không bao giờ được thử lại; `USER_DELETED` lỗi tạm thời vào DLQ sau 60s — ✅ phát hiện mới, đã sửa (ADR-013, migration V3)
+- Sweep chỉ chọn `ANONYMIZED` (và index partial cũng vậy) dù docs nói "retries"; listener dùng chung error handler (backoff tối đa 60s rồi DLQ) dù docs/comment nói "must not DLQ". Nay: `FAILED` được thử lại mỗi lần chạy daily, alert quá hạn giữ tới `PURGED`; listener có error handler riêng retry không giới hạn (đếm `review_privacy_consumer_failure_total`), chỉ vi phạm contract vào DLQ ngay.
+
+### R8 🟡 Daily chỉ xử lý một batch (500) dù docs "process every" — ✅ phát hiện mới, đã sửa
+- Dọn media và purge privacy nay phân trang keyset tới hết; dòng lỗi không chặn dòng sau.
+
+### R9 🟡 Partition outbox: readiness/metric đếm số lượng, không kiểm tháng hiện tại; `REVIEW_OUTBOX_RETENTION_DAYS` là cấu hình chết — ✅ phát hiện mới, đã sửa
+- Partition cũ không bao giờ bị drop nên đếm luôn ≥2 dù thiếu tháng hiện tại (mọi write hỏng, readiness vẫn UP). Nay kiểm đúng tháng UTC hiện tại/kế tiếp. Bỏ knob chết; ghi runbook drop thủ công (chủ dự án chọn).
+
+### R10 🟡 Lệch nhỏ khác — ✅ đã sửa
+- `media_asset_ids` trùng ở create trả 409 thay vì 400 (contract `uniqueItems`); `INVALID_CURSOR` không bao giờ được phát (xoá); `domain.md` §7 thiếu 7 mã lỗi (thêm danh mục đầy đủ ở `interfaces.md` §7); OpenAPI nói `REVIEW_NOT_REPORTABLE` có thể xảy ra (thực tế dành riêng); thiếu `400` ở 4 GET/POST và export page; `content` (PDP preview) và `total_with_media` (export) luôn có nhưng không `required`; internal OpenAPI khai lỗi không body trong khi thực tế là problem+json; thuật toán `checksum` (hex MD5/ETag), MIME cho phép và giới hạn kích thước không được ghi; bảng env var `operations.md` lệch `application.yml`; thêm 8 file ví dụ event `contracts/examples/events/review-*.v1.json` và test so hình dạng với factory.
+
+### Ghi nhận, không đổi hành vi (chủ dự án chọn chỉ ghi docs)
+- Reconciliation hằng ngày có thể đếm đôi một review vừa tạo mà event chưa được aggregator xử lý (tự sửa ở lần chạy sau): ADR-005, workflows, operations.
+- Alert quá hạn privacy định nghĩa "trên 25 giờ" vì purge chạy một lần/ngày: operations §1/§4.
+- Phụ thuộc chéo: `ORDER_COMPLETED` chỉ phát khi Delivery chứng minh giao hàng (O3) nên môi trường thật chưa cấp entitlement; ghi ở Known gaps của README Review.
+
+Đã khớp (kiểm bằng `SchemaSyncTest` và `HttpContractIT`, không chỉ đọc): toàn bộ 14 + 3 route == OpenAPI; V1/V2/V3 == SQL docs; topic `t.review.events`/`t.order.events`/`t.auth.events`; consumer group; event catalog (`ReviewEventFactoryTest`).
 
 ---
 
@@ -694,7 +731,7 @@ Docs mới nhất, khớp code.
 - [x] Product: P1–P4, P8 (cộng ADR-020, error catalog đầy đủ, bảng cấu hình, `schema.sql` khớp migration, frontmatter `status: implemented`). *(2026-10-09)*
 - [ ] Promotion: PR1–PR3, PR5–PR7, PR10, README §9.
 - [ ] Inventory: I1, I2.
-- [ ] Review: R1, R2.
+- [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
 - [ ] Search: S1–S3, S5.
 - [ ] PDP BFF: B1, B2.
 - [ ] Order: O1, O2, K1, K2.

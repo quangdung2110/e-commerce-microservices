@@ -126,8 +126,8 @@ public class PrivacyRepository {
     public void markPurged(SubjectKey key, Instant now) {
         jdbc.sql("""
                 UPDATE privacy_erasure_requests
-                   SET subject_user_id = NULL, purged_at = ?, status = 'PURGED'
-                 WHERE subject_match_key = ? AND status = 'ANONYMIZED'
+                   SET subject_user_id = NULL, purged_at = ?, status = 'PURGED', failure_detail = NULL
+                 WHERE subject_match_key = ? AND status IN ('ANONYMIZED', 'FAILED')
                 """)
                 .param(OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
                 .param(key.bytes())
@@ -146,17 +146,44 @@ public class PrivacyRepository {
                 .update();
     }
 
-    /** The purge queue, read through {@code ix_privacy_hard_delete_sweep}. */
-    public List<PrivacyRequest> findDueForPurge(Instant now, int batchSize) {
-        return jdbc.sql("SELECT " + COLUMNS + """
+    /**
+     * One keyset page of the purge queue, read through {@code ix_privacy_hard_delete_sweep}.
+     *
+     * <p>A {@code FAILED} request is due again exactly like an {@code ANONYMIZED} one: a
+     * failed purge is retried on the next pass instead of waiting for a person, and the
+     * overdue alert stays up until the request reaches {@code PURGED}. Only a request that
+     * was anonymised can be purged ({@code ck_privacy_status_timestamps_consistent}), hence
+     * the {@code anonymized_at} predicate. The keyset lets one pass visit every due request
+     * once: a request that fails again is not selected twice in the same pass, so it cannot
+     * starve the ones behind it.
+     *
+     * @param afterHardDeleteAfter the position of the last request of the previous page, or
+     *                             {@code null} for the first page
+     */
+    public List<PrivacyRequest> findDueForPurge(Instant now,
+                                                Instant afterHardDeleteAfter,
+                                                UUID afterId,
+                                                int batchSize) {
+        var spec = jdbc.sql(dueForPurgeSql(afterHardDeleteAfter != null))
+                .param(OffsetDateTime.ofInstant(now, ZoneOffset.UTC));
+        if (afterHardDeleteAfter != null) {
+            spec = spec.param(OffsetDateTime.ofInstant(afterHardDeleteAfter, ZoneOffset.UTC)).param(afterId);
+        }
+        return spec.param(batchSize).query(MAPPER).list();
+    }
+
+    /**
+     * The purge queue statement. Public so the index-usage test can run {@code EXPLAIN} on
+     * the exact text the sweep executes (it must read {@code ix_privacy_hard_delete_sweep}).
+     */
+    public static String dueForPurgeSql(boolean keyset) {
+        return "SELECT " + COLUMNS + """
                  FROM privacy_erasure_requests
-                 WHERE status = 'ANONYMIZED' AND hard_delete_after <= ?
-                 ORDER BY hard_delete_after
-                 LIMIT ?
-                """)
-                .param(OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
-                .param(batchSize)
-                .query(MAPPER).list();
+                 WHERE status IN ('ANONYMIZED', 'FAILED') AND anonymized_at IS NOT NULL
+                   AND hard_delete_after <= ?
+                """
+                + (keyset ? " AND (hard_delete_after, id) > (?, ?)" : "")
+                + " ORDER BY hard_delete_after, id LIMIT ?";
     }
 
     /** Feeds {@code review_privacy_hard_delete_overdue_total}, a critical alert. */

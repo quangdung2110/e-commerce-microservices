@@ -24,7 +24,6 @@ public record ReviewProperties(
         @DefaultValue("10") int reportThreshold,
         @DefaultValue("30m") Duration exportSessionTtl,
         @DefaultValue("30") int eventReceiptRetentionDays,
-        @DefaultValue("30") int outboxRetentionDays,
         Secrets secrets,
         Media media,
         Storage storage,

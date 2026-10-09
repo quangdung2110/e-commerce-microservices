@@ -3,9 +3,9 @@ package com.ecommerce.review.common;
 import org.springframework.http.HttpStatus;
 
 /**
- * Every error Review can return over HTTP, exactly as listed in
- * {@code docs/review/domain.md 7} plus the infrastructure failures the OpenAPI
- * declares as retryable.
+ * Every error Review can return over HTTP. The complete catalog, with the HTTP status and
+ * whether a client may retry, is {@code docs/review/interfaces.md 7}; the domain meaning
+ * of each business error is {@code docs/review/domain.md 7}.
  *
  * <p>A deletion guard never gets an error of its own: a guarded caller receives the
  * generic {@link #FORBIDDEN}, so the response cannot be used to learn that an account
@@ -15,9 +15,14 @@ public enum ErrorCode {
 
     // Validation and identity
     INVALID_REQUEST(HttpStatus.BAD_REQUEST, false, "Invalid request"),
-    INVALID_CURSOR(HttpStatus.BAD_REQUEST, false, "Invalid cursor"),
     UNAUTHENTICATED(HttpStatus.UNAUTHORIZED, false, "Missing trusted identity"),
     FORBIDDEN(HttpStatus.FORBIDDEN, false, "Forbidden"),
+
+    // Routing: a request the service has no operation for, answered as the HTTP error it
+    // is rather than as an internal failure
+    NOT_FOUND(HttpStatus.NOT_FOUND, false, "No such operation"),
+    METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, false, "Method not allowed"),
+    UNSUPPORTED_MEDIA_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE, false, "Unsupported media type"),
 
     // Entitlement
     ELIGIBILITY_NOT_FOUND(HttpStatus.NOT_FOUND, false, "Entitlement not found"),

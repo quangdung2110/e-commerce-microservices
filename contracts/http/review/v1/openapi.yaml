@@ -3,7 +3,9 @@ info:
   title: Review Service Public and Admin HTTP API
   version: 1.0.0
   description: >-
-    Contract đích cho public read, buyer command và admin moderation của Review.
+    Contract cho public read, buyer command và admin moderation của Review, do
+    `java/services/review-service` triển khai; `HttpContractIT` kiểm tập route bằng
+    đúng tập operation ở đây và validate từng response với schema tương ứng.
     Public review chỉ có khi status APPROVED. Caller identity và role là trusted
     headers do API Gateway inject sau JWT verification, không phải client-controlled
     headers. Mọi domain write commit outbox cùng transaction; HTTP thành công không
@@ -11,7 +13,14 @@ info:
     Gateway local tách GET public list/aggregate sang router anonymous chỉ bỏ
     forged identity headers. Buyer/admin dùng authenticated@file qua gateway-auth;
     không inject danh tính dev cố định và không retry write ở gateway.
-x-adoption-status: proposed
+    Mọi request body là `additionalProperties: false`: field không được định nghĩa
+    bị từ chối `400 INVALID_REQUEST` với `errors[].field` là tên field đó. Mọi lỗi là
+    `application/problem+json`; danh mục `code`, HTTP status và `retryable` đầy đủ nằm ở
+    docs/review/interfaces.md mục 7. Một request không có operation tương ứng trả
+    `404 NOT_FOUND`, sai method trả `405 METHOD_NOT_ALLOWED` (kèm `Allow`) và sai
+    content type trả `415 UNSUPPORTED_MEDIA_TYPE`; các status này áp dụng cho mọi đường
+    dẫn nên không lặp ở từng operation.
+x-adoption-status: implemented
 servers:
   - url: http://review-service:8080
     description: Internal cluster endpoint via API Gateway
@@ -84,6 +93,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingEligibilityPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/RetryableUnavailable' }
 
@@ -130,6 +140,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MyEligibilityReviewStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/NotEligibilityOwner' }
         '404': { $ref: '#/components/responses/EligibilityNotFound' }
@@ -153,6 +164,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OwnerReview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/NotReviewOwner' }
         '404': { $ref: '#/components/responses/ReviewNotFound' }
@@ -330,6 +342,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminModerationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/AdminForbidden' }
         '404': { $ref: '#/components/responses/ReviewNotFound' }
@@ -418,7 +431,10 @@ components:
       name: X-Request-Id
       in: header
       required: false
-      description: Correlation/tracing identifier only; it is not an idempotency key.
+      description: >-
+        Correlation/tracing identifier only; it is not an idempotency key. Review echoes
+        it as the Problem `trace_id` only when it is 16..64 characters, the bounds of
+        that schema; a shorter or longer value is accepted but not echoed.
       schema: { type: string, minLength: 8, maxLength: 128 }
     ProductId:
       name: product_id
@@ -728,17 +744,32 @@ components:
       required: [media_type, content_type, byte_size]
       properties:
         media_type: { $ref: '#/components/schemas/ReviewMediaType' }
-        content_type: { type: string, minLength: 1, maxLength: 100 }
+        content_type:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: >-
+            Must be a type the service accepts for `media_type`: image/jpeg, image/png or
+            image/webp for IMAGE; video/mp4 or video/webm for VIDEO (case-insensitive).
+            The list is service configuration (`review.media.*-content-types`); any other
+            value is `400 INVALID_REQUEST`.
         byte_size:
           type: integer
           format: int64
           minimum: 1
-          description: Declared source size; effective IMAGE/VIDEO limits are server configuration and signed upload policy.
+          description: >-
+            Declared object size in bytes; the object that is uploaded must have exactly
+            this size. Above the configured limit for `media_type` (default 10 MiB for
+            IMAGE, 100 MiB for VIDEO) is `400 INVALID_REQUEST`.
         checksum:
           type: string
           minLength: 1
           maxLength: 128
-          description: Optional checksum that Review verifies when supplied.
+          description: >-
+            Optional. Compared, case-insensitively, with the storage ETag of the uploaded
+            object when the asset is attached, so it must be the hex MD5 digest of the
+            body for a single-part upload (what S3-compatible storage reports as the
+            ETag). A mismatch makes the asset `MEDIA_NOT_VERIFIED`.
     UploadInstruction:
       type: object
       additionalProperties: false
@@ -942,7 +973,11 @@ components:
       description: REVIEW_REPORT_FORBIDDEN, for example caller is the author.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ReportConflict:
-      description: ALREADY_REPORTED or REVIEW_NOT_REPORTABLE; it never includes moderation progress.
+      description: >-
+        ALREADY_REPORTED, and never any moderation progress. REVIEW_NOT_REPORTABLE is
+        reserved and is not produced in v1: a review that is not APPROVED is not on the
+        public surface, so reporting it answers 404 REVIEW_NOT_FOUND instead of
+        disclosing that it was hidden or removed.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ReviewNotReplyable:
       description: REVIEW_NOT_REPLYABLE because the review is not APPROVED.

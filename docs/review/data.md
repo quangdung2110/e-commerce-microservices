@@ -1,21 +1,29 @@
 ---
 doc_id: review-data
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
 verified_against_commit: null
 ---
 
 # Review Service — Thiết kế dữ liệu
 
-> Nguồn chuẩn thực thi là
-> [`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql).
+> Nguồn chuẩn thực thi là ba file trong [`schema/`](./schema), mỗi file giống từng byte với
+> một migration Flyway: [`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql)
+> (`V1`), [`0002_eligibility_product_snapshot.sql`](./schema/0002_eligibility_product_snapshot.sql)
+> (`V2`) và [`0003_privacy_sweep_includes_failed.sql`](./schema/0003_privacy_sweep_includes_failed.sql)
+> (`V3`). `0003` chỉ dựng lại một index; phần còn lại của DDL ở `0001`.
 > File này giải thích ownership, quan hệ và lý do thiết kế; không lặp lại DDL.
 
 ## 1. Ownership
@@ -284,6 +292,14 @@ partial theo `status='PENDING'`, trong khi review chỉ tồn tại khi eligibil
 `CLAIMED` — tức đúng phần nằm ngoài index đó. Row đã purge rơi khỏi index thay vì làm
 nó phình ra.
 
+Sweep đến hạn đọc `ix_privacy_hard_delete_sweep`, partial theo
+`status IN ('ANONYMIZED', 'FAILED')` và sắp theo `(hard_delete_after, id)` (migration `V3`).
+Một purge thất bại đặt request về `FAILED` nhưng giữ `anonymized_at`, nên request vẫn đến
+hạn ở lần chạy kế tiếp và index phải phủ cả hai trạng thái; bản đầu của index chỉ phủ
+`ANONYMIZED` và một request `FAILED` không bao giờ được chọn lại
+([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)). `PURGED` nằm ngoài index, nên
+lịch sử các tài khoản đã xóa không làm sweep chậm đi.
+
 `subject_user_id` chỉ được giữ tới khi purge để Review có thể tìm toàn bộ dữ liệu cần
 xử lý. `subject_match_key` được giữ cùng privacy request sau purge để tránh late
 delivery, retry, DLQ redrive hoặc backfill ghi UUID trở lại; đây là dữ liệu
@@ -307,7 +323,10 @@ nhật publish status an toàn. Vì vậy không được suy diễn outbox back
 cũ. Giám sát publication qua Kafka Connect state, replication slot/WAL lag và độ
 trễ từ `created_at` tới message observed downstream.
 
-Cleanup chỉ drop partition khi connector/slot đã vượt toàn bộ vùng dữ liệu cần xóa.
+Review không tự drop partition: drop là thao tác của operator, chỉ làm khi connector/slot đã
+vượt toàn bộ vùng dữ liệu cần xóa (runbook ở [operations.md mục 5](./operations.md#5-outbox-operational-rule)).
+Vì thế các partition cũ tồn tại lâu, và mọi kiểm tra "partition có đủ không" phải nhìn đúng
+tháng UTC hiện tại và tháng kế tiếp chứ không đếm số partition.
 UUID event ID là CloudEvents id; PostgreSQL 14 partitioning không enforce global
 unique UUID tại parent, nên producer phải luôn sinh UUID ngẫu nhiên và không tái sử
 dụng event ID.
@@ -340,6 +359,10 @@ nhiệm cho một type phải ACK nó mà không persist/log payload.
 Public review list dùng keyset `(created_at, id)` và các partial index
 `status='APPROVED'`. Mọi index phục vụ sort đều kết thúc bằng
 `created_at DESC, id DESC`; không dùng `OFFSET`.
+
+Sweep purge privacy dùng keyset `(hard_delete_after, id)` trên `ix_privacy_hard_delete_sweep`;
+sweep dọn media dùng `(delete_requested_at, id)`. Cả hai duyệt từng trang cho tới hết trong một
+lần chạy, nên một dòng thất bại không chặn các dòng phía sau.
 
 Admin moderation list dùng keyset `(first_reported_at, id)` tăng dần cho cả hai
 status, trên `ix_review_moderation_reported` và `ix_review_moderation_hidden`. Dùng

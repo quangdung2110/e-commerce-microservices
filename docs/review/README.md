@@ -1,18 +1,22 @@
 ---
 doc_id: review-overview
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
   - contracts/tools/test-auth-user-deleted-to-review.ps1
-  - contracts/http/review/v1/openapi.yaml
-  - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -20,9 +24,13 @@ verified_against_commit: null
 
 Review Service is implemented in [`java/services/review-service`](../../java/services/review-service)
 (Java 21, Spring Boot, Spring JDBC over PostgreSQL, Flyway, S3-compatible object storage).
-These documents remain the design of record: the code follows them, and the schema the
-service runs is byte-identical to
-[`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql).
+These documents remain the design of record: the code follows them. The schema the service
+runs is three Flyway migrations, `V1`–`V3`, each byte-identical to its file under
+[`schema/`](./schema) (`0001_initial_review_schema.sql`,
+`0002_eligibility_product_snapshot.sql`, `0003_privacy_sweep_includes_failed.sql`;
+`SchemaSyncTest` fails the build if one drifts). `HttpContractIT` holds the HTTP surface to
+the OpenAPI documents the same way: the mapped routes must equal the contracts' operations
+and every response is validated against its declared schema.
 
 ## Purpose and boundary
 
@@ -119,4 +127,17 @@ late/replayed input from writing that direct identity back.
   call, so this is recorded rather than fixed here.
 - Auth deliberately keeps best-effort `USER_DELETED` delivery with at most three
   retries and no outbox. A missed event requires Auth operational reconciliation/redrive
-  before Review can start its privacy lifecycle.
+  before Review can start its privacy lifecycle. Once Review has received the event it does
+  not lose it: a transient failure is retried without a time limit and a failed hard purge is
+  retried every day ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)).
+- Entitlements exist only after Order publishes `ORDER_COMPLETED`, which Order does when every
+  line has a verified Delivery proof. Until the Delivery boundary that Order depends on
+  exists (see the Order documentation), no order reaches `COMPLETED` in a real environment,
+  so Review grants no entitlement there; the Review side is complete and tested with
+  `ORDER_COMPLETED` supplied directly.
+- Review does not drop `review_outbox` partitions. Partition cleanup needs evidence from
+  Kafka Connect and the replication slot that a month has been fully published, which Review
+  cannot see, so it is an operator action ([operations.md](./operations.md#5-outbox-operational-rule)).
+- The daily rating reconciliation can double-count a review whose event the aggregator has
+  not yet processed at that instant; the next run corrects it
+  ([ADR-005](./decisions/ADR-005-async-rating-aggregation.md)).

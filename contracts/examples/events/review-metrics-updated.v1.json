@@ -1,0 +1,20 @@
+{
+  "specversion": "1.0",
+  "id": "018f41ca-48dc-7c14-9bb4-3ac31dcda106",
+  "type": "com.ecommerce.review.metrics-updated.v1",
+  "source": "/services/review",
+  "subject": "product-rating-aggregates/b3f1c9a2-5d47-4e88-9a1f-7c05e2d84b63",
+  "time": "2026-09-09T10:15:30.123456Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/review/v1/schemas/review-metrics-updated.schema.json",
+  "correlationid": "corr-metrics-updated",
+  "sequence": 7,
+  "data": {
+    "product_id": "b3f1c9a2-5d47-4e88-9a1f-7c05e2d84b63",
+    "average_rating": 4.5,
+    "total_reviews": 2,
+    "total_with_media": 1,
+    "review_revision": 7,
+    "observed_at": "2026-09-09T10:15:30.123456Z"
+  }
+}
