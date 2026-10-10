@@ -74,7 +74,7 @@ store, không commit credential. Không cấu hình `t.promotion.budget.events`.
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→forward repair; assert Order identity is denied technical cleanup and only legacy-migrator with valid proof is accepted |
 
-Hiện có trong `src/test/java` (44 test, chạy bằng lệnh ở §1):
+Hiện có trong `src/test/java` (45 test, chạy bằng lệnh ở §1):
 
 | Test class | Bao phủ |
 |---|---|
@@ -85,10 +85,11 @@ Hiện có trong `src/test/java` (44 test, chạy bằng lệnh ở §1):
 | `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
 | `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair (kèm proof); final command không ghi outbox; refund no-op (chỉ khẳng định state không đổi vì không có endpoint refund); confirm sau lazy-expiry (`EXPIRED→USED`, rồi legacy cleanup → `EXPIRED`); 6 confirm và 6 legacy cancel trùng key đồng thời cùng nhận stored response |
 | `ClaimAndTombstoneIntegrationTest` | Pool pre-generate tại publish, gate revision fence, DB commit trước success, replay, OUT_OF_STOCK, pause đóng gate; Redis loss rebuild + sweeper; tombstone watermark/invalidation/stale duplicate/mutation reject/no reverse event; clone identity |
+| `OutboxCdcIntegrationTest` (PostgreSQL `wal_level=logical` + Kafka + `debezium/connect:3.0.0.Final` Testcontainers) | Chạy đúng `kafka/debezium-connector-promotion-outbox.json`: publish rồi pause → hai dòng outbox lên `t.promotion.markdown.events` với key `product_id`, header `ce_type`/`ce_aggregate_id`/`ce_source_revision`, thứ tự theo `source_revision`, envelope là JSON object bằng payload đã lưu (trừ field `null` tường minh bị bỏ) và hợp lệ với JSON Schema. Bỏ qua khi dùng `TEST_DB_URL` |
 | `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store và PUT không body, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, Idempotency-Key mismatch 400; technical cleanup: `order-service` `403`, migrator thiếu/sai proof `403`, body sai schema/digest/field lạ `400`, thành công lưu proof trên receipt, replay khác digest `409`; `checkout_channel` ≠ `CHECKOUT` ở calculate/reserve/options `400` (customer discovery không bị ép); `voucher-options` có `Cache-Control: no-store`; route lạ `404`, sai method `405`, Content-Type sai `400` (problem+json `INVALID_REQUEST`, không `500`) |
 
 Chưa có: load 10.000 contender, race test đa luồng cho claim/sweep (confirm và legacy cancel trùng đồng thời đã
-có), schedule worker với Redis thật theo thời gian, Debezium/Kafka E2E, Temporal fixture, consumer contract
+có), schedule worker với Redis thật theo thời gian, E2E Promotion → Product qua Debezium/Kafka cùng lúc, Temporal fixture, consumer contract
 test từ Checkout/Order chạy với Promotion thật.
 
 Phải có negative integration test chứng minh Order/refund input ngoài contract không

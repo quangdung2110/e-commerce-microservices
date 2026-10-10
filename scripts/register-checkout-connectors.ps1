@@ -1,7 +1,7 @@
 #requires -Version 7.0
 [CmdletBinding()]
 param(
-    [ValidateSet('payment', 'order', 'inventory')]
+    [ValidateSet('payment', 'order', 'inventory', 'promotion')]
     [string[]]$Services = @('payment', 'order', 'inventory'),
     [uri]$ConnectUrl = 'http://localhost:8084',
     [string]$DatabaseHost = 'postgres',

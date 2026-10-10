@@ -40,5 +40,5 @@ Chạy jar với profile `dev` (`SPRING_PROFILES_ACTIVE=dev`) hoặc `docker com
 
 ## Test
 
-Xem `docs/promotion/development.md` §1 và §3: 44 test gồm unit, Lua trên Redis Testcontainers,
+Xem `docs/promotion/development.md` §1 và §3: 45 test gồm unit, Lua trên Redis Testcontainers,
 PostgreSQL + Redis integration và HTTP contract MockMvc.

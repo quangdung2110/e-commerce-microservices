@@ -178,12 +178,12 @@ ký các fact đó; thêm sau là thay đổi additive theo
   `user_tier`. Promotion enforce channel `CHECKOUT` ở calculate, options và reserve (`400
   INVALID_REQUEST` nếu khác). Chưa có consumer contract test chạy với Promotion thật (Checkout validate
   fixture theo OpenAPI).
-- Test suite hiện có (44 test): unit (Rule Engine, discount, phase, validity, identity filter kể cả path mã
+- Test suite hiện có (45 test): unit (Rule Engine, discount, phase, validity, identity filter kể cả path mã
   hoá), Lua trên Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→legacy
   cleanup, confirm sau lazy-expiry, confirm/cancel trùng đồng thời, limited claim + Redis loss + sweeper,
   tombstone, clone), HTTP contract MockMvc (kể cả guard technical-cancellations, channel, route lạ) và JSON
   Schema contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
-  claim/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.
+  claim/sweep, E2E Promotion → Debezium → Kafka → Product chạy cùng nhau (đoạn outbox → topic đã có `OutboxCdcIntegrationTest`; đoạn Product consume có `MarkdownConsumerIntegrationTest` riêng), Temporal fixture.
 - `/internal/v1/**` được service mesh bảo vệ: `AuthorizationPolicy` chỉ cho principal
   `checkout-service`/`order-service` chạm từng nhóm route, và `promotion-legacy-migrator` chạm duy nhất
   technical-cancellations

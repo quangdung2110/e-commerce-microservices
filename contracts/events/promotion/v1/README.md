@@ -5,7 +5,7 @@
 trong [AsyncAPI](asyncapi.yaml). Contract đã `implemented`: Promotion ghi snapshot vào
 `promotion_outbox_events` (JSON Schema contract test `MarkdownSnapshotContractTest`, connector
 `java/services/promotion-service/src/main/resources/kafka/debezium-connector-promotion-outbox.json`)
-và Product consumer chấp nhận cả ACTIVE lẫn INACTIVE tombstone; chưa `verified` qua E2E Debezium.
+và Product consumer chấp nhận cả ACTIVE lẫn INACTIVE tombstone; `OutboxCdcIntegrationTest` kiểm outbox → Debezium → Kafka thật; chưa `verified` vì chưa chạy cùng Product consumer.
 
 ## Phạm vi v1
 

@@ -31,6 +31,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -56,8 +57,16 @@ abstract class AbstractPromotionIntegrationTest {
     private static final String EXTERNAL_DB_URL = System.getenv("TEST_DB_URL");
     private static final String EXTERNAL_REDIS_HOST = System.getenv("TEST_REDIS_HOST");
 
-    private static final PostgreSQLContainer<?> POSTGRES = EXTERNAL_DB_URL == null
+    /** Mạng chung + alias cố định để Debezium (OutboxCdcIntegrationTest) với tới PostgreSQL từ trong Docker. */
+    static final Network NETWORK = Network.newNetwork();
+    static final String POSTGRES_ALIAS = "promotion-postgres";
+
+    static final PostgreSQLContainer<?> POSTGRES = EXTERNAL_DB_URL == null
             ? new PostgreSQLContainer<>("postgres:16-alpine").withDatabaseName("promotion_service")
+            .withNetwork(NETWORK).withNetworkAliases(POSTGRES_ALIAS)
+            // Outbox CDC cần logical decoding, đúng như docker-compose.
+            .withCommand("postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4",
+                    "-c", "max_wal_senders=4")
             : null;
     private static final RedisContainer REDIS = EXTERNAL_REDIS_HOST == null
             ? new RedisContainer(DockerImageName.parse("redis:7.2-alpine"))

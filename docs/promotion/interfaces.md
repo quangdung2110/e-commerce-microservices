@@ -33,8 +33,8 @@ verified_against_commit: null
 | Calculate/voucher options/discovery/save/claim | Inbound | HTTP | Promotion | Checkout/Gateway | `implemented` (provider test; Checkout validate fixture theo OpenAPI, chưa có consumer test với Promotion thật) |
 | Allocation lifecycle (reserve/confirm/cancel) | Inbound | HTTP | Promotion | Order/Temporal | `implemented` (provider test; Order gọi qua `HttpGateways`, chưa có consumer test với Promotion thật) |
 | Technical cancellation (deprecated) | Inbound | HTTP | Promotion | `promotion-legacy-migrator` | provider `implemented` (guard + test); consumer chưa tồn tại nên interaction vẫn `proposed` |
-| Markdown current-state snapshot | Outbound | Kafka/CDC | Promotion | Product | `implemented` (JSON Schema contract test; chưa E2E qua Debezium thật) |
-| Product tombstone | Inbound | Kafka | Product | Promotion | `implemented` (consumer + test service-level; chưa E2E qua Kafka thật) |
+| Markdown current-state snapshot | Outbound | Kafka/CDC | Promotion | Product | `implemented` (JSON Schema contract test + `OutboxCdcIntegrationTest` với Debezium/Kafka thật; chưa chạy cùng Product consumer) |
+| Product tombstone | Inbound | Kafka | Product | Promotion | `implemented` (consumer + test service-level; chưa test qua Kafka thật) |
 
 Đây là toàn bộ bề mặt tích hợp v1. Không có inbound `ORDER_REFUNDED`, Auth welcome-voucher
 consumer, Promotion refund API, coupon/wallet event, budget event hay reservation event.
