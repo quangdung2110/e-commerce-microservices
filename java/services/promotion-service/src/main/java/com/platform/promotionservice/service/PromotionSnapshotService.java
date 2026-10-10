@@ -69,15 +69,6 @@ public class PromotionSnapshotService {
         }
     }
 
-    /** Product-scoped invalidation sau tombstone commit: chỉ bump fence, lỗi Redis không làm consumer fail. */
-    public void bumpVersionQuietly() {
-        try {
-            cache.bumpVersion();
-        } catch (RuntimeException e) {
-            log.warn("Snapshot version bump failed: {}", e.getMessage());
-        }
-    }
-
     private Optional<PromotionView> parse(String json) {
         try {
             return Optional.of(objectMapper.readValue(json, PromotionView.class));

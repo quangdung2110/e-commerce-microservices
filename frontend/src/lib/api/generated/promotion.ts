@@ -237,7 +237,7 @@ export interface paths {
         get?: never;
         /**
          * Lưu public voucher, evaluate khi có checkout context
-         * @description Chỉ PUBLIC_SAVE thuộc campaign ACTIVE. Existing SAVED còn hạn trả 200 và không kéo dài expired_at; tạo mới trả 201; USED hoặc expired ownership trả 409. Identity user lấy từ token, không nhận user_id trong payload. context là tùy chọn: thiếu context thì chỉ lưu wallet và evaluation là null. Trang checkout gửi body rỗng vì giá và category tin cậy chỉ có ở Checkout; Checkout Preview tính discount chính thức (Promotion ADR-018).
+         * @description Chỉ PUBLIC_SAVE thuộc campaign ACTIVE. Existing SAVED còn hạn trả 200 và không kéo dài expired_at; tạo mới trả 201; USED hoặc expired ownership trả 409. Identity user lấy từ token, không nhận user_id trong payload. context là tùy chọn: thiếu context thì chỉ lưu wallet và evaluation là null. Trang checkout gửi body rỗng vì giá và category tin cậy chỉ có ở Checkout; Checkout Preview tính discount chính thức (Promotion ADR-018). Body là tùy chọn: không có body và `{}` đều lưu wallet và trả evaluation null.
          */
         put: operations["saveAndEvaluatePromotionVoucher"];
         post?: never;
@@ -278,7 +278,7 @@ export interface paths {
         put?: never;
         /**
          * Tính discount cho 0 hoặc 1 platform voucher
-         * @description Pure/replay-safe, không save và không reserve. Discount là một amount toàn đơn, không trả allocation theo SKU. Nếu promotion_id null, kết quả discount là 0.
+         * @description Pure/replay-safe, không save và không reserve. Discount là một amount toàn đơn, không trả allocation theo SKU. Nếu promotion_id null, kết quả discount là 0. Context là TrustedCheckoutContext: `checkout_channel` khác `CHECKOUT` là `400 INVALID_REQUEST` (`errors[].field = context.checkout_channel`).
          */
         post: operations["calculatePromotionDiscount"];
         delete?: never;
@@ -298,7 +298,7 @@ export interface paths {
         put?: never;
         /**
          * Xếp hạng voucher wallet và public cho trusted checkout context
-         * @description Chỉ checkout-service gọi để dựng khay voucher của trang checkout (Checkout ADR-017, Promotion ADR-018). Cùng logic với suggestion/discovery nhưng context do Checkout dựng từ snapshot server-owned, không từ browser. Safe query ngoài lazy-normalize SAVED hết hạn thành EXPIRED; không save, không claim, không reserve. Ranking: eligible trước, discount giảm dần, promotion_id tăng dần. Mỗi item kèm thông tin hiển thị của voucher. Rate limit thuộc Gateway profile checkout-voucher-options ở route Checkout; Promotion không giữ local limiter.
+         * @description Chỉ checkout-service gọi để dựng khay voucher của trang checkout (Checkout ADR-017, Promotion ADR-018). Cùng logic với suggestion/discovery nhưng context do Checkout dựng từ snapshot server-owned, không từ browser. Safe query ngoài lazy-normalize SAVED hết hạn thành EXPIRED; không save, không claim, không reserve. Ranking: eligible trước, discount giảm dần, promotion_id tăng dần. Mỗi item kèm thông tin hiển thị của voucher. Rate limit thuộc Gateway profile checkout-voucher-options ở route Checkout; Promotion không giữ local limiter. Context là TrustedCheckoutContext: `checkout_channel` khác `CHECKOUT` là `400 INVALID_REQUEST`.
          */
         post: operations["listPromotionVoucherOptions"];
         delete?: never;
@@ -318,7 +318,7 @@ export interface paths {
         put?: never;
         /**
          * TRY giữ budget cho voucher sau Submit
-         * @description Chỉ Order/Temporal gọi sau khi đã có order_id. Revalidate wallet SAVED, expiry, rules và expected amount; Redis Lua giữ quota/amount trong 15 phút. Cùng stable order/promotion và payload là replay; payload khác trả IDEMPOTENCY_PAYLOAD_MISMATCH.
+         * @description Chỉ Order/Temporal gọi sau khi đã có order_id. Revalidate wallet SAVED, expiry, rules và expected amount; Redis Lua giữ quota/amount trong 15 phút. Cùng stable order/promotion và payload là replay; payload khác trả IDEMPOTENCY_PAYLOAD_MISMATCH. Context là TrustedCheckoutContext: `checkout_channel` khác `CHECKOUT` là `400 INVALID_REQUEST` (`errors[].field = context.checkout_channel`). Promotion không tồn tại trả `404 PROMOTION_NOT_FOUND`.
          */
         post: operations["reservePromotionAllocation"];
         delete?: never;
@@ -338,7 +338,7 @@ export interface paths {
         put?: never;
         /**
          * CONFIRM voucher reservation
-         * @description Idempotency-Key chuẩn là REDEEM_FINAL:{order_id}:{promotion_id}. Server lookup durable receipt trước Redis, fence RESERVED->CONFIRMING, rồi commit receipt, wallet và durable budget trong một PostgreSQL transaction; final command không ghi outbox (ADR-016). Redis finalize chỉ chạy sau commit và receipt redis_finalized_at IS NULL là durable trigger để chạy lại sau crash. expected_discount không phải amount authority.
+         * @description Idempotency-Key chuẩn là REDEEM_FINAL:{order_id}:{promotion_id}. Server lookup durable receipt trước Redis, fence RESERVED->CONFIRMING, rồi commit receipt, wallet và durable budget trong một PostgreSQL transaction; final command không ghi outbox (ADR-016). Redis finalize chỉ chạy sau commit và receipt redis_finalized_at IS NULL là durable trigger để chạy lại sau crash. expected_discount không phải amount authority. Hai request cùng key đến đồng thời đều nhận cùng stored response (một transition duy nhất). Reservation tạo lúc voucher còn hạn vẫn được redeem dù wallet đã bị lazy-normalize thành EXPIRED trong lúc Payment chạy (Promotion ADR-019).
          */
         post: operations["confirmPromotionAllocation"];
         delete?: never;
@@ -379,7 +379,7 @@ export interface paths {
         /**
          * Legacy-only technical cancellation of a confirmed allocation
          * @deprecated
-         * @description Không phải customer refund và không phải post-payment Saga compensation. Only the `promotion-legacy-migrator` mTLS principal may invoke it, and every request must carry an immutable migration-record proof that the historical flow never crossed the Payment financial watermark. `order-service`, active checkout, late-payment recovery and every order with PAYMENT_SUCCESS/ALREADY_SUCCEEDED are denied. New failures after payment use forward repair/financial reconciliation, never make wallet/budget look unredeemed. Idempotency-Key chuẩn là CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu chưa hết hạn, ngược lại EXPIRED.
+         * @description Không phải customer refund và không phải post-payment Saga compensation. Only the `promotion-legacy-migrator` mTLS principal may invoke it, and every request must carry an immutable migration-record proof that the historical flow never crossed the Payment financial watermark. `order-service`, active checkout, late-payment recovery and every order with PAYMENT_SUCCESS/ALREADY_SUCCEEDED are denied. New failures after payment use forward repair/financial reconciliation, never make wallet/budget look unredeemed. Promotion enforces this itself: any caller outside the migrator is `403 FORBIDDEN`; a missing `X-Legacy-Migration-Proof`, a value that is not a UUID or one different from the body's `migration_record_id` is also `403 FORBIDDEN` and nothing is read or written. A body that breaks the schema (missing field, digest that is not 64 hex characters, unknown field) is `400`. Both proof fields are part of the request hash and stored on the receipt: replaying the key with another record or digest is `409 IDEMPOTENCY_PAYLOAD_MISMATCH`. Idempotency-Key chuẩn là CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu chưa hết hạn, ngược lại EXPIRED. Hai request cùng key đến đồng thời đều nhận cùng stored response.
          */
         post: operations["cancelConfirmedPromotionAllocation"];
         delete?: never;
@@ -984,7 +984,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Caller không có role/capability cho operation. */
+        /** @description Caller không có role/capability cho operation (code FORBIDDEN), gồm technical-cancellations thiếu hoặc sai X-Legacy-Migration-Proof. */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -1002,7 +1002,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Domain/idempotency conflict. code có thể là CAMPAIGN_NOT_ACTIVE, CLAIM_GATE_STALE, ALREADY_CLAIMED, OUT_OF_STOCK, ALREADY_USED_VOUCHER, VOUCHER_EXPIRED, VOUCHER_NOT_OWNED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH, EXPECTED_DISCOUNT_MISMATCH, RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT, INVALID_STATE_TRANSITION, CAMPAIGN_NOT_DRAFT, DISTRIBUTION_MODE_MISMATCH, CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS hoặc MARKDOWN_RULE_ALREADY_EXISTS. */
+        /** @description Domain/idempotency conflict. code có thể là CAMPAIGN_NOT_ACTIVE, CLAIM_GATE_STALE, ALREADY_CLAIMED, OUT_OF_STOCK, ALREADY_USED_VOUCHER, VOUCHER_EXPIRED, VOUCHER_NOT_OWNED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH, EXPECTED_DISCOUNT_MISMATCH, RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT, INVALID_STATE_TRANSITION, CAMPAIGN_NOT_DRAFT, DISTRIBUTION_MODE_MISMATCH, CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS, MARKDOWN_RULE_ALREADY_EXISTS hoặc PROMOTION_CONSTRAINT_VIOLATION (ràng buộc PostgreSQL bị vi phạm bởi race không có mã riêng; tải lại rồi thử lại). */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1056,7 +1056,7 @@ export interface components {
         ConfirmIdempotencyKey: string;
         /** @description CANCEL_FINAL:{order_id}:{promotion_id}. */
         TechnicalCancellationIdempotencyKey: string;
-        /** @description Immutable approved migration record ID; its evidence digest must match the body. */
+        /** @description Immutable approved migration record ID; it must equal `migration_record_id` of the body (the evidence digest travels in the body). Missing or different is `403 FORBIDDEN`. */
         LegacyMigrationProof: string;
         /** @description Strong ETag mang parent campaign revision, ví dụ "7". */
         IfMatchCampaign: string;
@@ -1166,6 +1166,7 @@ export interface operations {
                     "application/json": components["schemas"]["Campaign"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1313,6 +1314,7 @@ export interface operations {
                     "application/json": components["schemas"]["PromotionPage"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1382,6 +1384,7 @@ export interface operations {
                     "application/json": components["schemas"]["Promotion"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1496,6 +1499,7 @@ export interface operations {
                     "application/json": components["schemas"]["MarkdownRulePage"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1565,6 +1569,7 @@ export interface operations {
                     "application/json": components["schemas"]["MarkdownRule"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1682,7 +1687,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["SaveAndEvaluateRequest"];
             };
@@ -1764,6 +1769,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             503: components["responses"]["Unavailable"];
         };
@@ -1866,6 +1872,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
             503: components["responses"]["Unavailable"];
@@ -1942,7 +1949,7 @@ export interface operations {
                 "X-Request-Id"?: components["parameters"]["RequestId"];
                 /** @description CANCEL_FINAL:{order_id}:{promotion_id}. */
                 "Idempotency-Key": components["parameters"]["TechnicalCancellationIdempotencyKey"];
-                /** @description Immutable approved migration record ID; its evidence digest must match the body. */
+                /** @description Immutable approved migration record ID; it must equal `migration_record_id` of the body (the evidence digest travels in the body). Missing or different is `403 FORBIDDEN`. */
                 "X-Legacy-Migration-Proof": components["parameters"]["LegacyMigrationProof"];
             };
             path?: never;

@@ -1,8 +1,9 @@
-# Promotion Service HTTP v1 — đề xuất
+# Promotion Service HTTP v1
 
-Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Contract hiện ở trạng thái `proposed`
-bởi `java/services/promotion-service` (provider test `HttpContractIntegrationTest`); chưa
-`verified` vì Checkout/Order chưa có consumer test.
+Contract machine-readable nằm tại [openapi.yaml](./openapi.yaml). Contract ở trạng thái `implemented`:
+`java/services/promotion-service` phục vụ đủ 25 operation (provider test `HttpContractIntegrationTest`,
+kể cả guard `technical-cancellations`); chưa `verified` vì Checkout/Order chưa có consumer test chạy
+với Promotion thật.
 
 ## Các thay đổi chính so với `docs/promotion/interfaces.md`
 
@@ -20,6 +21,12 @@ bởi `java/services/promotion-service` (provider test `HttpContractIntegrationT
   update in-place; thay đổi business definition phải clone aggregate DRAFT với child ID mới.
 - Chỉ `CONFIRM` và `CANCEL_CONFIRMED` dùng durable `Idempotency-Key`/command receipt.
   Save/claim/reserve/cancel dùng natural business key và guard đã chốt trong domain design.
+- `context` của calculate, voucher options và reserve là `TrustedCheckoutContext`: `checkout_channel`
+  khác `CHECKOUT` là `400 INVALID_REQUEST`; context của discovery/suggestion/save là của client nên
+  không bị ép.
+- `PUT /me/promotion-vouchers/{promotion_id}` không bắt buộc body: không body và `{}` đều chỉ lưu wallet.
+- Request không khớp operation nào (route lạ, sai method, Content-Type không hỗ trợ) là lỗi client:
+  `404`/`405` (kèm `Allow`) và `400`, mọi trường hợp là problem+json code `INVALID_REQUEST`.
 - Error dùng RFC 9457 `application/problem+json`; `CLAIM_PENDING` là accepted outcome
   `202`, không giả làm durable success.
 - ID qua wire là opaque string, không lộ BIGINT/sequence. Money luôn có shape
@@ -69,7 +76,7 @@ và `category_ids` tin cậy; save/claim vẫn gọi thẳng Promotion
 | POST | `/internal/v1/promotion-allocation/reservations` | TRY giữ quota/amount sau Submit |
 | POST | `/internal/v1/promotion-allocation/confirmations` | Durable CONFIRM, PostgreSQL-first |
 | POST | `/internal/v1/promotion-allocation/cancellations` | Release reservation trước confirm |
-| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Deprecated legacy migration only; dedicated `promotion-legacy-migrator` principal + immutable proof, denied to Order |
+| POST | `/internal/v1/promotion-allocation/technical-cancellations` | Deprecated legacy migration only; dedicated `promotion-legacy-migrator` principal + header `X-Legacy-Migration-Proof` bằng `migration_record_id` của body, Order bị `403`; thiếu/sai proof cũng `403` |
 
 Không có endpoint refund. Customer partial/full refund không thay đổi wallet hoặc budget
 của Promotion.

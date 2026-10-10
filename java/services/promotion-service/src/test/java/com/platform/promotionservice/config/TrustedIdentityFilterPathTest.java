@@ -47,6 +47,11 @@ class TrustedIdentityFilterPathTest {
         String allocation() {
             return "reached";
         }
+
+        @GetMapping("/internal/v1/promotion-allocation/technical-cancellations")
+        String technicalCancellation() {
+            return "reached";
+        }
     }
 
     private MockMvc mvc;
@@ -110,6 +115,19 @@ class TrustedIdentityFilterPathTest {
                     .as("checkout-service on allocation " + path).isEqualTo(403);
             assertThat(status(path, "X-Service-Identity", "order-service"))
                     .as("order-service on allocation " + path).isEqualTo(200);
+        }
+        // technical-cancellations sit under the allocation prefix but belong to the legacy migrator only: no
+        // spelling of the path may send Order into the Order group (PROMO-BR-018).
+        for (String path : List.of("/internal/v1/promotion-allocation/technical-cancellations",
+                "/%69nternal/v1/promotion-allocation/technical-cancellations",
+                "/internal/v1/promotion-allocation;x=1/technical-cancellations",
+                "/internal/v1/promotion-allocation/technical%2Dcancellations",
+                "/internal/v1/promotion-allocation/technical-cancellations;x=1")) {
+            assertThat(status(path)).as("anonymous on " + path).isEqualTo(401);
+            assertThat(status(path, "X-Service-Identity", "order-service"))
+                    .as("order-service on technical cancellation " + path).isEqualTo(403);
+            assertThat(status(path, "X-Service-Identity", "promotion-legacy-migrator"))
+                    .as("legacy migrator on technical cancellation " + path).isEqualTo(200);
         }
     }
 }

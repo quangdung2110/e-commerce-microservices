@@ -189,8 +189,13 @@ abstract class AbstractPromotionIntegrationTest {
         return jdbcTemplate.queryForObject("SELECT revision FROM campaigns WHERE id = ?", Long.class, campaignId);
     }
 
+    /** Context của Checkout/Order (TrustedCheckoutContext): channel luôn CHECKOUT. */
     protected CheckoutDtos.CheckoutContext context(long subtotalVnd) {
-        return new CheckoutDtos.CheckoutContext(MoneyDto.vnd(subtotalVnd), "STRIPE", "web",
+        return context(subtotalVnd, "CHECKOUT");
+    }
+
+    protected CheckoutDtos.CheckoutContext context(long subtotalVnd, String channel) {
+        return new CheckoutDtos.CheckoutContext(MoneyDto.vnd(subtotalVnd), "STRIPE", channel,
                 List.of(new CheckoutDtos.CheckoutItem(UUID.randomUUID(), "SKU-1", 1, MoneyDto.vnd(subtotalVnd),
                         List.of("cat-1"))), Map.of());
     }

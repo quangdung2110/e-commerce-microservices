@@ -18,9 +18,10 @@ nằm ở [`docs/promotion`](../../../docs/promotion/README.md); contract ở
 | `infrastructure/product` | Port validate Product (`HttpProductCatalogClient` / `NoopProductCatalogClient`) |
 | `service` | Admin (campaign/promotion/markdown), discovery/calculate, wallet save/grant, limited claim, allocation TRY/CANCEL, final command CONFIRM/CANCEL_CONFIRMED, markdown snapshot, tombstone, schedule, runtime rebuild/reconcile |
 | `worker` | Scheduler loop + DB fallback, pending-claim sweeper, reservation sweeper, receipt finalizer, budget reconciliation, trimmers, startup rebuild |
-| `web` | Controllers cho 24 operation OpenAPI, DTO snake_case, RFC 9457 problem+json |
+| `web` | Controllers cho 25 operation OpenAPI, DTO snake_case, RFC 9457 problem+json (route lạ/sai method/Content-Type là lỗi client, không `500`) |
 
-Redis Lua nằm ở `src/main/resources/lua`; Flyway baseline ở `src/main/resources/db/migration`;
+Redis Lua nằm ở `src/main/resources/lua`; Flyway ở `src/main/resources/db/migration` (`V1` baseline, `V2` proof của
+legacy technical cancellation);
 Debezium connector ở `src/main/resources/kafka`.
 
 ## Chạy local
@@ -39,5 +40,5 @@ Chạy jar với profile `dev` (`SPRING_PROFILES_ACTIVE=dev`) hoặc `docker com
 
 ## Test
 
-Xem `docs/promotion/development.md` §1 và §3: 33 test gồm unit, Lua trên Redis Testcontainers,
+Xem `docs/promotion/development.md` §1 và §3: 44 test gồm unit, Lua trên Redis Testcontainers,
 PostgreSQL + Redis integration và HTTP contract MockMvc.

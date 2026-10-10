@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-development
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -23,8 +23,8 @@ JDK 21, Spring Boot 3.3 (đồng bộ với các service Java khác), Maven, Pos
 `wal_level=logical`, Redis 7 (standalone trong compose; Lua dùng hash tag nên chuyển Cluster
 không đổi script), Kafka và Debezium/Kafka Connect. Product được validate đồng bộ qua
 `GET /internal/v1/products/{id}/snapshot` (tắt bằng `promotion.product.validation-enabled=false`
-khi chạy độc lập). Checkout/Order chưa có client; test allocation dùng HTTP trực tiếp. Không
-cần Auth fixture vì Promotion không consume Auth event.
+khi chạy độc lập). Checkout (`PromotionClient`) và Order (`HttpGateways`) đã có client; test của
+Promotion gọi HTTP trực tiếp. Không cần Auth fixture vì Promotion không consume Auth event.
 
 Build và test khi máy không có JDK/Maven (dùng container Maven, Testcontainers qua Docker socket):
 
@@ -47,12 +47,14 @@ Integration test có thể trỏ vào dependency sẵn có bằng `TEST_DB_URL`,
 
 Profile `dev` trỏ vào PostgreSQL/Redis/Kafka của docker-compose; `prod` nhận env `DB_URL`,
 `REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`. Property nghiệp vụ nằm dưới prefix
-`promotion.*` (`PromotionProperties`): `internal.calculation-clients`/`allocation-clients`,
-`product.*`, `snapshot.ttl`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size}`,
+`promotion.*` (`PromotionProperties`):
+`internal.{calculation,options,allocation,legacy-migration}-clients`, `admin.*`,
+`product.*`, `snapshot.ttl`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size,pending-retry-after-seconds}`,
 `reservation.{business-ttl,cleanup-grace,sweeper-interval}`, `finalizer.{scan-interval,stale-after,batch-size}`,
 `schedule.{loop-interval,fallback-interval,batch-size,fallback-lookback}`,
 `reconciliation.{interval,recent-window,lock-ttl}`, `outbox.retention`, `receipt.retention`,
-`kafka.{product-topic,product-dlq-topic,group-id}`, `workers.enabled`, `kafka.consumer-enabled`.
+`kafka.{product-topic,product-dlq-topic,group-id,retry-attempts,retry-backoff,consumer-enabled}`,
+`workers.enabled`, `markdown.dataschema`. Bảng giá trị mặc định ở [operations.md §3](./operations.md#3-configuration).
 Mọi time UTC. Wire money dùng `{amount_minor,currency}`; persistence/Redis dùng integer
 VND và adapter kiểm `currency=VND` (`MoneyDto.requireVnd`). Secret đến từ environment/secret
 store, không commit credential. Không cấu hình `t.promotion.budget.events`.
@@ -72,24 +74,26 @@ store, không commit credential. Không cấu hình `t.promotion.budget.events`.
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→forward repair; assert Order identity is denied technical cleanup and only legacy-migrator with valid proof is accepted |
 
-Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
+Hiện có trong `src/test/java` (44 test, chạy bằng lệnh ở §1):
 
 | Test class | Bao phủ |
 |---|---|
 | `RuleEvaluatorTest`, `DomainRulesTest` | AST operators/missing/empty/numeric, validator reject, discount math, phase `[start,end)`, ba validity mode |
-| `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route |
-| `TrustedIdentityFilterPathTest` | Cùng các kiểm quyền đó với path mã hoá `%xx` / `;param` (MockMvc standalone, controller giả ở route thật) |
+| `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route; technical-cancellations chỉ `promotion-legacy-migrator` (Order/Checkout `403`, migrator không chạm route nào khác) |
+| `TrustedIdentityFilterPathTest` | Cùng các kiểm quyền đó với path mã hoá `%xx` / `;param`, kể cả technical-cancellations (MockMvc standalone, controller giả ở route thật) |
 | `MarkdownSnapshotContractTest` | CloudEvent ACTIVE (percentage/fixed) và INACTIVE hợp lệ với JSON Schema trong `contracts/`; causal dedup key |
 | `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
-| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair; migration proof/capability enforcement; final command không ghi outbox; refund no-op |
+| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair (kèm proof); final command không ghi outbox; refund no-op (chỉ khẳng định state không đổi vì không có endpoint refund); confirm sau lazy-expiry (`EXPIRED→USED`, rồi legacy cleanup → `EXPIRED`); 6 confirm và 6 legacy cancel trùng key đồng thời cùng nhận stored response |
 | `ClaimAndTombstoneIntegrationTest` | Pool pre-generate tại publish, gate revision fence, DB commit trước success, replay, OUT_OF_STOCK, pause đóng gate; Redis loss rebuild + sweeper; tombstone watermark/invalidation/stale duplicate/mutation reject/no reverse event; clone identity |
-| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, `order-service` denied technical cleanup, legacy-migrator proof mismatch denied, Idempotency-Key mismatch 400 |
+| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store và PUT không body, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, Idempotency-Key mismatch 400; technical cleanup: `order-service` `403`, migrator thiếu/sai proof `403`, body sai schema/digest/field lạ `400`, thành công lưu proof trên receipt, replay khác digest `409`; `checkout_channel` ≠ `CHECKOUT` ở calculate/reserve/options `400` (customer discovery không bị ép); `voucher-options` có `Cache-Control: no-store`; route lạ `404`, sai method `405`, Content-Type sai `400` (problem+json `INVALID_REQUEST`, không `500`) |
 
-Chưa có: load 10.000 contender, race test đa luồng, schedule worker với Redis thật theo thời
-gian, Debezium/Kafka E2E, Temporal fixture.
+Chưa có: load 10.000 contender, race test đa luồng cho claim/sweep (confirm và legacy cancel trùng đồng thời đã
+có), schedule worker với Redis thật theo thời gian, Debezium/Kafka E2E, Temporal fixture, consumer contract
+test từ Checkout/Order chạy với Promotion thật.
 
 Phải có negative integration test chứng minh Order/refund input ngoài contract không
-mutate wallet/budget và Promotion không yêu cầu `promotion_refund_allocations[]`.
+mutate wallet/budget và Promotion không yêu cầu `promotion_refund_allocations[]`. Hiện chưa có test gửi input
+refund: Promotion không có endpoint hay consumer refund nên bằng chứng duy nhất là test state không đổi ở trên.
 
 ## 4. Rule Engine
 
@@ -166,10 +170,10 @@ Promotion HTTP phải generate/validate theo
 [`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
 Contract không được chứa refund endpoint hoặc SKU-level voucher allocation; CI lint
 OpenAPI và chạy provider/consumer contract tests trước khi nâng adoption status.
-Checkout adoption gate còn yêu cầu internal DTO chấp nhận `user_tier` omit/null và
-Calculate/Reserve chỉ nhận `checkout_channel=CHECKOUT`; customer discovery context
-không bị ép dùng internal channel. Test phải cover cả Discount Calculate và Reserve bằng
-cùng item/category context.
+Internal DTO chấp nhận `user_tier` omit/null (`userTierIsOptional`), và calculate, voucher
+options và reserve chỉ nhận `checkout_channel=CHECKOUT` (`400 INVALID_REQUEST` nếu khác;
+`internalContextsAcceptOnlyTheCheckoutChannel`); customer discovery context không bị ép dùng
+internal channel. Test cover cả Discount Calculate và Reserve bằng cùng item/category context.
 
 ## 8. Test data
 

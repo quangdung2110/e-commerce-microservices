@@ -25,9 +25,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 import java.sql.Timestamp;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -182,13 +189,17 @@ class VoucherLifecycleIntegrationTest extends AbstractPromotionIntegrationTest {
 
         // Technical cancellation: DB-first, wallet back to SAVED (still valid), Redis repaired
         String cancelKey = "CANCEL_FINAL:1001:" + promotionId;
-        AllocationDtos.TechnicalCancellationResponse cancelled = finalCommands.cancelConfirmed(cancelKey, finalRequest);
+        UUID record = UUID.randomUUID();
+        AllocationDtos.LegacyTechnicalCancellationRequest legacyRequest = legacyRequest("1001", promotionId, record);
+        AllocationDtos.TechnicalCancellationResponse cancelled = finalCommands.cancelConfirmed(cancelKey,
+                record.toString(), legacyRequest);
         assertThat(cancelled.walletStatus()).isEqualTo(WalletStatus.SAVED);
         assertThat(walletStatus(user, promotion.getId())).isEqualTo("SAVED");
         assertThat(budget(promotion.getId())).containsEntry("used_quantity", 0L).containsEntry("used_budget_vnd", 0L);
         assertThat(runtime.read(promotion.getId()).orElseThrow().usedQuantity()).isZero();
         assertThat(receiptFinalized("CANCEL_CONFIRMED", promotion.getId(), 1001)).isTrue();
-        assertThat(finalCommands.cancelConfirmed(cancelKey, finalRequest).completedAt()).isEqualTo(cancelled.completedAt());
+        assertThat(finalCommands.cancelConfirmed(cancelKey, record.toString(), legacyRequest).completedAt())
+                .isEqualTo(cancelled.completedAt());
 
         // Final commands never write outbox (ADR-016)
         assertThat(outboxRows()).isEmpty();
@@ -215,6 +226,103 @@ class VoucherLifecycleIntegrationTest extends AbstractPromotionIntegrationTest {
         assertThat(walletStatus(user, promotion.getId())).isEqualTo("USED");
         assertThat(budget(promotion.getId())).containsEntry("used_quantity", 1L);
         assertThat(outboxRows()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a wallet lazily normalized to EXPIRED after Reserve is still redeemed by Confirm (ADR-019)")
+    void confirmRedeemsAWalletThatExpiredUnderItsReservation() {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        publish(campaign);
+        UUID user = UUID.randomUUID();
+        String promotionId = Long.toString(promotion.getId());
+        wallets.savePublic(user, promotion.getId());
+        allocation.reserve(new AllocationDtos.ReserveRequest("3001", user, null, promotionId, MoneyDto.vnd(35000),
+                context(350000)));
+
+        // The wallet runs out while the Payment is in flight and the user's next query normalizes it (lazy expiry).
+        jdbcTemplate.update("UPDATE user_coupon_wallets SET expired_at = now() - interval '1 second' WHERE user_id = ?", user);
+        discovery.suggest(user, new CheckoutDtos.SuggestionRequest(context(350000), 20));
+        assertThat(walletStatus(user, promotion.getId())).isEqualTo("EXPIRED");
+
+        // Payment succeeded: the reservation made while the voucher was valid is the authority, the voucher is redeemed.
+        AllocationDtos.ConfirmationResponse confirmed = finalCommands.confirm("REDEEM_FINAL:3001:" + promotionId,
+                new AllocationDtos.FinalAllocationRequest("3001", promotionId, MoneyDto.vnd(35000)));
+        assertThat(confirmed.walletStatus()).isEqualTo(WalletStatus.USED);
+        assertThat(walletStatus(user, promotion.getId())).isEqualTo("USED");
+        assertThat(budget(promotion.getId())).containsEntry("used_quantity", 1L).containsEntry("used_budget_vnd", 35000L);
+        assertThat(receiptFinalized("CONFIRM", promotion.getId(), 3001)).isTrue();
+
+        // A legacy cleanup of that redemption gives the voucher back as EXPIRED, as its validity has passed.
+        UUID record = UUID.randomUUID();
+        assertThat(finalCommands.cancelConfirmed("CANCEL_FINAL:3001:" + promotionId, record.toString(),
+                legacyRequest("3001", promotionId, record)).walletStatus()).isEqualTo(WalletStatus.EXPIRED);
+    }
+
+    @Test
+    @DisplayName("concurrent duplicate CONFIRM and legacy cancel replay the stored response (PROMO-INV-012)")
+    void concurrentDuplicatesReplayInsteadOfFailing() throws Exception {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.PUBLIC_SAVE, null);
+        publish(campaign);
+        String promotionId = Long.toString(promotion.getId());
+        int threads = 6;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            // The fixture budget allows 10 redemptions: 5 orders, each hit by 6 identical commands at once.
+            for (int i = 0; i < 5; i++) {
+                UUID user = UUID.randomUUID();
+                String orderId = Integer.toString(4000 + i);
+                wallets.savePublic(user, promotion.getId());
+                allocation.reserve(new AllocationDtos.ReserveRequest(orderId, user, null, promotionId,
+                        MoneyDto.vnd(35000), context(350000)));
+                AllocationDtos.FinalAllocationRequest request = new AllocationDtos.FinalAllocationRequest(orderId,
+                        promotionId, MoneyDto.vnd(35000));
+                List<AllocationDtos.ConfirmationResponse> responses = runConcurrently(pool, threads,
+                        () -> finalCommands.confirm("REDEEM_FINAL:" + orderId + ":" + promotionId, request));
+                assertThat(responses).hasSize(threads).doesNotContainNull()
+                        .extracting(AllocationDtos.ConfirmationResponse::completedAt).containsOnly(responses.get(0).completedAt());
+                assertThat(walletStatus(user, promotion.getId())).isEqualTo("USED");
+
+                UUID record = UUID.randomUUID();
+                AllocationDtos.LegacyTechnicalCancellationRequest legacy = legacyRequest(orderId, promotionId, record);
+                List<AllocationDtos.TechnicalCancellationResponse> cancelled = runConcurrently(pool, threads,
+                        () -> finalCommands.cancelConfirmed("CANCEL_FINAL:" + orderId + ":" + promotionId,
+                                record.toString(), legacy));
+                assertThat(cancelled).hasSize(threads).doesNotContainNull()
+                        .extracting(AllocationDtos.TechnicalCancellationResponse::completedAt)
+                        .containsOnly(cancelled.get(0).completedAt());
+                assertThat(walletStatus(user, promotion.getId())).isEqualTo("SAVED");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        // Each transition happened exactly once: 5 confirms, 5 cancels, counters back to zero.
+        assertThat(jdbcTemplate.queryForObject("SELECT count(*) FROM promotion_command_receipts", Long.class)).isEqualTo(10L);
+        assertThat(budget(promotion.getId())).containsEntry("used_quantity", 0L).containsEntry("used_budget_vnd", 0L);
+    }
+
+    /** Chạy cùng một command từ {@code threads} thread cùng lúc; mọi exception làm test fail. */
+    private static <T> List<T> runConcurrently(ExecutorService pool, int threads, Callable<T> command) throws Exception {
+        CyclicBarrier barrier = new CyclicBarrier(threads);
+        List<Future<T>> futures = new ArrayList<>();
+        for (int i = 0; i < threads; i++) {
+            futures.add(pool.submit(() -> {
+                barrier.await();
+                return command.call();
+            }));
+        }
+        List<T> results = new ArrayList<>();
+        for (Future<T> future : futures) {
+            results.add(future.get(30, TimeUnit.SECONDS));
+        }
+        return results;
+    }
+
+    private static AllocationDtos.LegacyTechnicalCancellationRequest legacyRequest(String orderId, String promotionId,
+                                                                                   UUID record) {
+        return new AllocationDtos.LegacyTechnicalCancellationRequest(orderId, promotionId, MoneyDto.vnd(35000), record,
+                "ab".repeat(32));
     }
 
     private String walletStatus(UUID user, long promotionId) {

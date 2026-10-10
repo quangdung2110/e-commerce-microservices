@@ -369,7 +369,7 @@ interactions:
     consumers: [order-service]
     contract: http/promotion/v1/openapi.yaml
     status: implemented
-    notes: Order Temporal owns reserve, pre-payment cancel and confirm only; technical cancellation is denied to Order and reserved for the separately capability-bound legacy migrator.
+    notes: Order Temporal owns reserve, pre-payment cancel and confirm only; technical cancellation is denied to Order (403 at the application allowlist, tested) and reserved for the separately capability-bound legacy migrator. Reserve sends the trusted context (checkout_channel CHECKOUT, enforced by Promotion).
 
   - id: legacy-migrator-technical-cancels-promotion-allocation
     protocol: http
@@ -377,7 +377,7 @@ interactions:
     consumers: [promotion-legacy-migrator]
     contract: http/promotion/v1/openapi.yaml
     status: proposed
-    notes: The legacy migrator alone must present the dedicated workload identity and an immutable pre-watermark proof; this route is not a Saga compensation or Order recovery path.
+    notes: The legacy migrator alone must present the dedicated workload identity and an immutable pre-watermark proof (header X-Legacy-Migration-Proof equal to the body migration_record_id; 403 otherwise, Order included); this route is not a Saga compensation or Order recovery path. Promotion implements the guard (Promotion ADR-019) but the migrator workload does not exist yet, so the interaction stays proposed.
 
   - id: finance-ops-decides-order-financial-reconciliation
     protocol: http

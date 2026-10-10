@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-workflows
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -52,7 +52,8 @@ coupon fact; WF-PROMO-007 là workflow duy nhất ghi outbox.
 
 Definition đã publish là bất biến. Muốn thay discount, eligibility, validity, product
 scope hoặc budget definition phải clone thành campaign DRAFT với campaign/promotion/
-markdown ID mới. `campaigns.revision` chỉ là concurrency/cache/schedule fence, không phải
+markdown ID mới (clone bỏ qua markdown rule đã `invalidated` hoặc của Product đã có tombstone watermark để
+không tạo dangling rule; budget được sao chép là cấu hình, counter bắt đầu từ 0, không sao chép claim hay wallet). `campaigns.revision` chỉ là concurrency/cache/schedule fence, không phải
 definition version; wallet cũ tiếp tục bind promotion cũ và `expired_at` đã snapshot.
 
 Pause/cancel đóng claim-gate fields trong runtime hash một cách bảo thủ trước DB
@@ -150,7 +151,9 @@ hiển thị từ definition snapshot (`code`, `name`, `description`, `discount`
 `min_order_amount`, `valid_until`). `valid_until` là `expired_at` của wallet với voucher `WALLET`
 và `end_time` của campaign với voucher `PUBLIC`. Mặc định `include_public` và
 `include_ineligible` là `true`, `limit` là 50. Không save, claim hay reserve; không local rate
-limit.
+limit. Context phải là `TrustedCheckoutContext` (`checkout_channel=CHECKOUT`, khác thì `400`); response
+`Cache-Control: no-store`. Phần public đánh giá tối đa 200 promotion `ACTIVE` (theo `id` tăng) trước khi
+sắp xếp và áp `limit`.
 
 ### Calculate
 
@@ -164,7 +167,8 @@ AST/context phải cho cùng kết quả.
 ### TRY
 
 1. Chỉ sau Submit và khi đã có `order_id`, Order gọi
-   `POST /internal/v1/promotion-allocation/reservations`.
+   `POST /internal/v1/promotion-allocation/reservations`. Context phải là `TrustedCheckoutContext`
+   (`checkout_channel=CHECKOUT`, khác thì `400 INVALID_REQUEST` trước mọi bước đọc/ghi).
 2. Promotion revalidate wallet SAVED/expiry/rule và requested amount.
 3. Lua kiểm replay payload, available quantity/amount, tăng integer reserved counter,
    ghi reservation payload + per-promotion expiry ZSET.
@@ -185,9 +189,12 @@ AST/context phải cho cùng kết quả.
    commit/finalize. Chỉ khi recheck vẫn miss mới trả `RESERVATION_NOT_FOUND` cho
    late-payment policy.
 5. PostgreSQL transaction acquire `CONFIRM` command receipt. Concurrent existing cùng hash
-   trả stored response; khác hash bị từ chối.
+   trả stored response; khác hash bị từ chối. Receipt được kiểm trước và kiểm lại sau khi giành khoá
+   wallet: bản trùng đến đồng thời chờ khoá rồi trả stored response của bản thắng (PROMO-BR-027), không phải
+   `FINAL_COMMAND_STATE_INCONSISTENT`.
 6. Với command mới, transaction lock wallet/budget, dùng authoritative amount từ matching
-   reservation `CONFIRMING`, guarded `SAVED→USED`, persist amount vào wallet, set
+   reservation `CONFIRMING`, guarded `SAVED→USED` (cả `EXPIRED→USED` nếu truy vấn của user đã chuẩn hoá
+   wallet sau Reserve: reservation tạo khi còn hạn là authority, PROMO-BR-026), persist amount vào wallet, set
    `used_order_id`/`used_at`, tăng durable used counters và hoàn thiện receipt với
    `redis_finalized_at = NULL`. Không insert outbox: không có consumer cho redeemed fact.
 7. PostgreSQL commit là durable completion point. Sau commit Redis finalizer mới atomically
@@ -221,14 +228,17 @@ Flow này chỉ giữ để cleanup/migration record legacy với bằng chứng
 chưa vượt Payment financial watermark. Nó không phải customer refund và không được active
 Order checkout, post-payment hay late-payment workflow gọi. Only the dedicated
 `promotion-legacy-migrator` mTLS principal can invoke the endpoint; `order-service` is
-denied by mesh and application policy.
+denied by mesh and application policy (`403 FORBIDDEN` từ allowlist `legacy-migration-clients`).
 
 1. `promotion-legacy-migrator` gọi `POST /internal/v1/promotion-allocation/technical-cancellations`
    với `Idempotency-Key: CANCEL_FINAL:{order_id}:{promotion_id}`, header
-   `X-Legacy-Migration-Proof=<migration-record-uuid>` và body evidence SHA-256 matching
-   the approved record. Missing/mismatched proof or an `order-service` principal is denied.
+   `X-Legacy-Migration-Proof=<migration-record-uuid>` và body `LegacyTechnicalCancellationRequest`
+   (`migration_record_id` bằng header, `pre_financial_watermark_evidence_sha256` 64 hex; không field lạ,
+   sai schema `400`). Missing/mismatched proof or an `order-service` principal is denied (`403`, trước mọi
+   đọc/ghi). Promotion không tra cứu record trong registry nào: proof được lưu bất biến để audit.
 2. PostgreSQL transaction acquire `CANCEL_CONFIRMED` command receipt theo canonical request
-   hash. Cùng key/hash đã complete trả stored response; khác hash bị từ chối.
+   hash (gồm record ID và digest). Cùng key/hash đã complete trả stored response (kể cả bản trùng đến
+   đồng thời); khác hash — kể cả khác record hoặc digest — bị từ chối (`IDEMPOTENCY_PAYLOAD_MISMATCH`).
 3. Với command mới, transaction lock wallet/budget, bắt buộc wallet `USED` bởi đúng order và
    lấy authoritative amount trước khi clear usage fields.
 4. Transaction giảm durable used counter bằng guarded update; underflow/inconsistent state
@@ -325,7 +335,8 @@ Promotion consume `com.ecommerce.catalog.product-deleted.v1`, key `product_id`:
    `invalidated_at`, `invalidation_reason=PRODUCT_DELETED` và watermark revision. Duplicate/
    stale event không lùi watermark nhưng vẫn có thể repair rule bất thường; không bump
    campaign revision hoặc claim-gate fields vì voucher definition không đổi.
-4. Commit rồi invalidate product-scoped Promotion snapshot; Kafka ack sau commit.
+4. Commit; Kafka ack sau commit. Không invalidate cache: markdown rule không nằm trong Redis và snapshot
+   voucher theo promotion không đổi (ADR-019).
 5. Không phát markdown `INACTIVE` ngược lại Product đã hard delete. Search nhận Product
    tombstone trực tiếp; scheduler/winner query bỏ mọi invalidated rule.
 

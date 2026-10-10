@@ -1,7 +1,5 @@
 package com.platform.promotionservice.service;
 
-import com.platform.promotionservice.common.DomainException;
-import com.platform.promotionservice.common.ErrorCode;
 import com.platform.promotionservice.common.Ids;
 import com.platform.promotionservice.domain.entity.PromotionEntity;
 import com.platform.promotionservice.domain.entity.UserCouponWalletEntity;
@@ -42,7 +40,6 @@ public class DiscoveryService {
     private static final int PUBLIC_CANDIDATE_LIMIT = 200;
     private static final int DEFAULT_LIMIT = 20;
     private static final int OPTIONS_DEFAULT_LIMIT = 50;
-    private static final String CHECKOUT_CHANNEL = "CHECKOUT";
 
     private final UserCouponWalletRepository wallets;
     private final PromotionRepository promotions;
@@ -86,10 +83,7 @@ public class DiscoveryService {
      */
     @Transactional
     public CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request) {
-        if (!CHECKOUT_CHANNEL.equals(request.context().checkoutChannel())) {
-            throw new DomainException(ErrorCode.INVALID_REQUEST, "context.checkout_channel must be CHECKOUT",
-                    List.of(new DomainException.FieldError("context.checkout_channel", "must be CHECKOUT")));
-        }
+        RuleFactsBuilder.requireCheckoutChannel(request.context());
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
         List<Ranked> ranked = new ArrayList<>(evaluateWallet(request.userId(), context, now));
@@ -134,6 +128,7 @@ public class DiscoveryService {
     /** Checkout tính lại 0/1 voucher từ trusted context; pure/replay-safe. */
     @Transactional(readOnly = true)
     public CheckoutDtos.DiscountCalculationResult calculate(CheckoutDtos.DiscountCalculationRequest request) {
+        RuleFactsBuilder.requireCheckoutChannel(request.context());
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
         MoneyDto subtotal = MoneyDto.vnd(context.subtotalVnd());

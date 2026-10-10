@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-data
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -175,9 +175,11 @@ Unique `(user_id,promotion_id)` bảo đảm một quyền sở hữu. Partial u
 `used_order_id WHERE used_order_id IS NOT NULL` bảo đảm một platform voucher cho một
 order. CHECK buộc `USED` có order/amount/time và `SAVED/EXPIRED` không có usage fields.
 
-Confirm chuyển `SAVED → USED`. Buyer selected-line hay Admin pre-dispatch refund không mutate row. Legacy,
-capability/proof-gated `cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
-nếu đã hết hạn thì chuyển `USED → EXPIRED`.
+Confirm chuyển `SAVED → USED`, và cả `EXPIRED → USED` khi wallet bị lazy-normalize sau Reserve trong lúc
+Payment chạy (reservation tạo khi còn hạn là authority; PROMO-BR-026). `EXPIRED` chỉ do truy vấn của user ghi
+(`UPDATE ... WHERE status='SAVED' AND expired_at <= now`), không có batch. Buyer selected-line hay Admin
+pre-dispatch refund không mutate row. Legacy, capability/proof-gated `cancel-confirmed` chuyển `USED → SAVED` và
+xóa usage fields nếu `NOW() < expired_at`; nếu đã hết hạn thì chuyển `USED → EXPIRED`.
 
 ### 3.6 `markdown_rules`
 
@@ -234,8 +236,8 @@ tombstone đến trước rule commit hoặc sau rule commit đều không để
 | `order_id`                | `BIGINT NOT NULL`, logical Order reference                                                                        |
 | `wallet_id`               | `BIGINT NOT NULL REFERENCES user_coupon_wallets(id)`                                                              |
 | `request_hash`            | `CHAR(64) NOT NULL`, SHA-256 canonical request                                                                    |
-| `migration_record_id`     | `UUID NULL`; required only for `CANCEL_CONFIRMED`, must equal `X-Legacy-Migration-Proof`                           |
-| `pre_watermark_evidence_sha256` | `CHAR(64) NULL`; required only for `CANCEL_CONFIRMED`, immutable audited evidence digest                      |
+| `migration_record_id`     | `UUID NULL`; required only for `CANCEL_CONFIRMED`, must equal `X-Legacy-Migration-Proof` (migration `V2`)           |
+| `pre_watermark_evidence_sha256` | `CHAR(64) NULL`; required only for `CANCEL_CONFIRMED`, immutable audited evidence digest, lưu chữ thường (migration `V2`) |
 | `amount_vnd`              | `BIGINT NOT NULL CHECK (amount_vnd >= 0)`; confirm lấy từ fenced reservation, legacy cleanup lấy từ wallet USED after proof validation |
 | `result_code`             | stable business result để replay                                                                                  |
 | `resulting_wallet_status` | `USED`, `SAVED` hoặc `EXPIRED` theo operation                                                                     |
@@ -249,9 +251,14 @@ Unique `(operation_type,promotion_id,order_id)` ngăn hai idempotency key khác 
 cùng final business transition. Receipt không có durable `PENDING`: row, wallet và budget
 chỉ hiện ra cùng lúc khi transaction commit. Cùng key + cùng request hash trả
 `response_payload`; cùng key khác hash trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
-`CHECK` requires both migration-proof fields for `CANCEL_CONFIRMED` and both NULL for
-`CONFIRM`; the request hash includes them. A legacy command may not be replayed with a
-different proof record/digest.
+`CHECK chk_receipts_migration_proof` (migration `V2__legacy_migration_proof.sql`) requires both
+migration-proof fields for `CANCEL_CONFIRMED` and both NULL for `CONFIRM`; the request hash includes
+them. A legacy command may not be replayed with a different proof record/digest. Ràng buộc được thêm
+`NOT VALID`: receipt `CANCEL_CONFIRMED` tạo trước `V2` (khi route chưa có guard) không có proof và không thể
+bịa lại, nên được miễn; mọi dòng mới đều bị kiểm. Promotion không có registry để tra cứu bản ghi migration:
+bằng chứng của guard là header = `migration_record_id` + allowlist workload, còn tính "đã duyệt" của record và
+digest là trách nhiệm của quy trình migration phía caller; Promotion chỉ lưu chúng bất biến trên receipt để
+audit.
 
 Receipt là command history tối thiểu, không phải usage/refund ledger. Nó giữ response,
 migration proof reference và original order/amount sau khi legacy cleanup clear usage fields trên wallet.
@@ -295,7 +302,9 @@ Outbox dedup chỉ bảo vệ một outbound business event; nó không thay
 `promotion_command_receipts` cho inbound retry/response replay hay Redis finalize trigger
 và có retention riêng.
 
-Markdown `source_revision` lấy từ PostgreSQL sequence. Transaction acquire advisory lock
+Markdown `source_revision` lấy từ PostgreSQL sequence `markdown_source_revision_seq` (toàn cục, không theo product;
+đơn điệu tăng theo product vì lấy sau advisory lock; cause trùng dedup cũng tiêu thụ một giá trị nên có khoảng
+trống). Transaction acquire advisory lock
 theo `product_id`, tính current-state snapshot hiện hành, cấp revision rồi insert outbox; Product
 chỉ apply revision mới hơn.
 
@@ -307,6 +316,7 @@ chỉ apply revision mới hơn.
 | campaign `(publication_status,start_time,end_time)`                                       | fallback scan/rebuild schedule                                  |
 | promotion `(campaign_id,is_enabled)`                                                      | discovery/admin load                                            |
 | wallet `(user_id,status,expired_at)`                                                      | voucher tray/lazy expiry                                        |
+| wallet `(promotion_id,status)`                                                            | reconciliation/đếm wallet theo promotion và trạng thái          |
 | wallet unique `(user_id,promotion_id)`                                                    | save/claim idempotency                                          |
 | wallet partial unique `used_order_id`                                                     | một voucher/order                                               |
 | claim `(promotion_id,status,id)`                                                          | preload/rebuild claim pool                                      |
@@ -339,18 +349,22 @@ bác claim đã linearize đúng hạn. Retry preflight durable claim/wallet tr�
 terminal watermark theo max catalog revision, rồi lock affected rules theo deterministic
 order. Dùng watermark lớn nhất để update rule khi `source_product_revision IS NULL OR source_product_revision < watermark`. Duplicate/stale event vẫn repair được rule bất
 thường nhưng không lùi watermark. Operational overlay không bump campaign revision/claim
-gate. Sau commit mới invalidate product-scoped snapshots; không insert markdown INACTIVE
-về Product đã xóa.
+gate. Không có cache nào theo product để invalidate (markdown rule không nằm trong Redis; snapshot voucher theo
+promotion không đổi vì voucher definition không đổi) nên consumer chỉ commit rồi ack; không insert markdown
+INACTIVE về Product đã xóa.
 - Confirm: preflight receipt theo key và business identity; durable hit replay response mà
 không cần reservation. Với command mới, Redis preparation fence đổi reservation
 `RESERVED→CONFIRMING` và gia hạn grace nhưng chưa move counter. Một DB transaction commit
-command receipt (`redis_finalized_at NULL`), guarded wallet `SAVED→USED` và durable used
-counter; không ghi outbox. Sau commit Redis finalizer mới move reserved→used rồi set
+command receipt (`redis_finalized_at NULL`), guarded wallet `SAVED→USED` (hoặc `EXPIRED→USED` nếu wallet bị
+lazy-normalize sau Reserve) và durable used counter; không ghi outbox. Transaction kiểm receipt trước, rồi
+khoá wallet, rồi kiểm receipt lần nữa: một bản trùng vừa commit trong lúc chờ khoá là replay, không phải
+state không nhất quán. Sau commit Redis finalizer mới move reserved→used rồi set
 `redis_finalized_at`. Redis miss recheck receipt trước khi trả not-found; missing runtime
 evidence chỉ enqueue reconciliation, không increment mù.
 - Pre-payment cancel: Redis release; wallet không đổi.
-- Legacy `cancel-confirmed` (dedicated migrator + proof): một DB transaction commit command receipt (`redis_finalized_at NULL`),
-giảm durable used counter và chuyển wallet về `SAVED`/`EXPIRED`; không ghi outbox. Sau
+- Legacy `cancel-confirmed` (dedicated migrator + proof): một DB transaction commit command receipt (`redis_finalized_at NULL`,
+kèm `migration_record_id` và digest bằng chứng), giảm durable used counter và chuyển wallet về `SAVED`/`EXPIRED`
+(cùng kiểm receipt trước và sau khi khoá wallet như Confirm); không ghi outbox. Sau
 commit trigger DB-first Redis projection repair rồi set `redis_finalized_at`; không
 decrement Redis trước DB hoặc replay delta mù.
 - Customer refund: không có Promotion transaction.

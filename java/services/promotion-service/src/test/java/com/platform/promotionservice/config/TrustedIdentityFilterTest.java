@@ -69,4 +69,28 @@ class TrustedIdentityFilterTest {
         filter.doFilter(missing, missingResponse, (req, res) -> { });
         assertThat(missingResponse.getStatus()).isEqualTo(401);
     }
+
+    @Test
+    void technicalCancellationsBelongToTheLegacyMigratorOnly() throws Exception {
+        String path = "/internal/v1/promotion-allocation/technical-cancellations";
+        assertThat(statusOf(path, "order-service")).isEqualTo(403);
+        assertThat(statusOf(path, "checkout-service")).isEqualTo(403);
+        assertThat(statusOf(path, null)).isEqualTo(401);
+        assertThat(statusOf(path, "promotion-legacy-migrator")).isEqualTo(200);
+        // The migrator is not an Order: it reaches nothing else under the allocation prefix.
+        assertThat(statusOf("/internal/v1/promotion-allocation/reservations", "promotion-legacy-migrator")).isEqualTo(403);
+        assertThat(statusOf("/internal/v1/promotion-allocation/confirmations", "promotion-legacy-migrator")).isEqualTo(403);
+        assertThat(statusOf("/internal/v1/promotion-discount-calculations", "promotion-legacy-migrator")).isEqualTo(403);
+        assertThat(statusOf("/internal/v1/promotion-voucher-options", "promotion-legacy-migrator")).isEqualTo(403);
+    }
+
+    private int statusOf(String path, String identity) throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+        if (identity != null) {
+            request.addHeader("X-Service-Identity", identity);
+        }
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request, response, (req, res) -> { });
+        return response.getStatus();
+    }
 }

@@ -13,15 +13,21 @@ import org.springframework.dao.TransientDataAccessException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.RedisSystemException;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.net.URI;
 import java.util.List;
@@ -71,6 +77,33 @@ public class GlobalExceptionHandler {
         return respond(ErrorCode.INVALID_REQUEST, problem(ErrorCode.INVALID_REQUEST, detail, request));
     }
 
+    /**
+     * Route lạ hoặc sai method: giữ status 404/405 (kèm {@code Allow}) nhưng nói problem+json với code
+     * INVALID_REQUEST; catalog không có mã riêng cho chúng (cùng quy ước Checkout). Không log stack trace:
+     * đây là lỗi của client, không phải {@code INTERNAL_ERROR}.
+     */
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class,
+            HttpRequestMethodNotSupportedException.class})
+    public ResponseEntity<ProblemDetail> handleUnrouted(Exception exception, HttpServletRequest request) {
+        ErrorResponse routing = (ErrorResponse) exception;
+        log.debug("Unrouted request {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
+        ProblemDetail problem = problem(ErrorCode.INVALID_REQUEST, routing.getStatusCode(),
+                "No operation matches this request", request);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(routing.getStatusCode());
+        routing.getHeaders().forEach((name, values) -> builder.header(name, values.toArray(String[]::new)));
+        return builder.body(problem);
+    }
+
+    /** Content-Type không được operation chấp nhận (vd PATCH không phải merge-patch+json): 400, không 415. */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException exception,
+                                                                    HttpServletRequest request) {
+        log.debug("Unsupported media type on {} {}: {}", request.getMethod(), request.getRequestURI(),
+                exception.getMessage());
+        return respond(ErrorCode.INVALID_REQUEST, problem(ErrorCode.INVALID_REQUEST,
+                "Content-Type is not supported by this operation", request));
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ProblemDetail> handleIntegrity(DataIntegrityViolationException exception,
                                                          HttpServletRequest request) {
@@ -111,7 +144,11 @@ public class GlobalExceptionHandler {
     }
 
     private ProblemDetail problem(ErrorCode code, String detail, HttpServletRequest request) {
-        ProblemDetail problem = ProblemDetail.forStatus(code.status());
+        return problem(code, code.status(), detail, request);
+    }
+
+    private ProblemDetail problem(ErrorCode code, HttpStatusCode status, String detail, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatus(status);
         problem.setType(URI.create(PROBLEM_TYPE_BASE + code.name().toLowerCase().replace('_', '-')));
         problem.setTitle(code.title());
         problem.setDetail(detail == null ? code.title() : detail);

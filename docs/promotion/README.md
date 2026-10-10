@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-overview
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -27,8 +27,8 @@ hoạt động.
 | Vòng đời service | `implemented` — service code, Flyway migration, Lua scripts và test suite nằm trong repository; chưa deploy production |
 | Runtime | Java 21, Spring Boot 3.3 (đồng bộ với các service Java khác), PostgreSQL 16, Redis 7, Kafka + Debezium |
 | Implementation path | `java/services/promotion-service` (package `com.platform.promotionservice`) |
-| Độ tin cậy tài liệu | `implemented`; tài liệu đã được đồng bộ với source/migration trong lần implement đầu; `verified_against_commit` sẽ được ghi khi merge |
-| Contract adoption | Promotion Events v1 đã có provider/consumer tests. HTTP v1 đã có provider test MockMvc (`HttpContractIntegrationTest`), gồm `user_tier` tùy chọn ở calculate/Reserve, `POST /internal/v1/promotion-voucher-options` cho Checkout và `context` tùy chọn khi lưu voucher ([ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); phần Checkout context đã được provider DTO/test adopt |
+| Độ tin cậy tài liệu | `implemented`, `scope: current`; đã đối chiếu từng điểm với source/migration/test sau audit 2026-10-10 ([ADR-019](./decisions/ADR-019-post-implementation-audit-corrections.md)); `verified_against_commit` sẽ được ghi khi merge |
+| Contract adoption | Promotion Events v1 đã có provider/consumer tests. HTTP v1 (25 operation) đã có provider test MockMvc (`HttpContractIntegrationTest`), gồm `user_tier` tùy chọn ở calculate/Reserve, `POST /internal/v1/promotion-voucher-options` cho Checkout, `context` tùy chọn khi lưu voucher ([ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)), guard `technical-cancellations` (chỉ `promotion-legacy-migrator` + proof) và `checkout_channel=CHECKOUT` ở calculate/options/reserve (ADR-019). Chưa có consumer contract test chạy với Promotion thật từ Checkout/Order |
 
 Các ADR trong `decisions/` là quyết định thiết kế, không phải bằng chứng code production.
 
@@ -113,7 +113,7 @@ CloudEvents `id`.
 | Inbound | Customer qua Gateway | HTTP | Discovery, suggestion, save và claim voucher |
 | Inbound | Checkout | Internal HTTP | Calculate discount từ trusted context; voucher options cho khay voucher của trang checkout (`implemented`, ADR-018) |
 | Inbound | Order/Temporal | HTTP | Reserve, confirm, pre-payment cancel only; technical cancellation is denied to Order |
-| Inbound | `promotion-legacy-migrator` | HTTP | Deprecated technical cleanup with proof header/body digest |
+| Inbound | `promotion-legacy-migrator` | HTTP | Chỉ route technical-cancellations (deprecated): allowlist riêng, header `X-Legacy-Migration-Proof` phải bằng `migration_record_id` của body, digest bằng chứng lưu trên receipt |
 | Inbound | Product | Kafka | `product-deleted.v1` để invalidate dangling markdown rule |
 | Outbound | Product | Kafka/CDC | `product-markdown-snapshot.v1` |
 | Runtime | PostgreSQL | SQL/WAL | Dữ liệu bền vững và transactional outbox |
@@ -173,18 +173,20 @@ ký các fact đó; thêm sau là thay đổi additive theo
 
 ## 9. Known gaps
 
-- Trước khi bật Checkout route, Promotion provider phải bỏ `@NotBlank` cho
-  `DiscountCalculationRequest.userTier` và `ReserveRequest.userTier`, enforce
-  `checkoutChannel=CHECKOUT` riêng trên hai internal request, rồi thêm provider tests cho
-  tier omit/null ở Calculate và Reserve. Catalog giữ interaction Checkout ở
-  `proposed` cho tới khi gate này đạt.
-- Test suite hiện có: unit (Rule Engine, discount, phase, validity, identity filter), Lua trên
-  Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→legacy cleanup,
-  limited claim + Redis loss + sweeper, tombstone, clone), HTTP contract MockMvc và JSON Schema
-  contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
-  confirm/cancel/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.
-- Order/Checkout chưa có client gọi Promotion; `/internal/v1/**` được service mesh bảo vệ:
-  `AuthorizationPolicy` chỉ cho principal `checkout-service`/`order-service` chạm từng nhóm route
+- Checkout (`PromotionClient`: calculate, voucher options) và Order (`CheckoutSaga`/`HttpGateways`:
+  reserve, confirm, cancel) đã gọi Promotion; cả hai luôn gửi `checkout_channel=CHECKOUT` và không gửi
+  `user_tier`. Promotion enforce channel `CHECKOUT` ở calculate, options và reserve (`400
+  INVALID_REQUEST` nếu khác). Chưa có consumer contract test chạy với Promotion thật (Checkout validate
+  fixture theo OpenAPI).
+- Test suite hiện có (44 test): unit (Rule Engine, discount, phase, validity, identity filter kể cả path mã
+  hoá), Lua trên Redis thật, PostgreSQL+Redis integration (publish/pause, save→reserve→confirm→legacy
+  cleanup, confirm sau lazy-expiry, confirm/cancel trùng đồng thời, limited claim + Redis loss + sweeper,
+  tombstone, clone), HTTP contract MockMvc (kể cả guard technical-cancellations, channel, route lạ) và JSON
+  Schema contract cho markdown snapshot. Chưa có: load test 10.000 contender, race test đa luồng cho
+  claim/sweep, E2E qua Debezium/Kafka thật, Temporal fixture.
+- `/internal/v1/**` được service mesh bảo vệ: `AuthorizationPolicy` chỉ cho principal
+  `checkout-service`/`order-service` chạm từng nhóm route, và `promotion-legacy-migrator` chạm duy nhất
+  technical-cancellations
   ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)).
   Header `X-Service-Identity` do service caller tự đặt, không phải Bearer workload JWT; mesh không
   xác minh giá trị header, nên allowlist `TrustedIdentityFilter` trong Promotion chỉ là
@@ -220,5 +222,13 @@ ký các fact đó; thêm sau là thay đổi additive theo
 - `display.name` và `display.description` của voucher options lấy từ snapshot; snapshot đã cache
   trước khi có hai field này không có `name`, nên Promotion trả `code` thay `name` cho tới khi
   snapshot được ghi lại (TTL hoặc bump version).
+- Wallet bị lazy-normalize thành `EXPIRED` (truy vấn của chính user) khi đang có reservation vẫn được
+  `CONFIRM` redeem: reservation tạo lúc voucher còn hạn là authority sau `PAYMENT_SUCCESS`
+  ([ADR-019](./decisions/ADR-019-post-implementation-audit-corrections.md), ADR-017). Chưa có batch
+  normalization nên trạng thái `EXPIRED` chỉ xuất hiện theo truy vấn.
+- `reason` của `POST .../transitions` chỉ được ghi log; `reason` của `POST .../grants` được validate rồi bỏ,
+  không lưu: chưa có audit trail bền cho hai thao tác này.
+- Public discovery và voucher options đánh giá tối đa 200 promotion public đang `ACTIVE` (theo `id` tăng,
+  trước khi loại promotion user đã sở hữu); vượt ngưỡng đó cần phân trang phía Promotion.
 - `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
   `domain/rule/RuleEvaluator` + `RuleValidator` trong service.

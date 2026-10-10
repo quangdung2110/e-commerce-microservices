@@ -32,7 +32,7 @@ verified_against_commit: null
 | Order detail/search/cancel/return/payment retry | Inbound | HTTP | Order | Buyer/Admin qua Gateway | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
 | Create from checkout | Inbound | HTTP | Order | Checkout | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
 | Inventory activities | Outbound | HTTP | Inventory | Order Temporal worker | [workflow OpenAPI v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
-| Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
+| Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) (reservations, confirmations, cancellations; không gọi `technical-cancellations`) |
 | Payment activities | Outbound | HTTP | Payment | Order Temporal worker | [Payment OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | `t.order.events` | Outbound | Kafka | Order | Cart (`com.ecommerce.order.paid.v1`), Review (`com.ecommerce.order.completed.v1`) | [Order AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
 | `t.notification.transactional.v1` | Outbound | Kafka | Notification (topic owner) | Notification | [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml); Order là producer của `com.ecommerce.notification.requested.v1` cho 5 template `ORDER_*` |

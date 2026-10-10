@@ -52,8 +52,16 @@ public class PromotionProperties {
         private List<String> calculationClients = new ArrayList<>(List.of("checkout-service"));
         /** Caller của POST /internal/v1/promotion-voucher-options (Checkout, ADR-018). */
         private List<String> optionsClients = new ArrayList<>(List.of("checkout-service"));
-        /** Caller của /internal/v1/promotion-allocation/** (Order/Temporal). */
+        /**
+         * Caller của reservations/confirmations/cancellations dưới /internal/v1/promotion-allocation
+         * (Order/Temporal). Không gồm technical-cancellations.
+         */
         private List<String> allocationClients = new ArrayList<>(List.of("order-service"));
+        /**
+         * Caller duy nhất của POST /internal/v1/promotion-allocation/technical-cancellations
+         * (legacy migration cleanup, ADR-013/017). Tách hẳn khỏi {@link #allocationClients}: Order bị từ chối.
+         */
+        private List<String> legacyMigrationClients = new ArrayList<>(List.of("promotion-legacy-migrator"));
     }
 
     @Getter

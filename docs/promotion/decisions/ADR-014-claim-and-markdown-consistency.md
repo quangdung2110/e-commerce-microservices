@@ -29,6 +29,10 @@ Amended bởi [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md
 snapshot contract chuyển sang `contracts/events/promotion/v1/` do Promotion sở hữu; không
 có coupon fact hay Auth welcome-voucher consumer ở v1.
 
+Làm rõ bởi [ADR-019](./ADR-019-post-implementation-audit-corrections.md): consumer Product tombstone
+không invalidate cache nào (không có cache theo product); câu "invalidate product-scoped Redis cache
+sau commit" bên dưới là lịch sử tại thời điểm quyết định.
+
 ## Context
 
 Claim kiểm tra ACTIVE trước Lua vẫn có thể `SPOP` sau `campaign.end_time`. Campaign

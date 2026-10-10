@@ -3,6 +3,38 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-10 (Promotion sync)
+
+- Promotion HTTP v1 is `implemented` as a whole (was `proposed`; `x-known-runtime-gap` removed). Observable behaviour
+  that changed in the service and is now stated ([Promotion ADR-019](../docs/promotion/decisions/ADR-019-post-implementation-audit-corrections.md)):
+  - `POST /internal/v1/promotion-allocation/technical-cancellations` is guarded. Only `promotion-legacy-migrator` reaches it
+    (`order-service` and every other caller: `403`). The body is `LegacyTechnicalCancellationRequest`
+    (`migration_record_id`, `pre_financial_watermark_evidence_sha256`; `additionalProperties: false`) and the header
+    `X-Legacy-Migration-Proof` must equal `migration_record_id`: missing, not a UUID or different is `403 FORBIDDEN` with
+    nothing read or written. Both proof fields are part of the request hash (replay with another record or digest is
+    `409 IDEMPOTENCY_PAYLOAD_MISMATCH`) and are stored on the receipt (migration `V2`). Before, the route accepted the
+    `FinalAllocationRequest` body from `order-service` with no proof, so Order could have un-redeemed a voucher.
+  - `LegacyMigrationProof` no longer carries the `CANCEL_FINAL:` pattern, which a UUID can never match; the pattern moved to
+    `TechnicalCancellationIdempotencyKey`, which had none.
+  - `checkout_channel` of calculate (`calculatePromotionDiscount`) and reserve (`reservePromotionAllocation`) must be
+    `CHECKOUT` (`TrustedCheckoutContext`): another value is `400 INVALID_REQUEST`, `errors[].field =
+    context.checkout_channel`, as `listPromotionVoucherOptions` already did. Checkout and Order always send `CHECKOUT`.
+  - Two identical `confirm` (or technical-cancellation) requests arriving at the same time both get the stored response; before,
+    the loser could get `409 FINAL_COMMAND_STATE_INCONSISTENT` although the first had committed.
+  - A reservation made while the voucher was valid is redeemed by `confirm` even if the wallet was lazily normalized to
+    `EXPIRED` in the meantime (the next query of that user does it). Before, `confirm` failed with
+    `FINAL_COMMAND_STATE_INCONSISTENT` after the Payment had succeeded.
+  - `listPromotionVoucherOptions` answers `Cache-Control: no-store` as its OpenAPI already said.
+  - A request no operation matches is a client error: `404` for an unknown route, `405` (with `Allow`) for another HTTP
+    method, `400` for a Content-Type the operation does not accept (PATCH other than `application/merge-patch+json`), all
+    `application/problem+json` with code `INVALID_REQUEST`. Before, all of them were `500 INTERNAL_ERROR`.
+- Promotion HTTP v1 (documentation of behaviour that already existed; no wire shape changed): `PUT
+  /me/promotion-vouchers/{promotion_id}` takes no body or `{}` (`requestBody.required: false`); `claimLimitedPromotionVoucher`
+  and `reservePromotionAllocation` declare `404 PROMOTION_NOT_FOUND`; the five admin reads/lists that parse an id, cursor or
+  limit declare `400`; `Conflict` lists `PROMOTION_CONSTRAINT_VIOLATION`.
+- Catalog: `legacy-migrator-technical-cancels-promotion-allocation` stays `proposed` (the migrator workload does not exist);
+  `ADOPTION.md` counts 25 operations.
+
 ## 2026-10-09 (Product Detail BFF sync)
 
 - Product Detail BFF HTTP v1: wire shapes are unchanged and `x-adoption-status` is `implemented`. The `404` text now

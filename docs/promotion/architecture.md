@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-architecture
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -82,8 +82,9 @@ flowchart LR
 - Product tombstone consumer và mọi admin markdown mutation serialize bằng cùng PostgreSQL
   advisory transaction lock theo product. Consumer persist catalog-revision watermark dù
   chưa có rule, rồi ghi operational invalidation; mutation reject nếu watermark đã
-  tồn tại. Sau commit mới xóa product-scoped cache. Không bump campaign revision/claim gate
-  vì voucher definition không đổi và không phát INACTIVE ngược về Product đã bị xóa.
+  tồn tại. Không có cache nào theo product để xóa (markdown rule không nằm trong Redis) nên consumer chỉ commit
+  rồi ack. Không bump campaign revision/claim gate hay version fence của snapshot voucher vì voucher
+  definition không đổi, và không phát INACTIVE ngược về Product đã bị xóa.
 - Customer refund không đi qua Promotion. Không có refund consumer/API/allocation.
 
 ## 5. Consistency model
@@ -189,5 +190,11 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   fields gộp vào runtime hash và edge-owned discovery rate limit.
 - [ADR-016](./decisions/ADR-016-event-scope-and-receipt-driven-finalization.md): phạm vi
   integration event v1 và finalizer/repair trigger bằng command receipt.
+- [ADR-017](./decisions/ADR-017-post-capture-forward-repair.md): lỗi sau payment dùng forward repair;
+  `cancel-confirmed` chỉ còn legacy.
+- [ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md): voucher options cho
+  Checkout, lưu voucher không cần context.
+- [ADR-019](./decisions/ADR-019-post-implementation-audit-corrections.md): sửa sau audit (guard legacy,
+  channel `CHECKOUT`, final command trùng đồng thời, `EXPIRED→USED` ở Confirm, route lạ là lỗi client).
 
 ADR-001, ADR-003..008 và ADR-010..012 đã được supersede.

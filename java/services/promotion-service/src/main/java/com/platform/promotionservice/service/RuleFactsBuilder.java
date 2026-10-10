@@ -24,6 +24,19 @@ public final class RuleFactsBuilder {
     public record Context(long subtotalVnd, Map<String, Object> facts) {
     }
 
+    public static final String CHECKOUT_CHANNEL = "CHECKOUT";
+
+    /**
+     * Context của calculate, voucher options và reserve là {@code TrustedCheckoutContext} (OpenAPI): caller là
+     * service nên channel luôn {@code CHECKOUT}, không phải giá trị tuỳ ý như context customer discovery.
+     */
+    public static void requireCheckoutChannel(CheckoutDtos.CheckoutContext context) {
+        if (!CHECKOUT_CHANNEL.equals(context.checkoutChannel())) {
+            throw new DomainException(ErrorCode.INVALID_REQUEST, "context.checkout_channel must be CHECKOUT",
+                    List.of(new DomainException.FieldError("context.checkout_channel", "must be CHECKOUT")));
+        }
+    }
+
     public static Context build(CheckoutDtos.CheckoutContext context, UUID userId, String userTier) {
         long subtotal = context.subtotal().requireVnd("context.subtotal", 0);
         String paymentMethod = context.paymentMethod() == null ? CheckoutDtos.PAYMENT_METHOD_STRIPE : context.paymentMethod();

@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-domain
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -88,13 +88,16 @@ Không có command customer-refund trong Promotion.
 | `PROMO-BR-015` | `IN` collection là ANY; `NOT_IN` là ALL-not-match; missing vẫn false. |
 | `PROMO-BR-016` | Unknown operator/node hoặc logical children rỗng bị từ chối trước persist/publish. |
 | `PROMO-BR-017` | Confirm chỉ fence reservation trên Redis trước khi receipt, wallet và durable budget cùng commit PostgreSQL. |
-| `PROMO-BR-018` | Deprecated `cancel-confirmed` legacy cleanup commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. Contract/mesh/application deny `order-service`; only `promotion-legacy-migrator` plus immutable pre-watermark proof may call it. |
+| `PROMO-BR-018` | Deprecated `cancel-confirmed` legacy cleanup commit PostgreSQL trước; Redis chỉ được repair sau commit, không replay decrement delta. Contract/mesh/application deny `order-service` (`403`); only `promotion-legacy-migrator` plus immutable pre-watermark proof may call it: header `X-Legacy-Migration-Proof` phải là UUID bằng `migration_record_id` của body, thiếu hoặc khác là `403` và không đọc/ghi gì. Record ID và digest đi vào request hash và được lưu trên receipt. |
 | `PROMO-BR-019` | Command receipt dedup inbound command và là durable trigger cho Redis finalize/repair qua `redis_finalized_at`; outbox dedup outbound markdown event. Hai bảng có retention độc lập. |
 | `PROMO-BR-020` | Markdown dedup identity gồm product, campaign, campaign revision và trigger; resulting state không thuộc key; ordering dùng source revision riêng. |
 | `PROMO-BR-021` | Snapshot ACTIVE mang full rule; INACTIVE chỉ là tombstone có reason, không mang rule/discount/interval. |
 | `PROMO-BR-022` | Product tombstone persist terminal watermark và invalidate markdown idempotently theo catalog revision; mọi markdown mutation serialize cùng product lock và không phát INACTIVE ngược về Product đã xóa. |
 | `PROMO-BR-023` | `BUDGET_EXHAUSTED` chỉ là synchronous outcome/telemetry, không phải integration event. |
 | `PROMO-BR-024` | Chỉ phát integration event có consumer đã đăng ký trong contract; ở v1 chỉ có markdown snapshot. Wallet transition, reservation và campaign lifecycle không tạo Kafka event. |
+| `PROMO-BR-025` | Context của calculate, voucher options và reserve là trusted context do Checkout/Order dựng: `checkout_channel` phải là `CHECKOUT`, khác thì `400 INVALID_REQUEST`. Context của discovery/suggestion/save là của client nên không bị ép. |
+| `PROMO-BR-026` | Reservation tạo khi wallet còn hạn là authority của `CONFIRM`: wallet đã bị lazy-normalize thành `EXPIRED` trong lúc Payment chạy vẫn chuyển `EXPIRED → USED`. Chỉ `CONFIRM` có đường này; save, reserve và discovery vẫn coi `EXPIRED` là hết hạn. |
+| `PROMO-BR-027` | Hai final command trùng key đến đồng thời cho cùng một kết quả: transition chỉ xảy ra một lần và mọi bên nhận stored response (kiểm lại receipt sau khi giành khoá wallet). |
 
 Natural campaign end khác emergency revocation. Pause/cancel dừng effective markdown và
 claim mới nhưng không tự thu hồi voucher đã lưu. Revocation nếu cần phải là nghiệp vụ
@@ -137,8 +140,9 @@ overlay nên không bump campaign revision hoặc claim-gate fields trong runtim
 ```mermaid
 stateDiagram-v2
   [*] --> SAVED: Claim / save / grant
-  SAVED --> EXPIRED: expired_at reached
+  SAVED --> EXPIRED: expired_at reached (lazy, on a query of the user)
   SAVED --> USED: Confirm
+  EXPIRED --> USED: Confirm of a reservation made before expired_at
   USED --> USED: Buyer selected-line or Admin pre-dispatch refund
   USED --> SAVED: cancel-confirmed and not expired
   USED --> EXPIRED: cancel-confirmed and expired
@@ -150,6 +154,11 @@ Reservation không phải wallet state:
 SAVED --reserve(runtime)--> SAVED --cancel--> SAVED
 SAVED --reserve(runtime)--> SAVED --confirm--> USED
 ```
+
+`EXPIRED` chỉ được ghi khi một truy vấn của chính user chuẩn hoá wallet đã hết hạn (không có batch).
+Reserve yêu cầu wallet còn hạn, nên một wallet `EXPIRED` dưới reservation còn sống chỉ có thể do chuẩn hoá
+lười xảy ra sau Reserve; `CONFIRM` vẫn redeem nó (PROMO-BR-026, ADR-019). Một `cancel-confirmed` legacy
+sau đó trả wallet về `EXPIRED` vì `expired_at` đã qua.
 
 Customer refund không tạo transition. Sau `cancel-confirmed`, usage fields được clear để
 voucher có thể dùng lại nếu còn hạn.
@@ -224,42 +233,62 @@ fence optimistic concurrency/cache/schedule. Một business definition mới dù
 - Chỉ admin quản trị campaign/voucher/markdown/budget.
 - Customer chỉ đọc/claim/save wallet của `user_id` trong access token.
 - Chỉ Checkout workload identity (`X-Service-Identity: checkout-service`) gọi
-  `POST /internal/v1/promotion-discount-calculations`; discovery/suggestion customer lấy
-  user identity đã được Gateway verify, còn allocation chỉ allowlist Order/Temporal
-  (`X-Service-Identity: order-service`). Việc chỉ Checkout/Order chạm được các route này do
+  `POST /internal/v1/promotion-discount-calculations` và `POST /internal/v1/promotion-voucher-options`
+  (`promotion.internal.calculation-clients` / `options-clients`); discovery/suggestion customer lấy
+  user identity đã được Gateway verify, còn reservations/confirmations/cancellations chỉ allowlist
+  Order/Temporal (`X-Service-Identity: order-service`, `allocation-clients`) và technical-cancellations
+  chỉ `promotion-legacy-migrator` (`legacy-migration-clients`; Order bị `403`). Việc chỉ Checkout/Order chạm được các route này do
   service mesh thực thi theo principal ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
   header do caller tự đặt và không được mesh xác minh, nên `TrustedIdentityFilter` allowlist theo
   nhóm route chỉ là defense-in-depth. Filter so khớp trên path đã decode và bỏ `;param` (đúng path
   Spring MVC route), không phải URI thô, để `/api/v1/admin;x=1/...` hay `/%69nternal/v1/...` không né
   được role ADMIN / allowlist (`TrustedIdentityFilterPathTest`).
-- Order/Temporal gọi reserve/confirm/cancel only. `cancel-confirmed` requires the separate legacy-migrator capability and proof.
+- Order/Temporal gọi reserve/confirm/cancel only. `cancel-confirmed` requires the separate legacy-migrator capability and proof
+  (`403` cho mọi caller khác và cho proof thiếu/sai; `TrustedIdentityFilterTest`, `HttpContractIntegrationTest`).
 - Consumer validate broker ACL, schema, event identity và business guard.
 
 ## 10. Domain errors
 
-| Error | Điều kiện | Retryable |
-|---|---|---|
-| `CAMPAIGN_NOT_ACTIVE` | Claim/save khi phase khác ACTIVE | No đến khi state đổi |
-| `CLAIM_GATE_STALE` | Gate revision khác expected/current campaign revision | Retry sau rebuild/refresh |
-| `ALREADY_CLAIMED` | User đã claim promotion | No |
-| `OUT_OF_STOCK` | Claim pool rỗng | No |
-| `CLAIM_PENDING` | Redis acquisition có evidence nhưng DB chưa xác nhận trước HTTP deadline | Retry cùng user/promotion; preflight DB/pending rồi resume |
-| `ALREADY_USED_VOUCHER` | Wallet đã USED | No |
-| `VOUCHER_EXPIRED` | `wallet.expired_at <= now` | No |
-| `BUDGET_EXHAUSTED` | Redis guard/reserve không đủ qty/amount; chỉ trả sync + metric | Sau khi reservation/budget đổi |
-| `IDEMPOTENCY_PAYLOAD_MISMATCH` | Cùng stable key nhưng canonical request hash khác | No; điều tra |
-| `FINAL_COMMAND_STATE_INCONSISTENT` | Receipt và wallet/budget không khớp invariant | No; parking-lot/repair |
-| `PARTIAL_RESERVATION_STATE` | Redis apply/rollback không hoàn chỉnh | Repair async |
-| `RESERVATION_NOT_FOUND` | Confirm không còn payload/receipt | Retry/recover same final command where possible; after payment success Order enters forward repair/financial reconciliation, never cancel-confirmed compensation |
-| `CONDITIONS_NOT_MET` | AST false | No |
-| `INVALID_RULE` | AST/operator/config không hợp lệ | No |
-| `EXPECTED_DISCOUNT_MISMATCH` | Reserve: `expected_discount` khác discount Promotion tính | No; Order tính lại |
-| `VOUCHER_NOT_OWNED` | Reserve/calculate cho promotion không có trong wallet | No |
-| `DISTRIBUTION_MODE_MISMATCH` | Save/claim/grant sai distribution mode | No |
-| `CAMPAIGN_NOT_DRAFT` | Mutation definition sau publish | No; clone |
-| `CAMPAIGN_REVISION_MISMATCH` | `If-Match` khác revision hiện hành (412) | Retry với ETag mới |
-| `PRODUCT_TOMBSTONED` | Markdown mutation cho Product đã có tombstone watermark (422) | No |
-| `RUNTIME_NOT_READY` | Redis runtime của promotion đang rebuild sau Redis loss (503) | Yes |
+Danh mục đầy đủ của `common/ErrorCode.java` (34 mã). Cột `retryable` là giá trị trên wire
+(`problem.retryable`; `true` kèm `Retry-After: 1`); cột cuối là hướng xử lý của caller. `ErrorCode` là
+nguồn chuẩn: không có mã nào ngoài bảng này (mã `PARTIAL_RESERVATION_STATE` từng được mô tả nhưng chưa bao giờ
+tồn tại: reservation/counter lệch được sửa nền bằng reconciliation, không trả cho caller).
+
+| Error | HTTP | `retryable` | Điều kiện / hướng xử lý |
+|---|---|---|---|
+| `INVALID_REQUEST` | 400 | false | Body/header/tham số sai; `If-Match` thiếu hoặc sai dạng; `Idempotency-Key` không khớp `order_id`/`promotion_id`; currency ≠ VND; `payment_method` ≠ STRIPE; `checkout_channel` ≠ `CHECKOUT` ở calculate/options/reserve; route lạ (`404`), sai method (`405`) hoặc Content-Type không hỗ trợ (`400`) |
+| `INVALID_CURSOR` | 400 | false | Cursor không giải mã được |
+| `UNAUTHENTICATED` | 401 | false | Thiếu trusted identity (user hoặc `X-Service-Identity`) |
+| `FORBIDDEN` | 403 | false | Thiếu role ADMIN; service identity ngoài allowlist của nhóm route; technical-cancellations thiếu/sai `X-Legacy-Migration-Proof` |
+| `CAMPAIGN_NOT_FOUND`, `PROMOTION_NOT_FOUND`, `MARKDOWN_RULE_NOT_FOUND`, `PRODUCT_NOT_FOUND` | 404 | false | Không có resource (`PRODUCT_NOT_FOUND`: Product trả 404 khi validate markdown rule) |
+| `CAMPAIGN_NOT_ACTIVE` | 409 | false | Claim/save/grant khi phase không cho phép; Reserve khi promotion `is_enabled=false`. Không đổi đến khi state đổi |
+| `CLAIM_GATE_STALE` | 409 | true | Gate revision khác expected revision; refresh rồi retry |
+| `ALREADY_CLAIMED` | 409 | false | User đã claim promotion |
+| `OUT_OF_STOCK` | 409 | false | Claim pool rỗng hoặc `total_claim_quantity` đã chạm |
+| `ALREADY_USED_VOUCHER` | 409 | false | Wallet đã `USED` |
+| `VOUCHER_EXPIRED` | 409 | false | `wallet.expired_at <= now` |
+| `VOUCHER_NOT_OWNED` | 409 | false | Reserve cho promotion không có trong wallet |
+| `BUDGET_EXHAUSTED` | 409 | false | Reserve không đủ qty/amount, hoặc durable budget không nhận Confirm; chỉ trả sync + metric. Thử lại khi reservation/budget đổi |
+| `IDEMPOTENCY_PAYLOAD_MISMATCH` | 409 | false | Cùng stable key/business operation nhưng canonical request hash khác (kể cả legacy cancel với record ID hoặc digest khác); điều tra |
+| `EXPECTED_DISCOUNT_MISMATCH` | 409 | false | Reserve: `expected_discount` khác discount Promotion tính; Order tính lại |
+| `RESERVATION_NOT_FOUND` | 409 | false | Confirm không còn payload và không có receipt. Retry/recover cùng final command nếu có thể; sau payment success Order vào forward repair/financial reconciliation, không bao giờ cancel-confirmed |
+| `FINAL_COMMAND_STATE_INCONSISTENT` | 409 | false | Receipt và wallet/budget không khớp invariant (wallet không `SAVED`/`EXPIRED` khi Confirm, không `USED` bởi order khi legacy cancel, underflow counter); parking-lot/repair |
+| `INVALID_STATE_TRANSITION` | 409 | false | Transition campaign ngoài `DRAFT→PUBLISHED`, `PUBLISHED→PAUSED\|CANCELLED`, `PAUSED→CANCELLED`; publish khi `end_time <= now` |
+| `CAMPAIGN_CODE_ALREADY_EXISTS`, `PROMOTION_CODE_ALREADY_EXISTS`, `MARKDOWN_RULE_ALREADY_EXISTS` | 409 | false | Code đã tồn tại / campaign đã có rule cho product |
+| `CAMPAIGN_NOT_DRAFT` | 409 | false | Mutation definition sau publish; clone campaign |
+| `DISTRIBUTION_MODE_MISMATCH` | 409 | false | Save/claim/grant sai distribution mode |
+| `PROMOTION_CONSTRAINT_VIOLATION` | 409 | false | Ràng buộc PostgreSQL bị vi phạm bởi race không có mã riêng; tải lại rồi thử lại |
+| `CAMPAIGN_REVISION_MISMATCH` | 412 | false | `If-Match` khác revision hiện hành; retry với ETag mới |
+| `CONDITIONS_NOT_MET` | 422 | false | AST false hoặc `MIN_ORDER_NOT_MET` ở Reserve |
+| `INVALID_RULE` | 422 | false | AST/operator/field/config không hợp lệ; `LIMITED_CLAIM` thiếu `total_claim_quantity` hoặc vượt pool tối đa |
+| `PRODUCT_TOMBSTONED` | 422 | false | Markdown mutation cho Product đã có tombstone watermark |
+| `INTERNAL_ERROR` | 500 | false | Lỗi không lường trước (log stack trace); không dùng cho lỗi của client |
+| `PROMOTION_UNAVAILABLE` | 503 | true | PostgreSQL/Redis tạm thời lỗi, lock timeout, Product validation không gọi được |
+| `RUNTIME_NOT_READY` | 503 | true | Redis runtime của promotion đang rebuild sau Redis loss |
+
+`CLAIM_PENDING` không phải `ErrorCode`: là body của `202` (`code=CLAIM_PENDING`, `retryable=true`) khi Redis
+acquisition có evidence nhưng DB chưa xác nhận trước HTTP deadline; retry cùng user/promotion, claim sẽ preflight DB
+và pending rồi resume.
 
 ## 11. Ví dụ
 

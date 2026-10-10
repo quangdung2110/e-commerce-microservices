@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-operations
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -38,14 +38,20 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 
 ## 2. Health
 
-- Liveness không phụ thuộc network.
-- API readiness fail khi PostgreSQL không dùng được. Redis write-path failure làm
-  reserve/claim/Confirm-Prepare unavailable; capability/proof-gated legacy cleanup vẫn có
-  thể durable commit rồi chờ projection repair. Snapshot read có thể fallback DB.
-- Consumer readiness phản ánh broker/subscription.
-- Scheduler readiness phản ánh PostgreSQL, Redis và độ trễ fallback.
-- Startup probe chờ migration, campaign ZSET và runtime claim fields/pool rebuild bắt buộc.
-- Debezium/Kafka Connect health được giám sát như dependency của event propagation.
+Hiện thực (Actuator, `management.endpoint.health.probes.enabled=true`; `health,info,metrics,prometheus`):
+
+- `/actuator/health/liveness` không phụ thuộc network.
+- `/actuator/health/readiness` là nhóm readiness mặc định của Spring Boot: chỉ phản ánh `readinessState` của
+  ứng dụng (UP khi app nhận traffic, OUT_OF_SERVICE khi shutdown), **không** kiểm PostgreSQL hay Redis.
+- `/actuator/health` (tổng hợp) mới gồm `db`, `redis` và `promotionRuntime`: `promotionRuntime` là
+  `OUT_OF_SERVICE` cho tới khi `PromotionWorkers.bootstrap()` rebuild xong campaign ZSET và runtime claim
+  fields/pool (startup probe bắt buộc). Healthcheck của docker-compose và router Traefik dùng
+  `/actuator/health`; Dockerfile dùng `/actuator/health/liveness`.
+- Redis write-path failure làm reserve/claim/Confirm-Prepare unavailable (`503`); capability/proof-gated
+  legacy cleanup vẫn có thể durable commit rồi chờ projection repair. Snapshot read fallback DB.
+- Không có health indicator cho Kafka consumer, scheduler lag hay Debezium: giám sát qua metric/alert ở §5
+  (chưa có metric nghiệp vụ tùy chỉnh). Debezium/Kafka Connect health được giám sát như dependency của event
+  propagation.
 
 ## 3. Configuration
 
@@ -63,8 +69,17 @@ ID user/order/promotion/claim không dùng làm metric label cardinality cao.
 | `promotion.outbox.retention` / `trim-interval` | 14d / 1h (trim theo thời gian; chưa đọc CDC watermark) |
 | `promotion.receipt.retention` / `trim-interval` | 90d / 1h; không xóa receipt còn `redis_finalized_at IS NULL` |
 | `promotion.kafka.product-topic` / `product-dlq-topic` / `group-id` | `t.product.events` / `t.product.events.promotion.dlq` / `promotion-product-tombstone-consumer` |
-| `promotion.internal.calculation-clients` / `allocation-clients` | `checkout-service` / `order-service` |
-| `promotion.product.base-url` / `validation-enabled` | `http://localhost:8082` (cổng host Product publish trong compose, cho chạy ngoài Docker; `PRODUCT_BASE_URL`) / true. Compose đặt `http://product-service:8081` |
+| `promotion.internal.calculation-clients` / `options-clients` | `checkout-service` / `checkout-service` |
+| `promotion.internal.allocation-clients` | `order-service` (reservations/confirmations/cancellations) |
+| `promotion.internal.legacy-migration-clients` | `promotion-legacy-migrator` (chỉ technical-cancellations; Order bị `403`) |
+| `promotion.internal.identity-header` / `promotion.admin.{user-id-header,roles-header,required-role}` | `X-Service-Identity` / `X-User-Id`, `X-User-Roles`, `ADMIN` |
+| `promotion.product.base-url` / `validation-enabled` | `http://localhost:8082` (cổng host Product publish trong compose, cho chạy ngoài Docker; `PRODUCT_BASE_URL`) / true (`PRODUCT_VALIDATION_ENABLED`). Compose đặt `http://product-service:8081` |
+| `promotion.product.identity` / `timeout` | `promotion-service` (gửi trong `X-Service-Identity`) / 2s |
+| `promotion.claim.pending-retry-after-seconds` | 2 (`Retry-After` của `202 CLAIM_PENDING`) |
+| `promotion.schedule.batch-size` | 100 member due mỗi vòng |
+| `promotion.kafka.retry-attempts` / `retry-backoff` / `consumer-enabled` | 4 / 500ms (exponential ×2, hết lượt → DLQ) / true (`KAFKA_CONSUMER_ENABLED`) |
+| `promotion.workers.enabled` | true (`WORKERS_ENABLED`) |
+| `promotion.markdown.dataschema` | `/contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json` |
 | Debezium connector | `src/main/resources/kafka/debezium-connector-promotion-outbox.json` (route `t.promotion.markdown.events`) |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
@@ -123,7 +138,7 @@ Promotion là integration error và không được xử lý payload.
 | Redis mất runtime claim fields/pool | Mutation không fail-open; rebuild từ PostgreSQL rồi mới ready |
 | Pause/cancel fail sau khi claim fields đã đóng | DB vẫn là PUBLISHED; rebuild/reopen từ DB, chấp nhận false reject tạm thời |
 | Product tombstone duplicate/stale | Watermark không lùi, repair dangling rule nếu có; ack sau DB commit |
-| Crash sau tombstone DB commit trước cache invalidation | Replay guarded no-op rồi invalidate/rebuild; không emit về Product |
+| Crash sau tombstone DB commit trước Kafka ack | Event giao lại: guarded no-op (watermark không lùi, rule đã invalidated); không có cache để invalidate; không emit về Product |
 | DB fail sau Confirm-Prepare | Durable state chưa đổi; giữ fence trong grace để retry, hết grace đi late-payment policy |
 | Crash sau confirm DB commit trước Redis finalize | Receipt đã durable với `redis_finalized_at IS NULL`; replay stored response và finalizer worker chạy lại |
 | Crash sau Redis finalize trước set `redis_finalized_at` | Worker chạy lại: Lua trả already-finalized, application chỉ set marker; không double move |
@@ -158,8 +173,9 @@ Promotion là integration error và không được xử lý payload.
 
 ## 9. Deployment/rollback
 
-1. Tạo additive migration cho chín bảng, gồm `catalog_product_tombstones`,
-   `promotion_command_receipts`, constraints, sequence/index.
+1. Flyway: `V1__promotion_baseline.sql` tạo chín bảng, gồm `catalog_product_tombstones`,
+   `promotion_command_receipts`, constraints, sequence/index; `V2__legacy_migration_proof.sql` thêm hai cột proof
+   của receipt (additive, CHECK `NOT VALID` nên không chặn DB đã có receipt cũ). Deploy `V2` cùng bản có guard.
 2. Deploy Product migration/consumer chấp nhận ACTIVE full payload và INACTIVE tombstone
    trước Promotion producer; contract đã production thì dùng v2 dual-read.
 3. Cấu hình outbox connector/ACL/topic và kiểm thử commit→CDC.
@@ -196,7 +212,8 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
   latest current-state snapshot → xác nhận Product source revision.
 - **RB-07 Reconciliation:** dựng expected từ DB + valid reservations → lock/re-read →
   repair Redis một chiều, audit before/after.
-- **RB-08 Legacy technical cleanup:** authenticate only as `promotion-legacy-migrator`, verify
+- **RB-08 Legacy technical cleanup:** authenticate only as `promotion-legacy-migrator` (mọi caller khác, kể cả
+  `order-service`, nhận `403`; thiếu/sai `X-Legacy-Migration-Proof` cũng `403` và không ghi gì), verify
   the approved immutable migration record and its SHA-256 proof that the historical flow never
   crossed the Payment financial watermark, then issue matching header/body proof plus stable
   legacy cancel key/hash → retry DB-first `cancel-confirmed` → replay stored response and verify
@@ -204,8 +221,9 @@ Không xóa offset, outbox, pending claim, reservation hoặc ZSET thủ công t
   missing/mismatched proof. Active post-capture Order cases route to Order forward repair/
   financial reconciliation, never this runbook.
 - **RB-09 Product tombstone:** đọc event/catalog revision + durable watermark + affected
-  rules/campaigns → kiểm tra shared product lock/monotonic guard → retry invalidation →
-  invalidate cache/schedule → xác nhận không emit event loop.
+  rules/campaigns → kiểm tra shared product lock/monotonic guard → retry invalidation
+  (event giao lại hoặc DLQ replay) → xác nhận không emit event loop. Không có cache hay schedule theo
+  product cần xoá.
 
 ## 11. Workers/jobs
 

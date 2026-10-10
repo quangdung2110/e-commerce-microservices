@@ -45,7 +45,7 @@
 |---|---|---|
 | O3 | Order (+ Delivery) | Không có Delivery provider; đơn không bao giờ `COMPLETED` |
 | PY1 | Payment | Thiếu `GET /v1/payments/{id}` và `GET /v1/refunds/{id}` mà Order đang gọi |
-| PR8 + PR10 | Promotion | `technical-cancellations` mở cho `order-service`, không kiểm proof; docs nói đã chặn |
+| PR8 + PR10 | Promotion | `technical-cancellations` mở cho `order-service`, không kiểm proof; docs nói đã chặn — ✅ đã kiểm chứng đúng và sửa 2026-10-10 (Promotion ADR-019) |
 | A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát — ✅ đã kiểm chứng và sửa 2026-10-09 (ADR-006) |
 | N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý |
 | U9 | User | Profile đã xoá (ẩn danh) vẫn ghi lại được PII |
@@ -385,7 +385,50 @@
 
 ## 7. Promotion (`docs/promotion`, `contracts/http/promotion/v1`, `contracts/events/promotion/v1`, `java/services/promotion-service`)
 
-### PR8 🔴 [SECURITY/BUG] `technical-cancellations` không có guard như docs mô tả
+> **Kiểm chứng và sửa xong 2026-10-10 (mục Promotion).** Đối chiếu lại từng mục với code, migration, OpenAPI,
+> AsyncAPI và test chạy thật (44 test xanh trên PostgreSQL + Redis thật qua Docker; Redocly và `asyncapi validate`
+> sạch; `tsc --noEmit` của frontend sạch sau khi sinh lại `promotion.ts`): **PR1–PR8 và PR10 đều đúng**, phần "Đã khớp"
+> cuối mục cũng đúng. Quyết định ở [Promotion ADR-019](../docs/promotion/decisions/ADR-019-post-implementation-audit-corrections.md)
+> và `contracts/CHANGELOG.md` (2026-10-10 Promotion sync). Chỉnh lại báo cáo:
+> - **PR8 nặng hơn mô tả:** test `HttpContractIntegrationTest` cũ chứng minh `order-service` gọi `technical-cancellations`
+>   được (`200`), và `development.md` §3 khẳng định có test "order-service denied" / "legacy-migrator proof mismatch denied" /
+>   "migration proof/capability enforcement" — các test đó không tồn tại. Đã hiện thực guard (nhóm allowlist
+>   `legacy-migration-clients`, `LegacyTechnicalCancellationRequest`, header = `migration_record_id`, thiếu/sai → `403`,
+>   proof vào request hash + lưu trên receipt, migration `V2` với `CHECK ... NOT VALID`) và viết các test đó. Promotion
+>   không có registry để tra record: bằng chứng ở tầng ứng dụng là allowlist + header = body + lưu bất biến.
+> - **PR3 thiếu:** `java/services/promotion-service/README.md` cũng ghi 24 operation / 33 test (thực: 25 / 39 trước sửa,
+>   44 sau sửa); `docs/README.md` §5 ghi cả AsyncAPI là `proposed` (đã `implemented`).
+> - **PR7 thiếu** `INVALID_STATE_TRANSITION` (không có trong bảng `domain.md` lẫn danh sách của báo cáo); `CLAIM_PENDING`
+>   không phải `ErrorCode` mà là body của `202`. Bảng §10 viết lại thành catalog đầy đủ 34 mã (HTTP, `retryable`).
+> - **PR2:** README §9 vừa nói gate còn mở vừa nói `user_tier` đã sửa; cả hai đã giải quyết. `checkout_channel=CHECKOUT` nay
+>   được enforce ở calculate, options và reserve (`400 INVALID_REQUEST`); test calculate/reserve cũ chạy với channel `web`.
+> - **PR6:** nhận xét "8082 là cổng User" sai: `8082:8081` là cổng host của Product; default `localhost:8082` đúng.
+> - **K11 (Checkout)** viết "Promotion bắt buộc body `{}`" sai về code: `@RequestBody(required = false)`, test gọi PUT không body
+>   vẫn `200`; chỉ OpenAPI ghi `required: true`. Đã nới contract thành `required: false` (người dùng chọn).
+>
+> Bổ sung ngoài báo cáo (đều đã sửa, có test; kiểm đột biến cho E1/E8):
+> 1. **E1 — `confirm`/legacy cancel trùng key đồng thời trả `409 FINAL_COMMAND_STATE_INCONSISTENT`** thay vì stored response
+>    (đo 22/54 lần với 6 luồng × 9 order): bản thua chờ khoá wallet, thấy `USED` rồi ném lỗi. Nay kiểm lại receipt sau khi giành
+>    khoá (PROMO-BR-027).
+> 2. **E8 — `confirm` thất bại sau khi đã thu tiền nếu wallet bị lazy-normalize thành `EXPIRED` giữa Reserve và Confirm**
+>    (truy vấn của chính user là đủ). Nay `EXPIRED → USED` qua `CONFIRM` có reservation (PROMO-BR-026, người dùng chọn).
+> 3. **E11 — route lạ, sai method, Content-Type sai (vd PATCH `application/json`) trả `500 INTERNAL_ERROR`** và log stack trace
+>    ERROR vì `GlobalExceptionHandler` bắt `Exception.class`. Nay `404`/`405`(+`Allow`)/`400`, code `INVALID_REQUEST`
+>    (tiền lệ Checkout, người dùng chọn).
+> 4. **E2** `voucher-options` thiếu `Cache-Control: no-store` mà OpenAPI hứa. **E3** OpenAPI thiếu `404` (claim, reserve) và `400`
+>    (5 GET/list admin), `Conflict` thiếu `PROMOTION_CONSTRAINT_VIOLATION`.
+> 5. **E5** consumer `product-deleted` tăng version fence toàn cục của cache snapshot voucher (mất cache mọi promotion mỗi lần
+>    xoá Product) trong khi docs nói "product-scoped" — không có cache theo product; đã bỏ lời gọi (người dùng chọn), sửa docs.
+> 6. **E6** `operations.md` nói readiness phản ánh PostgreSQL/Redis; nhóm readiness mặc định chỉ có `readinessState`
+>    (`/actuator/health` tổng hợp mới có `db`, `redis`, `promotionRuntime`). Đã sửa docs, không đổi code (người dùng chọn).
+> 7. Docs: `scope: current`, bảng cấu hình đầy đủ (thiếu `options-clients`, `legacy-migration-clients`, `admin.*`, retry Kafka…),
+>    số test, catalog lỗi, index/sequence trong `data.md`, clone bỏ rule invalidated/tombstoned, `docs/order/interfaces.md` §1.
+> - **Còn mở / không thuộc đợt này:** `reason` của `transitions` chỉ log và `reason` của `grants` bị bỏ (không audit trail bền);
+>   public discovery/options chỉ đánh giá 200 promotion đầu; X3 (`UNAUTHENTICATED` vs `UNAUTHORIZED`); Promotion chưa consume
+>   `USER_DELETED`; chưa có consumer contract test từ Checkout/Order, chưa E2E Debezium/Kafka; test `customerRefundIsNotAWorkflow`
+>   chỉ khẳng định state không đổi.
+
+### PR8 🔴 [SECURITY/BUG] `technical-cancellations` không có guard như docs mô tả — ✅ đúng và đã sửa 2026-10-10 (ADR-019)
 - Docs (`domain.md` BR-018, `interfaces.md` §2.3, `workflows.md` WF-PROMO-006, `operations.md` RB-08, OpenAPI): chỉ `promotion-legacy-migrator`, bắt buộc header `X-Legacy-Migration-Proof` + body `migration_record_id`, `pre_financial_watermark_evidence_sha256`; "`order-service` is denied by mesh **and application policy**".
 - Code:
   - `config/TrustedIdentityFilter.java`: route nằm dưới `ALLOCATION_PATH` → allowlist `allocation-clients = [order-service]`; không có nhóm cho legacy migrator.
@@ -394,32 +437,32 @@
 - Hệ quả: Order (hoặc ai giả header khi chưa có mesh) có thể đưa voucher `USED` về `SAVED`/`EXPIRED` và giảm budget đã dùng.
 - Sửa: implement guard (nhóm allowlist riêng `promotion-legacy-migrator`, DTO `LegacyTechnicalCancellationRequest`, kiểm header/digest, migration thêm cột) — hoặc tạm gỡ route; đồng bộ docs.
 
-### PR10 🔴 `data.md` mô tả cột không tồn tại
+### PR10 🔴 `data.md` mô tả cột không tồn tại — ✅ đúng; đã có migration `V2` + CHECK `NOT VALID` (2026-10-10)
 - `data.md` §3.8 `promotion_command_receipts`: `migration_record_id`, `pre_watermark_evidence_sha256` + CHECK theo `CANCEL_CONFIRMED`. `V1__promotion_baseline.sql` không có cột/CHECK này; `FinalCommandService` không xử lý proof. Data.md lại tuyên bố phản ánh DDL V1. Đi cùng PR8.
 
-### PR2 🟠 `checkout_channel=CHECKOUT` chỉ được kiểm ở voucher-options
+### PR2 🟠 `checkout_channel=CHECKOUT` chỉ được kiểm ở voucher-options — ✅ đúng; đã enforce ở calculate + reserve (2026-10-10)
 - Contract `TrustedCheckoutContext.checkout_channel: const CHECKOUT` cho calculate, voucher-options, reserve.
 - Code `service/DiscoveryService.java` chỉ kiểm trong `options(...)`; `calculate` và `AllocationService.reserve` không kiểm. Checkout và Order đều gửi `CHECKOUT` nên hiện chưa bị khai thác.
 - README §9 tự mâu thuẫn: gạch đầu dòng 1 nói gate "phải bỏ `@NotBlank` userTier + enforce checkoutChannel ... catalog giữ Checkout interaction proposed", gạch sau nói `user_tier` đã sửa. `user_tier` đã optional; phần channel còn mở.
 - Sửa: enforce ở calculate + reserve; viết lại README §9.
 
-### PR4 🟠 OpenAPI defect: tham số không thể thoả
+### PR4 🟠 OpenAPI defect: tham số không thể thoả — ✅ đúng; đã sửa (2026-10-10)
 - `components.parameters.LegacyMigrationProof`: `format: uuid` + `pattern: '^CANCEL_FINAL:...'`. Pattern này thuộc `TechnicalCancellationIdempotencyKey` (đang không có pattern). Sửa: chuyển pattern sang đúng tham số.
 
-### PR3 🟡 Số operation và trạng thái
+### PR3 🟡 Số operation và trạng thái — ✅ đúng (thiếu `java/services/promotion-service/README.md`); đã sửa (2026-10-10)
 - OpenAPI có 25 operation (thêm voucher-options), docs/README + ADOPTION ghi 24. OpenAPI `x-adoption-status: proposed` và `contracts/http/promotion/v1/README.md` "proposed" trong khi ADOPTION ghi "implemented".
 
-### PR1 🟡 Nhiều chỗ nói chưa implement
+### PR1 🟡 Nhiều chỗ nói chưa implement — ✅ đúng; đã sửa (2026-10-10)
 - `docs/README.md` §5; `decisions/README.md` "Promotion Service hiện chưa có source module"; README §9 "Order/Checkout chưa có client gọi Promotion"; `interfaces.md` §1 trạng thái "contract target exists", §7 "Markdown contract v1 đang proposed", "Trước implementation phải có contract tests".
 
-### PR5 🟡 Số ADR
+### PR5 🟡 Số ADR — ✅ đúng; đã sửa (2026-10-10; nay 19 ADR)
 - `docs/README.md` "16 ADR"; thực có 18.
 
-### PR6 🟡 Cấu hình/cổng lệch
+### PR6 🟡 Cấu hình/cổng lệch — ✅ đúng (nhận xét "8082 là User" sai: là Product); đã sửa trước đó
 - `operations.md`: `promotion.product.base-url` mặc định `http://product-service:8081`; `application.yml` mặc định `http://localhost:8082` (8082 là User). Compose override đúng `:8081`.
 - OpenAPI `servers: http://promotion-service:8080` nhưng `server.port` mặc định 8085.
 
-### PR7 🟡 Bảng mã lỗi lệch
+### PR7 🟡 Bảng mã lỗi lệch — ✅ đúng nhưng thiếu `INVALID_STATE_TRANSITION`; đã sửa (2026-10-10)
 - `domain.md` §10 có `PARTIAL_RESERVATION_STATE` — không có trong `common/ErrorCode.java`. Code có thêm `CAMPAIGN_NOT_FOUND, PROMOTION_NOT_FOUND, MARKDOWN_RULE_NOT_FOUND, PRODUCT_NOT_FOUND, CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS, MARKDOWN_RULE_ALREADY_EXISTS, PROMOTION_CONSTRAINT_VIOLATION, INVALID_REQUEST, INVALID_CURSOR, UNAUTHENTICATED, FORBIDDEN, INTERNAL_ERROR, PROMOTION_UNAVAILABLE`.
 
 Đã khớp: TTL reservation 15m + grace 5m tương thích deadline thanh toán của Order (deadline bị cap theo hold expiry − 30s); Order dùng `REDEEM_FINAL:{order_id}:{promotion_id}`; Order không bao giờ gọi technical-cancellations; markdown event schema/topic/key.
@@ -811,8 +854,9 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ### Code
 - [ ] PY1 Payment: thêm `GET /v1/payments/{id}`, `GET /v1/refunds/{id}`.
-- [ ] PR8/PR10 Promotion: guard technical-cancellations (allowlist migrator, proof header, DTO, migration cột) hoặc gỡ route.
-- [ ] PR2 Promotion: enforce `checkout_channel=CHECKOUT` ở calculate + reserve.
+- [x] PR8/PR10 Promotion: guard technical-cancellations (allowlist migrator, proof header, DTO, migration cột) hoặc gỡ route. *(2026-10-10: chọn hiện thực guard — `legacy-migration-clients`, `LegacyTechnicalCancellationRequest`, proof header = `migration_record_id` (`403`), migration `V2`; ADR-019)*
+- [x] PR2 Promotion: enforce `checkout_channel=CHECKOUT` ở calculate + reserve. *(2026-10-10: `400 INVALID_REQUEST`, như voucher-options)*
+- [x] Promotion (ngoài báo cáo, 2026-10-10): E1 confirm/legacy cancel trùng đồng thời replay thay vì `409`; E8 `confirm` redeem wallet bị lazy-`EXPIRED` dưới reservation; E11 route lạ/sai method/Content-Type là `404`/`405`/`400` không `500`; E2 `no-store` ở voucher-options; E5 bỏ bump version fence ở consumer tombstone.
 - [x] A9 Auth: luôn phát `USER_DELETED` / `USER_EMAIL_CHANGED` / `USER_PASSWORD_CHANGED` sau commit dù Redis lỗi (ADR-006). *(2026-10-09)*
 - [x] A12 Auth: resend OTP (và yêu cầu reset) không trả 429 phân biệt. *(2026-10-09)*
 - [x] A13 Auth + gateway-auth: *không sửa code* — hành vi là chủ ý (độ phân giải 1 giây); đã ghi vào `docs/auth/data.md`, ADR-001, OpenAPI và `docs/gateway/runtime-contract.md` §6. *(2026-10-09)*
@@ -838,7 +882,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 - [x] X5 Go: đã rà middleware gin của cart/auth/user/notification + gateway-auth + cấu hình Traefik — không có lỗ hổng cùng mẫu, chỉ thêm `cart-service/.../router_path_test.go`. *(2026-10-09)*
 
 ### Contract / catalog
-- [ ] PR4 sửa tham số `LegacyMigrationProof`.
+- [x] PR4 sửa tham số `LegacyMigrationProof`. *(2026-10-10; cùng với E3/E4 Promotion: thêm `404` claim/reserve, `400` 5 GET/list admin, `PUT /me/promotion-vouchers` `requestBody.required: false`, `x-adoption-status: implemented`, `ADOPTION.md` 25 operation)*
 - [x] K1/K2 bổ sung mã vào Order internal OpenAPI. *(2026-10-09)*
 - [x] K7 Checkout OpenAPI: `429` cho `getCheckoutSubmission`; sinh lại `frontend/.../generated/checkout.ts`. *(2026-10-09)*
 - [x] C7 Cart OpenAPI: mô tả đúng allowlist header + response 400. *(2026-10-09)*
@@ -854,7 +898,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 - [x] User: U1–U3, U6, U7, U8 (cộng U4, U5, U9–U11 ở docs; frontmatter `scope: current`/`status: implemented`, error catalog đầy đủ, bảng cấu hình, WF-USER-009). *(2026-10-09)*
 - [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
 - [x] Product: P1–P4, P8 (cộng ADR-020, error catalog đầy đủ, bảng cấu hình, `schema.sql` khớp migration, frontmatter `status: implemented`). *(2026-10-09)*
-- [ ] Promotion: PR1–PR3, PR5–PR7, PR10, README §9.
+- [x] Promotion: PR1–PR3, PR5–PR7, PR10, README §9. *(2026-10-10; cộng ADR-019, `scope: current`, catalog lỗi 34 mã, bảng cấu hình đầy đủ, mô tả health đúng code, bảng test thật, `docs/README.md` §5, `docs/order/interfaces.md` §1)*
 - [ ] Inventory: I1, I2.
 - [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
 - [ ] Search: S1–S3, S5.

@@ -73,8 +73,14 @@ promotion:
     identity-header: X-Service-Identity
     calculation-clients:
       - checkout-service
+    options-clients:
+      - checkout-service
+    # reservations/confirmations/cancellations; technical-cancellations không thuộc nhóm này.
     allocation-clients:
       - order-service
+    # technical-cancellations (deprecated, legacy migration only): chỉ workload migrator, Order bị 403.
+    legacy-migration-clients:
+      - promotion-legacy-migrator
   product:
     # Validate Product đồng bộ khi tạo/sửa markdown rule (WF-PROMO-001 bước 2).
     validation-enabled: ${PRODUCT_VALIDATION_ENABLED:true}

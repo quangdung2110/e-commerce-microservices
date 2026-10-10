@@ -137,8 +137,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 5. Promotion Service (Redis Lua + PostgreSQL)
 
-> Tài liệu đã refactor theo cấu trúc chuẩn trong `docs/_templates`; thiết kế đang ở
-> trạng thái `proposed` và chưa có implementation để verification.
+> Tài liệu theo cấu trúc chuẩn trong `docs/_templates`, `scope: current`: đã implement trong
+> `java/services/promotion-service` và đã đối soát với source/migration/test (audit 2026-10-10,
+> ADR-019). HTTP v1 và Events v1 `implemented`; chưa `verified` (chưa có consumer test với Promotion thật
+> và E2E Debezium).
 
 | File | Mô tả |
 |---|---|
@@ -146,13 +148,13 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [promotion/architecture.md](./promotion/architecture.md) | Thành phần, processing, consistency, concurrency và deployment. |
 | [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
 | [promotion/interfaces.md](./promotion/interfaces.md) | HTTP semantics đích, outbox event và Product markdown snapshot v1. |
-| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 24 operations; trạng thái `proposed`. |
-| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `proposed`. |
-| [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, Saga technical compensation và recovery. |
+| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 25 operations; trạng thái `implemented`. |
+| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `implemented`. |
+| [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, reserve/confirm/cancel, legacy technical cleanup (deprecated) và recovery. |
 | [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
 | [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
 | [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
-| [promotion/decisions/](./promotion/decisions/README.md) | 16 ADR; ADR-016 chốt phạm vi event v1 và receipt-driven finalizer. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 19 ADR (ADR-001..019); ADR-016 chốt phạm vi event v1 và receipt-driven finalizer, ADR-019 là các sửa sau audit. |
 
 ---
 
@@ -266,8 +268,8 @@ Service Contract Matrix legacy đã bị xóa.
 | [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [user/README.md](./user/README.md) | User Service — profile, address book, preferences; đã đồng bộ với `go/services/user-service` theo `docs/_templates/service-documentation` (ADR-001..012). |
 
-> Các service trên sẽ được sync ở giai đoạn tiếp theo. Năm service Checkout, Order,
-> Payment, Inventory và Promotion được đồng bộ ở mức thiết kế; Delivery chỉ là boundary
+> Các service trên sẽ được sync ở giai đoạn tiếp theo. Các service Checkout, Order,
+> Payment và Inventory được đồng bộ ở mức thiết kế (Promotion đã đồng bộ với code, xem §5); Delivery chỉ là boundary
 > target/proposed, chưa có implementation (không phải Shipping Service legacy).
 
 ---

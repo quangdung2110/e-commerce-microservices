@@ -6,7 +6,7 @@ info:
     name: MIT
     identifier: MIT
   description: >-
-    Contract đề xuất cho Promotion Service. Campaign là aggregate quản trị và lịch dùng
+    Contract của Promotion Service (`java/services/promotion-service`). Campaign là aggregate quản trị và lịch dùng
     chung; promotion là PLATFORM_VOUCHER toàn đơn; markdown rule chỉ áp dụng cho một
     Product. Published definition là immutable. Voucher đã lưu dùng wallet.expired_at
     và không được hoàn lại khi customer refund. Confirm/cancel-confirmed là final command
@@ -15,16 +15,17 @@ info:
     migration workload principal and an immutable pre-financial-watermark proof; the
     Order workload is denied at transport and application policy. It is not post-capture
     Saga compensation.
-    Request reader phải bỏ qua unknown optional field để cho phép compatible additions;
+    Request reader phải bỏ qua unknown optional field để cho phép compatible additions
+    (trừ request của technical-cancellations, `additionalProperties: false`);
     unknown rule node/operator/field vẫn bị từ chối theo rule_schema_version.
     Chỉ CONFIRM và CANCEL_CONFIRMED dùng durable Idempotency-Key/command receipt. Các
     command khác replay bằng natural business key, unique constraint, expected campaign
     revision hoặc Redis reservation payload như mô tả ở từng operation.
-x-adoption-status: proposed
-x-known-runtime-gap: >-
-  The current Promotion implementation exposes the legacy handler without the dedicated
-  capability/proof guard. It must not claim conformance to this route until that guard and
-  its provider tests are deployed.
+    Request không khớp operation nào là lỗi client, không phải `INTERNAL_ERROR`: route lạ trả
+    `404` và sai HTTP method trả `405` (kèm `Allow`), cả hai `application/problem+json` với code
+    `INVALID_REQUEST`; Content-Type operation không chấp nhận (vd PATCH không phải
+    `application/merge-patch+json`) trả `400 INVALID_REQUEST`, không có `415`.
+x-adoption-status: implemented
 servers:
   - url: http://localhost:8085
     description: Local Docker Compose (host 8085 map tới container 8085)
@@ -117,6 +118,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -242,6 +244,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PromotionPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -295,6 +298,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Promotion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -385,6 +389,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MarkdownRulePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -439,6 +444,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MarkdownRule' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -543,13 +549,14 @@ paths:
         lấy từ token, không nhận user_id trong payload. context là tùy chọn: thiếu context
         thì chỉ lưu wallet và evaluation là null. Trang checkout gửi body rỗng vì giá và
         category tin cậy chỉ có ở Checkout; Checkout Preview tính discount chính thức
-        (Promotion ADR-018).
+        (Promotion ADR-018). Body là tùy chọn: không có body và `{}` đều lưu wallet và trả
+        evaluation null.
       security: [{ gatewayUserIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/PromotionId'
         - $ref: '#/components/parameters/RequestId'
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema: { $ref: '#/components/schemas/SaveAndEvaluateRequest' }
@@ -618,6 +625,7 @@ paths:
               schema: { $ref: '#/components/schemas/ClaimPendingResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
@@ -629,6 +637,8 @@ paths:
       description: >-
         Pure/replay-safe, không save và không reserve. Discount là một amount toàn đơn,
         không trả allocation theo SKU. Nếu promotion_id null, kết quả discount là 0.
+        Context là TrustedCheckoutContext: `checkout_channel` khác `CHECKOUT` là
+        `400 INVALID_REQUEST` (`errors[].field = context.checkout_channel`).
       security: [{ workloadIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
       requestBody:
@@ -659,7 +669,8 @@ paths:
         SAVED hết hạn thành EXPIRED; không save, không claim, không reserve. Ranking:
         eligible trước, discount giảm dần, promotion_id tăng dần. Mỗi item kèm thông tin
         hiển thị của voucher. Rate limit thuộc Gateway profile checkout-voucher-options ở
-        route Checkout; Promotion không giữ local limiter.
+        route Checkout; Promotion không giữ local limiter. Context là TrustedCheckoutContext:
+        `checkout_channel` khác `CHECKOUT` là `400 INVALID_REQUEST`.
       x-adoption-status: implemented
       security: [{ workloadIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
@@ -690,6 +701,9 @@ paths:
         Chỉ Order/Temporal gọi sau khi đã có order_id. Revalidate wallet SAVED, expiry,
         rules và expected amount; Redis Lua giữ quota/amount trong 15 phút. Cùng stable
         order/promotion và payload là replay; payload khác trả IDEMPOTENCY_PAYLOAD_MISMATCH.
+        Context là TrustedCheckoutContext: `checkout_channel` khác `CHECKOUT` là
+        `400 INVALID_REQUEST` (`errors[].field = context.checkout_channel`). Promotion không tồn
+        tại trả `404 PROMOTION_NOT_FOUND`.
       security: [{ workloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -714,6 +728,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/Unprocessable' }
         '503': { $ref: '#/components/responses/Unavailable' }
@@ -729,7 +744,10 @@ paths:
         wallet và durable budget trong một PostgreSQL transaction; final command không ghi
         outbox (ADR-016). Redis finalize chỉ chạy sau commit và receipt
         redis_finalized_at IS NULL là durable trigger để chạy lại sau crash.
-        expected_discount không phải amount authority.
+        expected_discount không phải amount authority. Hai request cùng key đến đồng thời đều
+        nhận cùng stored response (một transition duy nhất). Reservation tạo lúc voucher còn
+        hạn vẫn được redeem dù wallet đã bị lazy-normalize thành EXPIRED trong lúc Payment chạy
+        (Promotion ADR-019).
       security: [{ workloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -793,11 +811,17 @@ paths:
         recovery and every order with PAYMENT_SUCCESS/ALREADY_SUCCEEDED are denied.
         New failures after payment use forward repair/financial reconciliation, never make
         wallet/budget look unredeemed.
+        Promotion enforces this itself: any caller outside the migrator is `403 FORBIDDEN`; a missing
+        `X-Legacy-Migration-Proof`, a value that is not a UUID or one different from the body's
+        `migration_record_id` is also `403 FORBIDDEN` and nothing is read or written. A body that
+        breaks the schema (missing field, digest that is not 64 hex characters, unknown field) is `400`.
+        Both proof fields are part of the request hash and stored on the receipt: replaying the
+        key with another record or digest is `409 IDEMPOTENCY_PAYLOAD_MISMATCH`.
         Idempotency-Key chuẩn là
         CANCEL_FINAL:{order_id}:{promotion_id}. PostgreSQL commit receipt, wallet và durable
         budget trước (không ghi outbox, ADR-016); Redis chỉ được repair sau commit. Wallet trở lại SAVED nếu
-        chưa hết hạn, ngược lại EXPIRED.
-      x-adoption-status: proposed
+        chưa hết hạn, ngược lại EXPIRED. Hai request cùng key đến đồng thời đều nhận cùng stored response.
+      x-adoption-status: implemented
       security: [{ legacyMigrationWorkloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -842,6 +866,7 @@ components:
         thực thi (docs/mesh/runtime-contract.md mục 5.2): checkout-service cho
         /internal/v1/promotion-discount-calculations, order-service cho
         reservations/cancellations/confirmations under /internal/v1/promotion-allocation;
+        checkout-service cũng cho /internal/v1/promotion-voucher-options;
         `promotion-legacy-migrator` exclusively for technical-cancellations. Principal sai bị mesh trả 403 text/plain trước
         khi tới Promotion. Mesh không xác minh giá trị header; Promotion allowlist header theo
         nhóm route chỉ là defense-in-depth và trả 401/403 problem+json khi thiếu/không khớp.
@@ -854,7 +879,8 @@ components:
       description: >-
         Dedicated mTLS/service-mesh capability for the `promotion-legacy-migrator` only.
         It is mutually exclusive with `order-service`; Promotion verifies the workload
-        claim in depth and Gateway strips it from client traffic.
+        claim in depth (`promotion.internal.legacy-migration-clients`, `403 FORBIDDEN`
+        for any other identity, `401` when absent) and Gateway strips it from client traffic.
 
   parameters:
     RequestId:
@@ -881,15 +907,17 @@ components:
         type: string
         minLength: 16
         maxLength: 255
+        pattern: '^CANCEL_FINAL:[A-Za-z0-9_.-]{1,64}:[A-Za-z0-9_.-]{1,64}$'
     LegacyMigrationProof:
       name: X-Legacy-Migration-Proof
       in: header
       required: true
-      description: Immutable approved migration record ID; its evidence digest must match the body.
+      description: >-
+        Immutable approved migration record ID; it must equal `migration_record_id` of the body
+        (the evidence digest travels in the body). Missing or different is `403 FORBIDDEN`.
       schema:
         type: string
         format: uuid
-        pattern: '^CANCEL_FINAL:[A-Za-z0-9_.-]{1,64}:[A-Za-z0-9_.-]{1,64}$'
     IfMatchCampaign:
       name: If-Match
       in: header
@@ -1640,7 +1668,9 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Forbidden:
-      description: Caller không có role/capability cho operation.
+      description: >-
+        Caller không có role/capability cho operation (code FORBIDDEN), gồm technical-cancellations
+        thiếu hoặc sai X-Legacy-Migration-Proof.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -1656,8 +1686,9 @@ components:
         VOUCHER_EXPIRED, VOUCHER_NOT_OWNED, BUDGET_EXHAUSTED, IDEMPOTENCY_PAYLOAD_MISMATCH,
         EXPECTED_DISCOUNT_MISMATCH, RESERVATION_NOT_FOUND, FINAL_COMMAND_STATE_INCONSISTENT,
         INVALID_STATE_TRANSITION, CAMPAIGN_NOT_DRAFT, DISTRIBUTION_MODE_MISMATCH,
-        CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS hoặc
-        MARKDOWN_RULE_ALREADY_EXISTS.
+        CAMPAIGN_CODE_ALREADY_EXISTS, PROMOTION_CODE_ALREADY_EXISTS,
+        MARKDOWN_RULE_ALREADY_EXISTS hoặc PROMOTION_CONSTRAINT_VIOLATION (ràng buộc PostgreSQL
+        bị vi phạm bởi race không có mã riêng; tải lại rồi thử lại).
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

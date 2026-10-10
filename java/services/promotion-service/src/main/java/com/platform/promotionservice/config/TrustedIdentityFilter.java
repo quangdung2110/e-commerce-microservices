@@ -28,8 +28,9 @@ import java.util.UUID;
  *   <li>{@code /api/v1/admin/**}: trusted identity do Gateway inject + role ADMIN.</li>
  *   <li>{@code /api/v1/me/**}, {@code /api/v1/promotion-discovery}: trusted user identity.</li>
  *   <li>{@code /internal/v1/**}: service identity đã được mesh/ingress xác minh và đặt vào
- *       header cấu hình; allowlist tách theo nhóm route (Checkout → calculations,
- *       Order/Temporal → allocation), khớp hai security scheme trong OpenAPI v1.</li>
+ *       header cấu hình; allowlist tách theo nhóm route (Checkout → calculations/voucher options,
+ *       Order/Temporal → reservations/confirmations/cancellations, {@code promotion-legacy-migrator}
+ *       → technical-cancellations), khớp các security scheme trong OpenAPI v1.</li>
  * </ul>
  *
  * <p>Header trusted chỉ hợp lệ vì các endpoint này không được expose trực tiếp
@@ -46,6 +47,7 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
     private static final String CALCULATION_PATH = "/internal/v1/promotion-discount-calculations";
     private static final String OPTIONS_PATH = "/internal/v1/promotion-voucher-options";
     private static final String ALLOCATION_PATH = "/internal/v1/promotion-allocation/";
+    private static final String LEGACY_CANCEL_PATH = "/internal/v1/promotion-allocation/technical-cancellations";
 
     private static final String TRACEPARENT_HEADER = "traceparent";
     private static final String REQUEST_ID_HEADER = "X-Request-Id";
@@ -140,6 +142,11 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
         }
         if (path.equals(OPTIONS_PATH)) {
             return internal.getOptionsClients();
+        }
+        // Phải đứng trước ALLOCATION_PATH: technical-cancellations nằm dưới tiền tố đó nhưng không
+        // thuộc nhóm Order; order-service bị từ chối ở đây (PROMO-BR-018).
+        if (path.equals(LEGACY_CANCEL_PATH)) {
+            return internal.getLegacyMigrationClients();
         }
         if (path.startsWith(ALLOCATION_PATH)) {
             return internal.getAllocationClients();
