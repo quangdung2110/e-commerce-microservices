@@ -135,8 +135,11 @@ reserve (`TrustedCheckoutContext`) từ chối channel khác `CHECKOUT` bằng `
 (`errors[].field = context.checkout_channel`) trước mọi bước đọc/ghi; context của suggestion, discovery và save
 là của client nên channel đó chỉ là một fact do client khai.
 
-Public discovery và voucher options đánh giá tối đa 200 promotion public đang `ACTIVE` (theo `id` tăng, trước khi
-loại promotion user đã sở hữu) rồi mới sắp xếp và áp `limit`; vượt ngưỡng đó cần phân trang phía Promotion.
+Public discovery và voucher options duyệt hết public candidate `ACTIVE` bằng keyset nội bộ (`id > afterId`),
+loại mọi ownership (`SAVED`/`USED`/`EXPIRED`) trong DB trước khi lấy batch. Wallet `SAVED` được đánh giá
+riêng theo batch. Heap giữ top `limit` trên cả wallet/public theo ranking ở trên; không dừng khi vừa đủ
+`limit` item. `promotion.discovery.batch-size` mặc định 200 là kích thước batch, không phải trần candidate.
+API không thêm cursor và `limit` vẫn là số item trả về (1–50), theo [ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md).
 
 `campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
 của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi

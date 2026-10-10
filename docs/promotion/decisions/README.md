@@ -37,6 +37,7 @@ bằng chứng test của từng quyết định nằm trong các tài liệu `d
 | [ADR-017](./ADR-017-post-capture-forward-repair.md) | Post-capture failure uses forward repair; `cancel-confirmed` is legacy-only | Accepted | 2026-09-16 | Refines active use of ADR-013, ADR-016 |
 | [ADR-018](./ADR-018-checkout-voucher-options-and-context-free-save.md) | Voucher options nội bộ cho Checkout; lưu voucher không cần context | Accepted (implemented) | 2026-10-07 | — |
 | [ADR-019](./ADR-019-post-implementation-audit-corrections.md) | Sửa sau audit: guard technical-cancellations, channel CHECKOUT, final command trùng đồng thời, `EXPIRED→USED` ở Confirm, tombstone không invalidate cache, route lạ là lỗi client | Accepted (implemented) | 2026-10-10 | — (làm rõ ADR-013, ADR-014, ADR-017, ADR-018) |
+| [ADR-020](./ADR-020-complete-discovery-with-batched-top-k.md) | Discovery đầy đủ: keyset scan, batch snapshot/budget và top K toàn cục | Accepted (implemented) | 2026-10-10 | — (mở rộng ADR-002, ADR-018; giải quyết gap ngoài phạm vi ADR-019) |
 
 ADR-015 chỉ refine physical Redis mapping/edge ownership của ADR-013 và ADR-014; hai ADR
 trước vẫn là nguồn quyết định cho durable finalization và claim boundary semantics.

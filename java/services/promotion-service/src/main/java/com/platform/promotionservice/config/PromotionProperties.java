@@ -2,7 +2,10 @@ package com.platform.promotionservice.config;
 
 import lombok.Getter;
 import lombok.Setter;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -15,12 +18,15 @@ import java.util.List;
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "promotion")
+@Validated
 public class PromotionProperties {
 
     private Admin admin = new Admin();
     private Internal internal = new Internal();
     private Product product = new Product();
     private Snapshot snapshot = new Snapshot();
+    @Valid
+    private Discovery discovery = new Discovery();
     private Claim claim = new Claim();
     private Reservation reservation = new Reservation();
     private Finalizer finalizer = new Finalizer();
@@ -78,6 +84,14 @@ public class PromotionProperties {
     @Setter
     public static class Snapshot {
         private Duration ttl = Duration.ofSeconds(3600);
+    }
+
+    @Getter
+    @Setter
+    public static class Discovery {
+        /** Number of candidates per batch, never a cap on the candidates evaluated. */
+        @Min(1)
+        private int batchSize = 200;
     }
 
     @Getter

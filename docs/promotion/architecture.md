@@ -64,6 +64,10 @@ flowchart LR
 
 - Discovery/calculate là synchronous read path. Snapshot JSON từ Redis; cache miss đọc
   PostgreSQL. Rule AST được parse request-scoped.
+- Discovery/suggestion/voucher options duyệt keyset projection cho wallet/public, snapshot và budget
+  đọc theo batch; public loại ownership ngay trong query. Heap giữ top `limit` toàn cục, không trần 200
+  candidate và không giữ managed entity theo tổng số candidate. Bộ nhớ `O(batchSize + limit)`, chọn kết
+  quả `O(N log limit)`; vẫn phải đánh giá N candidate ([ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md)).
 - Claim hữu hạn chạy một Lua: dùng Redis TIME kiểm claim-gate fields trong runtime hash
   (`enabled`/revision/[open,close)), rồi kiểm tra user, `SPOP`, ghi claimed-user và pending
   acquisition evidence. API chạy guarded PostgreSQL claim + wallet transaction và chỉ trả

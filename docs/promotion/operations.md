@@ -58,6 +58,7 @@ Hiện thực (Actuator, `management.endpoint.health.probes.enabled=true`; `heal
 | Property (`application.yml`) | Default hiện tại |
 |---|---|
 | `promotion.snapshot.ttl` | 3600s |
+| `promotion.discovery.batch-size` | 200 (>= 1; env `PROMOTION_DISCOVERY_BATCH_SIZE`); kích thước batch wallet/public, không phải trần candidate |
 | `promotion.reservation.business-ttl` | 15m |
 | `promotion.reservation.cleanup-grace` | 5m (payload TTL = business + grace; sweeper force-release `CONFIRMING` không receipt sau khi hết hạn) |
 | `promotion.claim.pending-stale-after` / `sweeper-interval` | 5m / 60s |
@@ -163,6 +164,12 @@ Promotion là integration error và không được xử lý payload.
 ## 8. Scaling/capacity
 
 - API stateless scale ngang.
+- Discovery/voucher options scan hết candidate bằng keyset, snapshot/runtime Redis pipeline, cache miss
+  DB projection theo batch và heap top `limit`; không trả kết quả bị cắt ngầm ở 200 candidate. Bộ nhớ
+  `O(batchSize + limit)`, latency vẫn tăng theo cardinality và độ phức tạp AST. Đo cold/warm cache, Redis
+  degraded và `EXPLAIN (ANALYZE, BUFFERS)` trên dữ liệu thực trước khi chỉnh batch size/thêm index;
+  SLO discovery ở §1 chưa được xác nhận bằng load test. Cùng `now` không tạo snapshot nhất quán giữa
+  mọi DB/Redis read khi publish/save/budget thay đổi đồng thời; Reserve vẫn là quyết định cuối.
 - Claim partition theo claim ID; markdown partition bắt buộc theo product ID.
 - SPOP O(1); pending/reservation/campaign schedule ZSET O(logN); không key scan.
 - Multi-key Lua phải dùng `{promotion_id}` và bounded input/runtime.

@@ -12,6 +12,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -56,6 +59,40 @@ public class PromotionSnapshotService {
         } catch (Exception e) {
             throw new IllegalStateException("stored conditions_rule is not a valid AST", e);
         }
+    }
+
+    /** One version read and a snapshot pipeline per batch; all misses use one DB projection query. */
+    @Transactional(readOnly = true)
+    public Map<Long, PromotionView> findAll(List<Long> promotionIds) {
+        if (promotionIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = promotionIds.stream().distinct().toList();
+        long version = cache.currentVersion();
+        Map<Long, PromotionView> result = new LinkedHashMap<>();
+        if (version >= 0) {
+            cache.getAll(ids).forEach((id, json) -> parse(json)
+                    .filter(view -> view.cacheVersion() == version && view.promotionId() == id)
+                    .ifPresent(view -> result.put(id, view)));
+        }
+        List<Long> missing = ids.stream().filter(id -> !result.containsKey(id)).toList();
+        if (!missing.isEmpty()) {
+            Map<Long, String> writes = new LinkedHashMap<>();
+            for (PromotionView view : promotions.findSnapshotViews(missing, Math.max(version, 0))) {
+                result.put(view.promotionId(), view);
+                if (version >= 0) {
+                    try {
+                        writes.put(view.promotionId(), objectMapper.writeValueAsString(view));
+                    } catch (Exception e) {
+                        log.debug("Snapshot serialization failed: {}", e.getMessage());
+                    }
+                }
+            }
+            if (!writes.isEmpty()) {
+                cache.putAll(writes);
+            }
+        }
+        return result;
     }
 
     /** Sau commit admin mutation: evict snapshot của mọi promotion trong campaign + bump fence. */

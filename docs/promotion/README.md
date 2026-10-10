@@ -228,7 +228,10 @@ ký các fact đó; thêm sau là thay đổi additive theo
   normalization nên trạng thái `EXPIRED` chỉ xuất hiện theo truy vấn.
 - `reason` của `POST .../transitions` chỉ được ghi log; `reason` của `POST .../grants` được validate rồi bỏ,
   không lưu: chưa có audit trail bền cho hai thao tác này.
-- Public discovery và voucher options đánh giá tối đa 200 promotion public đang `ACTIVE` (theo `id` tăng,
-  trước khi loại promotion user đã sở hữu); vượt ngưỡng đó cần phân trang phía Promotion.
+- Public discovery và voucher options duyệt hết candidate public `ACTIVE` bằng keyset, loại ownership
+  trong DB trước phân trang; wallet cũng được đọc theo batch. `promotion.discovery.batch-size=200` chỉ là
+  kích thước batch, không giới hạn số promotion được xét. Snapshot/budget đọc bằng pipeline và heap giữ
+  top `limit` toàn cục ([ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md)). Latency vẫn
+  tăng theo số candidate; chưa có load test xác nhận SLO khi cardinality lớn.
 - `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
   `domain/rule/RuleEvaluator` + `RuleValidator` trong service.

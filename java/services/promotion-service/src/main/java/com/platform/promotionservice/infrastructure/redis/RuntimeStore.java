@@ -1,6 +1,7 @@
 package com.platform.promotionservice.infrastructure.redis;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -51,6 +52,34 @@ public class RuntimeStore {
         List<Object> values = redis.opsForHash().multiGet(PromotionRedisKeys.runtime(promotionId), List.of(
                 F_TOTAL_QTY, F_TOTAL_VND, F_USED_QTY, F_USED_VND, F_RESERVED_QTY, F_RESERVED_VND,
                 F_CLAIM_ENABLED, F_CLAIM_REVISION, F_OPENS_AT, F_CLOSES_AT));
+        return decode(values);
+    }
+
+    /** Failures propagate so the evaluator can distinguish DEGRADED from a missing runtime hash. */
+    public Map<Long, RuntimeState> readAll(List<Long> ids) {
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        byte[][] fields = List.of(F_TOTAL_QTY, F_TOTAL_VND, F_USED_QTY, F_USED_VND, F_RESERVED_QTY, F_RESERVED_VND,
+                        F_CLAIM_ENABLED, F_CLAIM_REVISION, F_OPENS_AT, F_CLOSES_AT).stream()
+                .map(redis.getStringSerializer()::serialize).toArray(byte[][]::new);
+        List<Object> values = redis.executePipelined((RedisCallback<Object>) connection -> {
+            for (long id : ids) {
+                connection.hashCommands().hMGet(redis.getStringSerializer().serialize(PromotionRedisKeys.runtime(id)), fields);
+            }
+            return null;
+        });
+        Map<Long, RuntimeState> result = new LinkedHashMap<>();
+        for (int i = 0; i < ids.size(); i++) {
+            if (values.get(i) instanceof List<?> row) {
+                long id = ids.get(i);
+                decode(row).ifPresent(state -> result.put(id, state));
+            }
+        }
+        return result;
+    }
+
+    private static Optional<RuntimeState> decode(List<?> values) {
         if (values == null || values.get(2) == null) {
             return Optional.empty();
         }

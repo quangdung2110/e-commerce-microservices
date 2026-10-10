@@ -317,7 +317,7 @@ chỉ apply revision mới hơn.
 | promotion `(campaign_id,is_enabled)`                                                      | discovery/admin load                                            |
 | wallet `(user_id,status,expired_at)`                                                      | voucher tray/lazy expiry                                        |
 | wallet `(promotion_id,status)`                                                            | reconciliation/đếm wallet theo promotion và trạng thái          |
-| wallet unique `(user_id,promotion_id)`                                                    | save/claim idempotency                                          |
+| wallet unique `(user_id,promotion_id)`                                                    | save/claim idempotency; anti-join loại ownership trước public keyset paging |
 | wallet partial unique `used_order_id`                                                     | một voucher/order                                               |
 | claim `(promotion_id,status,id)`                                                          | preload/rebuild claim pool                                      |
 | markdown `(product_id,is_enabled)`                                                        | tính current-state snapshot theo product                        |

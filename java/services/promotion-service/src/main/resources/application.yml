@@ -89,6 +89,8 @@ promotion:
     timeout: 2s
   snapshot:
     ttl: 3600s
+  discovery:
+    batch-size: ${PROMOTION_DISCOVERY_BATCH_SIZE:200}
   claim:
     pending-stale-after: 5m
     # Duration dùng trong @Scheduled phải là ISO-8601 (PT..); Boot vẫn bind vào java.time.Duration.

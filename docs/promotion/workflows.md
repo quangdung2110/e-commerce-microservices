@@ -133,14 +133,27 @@ Checkout Preview (`context` tùy chọn, ADR-018).
    lazy-normalize SAVED đã hết hạn thành EXPIRED.
 2. Voucher SAVED, `expired_at > now` vẫn được xét dù campaign tự nhiên đã ENDED; với
    validity mode `CAMPAIGN_END`, `expired_at` trùng end nên voucher bị loại theo expiry.
-3. Batch load snapshot JSON, parse AST request-scoped, evaluate context.
+3. Duyệt wallet `SAVED` bằng keyset theo wallet ID; projection chỉ lấy ID, promotion ID và expiry.
+   Batch load snapshot JSON, parse AST request-scoped, evaluate context; heap giữ top `limit`.
 4. Budget read guard có thể downgrade thành `BUDGET_EXHAUSTED`; timeout fail-open với
    degraded marker vì Reserve mới là quyết định cuối.
 
 ### Public discovery
 
-`POST /api/v1/promotion-discovery` ngoài wallet còn query public promotions enabled thuộc campaign phase ACTIVE, loại promotion
-user đã sở hữu, evaluate/sort/limit. Campaign đã end không xuất hiện cho save mới.
+`POST /api/v1/promotion-discovery` ngoài wallet còn query public promotions enabled thuộc campaign phase ACTIVE.
+SQL `NOT EXISTS` loại promotion user đã sở hữu ở mọi status trước khi lấy batch ID theo
+`id > afterId ORDER BY id ASC`. Duyệt đến hết candidate, kể cả khi đã tìm đủ `limit` item eligible.
+Campaign đã end không xuất hiện cho save mới. Mỗi request dùng cùng một `now` cho mọi batch.
+
+Snapshot: đọc version một lần mỗi batch, pipeline GET theo ID; cache miss/JSON lỗi/version lệch dùng một
+projection query join promotion–campaign, rồi pipeline ghi cache với TTL. Rule evaluation đi trước budget;
+chỉ voucher vượt điều kiện cần pipeline HMGET runtime. Runtime thiếu → `NOT_CHECKED`, Redis lỗi →
+`DEGRADED` fail-open; budget exhausted → ineligible với discount 0. Không thực hiện round trip riêng cho từng voucher.
+
+Heap tối đa `limit` item dùng chung cho wallet/public: lọc `include_ineligible` trước heap, eligible trước,
+discount giảm dần, promotion ID tăng dần. Sort heap khi trả response. Kích thước batch cấu hình bằng
+`promotion.discovery.batch-size` (mặc định 200, phải >= 1); không có trần candidate hoặc cursor API.
+Chi tiết: [ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md).
 
 ### Checkout voucher options (ADR-018)
 
@@ -152,8 +165,8 @@ hiển thị từ definition snapshot (`code`, `name`, `description`, `discount`
 và `end_time` của campaign với voucher `PUBLIC`. Mặc định `include_public` và
 `include_ineligible` là `true`, `limit` là 50. Không save, claim hay reserve; không local rate
 limit. Context phải là `TrustedCheckoutContext` (`checkout_channel=CHECKOUT`, khác thì `400`); response
-`Cache-Control: no-store`. Phần public đánh giá tối đa 200 promotion `ACTIVE` (theo `id` tăng) trước khi
-sắp xếp và áp `limit`.
+`Cache-Control: no-store`. Phần public dùng cùng keyset scan và heap top `limit` toàn cục ở trên;
+không giới hạn 200 candidate.
 
 ### Calculate
 
