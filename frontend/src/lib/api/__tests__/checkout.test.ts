@@ -7,6 +7,12 @@ vi.mock("@/lib/api/client", () => ({ api: { post: vi.fn(), get: vi.fn() } }));
 const token = "01234567-1234-4234-8234-0123456789ab";
 beforeEach(() => vi.resetAllMocks());
 describe("Checkout HTTP contract", () => {
+  it("reads options by token with cancellation, without sending browser cart context", async () => {
+    const signal = new AbortController().signal;
+    vi.mocked(api.get).mockResolvedValue({ data: { items: [] } });
+    await checkoutApi.voucherOptions(token, signal);
+    expect(api.get).toHaveBeenCalledWith(`/api/v1/checkout/previews/${token}/voucher-options`, { signal, timeout: 8_000 });
+  });
   it("sends Preview with its idempotency key and no client prices", async () => {
     vi.mocked(api.post).mockResolvedValue({ data: { checkout_token: token } });
     await checkoutApi.preview({ delivery_address_id: "address1" }, token);

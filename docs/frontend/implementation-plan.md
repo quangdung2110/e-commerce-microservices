@@ -1,7 +1,7 @@
 # Frontend Implementation Plan
 
 Kế hoạch xây dựng giao diện người mua và giao diện quản trị trong `frontend/`. Tài liệu
-gồm lộ trình tổng thể và các bước 0–10. Bước 3 đã hoàn thành code, kiểm thử offline và
+gồm lộ trình tổng thể và các bước 0–11. Bước 3 đã hoàn thành code, kiểm thử offline và
 kiểm chứng live local với Inventory Service qua gateway; MFA vẫn là gate production.
 
 Route và API của từng màn hình nằm ở [sitemap.md](./sitemap.md). Quy tắc giao diện nằm
@@ -12,7 +12,7 @@ trong skill Terra (`.claude/skills/terra-ui/`).
 Làm theo lát cắt dọc cho tới khi mua được một đơn hàng thật từ đầu đến cuối. Màn admin
 nào tạo ra dữ liệu thì làm ngay trước màn người mua cần dữ liệu đó.
 
-Trạng thái cập nhật ngày **07/10/2026**:
+Trạng thái cập nhật ngày **10/10/2026**:
 
 | Bước | Nội dung | Contract chính | Trạng thái |
 |---|---|---|---|
@@ -27,7 +27,7 @@ Trạng thái cập nhật ngày **07/10/2026**:
 | 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
 | 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Hoàn thành code/offline và live local (Auth, gateway, Product, Promotion) |
-| 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Chưa hoàn thành |
+| 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Hoàn thành code/offline, live save/claim Promotion; Checkout live và visual QA còn chờ (step-11-verification) |
 | 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Chưa hoàn thành |
 | 13 | Hoàn thiện: trang chủ, SEO/ISR, trạng thái rỗng/lỗi, responsive, a11y, E2E | — | Chưa hoàn thành |
 
@@ -706,7 +706,45 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Live qua gateway; responsive 375px (light) và 800px (dark) không tràn ngang.
 - [ ] Visual QA đủ ma trận 375/768/1280 px × light/dark, bàn phím và screen reader.
 
-## 13. Phụ thuộc backend
+## 13. Bước 11 — Voucher trong checkout
+
+> **10/10/2026: hoàn thành code và kiểm thử offline.** Không thêm endpoint hay sửa
+> nghiệp vụ backend; Checkout ADR-017 và Promotion ADR-018 đã có trong source. Phạm vi,
+> bằng chứng và giới hạn live ở [step-11-verification.md](./step-11-verification.md).
+
+- Khay voucher đọc `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`,
+  cache theo account và token; hiển thị voucher trong ví/công khai, điều kiện, hạn dùng,
+  mức giảm dự kiến và lý do không đủ điều kiện bằng tiếng Việt. Không gọi discovery
+  trực tiếp từ trình duyệt, không dựng giá/category facts ở client.
+- `NONE` áp dụng trực tiếp; `SAVE` gọi `PUT /api/v1/me/promotion-vouchers/{id}` với `{}`;
+  `CLAIM` gọi `POST /api/v1/me/promotion-voucher-claims` với đúng
+  `expected_campaign_revision` từ khay. Chỉ tạo Preview có voucher sau khi sở hữu được
+  xác nhận thành công; tổng tiền luôn lấy từ Preview, không dùng ước tính của khay.
+- Chọn/bỏ voucher gửi `previous_checkout_token` hiện tại; bỏ gửi `promotion_id: null`.
+  Đổi địa chỉ và tải báo giá mới giữ voucher đã chọn. `CHANGE_VOUCHER` cho phép bỏ
+  voucher trong một Preview mới và yêu cầu xác nhận lại, không tự đặt hàng.
+- `202 CLAIM_PENDING` không có GET status endpoint: replay cùng POST và revision,
+  tôn trọng `Retry-After`, dừng chờ tự động sau 30 giây hoặc khi unmount. Timeout/mất
+  phản hồi giữ nguyên ý định và có nút tiếp tục kiểm tra; không coi là nhận thất bại.
+- Khoá thao tác đặt hàng/đổi báo giá khi Preview hoặc save/claim chưa rõ kết quả.
+  Retry Preview giữ payload và idempotency key. Báo giá khớp địa chỉ và voucher mới
+  được đặt hàng. Lỗi khay `503`/`429` không vô hiệu hoá một báo giá hợp lệ; token hết
+  hạn/superseded yêu cầu báo giá mới, token đã submit chuyển sang phục hồi submission.
+- `/vouchers` vẫn chờ API đọc wallet độc lập, ngoài phạm vi bước 11.
+
+### 13.1. Tiêu chí và kiểm chứng
+
+- [x] Khay qua Checkout; áp dụng/bỏ voucher bằng Preview mới.
+- [x] Save không context; claim đúng revision; replay/polling, Retry-After và huỷ khi unmount.
+- [x] Không cập nhật tiền lạc quan; không tự submit sau khi báo giá đổi.
+- [x] Năm trạng thái dữ liệu, lỗi tiếng Việt, partial khi khay lỗi; semantic token Terra.
+- [x] Typecheck và test frontend qua; lint riêng file bước 11 sạch.
+- [x] Production build qua trong `node:20-alpine`.
+- [x] Save/claim và replay qua gateway thật (Promotion runtime build từ source hiện tại).
+- [ ] Live đầy đủ Preview → options → save/claim → Preview → Submit có voucher.
+- [ ] Visual QA 375/768/1280 px × light/dark, bàn phím và screen reader.
+
+## 14. Phụ thuộc backend
 
 | Phụ thuộc | Cần cho | Ảnh hưởng nếu thiếu |
 |---|---|---|
