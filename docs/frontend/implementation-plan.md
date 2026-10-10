@@ -1,7 +1,7 @@
 # Frontend Implementation Plan
 
 Kế hoạch xây dựng giao diện người mua và giao diện quản trị trong `frontend/`. Tài liệu
-gồm lộ trình tổng thể và các bước 0–11. Bước 3 đã hoàn thành code, kiểm thử offline và
+gồm lộ trình tổng thể và các bước 0–12. Bước 3 đã hoàn thành code, kiểm thử offline và
 kiểm chứng live local với Inventory Service qua gateway; MFA vẫn là gate production.
 
 Route và API của từng màn hình nằm ở [sitemap.md](./sitemap.md). Quy tắc giao diện nằm
@@ -28,7 +28,7 @@ Trạng thái cập nhật ngày **10/10/2026**:
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
 | 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Hoàn thành code/offline và live local (Auth, gateway, Product, Promotion) |
 | 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Hoàn thành code/offline, live save/claim Promotion; Checkout live và visual QA còn chờ (step-11-verification) |
-| 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Chưa hoàn thành |
+| 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Hoàn thành code; xem [step-12-verification](./step-12-verification.md) cho kiểm chứng và giới hạn |
 | 13 | Hoàn thiện: trang chủ, SEO/ISR, trạng thái rỗng/lỗi, responsive, a11y, E2E | — | Chưa hoàn thành |
 
 Mỗi bước đi theo cùng một vòng: phác giao diện → code theo Terra → chạy thử với backend
@@ -744,7 +744,21 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [ ] Live đầy đủ Preview → options → save/claim → Preview → Submit có voucher.
 - [ ] Visual QA 375/768/1280 px × light/dark, bàn phím và screen reader.
 
-## 14. Phụ thuộc backend
+## 14. Bước 12 — Kiểm duyệt, kho đầy đủ và hệ thống
+
+Đã triển khai các surface public admin hiện có, không cần bổ sung endpoint backend.
+Chi tiết route, quy tắc lệnh và bằng chứng ở [step-12-verification.md](./step-12-verification.md).
+
+- Review: queue theo trạng thái, panel signed media, dismissal, reply, legal takedown
+  có xác nhận gõ lại ID.
+- Inventory: danh sách kho/tồn/movement và ba queue, tìm Refund Scope theo đơn,
+  nhận hàng trả, PASS/FAIL, disposition và reversal.
+- Hệ thống: Reindex list/detail/create/cancel/rollback và polling trạng thái cuối;
+  xoá account bằng UUID, xác nhận chính xác, chặn retry khi kết quả chưa rõ.
+- Sidebar và đơn admin đã nối các màn mới. MFA và kiểm chứng mutation live vẫn là
+  gate riêng, không được coi đã qua.
+
+## 15. Phụ thuộc backend
 
 | Phụ thuộc | Cần cho | Ảnh hưởng nếu thiếu |
 |---|---|---|

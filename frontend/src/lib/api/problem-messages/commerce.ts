@@ -68,6 +68,13 @@ export const INVENTORY_MESSAGES: Record<string, string> = {
   DISPATCH_NOT_ALLOWED:
     "Dòng hàng không còn đủ điều kiện xuất kho hoặc dữ liệu phiếu không khớp phân bổ hiện tại.",
   OPERATION_IDENTITY_CONFLICT:
-    "Mã phiếu và dòng phiếu này đã được dùng cho một lần xuất kho khác.",
-  WAREHOUSE_NOT_FOUND: "Không tìm thấy kho trong lệnh xuất kho.",
+    "Mã phiếu hoặc mã thao tác đã được dùng. Hãy tra kết quả lệnh và đối chiếu chứng từ.",
+  WAREHOUSE_NOT_FOUND: "Không tìm thấy kho. Hãy kiểm tra lại mã kho.",
+  RETURN_RECEIPT_REJECTED: "Không thể nhận hàng: dòng đơn, SKU hoặc số lượng không khớp yêu cầu trả. Hãy tải lại và đối chiếu kiện hàng.",
+  INSPECTION_REJECTED: "Không thể kiểm định: kiểm tra kho nhận, phiếu nhận và số lượng chưa kiểm định rồi tải lại hàng đợi.",
+  DISPOSITION_REJECTED: "Không thể xử lý cách ly: kiểm tra kết quả kiểm định, số lượng còn lại và chứng từ hàng rời hoặc quay về kho.",
+  REFUND_SCOPE_STATE_CONFLICT: "Yêu cầu trả hàng đã chuyển trạng thái và không nhận thêm hàng. Hãy tải lại yêu cầu.",
+  INSUFFICIENT_SELLABLE_STOCK: "Không đủ tồn bán được cho thao tác này. Hãy tải lại vị trí tồn.",
+  MOVEMENT_NOT_REVERSIBLE: "Biến động này không thể đảo bằng điều chỉnh tồn. Hãy dùng đúng quy trình hàng trả hoặc cách ly.",
+  WAREHOUSE_CONFLICT: "Kho vừa được cập nhật. Hãy tải lại trước khi sửa tiếp.",
 };

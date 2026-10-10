@@ -136,6 +136,8 @@ sửa kho phải gửi `expected_revision` ([Inventory ADR-027](../inventory/dec
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
 | `/admin/inventory` | Trang tra cứu: nhập mã kho, mã SKU, mã movement, mã lệnh | — | 3 | có — đã kiểm chứng live |
+| `/admin/inventory/operations?view=` | Kho, tồn, movement; queue xuất kho, kiểm định, cách ly và form inspection/disposition/reversal | Operational queries và commands của `inventory/admin/v1` | 12 | có — code, xem step-12-verification |
+| `/admin/inventory/returns?order_id=` | Tìm yêu cầu trả theo đơn | `GET …/refund-scopes?order_id=` | 12 | có — code |
 | `/admin/inventory/warehouses/new` | Tạo kho | `POST /api/v1/admin/inventory/warehouses` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/warehouses/[warehouseId]` | Xem và sửa kho (tên, địa chỉ, nhận phân bổ mới, ưu tiên) | `GET/PATCH /api/v1/admin/inventory/warehouses/{id}` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/stock/[warehouseId]/[skuId]` | Toàn bộ bucket tồn của một SKU tại một kho | `GET /api/v1/admin/inventory/stock-positions/{wh}/{sku}` | 3 | có — đã kiểm chứng live |
@@ -144,7 +146,7 @@ sửa kho phải gửi `expected_revision` ([Inventory ADR-027](../inventory/dec
 | `/admin/inventory/movements/[movementId]` | Bằng chứng movement, tạo reversal | `GET /api/v1/admin/inventory/stock-movements/{id}`, `POST …/reversals` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/commands/[commandId]` | Kết quả của một lệnh admin | `GET /api/v1/admin/inventory/commands/{id}` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/reservations/[orderId]` | Phân bổ của một đơn theo kho; ghi nhận xuất kho từng dòng | `GET /api/v1/admin/inventory/reservations/{order_id}`, `POST /api/v1/admin/inventory/physical-dispatches` | 8 | có — chờ kiểm chứng live |
-| `/admin/inventory/refund-scopes/[refundScopeId]` | Hàng trả: nhận hàng vào cách ly, kiểm định PASS/FAIL, xử lý hàng cách ly | `GET /api/v1/admin/inventory/refund-scopes/{id}`, `POST …/return-receipts`, `…/inspections`, `…/quarantine-dispositions[/{id}/reversals]` | 12 | mới |
+| `/admin/inventory/refund-scopes/[refundScopeId]` | Counter hàng trả, nhận vào cách ly, link queue kiểm định/cách ly | `GET /api/v1/admin/inventory/refund-scopes/{id}`, `POST …/return-receipts` | 12 | có — code; mutation chờ live |
 
 ### 4.4. Đơn hàng
 
@@ -172,7 +174,7 @@ breadcrumb, `campaign_id` lấy từ chính resource.
 
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
-| `/admin/reviews?status=` | Hàng đợi kiểm duyệt `REPORTED` / `HIDDEN_BY_REPORT`; panel bên cạnh để gỡ báo cáo, phản hồi chính thức, takedown | `GET /api/v1/admin/reviews`, `POST …/report-dismissals`, `PUT …/reply`, `POST …/takedown` | 12 | mới |
+| `/admin/reviews?status=` | Hàng đợi kiểm duyệt `REPORTED` / `HIDDEN_BY_REPORT`; panel bên cạnh để gỡ báo cáo, phản hồi chính thức, takedown | `GET /api/v1/admin/reviews`, `POST …/report-dismissals`, `PUT …/reply`, `POST …/takedown` | 12 | có — code/offline; chờ live |
 
 Không có API đọc một review cho admin, nên chi tiết review mở trong panel từ dòng danh
 sách, không có route riêng.
@@ -181,8 +183,9 @@ sách, không có route riêng.
 
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
-| `/admin/system/search-reindex` | Chạy full reindex Search và theo dõi tiến độ | `POST /api/v2/search/reindex-runs`, `GET …/{run_id}` | 12 | mới |
-| `/admin/system/account-deletion` | Xoá tài khoản theo `account_id` (không thể hoàn tác) | `POST /api/v1/auth/admin/accounts/{id}/deletion-requests` | 12 | mới |
+| `/admin/system` | Lối vào các công cụ hệ thống | — | 12 | có |
+| `/admin/system/search-reindex` | List/tra lượt, full reindex, tiến độ, huỷ và rollback | `GET/POST /api/v2/search/reindex-runs`, `GET …/{run_id}`, `POST …/cancellation`, `POST …/rollback` | 12 | có — code/offline; chờ live |
+| `/admin/system/account-deletion` | Xoá tài khoản theo `account_id` (không thể hoàn tác) | `POST /api/v1/auth/admin/accounts/{id}/deletion-requests` | 12 | có — code/offline; không thử xoá tài khoản thật |
 
 ### 4.8. Không có route
 

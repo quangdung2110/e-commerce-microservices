@@ -28,6 +28,9 @@ interface ConfirmDialogProps {
   expectedText?: string;
   reasonRequired?: boolean;
   destructive?: boolean;
+  reasonMaxLength?: number;
+  showReason?: boolean;
+  disabled?: boolean;
 }
 
 export function ConfirmDialog({
@@ -40,6 +43,9 @@ export function ConfirmDialog({
   expectedText,
   reasonRequired = true,
   destructive = true,
+  reasonMaxLength,
+  showReason = true,
+  disabled = false,
 }: ConfirmDialogProps) {
   const reasonId = useId();
   const confirmationId = useId();
@@ -58,8 +64,10 @@ export function ConfirmDialog({
 
   const canConfirm =
     (!reasonRequired || reason.trim().length > 0) &&
+    (reasonMaxLength === undefined || reason.length <= reasonMaxLength) &&
     (!expectedText || confirmation === expectedText) &&
-    !isSubmitting;
+    !isSubmitting &&
+    !disabled;
 
   async function submit() {
     if (!canConfirm) return;
@@ -79,11 +87,11 @@ export function ConfirmDialog({
       open={open}
       onOpenChange={(nextOpen) => {
         if (nextOpen) onOpenChange(true);
-        else resetAndClose();
+        else if (!isSubmitting) resetAndClose();
       }}
       disablePointerDismissal={isSubmitting}
     >
-      <DialogContent>
+      <DialogContent showCloseButton={!isSubmitting}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -91,17 +99,22 @@ export function ConfirmDialog({
 
         <div className="mt-6 space-y-5">
           {error ? <ErrorState error={error} /> : null}
-          <div className="space-y-2">
-            <Label htmlFor={reasonId}>Lý do{reasonRequired ? " *" : ""}</Label>
-            <Textarea
-              id={reasonId}
-              value={reason}
-              required={reasonRequired}
-              disabled={isSubmitting}
-              placeholder="Nêu rõ lý do thực hiện hành động này"
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </div>
+          {showReason ? (
+            <div className="space-y-2">
+              <Label htmlFor={reasonId}>
+                Lý do{reasonRequired ? " *" : ""}
+              </Label>
+              <Textarea
+                id={reasonId}
+                value={reason}
+                required={reasonRequired}
+                maxLength={reasonMaxLength}
+                disabled={isSubmitting}
+                placeholder="Nêu rõ lý do thực hiện hành động này"
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </div>
+          ) : null}
 
           {expectedText ? (
             <div className="space-y-2">
@@ -134,7 +147,9 @@ export function ConfirmDialog({
             disabled={!canConfirm}
             onClick={() => void submit()}
           >
-            {isSubmitting ? <LoaderCircle className="animate-spin" aria-hidden /> : null}
+            {isSubmitting ? (
+              <LoaderCircle className="animate-spin" aria-hidden />
+            ) : null}
             {isSubmitting ? "Đang xử lý" : confirmLabel}
           </Button>
         </DialogFooter>

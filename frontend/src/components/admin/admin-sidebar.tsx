@@ -4,15 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import { Logo } from "@/components/layout/logo";
-import { ENABLED_ADMIN_NAV } from "@/components/admin/navigation";
+import { ENABLED_ADMIN_NAV, currentAdminNavHref } from "@/components/admin/navigation";
 import { cn } from "@/lib/utils";
-
-function isCurrent(pathname: string, href: string) {
-  return href === "/admin" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
-}
 
 export function AdminSidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const currentHref = currentAdminNavHref(pathname);
 
   return (
     <div className="flex min-h-full flex-col">
@@ -32,7 +29,7 @@ export function AdminSidebar({ onNavigate }: { onNavigate?: () => void }) {
               </p>
             ) : null}
             {group.items.map(({ href, label, icon: Icon }) => {
-              const active = isCurrent(pathname, href);
+              const active = currentHref === href;
               return (
                 <Link
                   key={href}

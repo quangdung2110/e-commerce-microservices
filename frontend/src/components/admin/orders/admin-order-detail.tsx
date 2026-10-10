@@ -231,6 +231,7 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
               ) : null}
             </CardContent>
             <CardFooter>
+                <Button nativeButton={false} variant="outline" render={<Link href={`/admin/inventory/returns?order_id=${encodeURIComponent(data.order_id)}`} />}>Hàng trả</Button>
               <Button nativeButton={false} variant="secondary" render={<Link href={`/admin/inventory/reservations/${encodeURIComponent(data.order_id)}`} />}>
                 Vận hành kho
               </Button>

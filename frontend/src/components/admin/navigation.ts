@@ -43,6 +43,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     label: "Kho",
     items: [
       { label: "Tra cứu", href: "/admin/inventory", icon: Warehouse, enabled: true },
+      { label: "Vận hành kho", href: "/admin/inventory/operations", icon: Boxes, enabled: true },
+      { label: "Hàng trả", href: "/admin/inventory/returns", icon: ClipboardList, enabled: true },
       { label: "Nhập hàng", href: "/admin/inventory/receipts/new", icon: Boxes, enabled: true },
     ],
   },
@@ -51,8 +53,8 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     items: [
       { label: "Đơn hàng", href: "/admin/orders", icon: ClipboardList, enabled: true },
       { label: "Khuyến mãi", href: "/admin/promotions", icon: Megaphone, enabled: true },
-      { label: "Kiểm duyệt", href: "/admin/reviews", icon: ShieldCheck, enabled: false },
-      { label: "Hệ thống", href: "/admin/system", icon: Settings, enabled: false },
+      { label: "Kiểm duyệt", href: "/admin/reviews", icon: ShieldCheck, enabled: true },
+      { label: "Hệ thống", href: "/admin/system", icon: Settings, enabled: true },
     ],
   },
 ];
@@ -62,6 +64,19 @@ export const ENABLED_ADMIN_NAV = ADMIN_NAV.map((group) => ({
   items: group.items.filter((item) => item.enabled),
 })).filter((group) => group.items.length > 0);
 
+export function currentAdminNavHref(pathname: string): string | undefined {
+  if (pathname.startsWith("/admin/inventory/refund-scopes/")) {
+    return "/admin/inventory/returns";
+  }
+  return ENABLED_ADMIN_NAV.flatMap((group) => group.items)
+    .filter(({ href }) =>
+      href === "/admin"
+        ? pathname === href
+        : pathname === href || pathname.startsWith(`${href}/`),
+    )
+    .sort((left, right) => right.href.length - left.href.length)[0]?.href;
+}
+
 export const ADMIN_BREADCRUMB_LABELS: Record<string, string> = {
   "/admin": "Tổng quan",
   "/admin/products": "Sản phẩm",
@@ -69,6 +84,12 @@ export const ADMIN_BREADCRUMB_LABELS: Record<string, string> = {
   "/admin/categories": "Danh mục",
   "/admin/attributes": "Thuộc tính",
   "/admin/inventory": "Kho hàng",
+  "/admin/inventory/operations": "Vận hành kho",
+  "/admin/inventory/returns": "Hàng trả",
+  "/admin/reviews": "Kiểm duyệt đánh giá",
+  "/admin/system": "Hệ thống",
+  "/admin/system/search-reindex": "Tái lập chỉ mục Search",
+  "/admin/system/account-deletion": "Xoá tài khoản",
   "/admin/inventory/warehouses/new": "Tạo kho",
   "/admin/inventory/receipts/new": "Nhập hàng",
   "/admin/inventory/adjustments/new": "Điều chỉnh tồn",
@@ -87,6 +108,7 @@ export function adminBreadcrumbLabel(pathname: string): string {
   if (pathname.startsWith("/admin/inventory/movements/")) return "Movement tồn kho";
   if (pathname.startsWith("/admin/inventory/commands/")) return "Kết quả lệnh";
   if (pathname.startsWith("/admin/inventory/reservations/")) return "Phân bổ đơn hàng";
+  if (pathname.startsWith("/admin/inventory/refund-scopes/")) return "Nhận hàng trả";
   if (pathname.startsWith("/admin/orders/")) return "Chi tiết đơn hàng";
   if (pathname.startsWith("/admin/promotions/")) {
     const [, , , , section, leaf] = pathname.split("/");

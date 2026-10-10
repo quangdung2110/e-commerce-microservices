@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
 import { newCommandId } from "@/lib/api/command";
+import { isCommandOutcomeUnknown } from "@/lib/admin-command";
 import { isRetryable, retryAfterSeconds } from "@/lib/api/problem";
 
 export interface CommandContext {
@@ -78,7 +79,7 @@ export function useCommand<TData = unknown, TVariables = void>(
       return onSuccess?.(...args);
     },
     onError: (...args) => {
-      if (isRetryable(args[0])) {
+      if (isRetryable(args[0]) || isCommandOutcomeUnknown(args[0])) {
         const delay = retryAfterSeconds(args[0]);
         if (delay !== null) {
           setRetryDelaySeconds(delay);
