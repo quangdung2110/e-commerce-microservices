@@ -13,6 +13,9 @@ servers:
     host: localhost:9092
     protocol: kafka
 channels:
+  # x-retry-policy below names the dead-letter topic that a consumer MAY use. The retry
+  # policy is the consumer's own choice: Search deliberately has no DLQ (Search ADR-005)
+  # and redelivers a failed batch instead, so it neither reads nor writes these topics.
   productEvents:
     address: t.product.events
     description: SKU catalog snapshot và Product/SKU tombstone do Product phát.

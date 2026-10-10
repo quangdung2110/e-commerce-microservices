@@ -1,7 +1,9 @@
 package com.ecommerce.search.worker.job;
 
+import com.ecommerce.search.domain.document.ReindexRunDocument;
 import com.ecommerce.search.worker.client.ExportPages;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,16 +13,48 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Mutable progress of one reindex run, persisted into the run document after each phase so
+ * Mutable progress of one reindex run, persisted into the run document at every checkpoint so
  * the admin status endpoint and a resume both have something to read.
+ *
+ * <p>A resume rebuilds this object from the stored document ({@link #restore}) and continues at
+ * {@link #stage()} using the cursor of that stage. Everything a stage needs in order to carry on
+ * is therefore kept here and written out by {@link #checkpointAsMap}; nothing is derived from
+ * the process that died.
  */
 public final class ReindexProgressState {
+
+    /**
+     * The next unit of work, in execution order. A stage is only recorded as done by moving on
+     * to the following one, so a crash re-runs at most the stage it was in; every stage is safe
+     * to repeat because each write is guarded by a revision.
+     */
+    public enum Stage {
+        CREATE_INDICES, BUILD_CATEGORIES, BUILD_CATALOG, BUILD_AVAILABILITY, BUILD_RATING,
+        CATCH_UP, VERIFY, CUTOVER, DONE;
+
+        public boolean before(Stage other) {
+            return ordinal() < other.ordinal();
+        }
+    }
 
     private final AtomicLong categoriesExported = new AtomicLong();
     private final AtomicLong productsExported = new AtomicLong();
     private final AtomicLong availabilitySnapshotsImported = new AtomicLong();
     private final AtomicLong ratingAggregatesImported = new AtomicLong();
     private volatile Long catchUpLag;
+
+    private volatile Stage stage = Stage.CREATE_INDICES;
+    private volatile String productsIndex;
+    private volatile String categoriesIndex;
+    private volatile String categoriesCursor;
+    private volatile String productsCursor;
+    private volatile int resumeAttempts;
+    private volatile String previousProductsIndex;
+    private volatile String previousCategoriesIndex;
+    private volatile Instant cutoverAt;
+    private volatile String tailReplay;
+    private volatile Instant catchUpEndedAt;
+    private final Map<String, Long> catchUpEndPositions = new ConcurrentHashMap<>();
 
     /** Replay boundaries per source, all captured by the owning service before its scan. */
     private final Map<String, List<ExportPages.ReplayOffset>> replayOffsets = new LinkedHashMap<>();
@@ -52,6 +86,79 @@ public final class ReindexProgressState {
      * a restart has to be able to say which (ADR-016).
      */
     private volatile ExportPages.RatingExportSession ratingSession;
+    private volatile String ratingAfter;
+
+    // ------------------------------------------------------------------ stage and indices
+
+    public Stage stage() {
+        return stage;
+    }
+
+    public void advanceTo(Stage next) {
+        this.stage = next;
+    }
+
+    public String productsIndex() {
+        return productsIndex;
+    }
+
+    public String categoriesIndex() {
+        return categoriesIndex;
+    }
+
+    public void recordIndices(String productsIndex, String categoriesIndex) {
+        this.productsIndex = productsIndex;
+        this.categoriesIndex = categoriesIndex;
+    }
+
+    /**
+     * The indices the cutover replaced, written down <em>before</em> the aliases move so a crash
+     * between the swap and the final save still leaves the way back, and read by rollback.
+     */
+    public void recordPrevious(String previousProductsIndex, String previousCategoriesIndex, Instant at) {
+        this.previousProductsIndex = previousProductsIndex;
+        this.previousCategoriesIndex = previousCategoriesIndex;
+        this.cutoverAt = at;
+    }
+
+    public String previousProductsIndex() {
+        return previousProductsIndex;
+    }
+
+    public String previousCategoriesIndex() {
+        return previousCategoriesIndex;
+    }
+
+    /** {@code COMPLETE} or {@code INCOMPLETE}: whether the post-cutover tail replay read everything. */
+    public void recordTailReplay(String outcome) {
+        this.tailReplay = outcome;
+    }
+
+    public int resumeAttempts() {
+        return resumeAttempts;
+    }
+
+    public void setResumeAttempts(int attempts) {
+        this.resumeAttempts = attempts;
+    }
+
+    // ------------------------------------------------------------------ build cursors
+
+    public String categoriesCursor() {
+        return categoriesCursor;
+    }
+
+    public void recordCategoriesCursor(String cursor) {
+        this.categoriesCursor = cursor;
+    }
+
+    public String productsCursor() {
+        return productsCursor;
+    }
+
+    public void recordProductsCursor(String cursor) {
+        this.productsCursor = cursor;
+    }
 
     public void addCategories(long count) {
         categoriesExported.addAndGet(count);
@@ -63,6 +170,14 @@ public final class ReindexProgressState {
 
     public void addAvailabilitySnapshots(long count) {
         availabilitySnapshotsImported.addAndGet(count);
+    }
+
+    public ExportPages.SnapshotSession availabilitySession() {
+        return availabilitySession;
+    }
+
+    public String availabilityCursor() {
+        return availabilityCursor;
     }
 
     /**
@@ -78,6 +193,7 @@ public final class ReindexProgressState {
         this.availabilityCursor = null;
         this.availabilitySequence = null;
         this.availabilityHandoffProven = false;
+        this.availabilitySnapshotsImported.set(0);
     }
 
     public void recordAvailabilityCursor(String cursor) {
@@ -127,6 +243,18 @@ public final class ReindexProgressState {
         ratingAggregatesImported.addAndGet(count);
     }
 
+    public ExportPages.RatingExportSession ratingSession() {
+        return ratingSession;
+    }
+
+    public String ratingAfter() {
+        return ratingAfter;
+    }
+
+    public void recordRatingAfter(String after) {
+        this.ratingAfter = after;
+    }
+
     /**
      * Pins a fresh rating build to a session, discarding what the previous one counted.
      *
@@ -137,11 +265,34 @@ public final class ReindexProgressState {
      */
     public void recordRatingSession(ExportPages.RatingExportSession session) {
         this.ratingSession = session;
+        this.ratingAfter = null;
         this.ratingAggregatesImported.set(0);
     }
 
     public void setCatchUpLag(Long lag) {
         this.catchUpLag = lag;
+    }
+
+    // ------------------------------------------------------------------ catch-up boundary
+
+    /**
+     * Where each catch-up partition had been read to when the phase converged
+     * ({@code topic-partition -> next offset}). A tail replay after the cutover starts here:
+     * the live consumer wrote everything after this point into the index that was still serving,
+     * so the new index has to read it once more.
+     */
+    public void recordCatchUpEnd(Map<String, Long> positions, Instant endedAt) {
+        this.catchUpEndPositions.clear();
+        this.catchUpEndPositions.putAll(positions);
+        this.catchUpEndedAt = endedAt;
+    }
+
+    public Map<String, Long> catchUpEndPositions() {
+        return Map.copyOf(catchUpEndPositions);
+    }
+
+    public Instant catchUpEndedAt() {
+        return catchUpEndedAt;
     }
 
     /** Records the offsets of one source; ignores a repeat, since pages repeat them. */
@@ -188,7 +339,8 @@ public final class ReindexProgressState {
     }
 
     /**
-     * The export sessions a resume or a cutover check has to reason about.
+     * Everything a resume or a cutover check has to reason about: the stage, both target
+     * indices, one cursor per build source, and the two export sessions.
      *
      * <p>Both session IDs are checkpointed because {@code WF-SEARCH-009} requires them as
      * run metrics, and because a support question about a bad rating in a finished index
@@ -196,22 +348,43 @@ public final class ReindexProgressState {
      */
     public Map<String, Object> checkpointAsMap() {
         Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("stage", stage.name());
+        checkpoint.put("products_index", productsIndex);
+        checkpoint.put("categories_index", categoriesIndex);
+        checkpoint.put("categories_cursor", categoriesCursor);
+        checkpoint.put("products_cursor", productsCursor);
+        checkpoint.put("resume_attempts", resumeAttempts);
+        if (cutoverAt != null) {
+            checkpoint.put("previous_products_index", previousProductsIndex);
+            checkpoint.put("previous_categories_index", previousCategoriesIndex);
+            checkpoint.put("cutover_at", cutoverAt);
+        }
+        if (tailReplay != null) {
+            checkpoint.put("tail_replay", tailReplay);
+        }
         if (availabilitySession != null) {
             Map<String, Object> session = new LinkedHashMap<>();
             session.put("snapshot_id", availabilitySession.snapshotId());
             session.put("export_watermark", availabilitySession.exportWatermark());
+            session.put("created_at", availabilitySession.createdAt());
             session.put("expires_at", availabilitySession.expiresAt());
             session.put("cursor", availabilityCursor);
             session.put("sequence", availabilitySequence);
             session.put("handoff_proven", availabilityHandoffProven);
             session.put("deferred_skus", deferredAvailabilitySkus.size());
+            session.put("deferred_sku_ids", new ArrayList<>(deferredAvailabilitySkus));
             checkpoint.put("inventory_availability", session);
         }
         if (ratingSession != null) {
             Map<String, Object> session = new LinkedHashMap<>();
             session.put("session_id", ratingSession.sessionId());
             session.put("expires_at", ratingSession.expiresAt());
+            session.put("after_product_id", ratingAfter);
             checkpoint.put("review_rating", session);
+        }
+        if (catchUpEndedAt != null) {
+            checkpoint.put("catch_up_ended_at", catchUpEndedAt);
+            checkpoint.put("catch_up_end_positions", new LinkedHashMap<>(catchUpEndPositions));
         }
         return checkpoint;
     }
@@ -225,5 +398,110 @@ public final class ReindexProgressState {
                         "offset", offset.offset()))
                 .toList()));
         return map;
+    }
+
+    // ------------------------------------------------------------------ restore
+
+    /**
+     * Rebuilds the state of a run that was stopped mid-way from the document it last saved.
+     * A document without a {@code stage} (written before this existed) restarts from the
+     * beginning, which is always safe.
+     */
+    @SuppressWarnings("unchecked")
+    public static ReindexProgressState restore(ReindexRunDocument run) {
+        ReindexProgressState state = new ReindexProgressState();
+        Map<String, Object> checkpoint = run.checkpointOrEmpty();
+
+        Object stageValue = checkpoint.get("stage");
+        if (stageValue instanceof String name) {
+            try {
+                state.stage = Stage.valueOf(name);
+            } catch (IllegalArgumentException ignored) {
+                state.stage = Stage.CREATE_INDICES;
+            }
+        }
+        state.productsIndex = asString(checkpoint.get("products_index"));
+        state.categoriesIndex = asString(checkpoint.get("categories_index"));
+        state.categoriesCursor = asString(checkpoint.get("categories_cursor"));
+        state.productsCursor = asString(checkpoint.get("products_cursor"));
+        state.resumeAttempts = (int) asLong(checkpoint.get("resume_attempts"));
+        state.previousProductsIndex = asString(checkpoint.get("previous_products_index"));
+        state.previousCategoriesIndex = asString(checkpoint.get("previous_categories_index"));
+        state.cutoverAt = asInstant(checkpoint.get("cutover_at"));
+        state.tailReplay = asString(checkpoint.get("tail_replay"));
+
+        Map<String, Object> progress = run.progress() == null ? Map.of() : run.progress();
+        state.categoriesExported.set(asLong(progress.get("categories_exported")));
+        state.productsExported.set(asLong(progress.get("products_exported")));
+        state.availabilitySnapshotsImported.set(asLong(progress.get("stock_snapshots_imported")));
+        state.ratingAggregatesImported.set(asLong(progress.get("rating_aggregates_imported")));
+        state.catchUpLag = progress.get("catch_up_lag") == null ? null : asLong(progress.get("catch_up_lag"));
+
+        if (run.replayFromOffsets() != null && !run.replayFromOffsets().isEmpty()) {
+            run.replayFromOffsets().get(0).forEach((source, value) -> {
+                if (value instanceof List<?> list) {
+                    List<ExportPages.ReplayOffset> offsets = new ArrayList<>();
+                    for (Object item : list) {
+                        if (item instanceof Map<?, ?> map) {
+                            offsets.add(new ExportPages.ReplayOffset(
+                                    String.valueOf(map.get("topic")),
+                                    (int) asLong(map.get("partition")),
+                                    asLong(map.get("offset"))));
+                        }
+                    }
+                    state.replayOffsets.put(source, offsets);
+                }
+            });
+        }
+
+        if (checkpoint.get("inventory_availability") instanceof Map<?, ?> raw) {
+            Map<String, Object> session = (Map<String, Object>) raw;
+            state.availabilitySession = new ExportPages.SnapshotSession(
+                    asString(session.get("snapshot_id")),
+                    session.get("export_watermark") == null ? null : asLong(session.get("export_watermark")),
+                    asInstant(session.get("created_at")),
+                    asInstant(session.get("expires_at")));
+            state.availabilityCursor = asString(session.get("cursor"));
+            state.availabilitySequence = session.get("sequence") == null ? null : asLong(session.get("sequence"));
+            state.availabilityHandoffProven = Boolean.TRUE.equals(session.get("handoff_proven"));
+            if (session.get("deferred_sku_ids") instanceof List<?> ids) {
+                ids.forEach(id -> state.deferredAvailabilitySkus.add(String.valueOf(id)));
+            }
+        }
+        if (checkpoint.get("review_rating") instanceof Map<?, ?> raw) {
+            Map<String, Object> session = (Map<String, Object>) raw;
+            state.ratingSession = new ExportPages.RatingExportSession(
+                    asString(session.get("session_id")),
+                    asInstant(session.get("expires_at")),
+                    state.replayOffsets.getOrDefault("review", List.of()));
+            state.ratingAfter = asString(session.get("after_product_id"));
+        }
+        if (checkpoint.get("catch_up_ended_at") != null) {
+            state.catchUpEndedAt = asInstant(checkpoint.get("catch_up_ended_at"));
+            if (checkpoint.get("catch_up_end_positions") instanceof Map<?, ?> positions) {
+                positions.forEach((key, value) ->
+                        state.catchUpEndPositions.put(String.valueOf(key), asLong(value)));
+            }
+        }
+        return state;
+    }
+
+    private static String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static long asLong(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    private static Instant asInstant(Object value) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Instant.parse(String.valueOf(value));
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 }

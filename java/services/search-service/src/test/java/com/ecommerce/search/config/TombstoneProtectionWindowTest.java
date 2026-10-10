@@ -18,8 +18,9 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@code SEARCH-INV-006} / ADR-021: the purge window outlives the retention of every topic
- * Search consumes, so no event can be replayed after its document has been physically removed.
+ * {@code SEARCH-INV-006} / ADR-011 / ADR-022: the purge window outlives the longest time any
+ * consumed record can still be on the broker, so no event can be replayed after its document
+ * has been physically removed.
  */
 class TombstoneProtectionWindowTest {
 
@@ -30,19 +31,32 @@ class TombstoneProtectionWindowTest {
      */
     private static final Duration LONGEST_CONSUMED_RETENTION = Duration.ofDays(30);
 
+    /**
+     * Kafka deletes whole log segments, and a segment is only eligible once its newest record is
+     * older than {@code retention.ms}. A record can therefore outlive the retention by up to
+     * {@code segment.ms}, which is 7 days unless the topic is provisioned otherwise.
+     */
+    private static final Duration DEFAULT_SEGMENT_ROLL = Duration.ofDays(7);
+
+    /** Clock skew, consumer backlog and the daily purge schedule. */
+    private static final Duration MINIMUM_MARGIN = Duration.ofDays(5);
+
+    private static final Duration REQUIRED = LONGEST_CONSUMED_RETENTION
+            .plus(DEFAULT_SEGMENT_ROLL).plus(MINIMUM_MARGIN);
+
     @Test
-    void configuredWindowIsStrictlyLongerThanTheLongestConsumedRetention() throws IOException {
+    void configuredWindowOutlivesRetentionPlusASegmentRollPlusTheMargin() throws IOException {
         List<PropertySource<?>> sources = new YamlPropertySourceLoader()
                 .load("application", new ClassPathResource("application.yml"));
         Binder binder = new Binder(ConfigurationPropertySources.from(sources));
 
         Duration window = binder.bind("search.tombstone.protection-window", Duration.class).get();
 
-        assertThat(window).isGreaterThan(LONGEST_CONSUMED_RETENTION);
+        assertThat(window).isGreaterThanOrEqualTo(REQUIRED);
     }
 
     @Test
-    void recordDefaultIsStrictlyLongerThanTheLongestConsumedRetention() {
+    void recordDefaultOutlivesRetentionPlusASegmentRollPlusTheMargin() {
         String declared = Arrays.stream(SearchProperties.Tombstone.class.getDeclaredConstructors()[0].getParameters())
                 .filter(p -> p.getType() == Duration.class)
                 .findFirst().orElseThrow()
@@ -52,6 +66,6 @@ class TombstoneProtectionWindowTest {
                 new MapPropertySource("default", Map.<String, Object>of("window", declared))))
                 .bind("window", Duration.class).get();
 
-        assertThat(fallback).isGreaterThan(LONGEST_CONSUMED_RETENTION);
+        assertThat(fallback).isGreaterThanOrEqualTo(REQUIRED);
     }
 }

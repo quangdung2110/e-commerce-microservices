@@ -13,6 +13,7 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -121,6 +122,49 @@ public class IndexAdmin {
         }
         client.indices().updateAliases(builder -> builder.actions(actions));
         log.info("alias cutover: {} now serve {}", aliases, targetIndex);
+    }
+
+    /**
+     * Moves every alias of several indices in one {@code _aliases} request, so there is no
+     * instant at which the product and category aliases point at different generations, nor
+     * two indices holding the same write alias.
+     *
+     * @param targets physical index to the aliases it must hold afterwards
+     */
+    public void swapAliasesAtomically(Map<String, List<String>> targets) throws IOException {
+        List<Action> actions = new ArrayList<>();
+        targets.values().forEach(aliases -> aliases.forEach(alias ->
+                actions.add(Action.of(a -> a.remove(r -> r.index("*").alias(alias).mustExist(false))))));
+        targets.forEach((index, aliases) -> aliases.forEach(alias ->
+                actions.add(Action.of(a -> a.add(add -> add.index(index).alias(alias))))));
+        client.indices().updateAliases(builder -> builder.actions(actions));
+        log.info("atomic alias cutover: {}", targets);
+    }
+
+    /** Every physical index of a template, {@code <template>_v<n>}, in no particular order. */
+    public List<String> versionedIndices(String template) throws IOException {
+        var indices = client.indices().get(builder -> builder
+                .index(template + "_v*")
+                .ignoreUnavailable(true)
+                .allowNoIndices(true));
+        return indices.result().keySet().stream()
+                .filter(name -> VERSIONED.matcher(name).matches())
+                .filter(name -> name.substring(0, name.lastIndexOf("_v")).equals(template))
+                .toList();
+    }
+
+    /** Store size of the primary shards of an index or alias; 0 when it does not exist. */
+    public long primaryStoreBytes(String indexOrAlias) throws IOException {
+        try {
+            var stats = client.indices().stats(builder -> builder.index(indexOrAlias).metric("store"));
+            var primaries = stats.all().primaries();
+            return primaries == null || primaries.store() == null ? 0L : primaries.store().sizeInBytes();
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
+            if (e.status() == 404) {
+                return 0L;
+            }
+            throw e;
+        }
     }
 
     /**

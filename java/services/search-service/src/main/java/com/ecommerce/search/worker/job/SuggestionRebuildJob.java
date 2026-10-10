@@ -144,6 +144,10 @@ public class SuggestionRebuildJob {
 
             Optional<String> rollbackIndex = indexAdmin.resolveAlias(properties.aliases().searchSuggestions());
             indexAdmin.swapAliases(newIndex, List.of(properties.aliases().searchSuggestions()));
+            if (rollbackIndex.isPresent()) {
+                // The replaced version is the rollback version; the cleanup job times it from here.
+                jobState.markIndexRetired(rollbackIndex.get(), runId, Instant.now());
+            }
             saveState(runId, "SWAPPED", newIndex, List.of(sourceProducts, sourceCategories), version,
                     rollbackIndex.flatMap(IndexAdmin::versionOf).orElse(null), Map.of("documents", published));
 

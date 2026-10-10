@@ -52,9 +52,11 @@ public class SuggestionRepository {
                 .query(matchPrefix(prefix))
                 .sort(sort -> sort.field(f -> f.field("weight").order(SortOrder.Desc)))
                 .sort(sort -> sort.field(f -> f.field("text.keyword").order(SortOrder.Asc)))
+                .allowPartialSearchResults(false)
                 .timeout(properties.query().suggestTimeout().toMillis() + "ms"),
                 SuggestionDocument.class);
         metrics.esQuery(index, "suggest", Duration.ofNanos(System.nanoTime() - startedAt));
+        SearchCompleteness.require(response, "suggest");
         return response.hits().hits().stream().map(hit -> hit.source()).filter(Objects::nonNull).toList();
     }
 

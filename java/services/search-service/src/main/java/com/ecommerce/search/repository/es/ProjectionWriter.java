@@ -27,6 +27,9 @@ import java.util.Map;
 @Component
 public class ProjectionWriter {
 
+    /** Refresh-and-repeat rounds for an update-by-query that hit version conflicts. */
+    static final int MAX_CONFLICT_RETRIES = 3;
+
     private final ElasticsearchClient client;
     private final PainlessScripts scripts;
     private final SearchProperties properties;
@@ -148,14 +151,28 @@ public class ProjectionWriter {
                 "product_rating_count", JsonData.of(ratingCount),
                 "indexed_at", JsonData.of(indexedAt),
                 "event_id", JsonData.of(eventId == null ? "" : eventId)));
-        return client.updateByQuery(builder -> builder
-                .index(index)
-                .query(query -> query.term(term -> term.field("product_id").value(productId)))
-                .script(script)
-                .conflicts(Conflicts.Proceed)
-                .requestsPerSecond(properties.bulk().taskRequestsPerSecond())
-                .refresh(false)
-                .timeout(timeout -> timeout.time(properties.query().updateByQueryTimeout().toMillis() + "ms")));
+        UpdateByQueryResponse response = null;
+        for (int attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
+            response = client.updateByQuery(builder -> builder
+                    .index(index)
+                    .query(query -> query.term(term -> term.field("product_id").value(productId)))
+                    .script(script)
+                    .conflicts(Conflicts.Proceed)
+                    .requestsPerSecond(properties.bulk().taskRequestsPerSecond())
+                    .refresh(false)
+                    .timeout(timeout -> timeout.time(properties.query().updateByQueryTimeout().toMillis() + "ms")));
+            if (response.versionConflicts() == null || response.versionConflicts() == 0) {
+                return response;
+            }
+            // An update-by-query works on the last refreshed view of the index. A SKU written
+            // since (a catalog or availability update inside the refresh interval) is seen at
+            // its old version, so its update conflicts and, with conflicts=proceed, is silently
+            // dropped. The guard makes repeating safe; refreshing first makes the repeat see the
+            // current version.
+            client.indices().refresh(refresh -> refresh.index(index));
+        }
+        throw new IOException("rating update for product " + productId + " still had version conflicts after "
+                + MAX_CONFLICT_RETRIES + " refreshes: " + response.versionConflicts());
     }
 
     private Script script(String name, Map<String, JsonData> params) {

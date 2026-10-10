@@ -28,7 +28,7 @@ search:
     purge-cron: "0 0 5 31 2 ?"
     product-count-cron: "0 0 5 31 2 ?"
   media:
-    cdn-base-url: "https://cdn.test/"
+    cdn-base-url: "https://cdn.test"
     placeholder-url: "/static/placeholder-product.png"
 
 logging:

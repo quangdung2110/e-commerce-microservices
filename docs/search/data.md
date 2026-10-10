@@ -2,15 +2,15 @@
 doc_id: search-data
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
 evidence:
   - docs/search/schema/products.index.json
   - docs/search/schema/categories.index.json
   - docs/search/schema/search_suggestions.index.json
+  - docs/search/schema/search_jobs.index.json
   - docs/search/schema/scripts
-verified_against_commit: null
 ---
 
 # Search Service — Thiết kế dữ liệu
@@ -184,12 +184,11 @@ chỉ được ghi các field thuộc nguồn đó
 | Inventory | `availability_revision` (long) | `event.availability_revision > doc.availability_revision` | `sku_id` |
 | Review | `review_revision` (long) | `event.review_revision > doc.review_revision` | `product_id` |
 
-Guard dùng so sánh `>` chặt. Product đã cấp `catalog_revision` và
-`category_revision`; Inventory v1 định nghĩa `availability_revision` cùng per-SKU snapshot
-export. Các contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
-và contract test. Review v1 định nghĩa `review_revision` cho cả event và aggregate
-snapshot export. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
-timestamp mà mang state khác nhau.
+Guard dùng so sánh `>` chặt. Product cấp `catalog_revision` và
+`category_revision`; Inventory cấp `availability_revision` cùng per-SKU snapshot
+export; Review cấp `review_revision` cho cả event và aggregate snapshot export. Cả ba
+producer đã chạy (các contract `implemented`, chưa `verified`). Không dùng publish timestamp
+làm guard vì hai mutation có thể cùng timestamp mà mang state khác nhau.
 
 Event catalog của Product mang snapshot đầy đủ nên apply lại cùng revision là
 no-op. Khi cây category đổi, Product phát control event; Search coalesce rồi
@@ -263,9 +262,22 @@ Không có bảng inbox hay bộ nhớ dedupe theo `event_id`. Idempotency đế
 theo nguồn cộng với snapshot semantics. `last_*_event_id` chỉ để truy vết vận
 hành, không dùng để quyết định apply hay bỏ qua.
 
-Trạng thái của reindex và suggestion build được lưu trong index nội bộ
+Trạng thái của reindex, suggestion build và các job singleton được lưu trong index nội bộ
 `search_jobs`, mapping tại
-[`schema/search_jobs.index.json`](./schema/search_jobs.index.json). Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
+[`schema/search_jobs.index.json`](./schema/search_jobs.index.json) (`dynamic: strict`, nên mọi document ghi vào đây
+phải chỉ có field đã khai báo; `SearchJobsDocumentsMatchMappingTest` kiểm điều đó). Các loại document, phân biệt bằng
+`doc_kind` và `_id`:
+
+| `doc_kind` | `_id` | Nội dung |
+|---|---|---|
+| `REINDEX_RUN` | `run:<run_id>` | Một lần reindex: `status`, `phase`, `reason`, `actor`, thời điểm, `failure_*`, `target_index` (index products đang dựng), `progress`, `replay_from_offsets` theo nguồn, `checkpoint` (object không index: `stage`, hai index đích, cursor từng nguồn, session Inventory/Review, SKU bị defer, `resume_attempts`, vị trí kết thúc catch-up, hai index bị thay, `tail_replay`) |
+| `REINDEX_REQUEST` | `reindex-request:pending` | Request category-tree đã gộp: `started_at` (event đầu), `updated_at` (event mới nhất), `checkpoint.roots` (root category → revision cao nhất), `checkpoint.last_attempt_at` |
+| `REINDEX_CANCEL` | `cancel:<run_id>` | Yêu cầu hủy; tách khỏi run document vì job ghi đè cả document ở mỗi checkpoint |
+| `INDEX_RETIRED` | `retired:<index>` | Thời điểm (`finished_at`) một index ngừng được alias phục vụ, và `run_id` đã thay nó |
+| `LOCK` | `lock:<tên>` | Lease: `full-reindex`, `suggestion-rebuild`, `category-product-count`, `tombstone-purge`, `index-cleanup` |
+| `SUGGESTION_BUILD` | `suggestion-build:<run_id>` | Một lần rebuild suggestion |
+
+Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
 version, kết quả validation và owner lock. Distributed lock `suggestion-rebuild` là
 một document lease trong cùng index: acquire bằng thao tác atomic, mang `owner_run_id`
 và `lease_expires_at` cùng fencing token đơn điệu, được owner renew trong lúc chạy
@@ -289,15 +301,19 @@ phải lưu.
   `com.ecommerce.catalog.sku-deleted.v1` đặt `is_deleted = true`, `deleted_at` và
   `is_in_stock = false`. Document biến mất khỏi mọi kết quả ngay lập tức.
 - **Purge.** Tombstone purger revoke Inventory readiness rồi mới xóa vật lý document
-  sau cửa sổ bảo vệ 35 ngày; cửa sổ này phải dài hơn retention của các topic Search tiêu
-  thụ (dài nhất là 30 ngày, `t.inventory.stock.events.v1`)
+  sau cửa sổ bảo vệ 45 ngày; cửa sổ này phải dài hơn thời gian dài nhất một record đã consume còn nằm trên broker:
+  retention dài nhất 30 ngày (`t.inventory.stock.events.v1`) cộng `segment.ms` mặc định 7 ngày (Kafka chỉ xóa cả
+  segment) cộng biên
   ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md),
+  [ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md), thay con số 35 ngày của
   [ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)).
-- **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
-  rồi mới xóa.
+- **Index cũ.** Cutover ghi marker `INDEX_RETIRED` cho hai index nó thay. `IndexCleanupJob` xóa index `products` và
+  `categories` không còn alias phục vụ sau 24 giờ kể từ marker đó (ngày tạo index không dùng được: build bắt đầu nhiều
+  giờ trước cutover). Rollback bằng API chỉ khả thi trong khoảng đó. Index chưa có marker (do tay hoặc phiên bản cũ) nhận
+  marker lúc job thấy nó. Không bao giờ xóa index của run chưa kết thúc.
 - **Suggestion.** Mỗi build tạo index mới. Sau swap, giữ current index và đúng một
-  rollback version tối thiểu 24 giờ; chỉ được xóa version cũ hơn rollback version.
-  Build `ABORTED` xóa index mới chưa từng được gắn alias.
+  rollback version (version retired mới nhất) vô thời hạn cho tới khi một swap sau làm nó cũ hơn rollback version; các
+  version cũ hơn xóa sau 24 giờ kể từ marker. Build `ABORTED` xóa index mới chưa từng được gắn alias.
 - **Backup.** Catalog/category tái tạo từ Product export rồi replay
   `t.product.events` và `t.category.events` từ offsets export trả về. Availability tái
   tạo trực tiếp trong Product documents từ Inventory fixed-watermark snapshot rồi

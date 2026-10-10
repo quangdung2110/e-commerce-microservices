@@ -1,10 +1,10 @@
 package com.ecommerce.search.worker.job;
 
-import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import com.ecommerce.search.common.SearchMetrics;
 import com.ecommerce.search.common.Timestamps;
 import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.domain.document.CategoryDocument;
+import com.ecommerce.search.domain.document.LeaseLockDocument;
 import com.ecommerce.search.domain.document.ReindexRunDocument;
 import com.ecommerce.search.domain.event.CatalogPayloads;
 import com.ecommerce.search.domain.event.CloudEventEnvelope;
@@ -22,6 +22,7 @@ import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
 import com.ecommerce.search.worker.handler.BatchExecutor;
 import com.ecommerce.search.worker.handler.CatalogProjection;
 import com.ecommerce.search.worker.handler.EventBatch;
+import com.ecommerce.search.worker.job.ReindexProgressState.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -35,19 +36,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * {@code WF-SEARCH-009} — the three-phase full reindex.
  *
  * <p>Build imports every snapshot into a new versioned index; Catch-up replays each topic
  * from the offsets the owning services captured, writing <em>directly</em> into that index
- * rather than through the write alias; Cutover moves both aliases in a single atomic
- * {@code _aliases} call. Rollback is the reverse swap (ADR-006).
+ * rather than through the write alias; Cutover verifies the new index and moves every alias in
+ * a single atomic {@code _aliases} call. Rollback is the reverse swap (ADR-006, ADR-022).
+ *
+ * <p>The run is a sequence of {@link Stage}s whose position and cursors are saved at every
+ * page. The process owns the {@code full-reindex} lease while it works and renews it from a
+ * heartbeat thread; if it dies the lease expires, {@link ReindexWatchdog} notices, and
+ * {@code run} is called again with the saved document to carry on from the saved stage.
  *
  * <p>The run fails rather than cuts over whenever a snapshot export fails, an export omits
  * its {@code replay_from_offsets}, the Inventory handoff cannot be proved at a single
  * watermark, a SKU is still left with availability and no document, catch-up does not
- * converge, or a control event supersedes the run.
+ * converge, the new index fails verification, or a control event supersedes the run. It
+ * ends {@code CANCELLED} when an admin asks, and does nothing at all when it loses its lease.
  */
 @Component
 public class FullReindexJob {
@@ -71,6 +81,7 @@ public class FullReindexJob {
     private final AvailabilityEventHandler availabilityHandler;
     private final BatchExecutor executor;
     private final SearchMetrics metrics;
+    private final ReindexVerifier verifier;
 
     public FullReindexJob(SearchProperties properties,
                           SnapshotExportClient exports,
@@ -82,7 +93,8 @@ public class FullReindexJob {
                           ReindexControlCoordinator control,
                           AvailabilityEventHandler availabilityHandler,
                           BatchExecutor executor,
-                          SearchMetrics metrics) {
+                          SearchMetrics metrics,
+                          ReindexVerifier verifier) {
         this.properties = properties;
         this.exports = exports;
         this.indexAdmin = indexAdmin;
@@ -94,88 +106,217 @@ public class FullReindexJob {
         this.availabilityHandler = availabilityHandler;
         this.executor = executor;
         this.metrics = metrics;
+        this.verifier = verifier;
     }
 
-    /** Runs the whole three-phase pipeline off the request thread. */
-    @Async("reindexExecutor")
-    public void run(String runId, String reason, String actor) {
-        Instant startedAt = Instant.now();
-        Instant deadline = startedAt.plus(properties.reindex().runDeadline());
-        ReindexProgressState progress = new ReindexProgressState();
-        control.consumePending();
+    // ------------------------------------------------------------------ one run
 
-        String productsIndex = null;
-        String categoriesIndex = null;
-        try {
-            categoriesIndex = indexAdmin.createVersionedIndex(
-                    IndexTemplates.CATEGORIES, indexAdmin.nextVersion(IndexTemplates.CATEGORIES));
-            productsIndex = indexAdmin.createVersionedIndex(
-                    IndexTemplates.PRODUCTS, indexAdmin.nextVersion(IndexTemplates.PRODUCTS));
+    /** State shared by the stages of a single run. */
+    private final class Run {
+        final String runId;
+        final String reason;
+        final String actor;
+        final Instant startedAt;
+        final Instant deadline;
+        final LeaseLockDocument lease;
+        final ReindexProgressState progress;
+        volatile boolean leaseLost;
+        volatile String lastStatus;
 
-            save(runId, "BUILDING", "BUILDING", reason, actor, startedAt, null, progress, productsIndex, null);
-            metrics.reindexState("BUILDING", 1);
-
-            buildCategories(categoriesIndex, progress, deadline);
-            buildCatalog(productsIndex, categoriesIndex, progress, deadline);
-            buildAvailability(productsIndex, progress, deadline);
-            buildRating(productsIndex, progress, deadline);
-
-            requireOffsets(progress);
-            failIfSuperseded(runId, productsIndex, categoriesIndex, reason, actor, startedAt, progress);
-
-            save(runId, "CATCHING_UP", "CATCHING_UP", reason, actor, startedAt, null,
-                    progress, productsIndex, null);
-            metrics.reindexState("CATCHING_UP", 1);
-            catchUp.replay(runId, productsIndex, categoriesIndex, progress, deadline);
-            settleDeferredAvailability(productsIndex, progress, deadline);
-
-            failIfSuperseded(runId, productsIndex, categoriesIndex, reason, actor, startedAt, progress);
-            requireAvailabilityHandoff(progress);
-
-            save(runId, "CUTOVER", "CUTOVER", reason, actor, startedAt, null, progress, productsIndex, null);
-            metrics.reindexState("CUTOVER", 1);
-            cutover(productsIndex, categoriesIndex);
-
-            save(runId, "COMPLETED", null, reason, actor, startedAt, Instant.now(),
-                    progress, productsIndex, null);
-            metrics.reindexState("COMPLETED", 1);
-            log.info("reindex run {} completed; aliases now serve {} and {}", runId, productsIndex, categoriesIndex);
-
-        } catch (Exception e) {
-            log.error("reindex run {} failed: {}", runId, e.getMessage(), e);
-            discard(productsIndex);
-            discard(categoriesIndex);
-            saveQuietly(runId, "FAILED", null, reason, actor, startedAt, Instant.now(), progress, productsIndex,
-                    new String[]{"REINDEX_FAILED", String.valueOf(e.getMessage())});
-            metrics.reindexState("FAILED", 1);
+        Run(String runId, String reason, String actor, Instant startedAt, Instant deadline,
+            LeaseLockDocument lease, ReindexProgressState progress) {
+            this.runId = runId;
+            this.reason = reason;
+            this.actor = actor;
+            this.startedAt = startedAt;
+            this.deadline = deadline;
+            this.lease = lease;
+            this.progress = progress;
         }
+
+        /**
+         * Called between units of work. Stops the run when it lost its lease, ran out of time or
+         * was cancelled; a run that reached the verify-and-swap step can no longer be cancelled.
+         */
+        void check() {
+            if (leaseLost) {
+                throw new LeaseLostException();
+            }
+            if (Instant.now().isAfter(deadline)) {
+                throw new IllegalStateException("run exceeded its deadline of " + properties.reindex().runDeadline());
+            }
+            if (progress.stage().before(Stage.VERIFY)) {
+                try {
+                    if (runs.isCancelRequested(runId)) {
+                        throw new CancelledException();
+                    }
+                } catch (IOException e) {
+                    log.warn("cannot read the cancellation request of run {}, assuming none: {}", runId, e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Runs the whole pipeline off the request thread, from the beginning or — when
+     * {@code resumeFrom} is the saved document of an abandoned run — from its saved stage.
+     * The caller has already acquired {@code lease}; this method releases it.
+     */
+    @Async("reindexExecutor")
+    public void run(String runId, String reason, String actor, LeaseLockDocument lease,
+                    ReindexRunDocument resumeFrom) {
+        boolean resuming = resumeFrom != null;
+        Instant startedAt = resuming && resumeFrom.startedAt() != null ? resumeFrom.startedAt() : Instant.now();
+        ReindexProgressState progress = resuming ? ReindexProgressState.restore(resumeFrom) : new ReindexProgressState();
+        Run run = new Run(runId, reason, actor, startedAt,
+                Instant.now().plus(properties.reindex().runDeadline()), lease, progress);
+
+        ScheduledExecutorService heartbeat = startHeartbeat(run);
+        try {
+            if (resuming) {
+                log.info("resuming reindex run {} at stage {}", runId, progress.stage());
+            }
+            execute(run);
+        } catch (SupersededException e) {
+            log.warn("reindex run {} ended superseded", runId);
+        } catch (CancelledException e) {
+            finishCancelled(run);
+        } catch (LeaseLostException e) {
+            log.error("reindex run {} lost its lease and stops without touching its state; "
+                    + "whoever holds the lease now owns the run", runId);
+        } catch (Exception e) {
+            fail(run, e);
+        } finally {
+            heartbeat.shutdownNow();
+            if (!run.leaseLost) {
+                try {
+                    runs.releaseLease(lease);
+                } catch (IOException e) {
+                    log.warn("could not release the reindex lease, it expires on its own: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    private void execute(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
+        persist(run);
+
+        if (p.stage() == Stage.CREATE_INDICES) {
+            createIndices(run);
+            advance(run, Stage.BUILD_CATEGORIES);
+        }
+        if (p.stage() == Stage.BUILD_CATEGORIES) {
+            buildCategories(run);
+            advance(run, Stage.BUILD_CATALOG);
+        }
+        if (p.stage() == Stage.BUILD_CATALOG) {
+            buildCatalog(run);
+            advance(run, Stage.BUILD_AVAILABILITY);
+        }
+        if (p.stage() == Stage.BUILD_AVAILABILITY) {
+            buildAvailability(run);
+            advance(run, Stage.BUILD_RATING);
+        }
+        if (p.stage() == Stage.BUILD_RATING) {
+            buildRating(run);
+            requireOffsets(p);
+            failIfSuperseded(run);
+            advance(run, Stage.CATCH_UP);
+        }
+        if (p.stage() == Stage.CATCH_UP) {
+            catchUp.replay(run.runId, p.productsIndex(), p.categoriesIndex(), p, run.deadline, run::check);
+            persist(run);
+            settleDeferredAvailability(run);
+            failIfSuperseded(run);
+            requireAvailabilityHandoff(p);
+            advance(run, Stage.VERIFY);
+        }
+        if (p.stage() == Stage.VERIFY) {
+            failIfSuperseded(run);
+            verifier.verify(indexAdmin.resolveAlias(properties.aliases().products()), p.productsIndex(),
+                    p.catchUpEndedAt());
+            advance(run, Stage.CUTOVER);
+        }
+        if (p.stage() == Stage.CUTOVER) {
+            cutover(run);
+            advance(run, Stage.DONE);
+            log.info("reindex run {} completed; aliases now serve {} and {}",
+                    run.runId, p.productsIndex(), p.categoriesIndex());
+        }
+        if (p.stage() == Stage.DONE) {
+            afterCutover(run);
+        }
+    }
+
+    private void advance(Run run, Stage next) throws IOException {
+        run.progress.advanceTo(next);
+        persist(run);
+    }
+
+    // ------------------------------------------------------------------ heartbeat
+
+    private ScheduledExecutorService startHeartbeat(Run run) {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "search-reindex-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        long interval = properties.lifecycle().leaseRenewInterval().toMillis();
+        scheduler.scheduleWithFixedDelay(() -> {
+            try {
+                Instant now = Instant.now();
+                if (!runs.renewLease(run.lease, now, now.plus(properties.lifecycle().leaseDuration()))) {
+                    run.leaseLost = true;
+                    log.error("the full-reindex lease of run {} moved to another owner", run.runId);
+                }
+            } catch (Exception e) {
+                log.warn("heartbeat of run {} failed and will be retried: {}", run.runId, e.getMessage());
+            }
+        }, interval, interval, TimeUnit.MILLISECONDS);
+        return scheduler;
     }
 
     // ------------------------------------------------------------------ build phases
 
+    private void createIndices(Run run) throws IOException {
+        String categories = indexAdmin.createVersionedIndex(
+                IndexTemplates.CATEGORIES, indexAdmin.nextVersion(IndexTemplates.CATEGORIES));
+        String products = indexAdmin.createVersionedIndex(
+                IndexTemplates.PRODUCTS, indexAdmin.nextVersion(IndexTemplates.PRODUCTS));
+        // Recorded before anything else happens, so a failure never leaks an index nobody knows.
+        run.progress.recordIndices(products, categories);
+        persist(run);
+    }
+
     /** Category export runs first so the Product build can enrich from a fresh tree. */
-    private void buildCategories(String categoriesIndex, ReindexProgressState progress, Instant deadline)
-            throws IOException {
-        String cursor = null;
-        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-categories", deadline)) {
+    private void buildCategories(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
+        String cursor = p.categoriesCursor();
+        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-categories", run.deadline)) {
             do {
+                run.check();
                 ExportPages.CategoryExportPage page = exports.categories(cursor);
-                progress.recordOffsets(SOURCE_CATEGORY, page.replayFromOffsets());
+                p.recordOffsets(SOURCE_CATEGORY, page.replayFromOffsets());
                 for (CatalogPayloads.CategorySnapshot category : nullSafe(page.categories())) {
                     if (!CatalogProjection.hasValidPath(category)) {
                         log.warn("skipping exported category {} with an unusable path", category.categoryId());
                         continue;
                     }
                     Map<String, Object> fields = CatalogProjection.toCategoryFields(category);
-                    session.add(writer.categoryUpsert(categoriesIndex, category.categoryId(), fields,
+                    session.add(writer.categoryUpsert(p.categoriesIndex(), category.categoryId(), fields,
                                     category.categoryRevision(), Timestamps.nowIso(), "reindex"),
                             estimateBytes(fields));
                 }
-                progress.addCategories(nullSafe(page.categories()).size());
+                // The cursor is only saved once the page is in the index.
+                session.flush();
+                p.addCategories(nullSafe(page.categories()).size());
                 cursor = page.nextCursor();
+                p.recordCategoriesCursor(cursor);
+                persist(run);
             } while (cursor != null && !cursor.isBlank());
         }
-        indexAdmin.refresh(categoriesIndex);
+        indexAdmin.refresh(p.categoriesIndex());
         metrics.snapshotExport(SOURCE_CATEGORY, "success");
     }
 
@@ -183,30 +324,34 @@ public class FullReindexJob {
      * Product build. Category enrichment reads the freshly built category index directly,
      * not the alias, so the new SKU documents carry the same tree the run exported.
      */
-    private void buildCatalog(String productsIndex, String categoriesIndex,
-                              ReindexProgressState progress, Instant deadline) throws IOException {
+    private void buildCatalog(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
         Map<String, CategoryDocument> categoryCache = new HashMap<>();
-        String cursor = null;
-        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-catalog", deadline)) {
+        String cursor = p.productsCursor();
+        try (ThrottledBulkWriter.Session session = bulkWriter.open("reindex-catalog", run.deadline)) {
             do {
+                run.check();
                 ExportPages.ProductExportPage page = exports.products(cursor);
-                progress.recordOffsets(SOURCE_PRODUCT, page.replayFromOffsets());
+                p.recordOffsets(SOURCE_PRODUCT, page.replayFromOffsets());
                 for (ExportPages.ExportedProduct product : nullSafe(page.products())) {
                     Optional<CategoryDocument> category =
-                            lookupCategory(categoriesIndex, categoryCache, product.categoryId());
+                            lookupCategory(p.categoriesIndex(), categoryCache, product.categoryId());
                     for (ExportPages.ExportedSku sku : nullSafe(product.skus())) {
                         Map<String, Object> fields = CatalogProjection.toFields(
                                 product.toSnapshot(), sku.toSnapshot(), category);
-                        session.add(writer.catalogUpsert(productsIndex, sku.skuId(), fields,
+                        session.add(writer.catalogUpsert(p.productsIndex(), sku.skuId(), fields,
                                         product.catalogRevision(), Timestamps.nowIso(), "reindex"),
                                 estimateBytes(fields));
                     }
                 }
-                progress.addProducts(nullSafe(page.products()).size());
+                session.flush();
+                p.addProducts(nullSafe(page.products()).size());
                 cursor = page.nextCursor();
+                p.recordProductsCursor(cursor);
+                persist(run);
             } while (cursor != null && !cursor.isBlank());
         }
-        indexAdmin.refresh(productsIndex);
+        indexAdmin.refresh(p.productsIndex());
         metrics.snapshotExport(SOURCE_PRODUCT, "success");
     }
 
@@ -219,20 +364,31 @@ public class FullReindexJob {
      * that expires mid-paging invalidates that proof: the pages already read belong to a
      * watermark that no longer exists, and splicing them onto a feed at the new one is not a
      * handoff. The only recovery is a new session paged from its first page, which is why
-     * this is a loop rather than a resume ({@code WF-SEARCH-007}).
+     * this is a loop rather than a resume of the cursor ({@code WF-SEARCH-007}). A run resumed
+     * after a crash does continue the saved session at its saved cursor first, and falls back to
+     * this loop if the session is gone.
      *
      * <p>Re-importing rows costs nothing: the {@code availability_revision} guard turns them
      * into no-ops or lifts them to a newer state, so nothing is rolled back between attempts.
      */
-    private void buildAvailability(String productsIndex, ReindexProgressState progress, Instant deadline)
-            throws IOException {
+    private void buildAvailability(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
         int maxSessions = properties.export().availabilitySnapshotMaxSessions();
         for (int attempt = 1; attempt <= maxSessions; attempt++) {
-            ExportPages.SnapshotSession session = openAvailabilitySession(progress);
+            ExportPages.SnapshotSession session;
+            String startCursor;
+            if (attempt == 1 && p.availabilitySession() != null && p.availabilitySession().snapshotId() != null) {
+                session = p.availabilitySession();
+                startCursor = p.availabilityCursor();
+            } else {
+                session = openAvailabilitySession(p);
+                startCursor = null;
+            }
             try {
-                importAvailabilitySnapshot(session, productsIndex, progress, deadline);
-                drainAvailabilityChanges(productsIndex, progress, deadline);
-                progress.markAvailabilityHandoffProven();
+                importAvailabilitySnapshot(run, session, startCursor);
+                drainAvailabilityChanges(run, run.deadline);
+                p.markAvailabilityHandoffProven();
+                persist(run);
                 metrics.availabilityExport("ok");
                 return;
             } catch (InventoryExportException e) {
@@ -260,18 +416,20 @@ public class FullReindexJob {
         return session;
     }
 
-    /** Pages one session from its first page into the documents the catalog build created. */
-    private void importAvailabilitySnapshot(ExportPages.SnapshotSession session, String productsIndex,
-                                            ReindexProgressState progress, Instant deadline) throws IOException {
-        String cursor = null;
-        try (ThrottledBulkWriter.Session bulk = bulkWriter.open("reindex-availability", deadline)) {
+    /** Pages one session from {@code startCursor} into the documents the catalog build created. */
+    private void importAvailabilitySnapshot(Run run, ExportPages.SnapshotSession session, String startCursor)
+            throws IOException {
+        ReindexProgressState p = run.progress;
+        String cursor = startCursor;
+        int absorbed = 0;
+        try (ThrottledBulkWriter.Session bulk = bulkWriter.open("reindex-availability", run.deadline)) {
             do {
-                requireBefore(deadline, "availability build");
+                run.check();
                 recordSessionTtl(session);
                 ExportPages.SkuAvailabilitySnapshotPage page =
                         exports.skuAvailabilities(session.snapshotId(), cursor);
                 for (CatalogPayloads.SkuAvailability availability : nullSafe(page.items())) {
-                    bulk.add(writer.availabilityPatch(productsIndex, availability.skuId(),
+                    bulk.add(writer.availabilityPatch(p.productsIndex(), availability.skuId(),
                                     Boolean.TRUE.equals(availability.isInStock()),
                                     availability.availabilityRevision(),
                                     Timestamps.iso(availability.observedAt()), Timestamps.nowIso(), "reindex"),
@@ -281,13 +439,15 @@ public class FullReindexJob {
                                 java.time.Duration.between(availability.observedAt(), Instant.now()).toSeconds());
                     }
                 }
-                progress.addAvailabilitySnapshots(nullSafe(page.items()).size());
+                bulk.flush();
+                List<ThrottledBulkWriter.ItemFailure> failures = bulk.failures();
+                absorbSnapshotFailures(failures.subList(absorbed, failures.size()), p);
+                absorbed = failures.size();
+                p.addAvailabilitySnapshots(nullSafe(page.items()).size());
                 cursor = page.nextCursor();
-                progress.recordAvailabilityCursor(cursor);
+                p.recordAvailabilityCursor(cursor);
+                persist(run);
             } while (cursor != null && !cursor.isBlank());
-
-            bulk.flush();
-            absorbSnapshotFailures(bulk.failures(), progress);
         }
     }
 
@@ -320,28 +480,31 @@ public class FullReindexJob {
      * Kafka replay offset, so this feed — not a topic seek — is how the new index stays
      * current until cutover hands it back to the live indexer.
      */
-    private void drainAvailabilityChanges(String productsIndex, ReindexProgressState progress, Instant deadline) {
-        long after = progress.availabilityResumeSequence();
+    private void drainAvailabilityChanges(Run run, Instant deadline) throws IOException {
+        ReindexProgressState p = run.progress;
+        long after = p.availabilityResumeSequence();
         while (true) {
+            run.check();
             requireBefore(deadline, "availability change feed");
             ExportPages.ProjectionChangePage page = exports.changes(after);
 
-            EventBatch batch = new EventBatch(productsIndex);
+            EventBatch batch = new EventBatch(p.productsIndex());
             for (CloudEventEnvelope event : nullSafe(page.items())) {
                 availabilityHandler.handle(properties.topics().stock(), event, batch);
             }
             // The commit verdict is meaningless here — there is no offset to hold. What
             // matters is which targets existed, and that is what the two lists carry.
             executor.execute(AVAILABILITY_CHANGES_JOB, batch);
-            batch.settledDocumentIds().forEach(progress::resolveDeferredAvailability);
-            batch.missingDocumentIds().forEach(progress::deferAvailability);
+            batch.settledDocumentIds().forEach(p::resolveDeferredAvailability);
+            batch.missingDocumentIds().forEach(p::deferAvailability);
 
             Long next = page.nextAfterSequence();
             if (next == null) {
                 return;
             }
             after = next;
-            progress.recordAvailabilitySequence(after);
+            p.recordAvailabilitySequence(after);
+            persist(run);
         }
     }
 
@@ -353,12 +516,11 @@ public class FullReindexJob {
      * which arrives on the same change feed. What this does is drain that feed until the
      * deferred set empties — and refuse the cutover if it never does.
      */
-    private void settleDeferredAvailability(String productsIndex, ReindexProgressState progress,
-                                            Instant runDeadline) {
-        Instant deadline = earliest(runDeadline, Instant.now().plus(properties.reindex().catchUpDeadline()));
+    private void settleDeferredAvailability(Run run) throws IOException {
+        Instant deadline = earliest(run.deadline, Instant.now().plus(properties.reindex().catchUpDeadline()));
         while (true) {
-            drainAvailabilityChanges(productsIndex, progress, deadline);
-            Set<String> deferred = progress.deferredAvailabilitySkus();
+            drainAvailabilityChanges(run, deadline);
+            Set<String> deferred = run.progress.deferredAvailabilitySkus();
             if (deferred.isEmpty()) {
                 return;
             }
@@ -409,22 +571,34 @@ public class FullReindexJob {
      * anything is scanned, so a session that dies mid-scan takes its replay boundary with it:
      * the aggregates already imported were read against offsets that will never be seeked to.
      * The recovery is a new session paged from its first page, which is why this loops the
-     * way the availability build does ({@code WF-SEARCH-009} step 3).
+     * way the availability build does ({@code WF-SEARCH-009} step 3). A run resumed after a
+     * crash first continues the saved session at the saved product id.
      *
      * <p>Re-importing aggregates is free — the {@code review_revision} guard turns a repeat
      * into a no-op — so nothing is undone between attempts.
      */
-    private void buildRating(String productsIndex, ReindexProgressState progress, Instant deadline)
-            throws IOException {
+    private void buildRating(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
         if (!properties.export().reviewEnabled()) {
             log.info("review rating export is disabled; new SKUs keep their 0/0 default");
             return;
         }
+        // The rating update works on the refreshed view: documents written by the stages
+        // before this one must be visible or their update would conflict and be skipped.
+        indexAdmin.refresh(p.productsIndex());
         int maxSessions = properties.export().ratingExportMaxSessions();
         for (int attempt = 1; attempt <= maxSessions; attempt++) {
-            ExportPages.RatingExportSession session = openRatingSession(progress);
+            ExportPages.RatingExportSession session;
+            String startAfter;
+            if (attempt == 1 && p.ratingSession() != null && p.ratingSession().sessionId() != null) {
+                session = p.ratingSession();
+                startAfter = p.ratingAfter();
+            } else {
+                session = openRatingSession(p);
+                startAfter = null;
+            }
             try {
-                importRatingSnapshot(session, productsIndex, progress, deadline);
+                importRatingSnapshot(run, session, startAfter);
                 metrics.snapshotExport(SOURCE_REVIEW, "success");
                 return;
             } catch (RatingExportSessionException e) {
@@ -461,23 +635,23 @@ public class FullReindexJob {
     }
 
     /**
-     * Pages one session from its first page, applying each aggregate with an
-     * {@code _update_by_query} over the product's SKUs, guarded by {@code review_revision}
-     * exactly like the event path (ADR-016).
+     * Pages one session, applying each aggregate with an {@code _update_by_query} over the
+     * product's SKUs, guarded by {@code review_revision} exactly like the event path (ADR-016).
      *
      * <p>This is the one build step that cannot use {@code _bulk}: the aggregate is keyed by
      * {@code product_id} while a document is addressed by {@code _id = sku_id}, and Search
      * keeps no reverse lookup from one to the other ({@code SEARCH-INV-005}).
      */
-    private void importRatingSnapshot(ExportPages.RatingExportSession session, String productsIndex,
-                                      ReindexProgressState progress, Instant deadline) throws IOException {
-        String after = null;
+    private void importRatingSnapshot(Run run, ExportPages.RatingExportSession session, String startAfter)
+            throws IOException {
+        ReindexProgressState p = run.progress;
+        String after = startAfter;
         do {
-            requireBefore(deadline, "rating build");
+            run.check();
             ExportPages.RatingExportPage page = exports.ratingAggregates(session.sessionId(), after);
             requireSameSession(session, page);
             for (CatalogPayloads.RatingAggregate aggregate : nullSafe(page.items())) {
-                writer.reviewMetricsPatch(productsIndex, aggregate.productId(),
+                writer.reviewMetricsPatch(p.productsIndex(), aggregate.productId(),
                         aggregate.averageRating() == null ? 0.0 : aggregate.averageRating(),
                         aggregate.totalReviews() == null ? 0L : aggregate.totalReviews(),
                         aggregate.reviewRevision(), Timestamps.nowIso(), "reindex");
@@ -486,8 +660,10 @@ public class FullReindexJob {
                             java.time.Duration.between(aggregate.observedAt(), Instant.now()).toSeconds());
                 }
             }
-            progress.addRatingAggregates(nullSafe(page.items()).size());
+            p.addRatingAggregates(nullSafe(page.items()).size());
             after = page.nextAfterProductId();
+            p.recordRatingAfter(after);
+            persist(run);
         } while (after != null && !after.isBlank());
     }
 
@@ -507,33 +683,66 @@ public class FullReindexJob {
     // ------------------------------------------------------------------ cutover
 
     /**
-     * Verifies the new index before moving traffic, then swaps every alias in one atomic
-     * call so no instant exists where two indices hold the same write alias.
+     * Moves every alias to the new indices in one {@code _aliases} request, after re-checking
+     * that the lease and the run are still valid. The indices being replaced are written down
+     * first, so a crash between the swap and the final save cannot lose the way back.
      */
-    private void cutover(String productsIndex, String categoriesIndex) throws IOException {
-        indexAdmin.refresh(productsIndex);
-        indexAdmin.refresh(categoriesIndex);
-
-        Optional<String> currentProducts = indexAdmin.resolveAlias(properties.aliases().products());
-        if (currentProducts.isPresent()) {
-            long before = indexAdmin.countDocuments(currentProducts.get());
-            long after = indexAdmin.countDocuments(productsIndex);
-            double drift = before == 0 ? 0 : Math.abs(after - before) / (double) before;
-            if (drift > properties.reindex().maxDocCountDriftRatio()) {
-                throw new IllegalStateException("document count drifted by " + Math.round(drift * 100)
-                        + "% (" + before + " -> " + after + "), refusing to cut over");
-            }
+    private void cutover(Run run) throws IOException {
+        ReindexProgressState p = run.progress;
+        failIfSuperseded(run);
+        if (run.leaseLost || !runs.holdsLease(run.lease)) {
+            throw new LeaseLostException();
         }
 
-        indexAdmin.swapAliases(productsIndex,
-                List.of(properties.aliases().products(), properties.aliases().productsWrite()));
-        indexAdmin.swapAliases(categoriesIndex,
-                List.of(properties.aliases().categories(), properties.aliases().categoriesWrite()));
+        Optional<String> previousProducts = indexAdmin.resolveAlias(properties.aliases().products());
+        Optional<String> previousCategories = indexAdmin.resolveAlias(properties.aliases().categories());
+        boolean alreadySwapped = previousProducts.filter(p.productsIndex()::equals).isPresent();
+        if (!alreadySwapped) {
+            p.recordPrevious(previousProducts.orElse(null), previousCategories.orElse(null), Instant.now());
+            persist(run);
+
+            indexAdmin.refresh(p.productsIndex());
+            indexAdmin.refresh(p.categoriesIndex());
+            Map<String, List<String>> targets = new java.util.LinkedHashMap<>();
+            targets.put(p.productsIndex(),
+                    List.of(properties.aliases().products(), properties.aliases().productsWrite()));
+            targets.put(p.categoriesIndex(),
+                    List.of(properties.aliases().categories(), properties.aliases().categoriesWrite()));
+            indexAdmin.swapAliasesAtomically(targets);
+        } else {
+            log.info("run {} resumed after its aliases had already moved; finishing the bookkeeping", run.runId);
+        }
+
+        Instant retiredAt = Instant.now();
+        for (String replaced : new String[]{p.previousProductsIndex(), p.previousCategoriesIndex()}) {
+            if (replaced != null && !replaced.equals(p.productsIndex()) && !replaced.equals(p.categoriesIndex())) {
+                runs.markIndexRetired(replaced, run.runId, retiredAt);
+            }
+        }
     }
 
-    // ------------------------------------------------------------------ helpers
+    /**
+     * What follows a completed cutover and cannot undo it: satisfy the control requests the run
+     * covered, and read once more the stretch the live indexer applied to the old index after
+     * catch-up ended.
+     */
+    private void afterCutover(Run run) {
+        ReindexProgressState p = run.progress;
+        control.satisfiedBy(run.startedAt);
+        boolean tailComplete = true;
+        try {
+            drainAvailabilityChanges(run, Instant.now().plus(properties.reindex().catchUpDeadline()));
+        } catch (Exception e) {
+            tailComplete = false;
+            log.error("availability tail of run {} did not finish: {}", run.runId, e.getMessage());
+        }
+        tailComplete &= catchUp.replayTail(run.runId, p.productsIndex(), p.categoriesIndex(), p, () -> { });
+        p.recordTailReplay(tailComplete ? "COMPLETE" : "INCOMPLETE");
+        saveQuietly(run, "COMPLETED", null, Instant.now(), null);
+    }
 
-    /** No snapshot may be imported without its replay boundary, or catch-up has no start. */
+    // ------------------------------------------------------------------ ending a run
+
     private void requireOffsets(ReindexProgressState progress) {
         // Inventory is absent on purpose: it publishes no Kafka replay offset, and catch-up
         // resumes from its change feed at the session watermark instead (ADR-019).
@@ -565,30 +774,128 @@ public class FullReindexJob {
     }
 
     /**
-     * A control event during Build or Catch-up means the category tree changed under the
-     * run: the index would cut over with a stale path, so the run is marked
-     * {@code SUPERSEDED} and the aliases are left alone (ADR-017).
+     * A control event after the run started means the category tree changed under it: the index
+     * would cut over with a stale path, so the run is marked {@code SUPERSEDED}, its indices are
+     * discarded and the aliases are left alone (ADR-017). The request stays stored, so the next
+     * run is started for it.
      */
-    private void failIfSuperseded(String runId, String productsIndex, String categoriesIndex, String reason,
-                                  String actor, Instant startedAt, ReindexProgressState progress) throws IOException {
-        if (!control.supersedePending()) {
+    private void failIfSuperseded(Run run) throws IOException {
+        if (!control.supersedePending(run.startedAt)) {
             return;
         }
-        log.warn("reindex run {} superseded by a catalog control event", runId);
-        discard(productsIndex);
-        discard(categoriesIndex);
-        save(runId, "SUPERSEDED", null, reason, actor, startedAt, Instant.now(), progress, productsIndex,
-                new String[]{"RUN_SUPERSEDED", "a catalog-reindex-requested event arrived during this run"});
-        metrics.reindexState("SUPERSEDED", 1);
+        log.warn("reindex run {} superseded by a catalog control event", run.runId);
+        discard(run.progress);
+        saveFinal(run, "SUPERSEDED", new String[]{"RUN_SUPERSEDED",
+                "a catalog-reindex-requested event arrived during this run"});
+        metrics.reindexState("SUPERSEDED");
         throw new SupersededException();
     }
 
-    /** Signals that a run stopped because a newer control event took priority. */
-    public static class SupersededException extends RuntimeException {
-        SupersededException() {
-            super("reindex run superseded by a newer catalog control event");
+    private void finishCancelled(Run run) {
+        log.warn("reindex run {} cancelled", run.runId);
+        discard(run.progress);
+        saveQuietly(run, "CANCELLED", null, Instant.now(),
+                new String[]{"RUN_CANCELLED", "cancelled by an administrator"});
+        metrics.reindexState("CANCELLED");
+        metrics.reindexLifecycle("cancelled");
+        try {
+            runs.clearCancel(run.runId);
+        } catch (IOException e) {
+            log.warn("could not clear the cancellation request of run {}: {}", run.runId, e.getMessage());
         }
     }
+
+    private void fail(Run run, Exception e) {
+        log.error("reindex run {} failed: {}", run.runId, e.getMessage(), e);
+        ReindexProgressState p = run.progress;
+        try {
+            if (p.productsIndex() != null && indexAdmin.resolveAlias(properties.aliases().products())
+                    .filter(p.productsIndex()::equals).isPresent()) {
+                // The aliases moved before the failure: the run did its job, so it is not a
+                // failure and the indices it serves must not be deleted.
+                p.advanceTo(Stage.DONE);
+                saveQuietly(run, "COMPLETED", null, Instant.now(), null);
+                return;
+            }
+        } catch (IOException ignored) {
+            // Cannot tell where the aliases are: keep the indices rather than risk deleting a serving one.
+            saveQuietly(run, "FAILED", null, Instant.now(),
+                    new String[]{"REINDEX_FAILED", String.valueOf(e.getMessage())});
+            metrics.reindexState("FAILED");
+            return;
+        }
+        discard(p);
+        saveQuietly(run, "FAILED", null, Instant.now(), new String[]{"REINDEX_FAILED", String.valueOf(e.getMessage())});
+        metrics.reindexState("FAILED");
+    }
+
+    /** Deletes the indices a run built, unless an alias already serves them. */
+    public void discard(ReindexProgressState p) {
+        for (String index : new String[]{p.productsIndex(), p.categoriesIndex()}) {
+            if (index == null) {
+                continue;
+            }
+            try {
+                boolean serving = indexAdmin.resolveAlias(properties.aliases().products()).filter(index::equals).isPresent()
+                        || indexAdmin.resolveAlias(properties.aliases().categories()).filter(index::equals).isPresent();
+                if (!serving) {
+                    indexAdmin.deleteIndex(index);
+                }
+            } catch (IOException e) {
+                log.warn("could not clean up index {} after a failed run: {}", index, e.getMessage());
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ persistence
+
+    private static String statusOf(Stage stage) {
+        return switch (stage) {
+            case CREATE_INDICES, BUILD_CATEGORIES, BUILD_CATALOG, BUILD_AVAILABILITY, BUILD_RATING -> "BUILDING";
+            case CATCH_UP -> "CATCHING_UP";
+            case VERIFY, CUTOVER -> "CUTOVER";
+            case DONE -> "COMPLETED";
+        };
+    }
+
+    /** Saves the run at its current stage. Called at every page and every stage change. */
+    private void persist(Run run) throws IOException {
+        String status = statusOf(run.progress.stage());
+        boolean done = run.progress.stage() == Stage.DONE;
+        if (!status.equals(run.lastStatus)) {
+            run.lastStatus = status;
+            metrics.reindexState(status);
+        }
+        save(run, status, done ? null : status, done ? Instant.now() : null, null);
+    }
+
+    private void saveFinal(Run run, String status, String[] failure) throws IOException {
+        save(run, status, null, Instant.now(), failure);
+    }
+
+    private void saveQuietly(Run run, String status, String phase, Instant finishedAt, String[] failure) {
+        try {
+            save(run, status, phase, finishedAt, failure);
+        } catch (IOException e) {
+            log.error("could not persist the final state of reindex run {}: {}", run.runId, e.getMessage());
+        }
+    }
+
+    private void save(Run run, String status, String phase, Instant finishedAt, String[] failure)
+            throws IOException {
+        ReindexProgressState p = run.progress;
+        runs.saveRun(new ReindexRunDocument(
+                ReindexRunDocument.DOC_KIND, run.runId, status, phase, run.reason, run.actor,
+                run.startedAt, finishedAt, Instant.now(),
+                failure == null ? null : failure[0],
+                failure == null ? null : failure[1],
+                p.productsIndex(),
+                p.toMap(),
+                List.of(p.offsetsAsMap()),
+                p.checkpointAsMap()));
+    }
+
+    // ------------------------------------------------------------------ helpers
 
     private Optional<CategoryDocument> lookupCategory(String categoriesIndex,
                                                       Map<String, CategoryDocument> cache,
@@ -607,41 +914,6 @@ public class FullReindexJob {
         }));
     }
 
-    private void discard(String index) {
-        if (index == null) {
-            return;
-        }
-        try {
-            indexAdmin.deleteIndex(index);
-        } catch (IOException e) {
-            log.warn("could not clean up index {} after a failed run: {}", index, e.getMessage());
-        }
-    }
-
-    private void save(String runId, String status, String phase, String reason, String actor,
-                      Instant startedAt, Instant finishedAt, ReindexProgressState progress,
-                      String targetIndex, String[] failure) throws IOException {
-        runs.saveRun(new ReindexRunDocument(
-                ReindexRunDocument.DOC_KIND, runId, status, phase, reason, actor,
-                startedAt, finishedAt, Instant.now(),
-                failure == null ? null : failure[0],
-                failure == null ? null : failure[1],
-                targetIndex,
-                progress.toMap(),
-                List.of(progress.offsetsAsMap()),
-                progress.checkpointAsMap()));
-    }
-
-    private void saveQuietly(String runId, String status, String phase, String reason, String actor,
-                             Instant startedAt, Instant finishedAt, ReindexProgressState progress,
-                             String targetIndex, String[] failure) {
-        try {
-            save(runId, status, phase, reason, actor, startedAt, finishedAt, progress, targetIndex, failure);
-        } catch (IOException e) {
-            log.error("could not persist the final state of reindex run {}: {}", runId, e.getMessage());
-        }
-    }
-
     private static <T> List<T> nullSafe(List<T> list) {
         return list == null ? List.of() : list;
     }
@@ -649,5 +921,28 @@ public class FullReindexJob {
     /** Rough serialised size, good enough to keep bulk requests under the byte ceiling. */
     private static long estimateBytes(Map<String, Object> fields) {
         return String.valueOf(fields).length() * 2L;
+    }
+
+    // ------------------------------------------------------------------ control flow
+
+    /** Signals that a run stopped because a newer control event took priority. */
+    public static class SupersededException extends RuntimeException {
+        SupersededException() {
+            super("reindex run superseded by a newer catalog control event");
+        }
+    }
+
+    /** An administrator asked for this run to stop. */
+    static class CancelledException extends RuntimeException {
+        CancelledException() {
+            super("reindex run cancelled");
+        }
+    }
+
+    /** Another process holds the lease, so this one must stop writing run state. */
+    static class LeaseLostException extends RuntimeException {
+        LeaseLostException() {
+            super("reindex lease lost");
+        }
     }
 }

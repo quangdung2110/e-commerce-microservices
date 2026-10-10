@@ -3,6 +3,46 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-10 (Search sync)
+
+- Search HTTP v2 is `2.2.0` and `implemented` (was `proposed`). Additive, in the same major version:
+  - New admin operations under `/api/v2/search/reindex-runs`: `listReindexRuns` (`GET`, `status`, `limit` 1–100),
+    `cancelReindexRun` (`POST …/{run_id}/cancellation`, `202`) and `rollbackReindexRun` (`POST …/{run_id}/rollback`,
+    synchronous `200`). New run status `CANCELLED` (terminal; `ROLLED_BACK` already existed but had no operation producing it); `ReindexRun` carries `reason` and `actor`
+    (a run started by the `catalog-reindex-requested` control event has actor `system:catalog-control`); new
+    failure codes `RUN_CANCELLED` and `RUN_ABANDONED`.
+  - New error codes `REINDEX_PRECONDITION_FAILED` (`409`, cluster red or free disk below 1.5× the primary store; retryable),
+    `REINDEX_RUN_NOT_CANCELLABLE` (`409`), `REINDEX_ROLLBACK_UNAVAILABLE` (`409`), and the protocol codes `NOT_FOUND`,
+    `METHOD_NOT_ALLOWED`, `NOT_ACCEPTABLE`, `UNSUPPORTED_MEDIA_TYPE`. `504 SEARCH_TIMEOUT` is declared where Elasticsearch can
+    time out. `UNAUTHORIZED` stays and is now in the error catalog.
+- Observable behaviour that changed in the service and is now stated
+  ([Search ADR-022](../docs/search/decisions/ADR-022-post-implementation-audit-corrections.md)):
+  - Request limits of the OpenAPI are enforced with `400 INVALID_QUERY_PARAMETER`, all offending parameters listed together:
+    `q` ≤ 256, `category` ≤ 180, ≤ 50 `filter` items, each ≤ 256 and a decodable facet token (before, a garbage token was
+    ignored and returned unfiltered results), `cursor` > 16384 is `400 INVALID_CURSOR`. `category` that does not exist is
+    `400` naming the field.
+  - No error is `500` because of the request: unreadable body, missing parameter, wrong type, unknown route, wrong method,
+    wrong `Accept` or `Content-Type` are `400`/`404`/`405`/`406`/`415` problem+json. Elasticsearch `429`/`502`/`503` is
+    `503 ELASTICSEARCH_UNAVAILABLE`, `408`/`504` and a search that timed out or lost a shard is `504 SEARCH_TIMEOUT`, never a `200` with partial data.
+  - `trace_id` is always present; a caller `X-Request-Id` is echoed only when 16–64 characters of `[A-Za-z0-9._:-]`,
+    otherwise Search generates one.
+  - A reindex run is now resumable and observable end to end: a stuck run is resumed or abandoned (max 3 resumes), a new
+    trigger is no longer blocked by a dead run, the new index is verified (count drift, 200-SKU sample, smoke queries) before
+    the atomic alias swap, and old indices are removed after 24 hours.
+  - The Product event tombstone protection window of Search is 45 days (30-day topic retention + 7-day segment + margin;
+    was 35). `CDN_BASE_URL` must be an absolute `http(s)` URL without trailing slash; default `https://cdn.local`.
+- Catalog: `storefront-queries-search` is `implemented`. `ADOPTION.md` Search HTTP v2 row is `implemented`.
+- Product Events v1: no schema change; the `asyncapi.yaml` comment now says each consumer picks its own retry policy
+  (Search has no DLQ, ADR-005).
+
+## 2026-10-10 (Promotion CDC test)
+
+- Promotion Events v1 (documentation of behaviour that already existed; no schema changed): the Debezium `EventRouter`
+  puts the outbox payload on the wire as a JSON object but omits a field whose value is an explicit `null` (for
+  example `discount.max_discount_vnd` of an uncapped percentage). Absent and `null` mean the same; Product reads
+  both through `hasNonNull`. The AsyncAPI no longer says the payload reaches the wire "verbatim".
+  `OutboxCdcIntegrationTest` proves the shipped connector against real Kafka and Debezium.
+
 ## 2026-10-10 (Promotion sync)
 
 - Promotion HTTP v1 is `implemented` as a whole (was `proposed`; `x-known-runtime-gap` removed). Observable behaviour

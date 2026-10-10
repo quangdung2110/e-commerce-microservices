@@ -6,6 +6,7 @@ date: 2026-09-02
 decision_owners:
   - Search Service team
 supersedes: null
+extended_by: ADR-016-review-rating-snapshot-reindex, ADR-017-product-catalog-snapshot-offset-contract, ADR-022-post-implementation-audit-corrections
 evidence: []
 ---
 

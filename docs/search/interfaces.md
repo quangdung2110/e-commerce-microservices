@@ -2,11 +2,18 @@
 doc_id: search-interfaces
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
-evidence: []
-verified_against_commit: null
+evidence:
+  - contracts/http/search/v2/openapi.yaml
+  - contracts/events/product/v1/asyncapi.yaml
+  - contracts/events/inventory/v1/asyncapi.yaml
+  - contracts/events/review/v1/asyncapi.yaml
+  - contracts/http/inventory/exports/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
+  - contracts/http/product/v1/openapi.yaml
+  - java/services/search-service/src/main/java/com/ecommerce/search/controller
 ---
 
 # Search Service — Giao diện tích hợp
@@ -20,36 +27,43 @@ verified_against_commit: null
 
 | Interaction | Direction | Protocol | Provider | Consumer | Contract | Status |
 |---|---|---|---|---|---|---|
-| Search, suggest, browse, facet | Inbound | HTTP | Search | Storefront qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
-| Full reindex admin | Inbound | HTTP | Search | Admin qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | proposed |
+| Search, suggest, browse, facet | Inbound | HTTP | Search | Storefront qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | implemented |
+| Full reindex admin (tạo, liệt kê, đọc, hủy, rollback) | Inbound | HTTP | Search | Admin qua Gateway | [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml) | implemented |
 | Catalog và tombstone | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | implemented |
-| Category | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | implemented |
-| Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | proposed |
-| Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | proposed |
+| Category và control reindex | Inbound | Kafka | Product | Search | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) | implemented |
+| Tồn kho | Inbound | Kafka | Inventory | Search | [AsyncAPI Inventory v1](../../contracts/events/inventory/v1/asyncapi.yaml) | implemented |
+| Rating aggregate | Inbound | Kafka | Review | Search | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) | implemented |
 | Catalog snapshot export + replay offsets | Outbound | HTTP nội bộ | Product | Search | [Product OpenAPI v1](../../contracts/http/product/v1/openapi.yaml), [Product interfaces](../product/interfaces.md) | implemented |
-| Availability readiness + snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | proposed |
-| Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | proposed |
+| Availability readiness + snapshot/change export | Outbound | HTTP nội bộ | Inventory | Search | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) | implemented |
+| Rating aggregate snapshot export | Outbound | HTTP nội bộ | Review | Search | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) | implemented |
+
+`implemented` theo [`contracts/ADOPTION.md`](../../contracts/ADOPTION.md): provider và consumer đã chạy theo contract; chưa
+có contract test chéo nên chưa `verified`.
 
 Search **không phát event**. Không có mục “event phát ra” trong tài liệu này là
 một khẳng định contract, không phải thiếu sót.
 
 ## 2. Quy ước chung cho HTTP v2
 
-- Storefront API là `/api/v2/search/...` và anonymous qua Gateway. Nó không nhận
-  hay sử dụng identity claim: Gateway hiện định tuyến `GET /api/v1/search/**` là
-  `public-read`, và v2 phải giữ cùng trust model. Service không được tin bất kỳ
-  `X-User-*` header nào khi có public ingress bypass Gateway.
+- Storefront API là `/api/v2/search/...` và anonymous qua Gateway: Gateway local chỉ expose bốn route
+  `GET` (`products`, `suggestions`, `categories`, `categories/{id}/facets`) với `strip-identity-headers`
+  ([gateway runtime contract](../gateway/runtime-contract.md)). Nó không nhận hay sử dụng identity claim.
+  Service không được tin bất kỳ `X-User-*` header nào khi có public ingress bypass Gateway.
 - Reindex là admin command qua Gateway, dùng `/api/v2/search/reindex-runs`; nó
   **không** dùng prefix `/internal`, vì `/internal/v1` được dành cho mTLS
   service-to-service như Product export và Inventory availability export. Gateway route
-  của hai operation admin phải có priority cao hơn public route, bắt buộc JWT và
-  `ADMIN`.
-- Breaking change chạy ở version path mới. V1 đã bị gỡ; frontend và Gateway còn gọi
-  `/api/v1/search/**` phải migrate sang v2, không có giai đoạn chạy song song nữa.
+  của các operation admin (`GET`/`POST` trên `/reindex-runs` và `/reindex-runs/**`) có priority cao hơn
+  public route, bắt buộc JWT và `ADMIN`.
+- Breaking change chạy ở version path mới. V1 đã bị gỡ khỏi Search, Gateway và frontend; không có
+  `/api/v1/search/**` và không có giai đoạn chạy song song.
 - Mọi lỗi dùng `application/problem+json` theo RFC 9457 và
   [`Problem`](../../contracts/shared/json-schema/v1/problem.schema.json): `code`,
-  `trace_id`, `retryable` và `errors[]`. Không dùng legacy
-  `error_code/message/details/request_id` body.
+  `trace_id` (luôn có), `retryable` và `errors[]`. Không dùng legacy
+  `error_code/message/details/request_id` body. Bảng mã lỗi đầy đủ ở [§7](#7-error-catalog).
+- `X-Request-Id` của client được giữ làm `trace_id` và echo ở header response khi dài 16..64 ký tự
+  `[A-Za-z0-9._:-]`; giá trị khác (OpenAPI cho phép 8..128 ký tự) bị thay bằng id Search sinh ra, vì `trace_id`
+  của schema Problem chỉ nhận 16..64 ký tự.
+- Giá trị rỗng hoặc chỉ khoảng trắng của `q`, `category` và `cursor` được coi như không gửi (form trình duyệt gửi `q=`).
 - Mọi response là projection eventual-consistent. `is_in_stock` là snapshot
   Inventory, không phải kết quả reserve; `selling_price_vnd` không phải quotation.
 - Security headers/CORS là concern của Gateway và deployment configuration; OpenAPI
@@ -62,9 +76,12 @@ một khẳng định contract, không phải thiếu sót.
 Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách sản phẩm.
 
 - **Caller:** buyer qua Gateway; không yêu cầu quyền nghiệp vụ.
-- **Tham số:** `q`, `category`, `filter` (repeatable opaque token từ facet), `price_min`, `price_max`,
-  `in_stock` (mặc định `true`), `has_promotion`, `sort`, `cursor`, `size`
-  (mặc định 20, tối đa 100).
+- **Tham số:** `q` (≤ 256 ký tự), `category` (id hoặc slug, ≤ 180), `filter` (repeatable opaque token từ facet,
+  tối đa 50 lần, mỗi token 1..256 ký tự và phải là giá trị `FacetOption.value`), `price_min`, `price_max`,
+  `in_stock` (mặc định `true`), `has_promotion`, `sort`, `cursor` (≤ 16384), `size`
+  (mặc định 20, tối đa 100). Vượt giới hạn, token `filter` không có dạng `code:type:value`, hoặc
+  `category` không khớp category nào đang hiển thị là `400 INVALID_QUERY_PARAMETER` kèm `errors[]` theo field
+  (mọi vi phạm cùng lúc) — token lạ không bị bỏ qua. `cursor` quá dài là `INVALID_CURSOR`.
 - **Sort:** relevance (max SKU score), price_asc/price_desc (giá SKU đại diện), newest (max updated_at), rating (max rating), luôn product_id asc khi bằng điểm.
 - **Đơn vị kết quả:** một Product duy nhất trên toàn bộ snapshot; sku_id, giá, ảnh, giảm giá và tồn kho thuộc SKU có selling_price_vnd thấp nhất THỎA TẤT CẢ bộ lọc, tie sku_id asc. Lọc màu đen không lấy giá SKU trắng rẻ hơn.
 - **Pagination:** signed cursor generation 2 mang PIT + vị trí Product + resolved category id + query chuẩn hóa (trừ size). PIT gia hạn 2 phút mỗi request. Đổi query/filter/sort, token sửa tay/cũ/hết hạn trả INVALID_CURSOR. Trang cuối next_cursor=null và đóng PIT; tải lại trang đầu để nhận dữ liệu mới.
@@ -78,7 +95,7 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
 
 Dropdown search-as-you-type.
 
-- **Tham số:** `q` (bắt buộc, tối thiểu 2 ký tự), `limit` (mặc định 8, tối đa 20).
+- **Tham số:** `q` (bắt buộc, 2..256 ký tự), `limit` (mặc định 8, tối đa 20).
 - Đọc index `search_suggestions` đã pre-compute; ranking theo `weight` giảm dần,
   tie-break `text.keyword` tăng dần. Public response chỉ trả `text` và `type`,
   không trả `weight` nội bộ.
@@ -88,8 +105,9 @@ Dropdown search-as-you-type.
   API không trả `product_id`, `sku_id`, `category_id` hay slug để điều hướng.
   `type` chỉ là metadata để trình bày/phân loại dropdown, không được dùng để suy
   ra hoặc điều hướng tới Product, SKU hay Category.
-- `q` ngắn hơn 2 ký tự trả `INVALID_QUERY_PARAMETER`.
-- Timeout 2s; suggest lỗi không được làm hỏng trang tìm kiếm chính.
+- `q` ngắn hơn 2 ký tự hoặc dài hơn 256 ký tự trả `INVALID_QUERY_PARAMETER`.
+- Timeout 2s: Elasticsearch quá hạn trả `504 SEARCH_TIMEOUT`, không bao giờ một danh sách thiếu; suggest lỗi không
+  được làm hỏng trang tìm kiếm chính.
 
 ### 3.3 `GET /api/v2/search/categories`
 
@@ -101,7 +119,8 @@ Trả cây danh mục cho sidebar điều hướng.
   được job recompute làm mới nên có thể trễ so với kết quả search. Nó là số DISTINCT
   Product của **cả nhánh**, nên danh mục cha luôn lớn hơn hoặc bằng tổng con.
   `product_count_updated_at` là `null` cho tới khi job chạy lần đầu cho node đó.
-- Danh mục `is_deleted = true` không xuất hiện trong cây.
+- Danh mục `is_deleted = true` không xuất hiện trong cây. Quá hạn (5s) hoặc shard lỗi là `504`/`503`, không
+  bao giờ một cây thiếu node.
 
 ### 3.4 `GET /api/v2/search/categories/{category_id}/facets`
 
@@ -121,29 +140,57 @@ Bộ lọc khả dụng cho một trang danh mục.
   `code:type:value`. `label` của từng option luôn dẫn xuất — chuỗi đã case-fold, viết hoa chữ
   đầu — vì descriptor không mang option; `value` không đổi. Đổi tên attribute hiển thị sau
   tối đa 60 giây kể từ khi snapshot mới được áp dụng (cache nhãn, không ảnh hưởng số đếm).
-- `category_id` không tồn tại trả `CATEGORY_NOT_FOUND`.
+- `category_id` không tồn tại trả `CATEGORY_NOT_FOUND`; một `category_id` không phải UUID cũng là
+  `CATEGORY_NOT_FOUND`, không phải `400`. Aggregation quá hạn (5s) hoặc shard lỗi là `504 SEARCH_TIMEOUT`, không bao giờ
+  một facet có số đếm thiếu.
 
 ### 3.5 `POST /api/v2/search/reindex-runs`
 
 Trigger full reindex bất đồng bộ.
 
-- **Auth:** identity và role `ADMIN` do Gateway chuyển tiếp; thiếu quyền trả
+- **Auth:** identity và role `ADMIN` do Gateway chuyển tiếp; thiếu identity trả `401 UNAUTHORIZED`, thiếu quyền trả
   `FORBIDDEN`. Actor audit được lấy từ trusted identity, không nhận từ body.
-- **Body:** chỉ có lý do trigger.
-- **Precondition:** cluster khỏe và còn đủ dung lượng cho một index đầy đủ kèm
-  replica; đang có run chưa kết thúc thì trả `REINDEX_ALREADY_RUNNING`.
+- **Body:** chỉ có lý do trigger (1..500 ký tự). Body hỏng hoặc thiếu là `400`, sai Content-Type là `415`.
+- **Run bị bỏ rơi:** trước khi nhận run mới, Search xử lý run chưa kết thúc mà owner đã chết (lease hết hạn):
+  resume hoặc đánh dấu `RUN_ABANDONED` ([WF-SEARCH-014](./workflows.md)). Nếu vừa resume một run, trigger này vẫn bị từ chối
+  `REINDEX_ALREADY_RUNNING`; slot được giải phóng khi run kết thúc.
+- **Precondition:** cluster không `red` và free disk ≥ `min-free-disk-ratio` (1.5) × kích thước primary store của
+  index hiện hành, nếu không trả `409 REINDEX_PRECONDITION_FAILED` (retryable). Cluster `yellow` được chấp nhận. Đang có
+  run chưa kết thúc thì trả `REINDEX_ALREADY_RUNNING`; slot là lease `full-reindex` nên hai trigger đồng thời chỉ một cái thắng.
 - **Hành vi:** trả `202 Accepted` kèm `run_id` và `status_url` ngay lập tức; công
   việc chạy nền theo [WF-SEARCH-009](./workflows.md).
 - **Idempotency:** không tự dedupe theo body; ràng buộc “chỉ một run đang chạy”
   là cơ chế chống trigger trùng.
+- Search cũng tự gọi thao tác này (actor `system:catalog-control`) khi cây category đổi
+  ([§4.3](#43-tcatalogcontrolevents--category-reindex-control)).
 
 ### 3.6 `GET /api/v2/search/reindex-runs/{run_id}`
 
-Đọc trạng thái một lần reindex: pha hiện tại, tiến độ build, lag catch-up, thời
-điểm bắt đầu/kết thúc và thông điệp lỗi nếu có. Trả `REINDEX_RUN_NOT_FOUND` khi
-`run_id` không tồn tại.
+Đọc trạng thái một lần reindex: pha hiện tại, tiến độ build, lag catch-up, lý do và actor, thời
+điểm bắt đầu/kết thúc và thông điệp lỗi nếu có (`failure.code`: `REINDEX_FAILED`, `RUN_SUPERSEDED`, `RUN_CANCELLED`,
+`RUN_ABANDONED`). Trả `REINDEX_RUN_NOT_FOUND` khi `run_id` không tồn tại (kể cả khi không phải UUID).
 
-### 3.7 Health
+### 3.7 `GET /api/v2/search/reindex-runs`
+
+Liệt kê các run, mới nhất trước (`started_at` giảm dần); `status` lọc theo một trạng thái, `limit` 1..100 (mặc định 20).
+Cần để tìm run do control event tự khởi chạy. Admin only.
+
+### 3.8 `POST /api/v2/search/reindex-runs/{run_id}/cancellation`
+
+Yêu cầu hủy một run. Run đang Build hoặc Catch-up dừng ở trang kế tiếp (tối đa vài giây) và kết thúc `CANCELLED`
+(`failure.code = RUN_CANCELLED`), các index nó dựng bị xóa, alias không đổi. Response `202` mang trạng thái hiện tại;
+client đọc lại run (§3.6) để thấy `CANCELLED`. Run không còn owner được hủy ngay trong request. Run đã kết thúc hoặc
+đang `CUTOVER` (kiểm tra và chuyển alias) không hủy được: `409 REINDEX_RUN_NOT_CANCELLABLE`.
+
+### 3.9 `POST /api/v2/search/reindex-runs/{run_id}/rollback`
+
+Trả bốn alias về hai index mà một run `COMPLETED` đã thay, trong một lệnh `_aliases` atomic, và đặt run `ROLLED_BACK`.
+Đồng bộ nên trả `200` kèm run. Chỉ cutover mới nhất được rollback, chỉ khi index trước đó chưa bị job dọn xóa (giữ tối thiểu
+24 giờ sau cutover) và không có run khác đang chạy; ngược lại `409 REINDEX_ROLLBACK_UNAVAILABLE` (lý do trong `detail`).
+Dữ liệu ghi vào index mới sau cutover không có trong index cũ: chạy reindex mới để hội tụ. Rollback của suggestion
+không có API ([Operations §10](./operations.md#10-runbooks)).
+
+### 3.10 Health
 
 `GET /actuator/health/liveness` phản ánh tiến trình còn sống.
 `GET /actuator/health/readiness` chỉ `UP` khi kết nối Elasticsearch dùng được và
@@ -167,12 +214,16 @@ Quy tắc chung cho mọi topic:
 - Field lạ trong payload được bỏ qua ở tầng deserialize; field bắt buộc thiếu là
   contract violation, ghi metric và bỏ qua event.
 - Không có DLQ ([ADR-005](./decisions/ADR-005-no-dead-letter-queue.md)): lỗi tạm
-  thời thì không commit offset để Kafka gửi lại; lỗi không tự hồi phục thì ghi log,
+  thời thì không commit offset và trả batch lại cho Kafka bằng `nack` (giao lại sau
+  `search.consumer.retry-backoff`, 5s) — chỉ "không ACK" thì không đủ, xem
+  [ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md); lỗi không tự hồi phục thì ghi log,
   ghi metric, bỏ qua và ACK.
 - Có một lớp lỗi thứ ba: vi phạm contract readiness của Inventory, tức
   `document_missing_exception` khi apply availability. Nó **không** phải lỗi không tự
-  hồi phục — Search không ACK, không commit offset và page cả hai owner (§4.4,
-  [ADR-019](./decisions/ADR-019-inventory-owned-sku-availability.md)).
+  hồi phục — Search không ACK, `nack` batch (nên nó được giao lại cho đến khi document
+  tồn tại), không upsert và page cả hai owner (§4.4,
+  [ADR-019](./decisions/ADR-019-inventory-owned-sku-availability.md)). Hệ quả có chủ đích: partition đó đứng lại
+  cho tới khi owner sửa.
 - Offset chỉ commit khi mọi record trong batch đã apply hoặc đã được phân loại là
   lỗi không tự hồi phục.
 
@@ -204,10 +255,14 @@ theo path và không tự dựng lại tree ([ADR-013](./decisions/ADR-013-produ
 ### 4.3 `t.catalog.control.events` — category reindex control
 
 Product phát `com.ecommerce.catalog.reindex-requested.v1` khi rename, đổi slug hoặc
-đổi parent category. Search coalesce các request, export category trước Product rồi
-chạy full reindex/catch-up; event control không cập nhật trực tiếp SKU document. Một
-control event mới trong Build/Catch-up làm run hiện tại `SUPERSEDED`, không được
-cutover, rồi được coalesce thành run mới.
+đổi parent category. Search **lưu bền** request vào `search_jobs` (một document, gộp theo `root_category_id` với
+`category_revision` cao nhất) trước khi ACK; nếu không lưu được thì `nack`. Request yên lặng
+`search.lifecycle.control-debounce` (2 phút) mà không có run đang chạy thì Search tự khởi chạy một full reindex
+(export category trước Product, rồi Catch-up) với actor `system:catalog-control`; event control không cập nhật trực
+tiếp SKU document. Một control event đến **sau** khi một run bắt đầu (kiểm trước Catch-up, trước VERIFY và ngay trước
+khi swap) làm run đó `SUPERSEDED`: index của nó bị xóa, alias giữ nguyên, request vẫn nằm đó để run kế tiếp xử lý.
+Một run `COMPLETED` xóa mọi request đến trước lúc nó bắt đầu. Sau mỗi lần tự khởi chạy, lần tự động tiếp theo
+đợi 5 × debounce để một run hỏng liên tục không dội vào Product, Inventory và Review.
 
 ### 4.4 `t.inventory.stock.events.v1` — tồn kho
 
@@ -280,8 +335,7 @@ Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 
 ## 6. Compatibility
 
-- V1 legacy đã bị gỡ khỏi Search. Frontend/Gateway còn dùng route v1 là migration
-  gap và sẽ nhận lỗi cho tới khi chuyển sang v2; không được mô tả v1 là đang chạy.
+- V1 legacy đã bị gỡ khỏi Search, Gateway và frontend. `/api/v1/search/**` không còn route; không được mô tả v1 là đang chạy.
 - V2 không có Product detail/point-read và không hỗ trợ pseudo-filter như
   `NOT product_id`. PDP dùng [Product Detail BFF](../product-detail-bff/README.md):
   BFF gọi Product buyer-read và Inventory Availability Read API. Inventory event/export
@@ -297,6 +351,35 @@ Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
   path mới. Consumer phải migrate trước khi version cũ bị gỡ ở lần thay đổi tiếp theo.
 - Cursor không phải contract ổn định giữa các version: client phải coi nó là chuỗi
   đục và không được tự sinh.
-- Trước khi bất kỳ interaction nào đạt `implemented`: phải có OpenAPI/AsyncAPI
-  tương ứng trong `contracts/`, contract test giữa Search và producer, và kiểm tra
-  breaking change trong CI.
+- Trước khi một interaction đạt `implemented`: phải có OpenAPI/AsyncAPI tương ứng trong
+  `contracts/` và cả provider lẫn consumer đã chạy theo nó. Để đạt `verified` (mức cao hơn,
+  [`contracts/ADOPTION.md`](../../contracts/ADOPTION.md)) còn cần contract test chéo giữa Search và producer
+  và kiểm tra breaking change trong CI; hai điều đó chưa có ([README §9](./README.md#9-known-gaps)).
+
+## 7. Error catalog
+
+Mọi lỗi là `application/problem+json` với `type`, `title`, `status`, `detail`, `instance`, `code`, `retryable`,
+`trace_id` và (khi lỗi theo field) `errors[]` gồm `field` và `message`. `retryable` là gợi ý cho client.
+
+| Code | HTTP | Retryable | Khi nào | Client nên làm gì |
+|---|---|---|---|---|
+| `INVALID_QUERY_PARAMETER` | 400 | Không | Tham số sai kiểu/range/độ dài/số lượng, `sort` ngoài enum, `price_max < price_min`, token `filter` không phải `FacetOption.value`, `category` không tồn tại, `reason` ngoài 1..500, body hỏng hoặc thiếu, tham số bắt buộc thiếu | Sửa request theo `errors[]` |
+| `INVALID_CURSOR` | 400 | Không | Cursor sai chữ ký, đổi query/filter/sort/category, PIT hết hạn (2 phút không hoạt động), dài quá 16384, hoặc ngoài tập kết quả | Tải lại trang đầu |
+| `UNAUTHORIZED` | 401 | Không | Admin operation thiếu `X-User-Id` do Gateway inject | Đăng nhập lại qua Gateway |
+| `FORBIDDEN` | 403 | Không | Admin operation thiếu role `ADMIN` | — |
+| `CATEGORY_NOT_FOUND` | 404 | Không | `category_id` của facet không có trong index (kể cả không phải UUID) | — |
+| `REINDEX_RUN_NOT_FOUND` | 404 | Không | `run_id` không tồn tại (kể cả không phải UUID) | — |
+| `NOT_FOUND` | 404 | Không | Route không tồn tại (chỉ xảy ra khi bypass Gateway) | — |
+| `METHOD_NOT_ALLOWED` | 405 | Không | Sai HTTP method; header `Allow` có sẵn | — |
+| `NOT_ACCEPTABLE` | 406 | Không | `Accept` không gồm JSON | — |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | Không | Body không phải `application/json` | — |
+| `REINDEX_ALREADY_RUNNING` | 409 | Có | Đã có run chưa kết thúc, hoặc vừa resume một run bị bỏ rơi | Đợi run kết thúc, đọc `GET /reindex-runs` |
+| `REINDEX_PRECONDITION_FAILED` | 409 | Có | Cluster `red` hoặc thiếu dung lượng đĩa | Đợi cluster hồi phục |
+| `REINDEX_RUN_NOT_CANCELLABLE` | 409 | Không | Run đã kết thúc hoặc đang `CUTOVER` | — |
+| `REINDEX_ROLLBACK_UNAVAILABLE` | 409 | Không | Run không `COMPLETED`, không thay index nào, không phải cutover mới nhất, index trước đã bị dọn, hoặc có run khác đang chạy | Chạy reindex mới thay vì rollback |
+| `ELASTICSEARCH_UNAVAILABLE` | 503 | Có | Elasticsearch không tới được, quá tải (`429`/`502`/`503`), hoặc vượt `max-matching-products` | Thử lại có backoff; ẩn dropdown suggest |
+| `SEARCH_TIMEOUT` | 504 | Có | Ngân sách truy vấn hết (5s search/category/facet, 2s suggest), `timed_out`, hoặc shard lỗi | Thử lại; không dùng kết quả một phần |
+| `INTERNAL_ERROR` | 500 | Không | Lỗi không lường trước hoặc Elasticsearch từ chối một truy vấn do chính Search sinh | Báo lỗi với `trace_id` |
+
+`401` dùng `UNAUTHORIZED`, khác `UNAUTHENTICATED` của Cart/Product/Promotion/Inventory/Checkout; tên chung chưa được chốt
+(mục X3 của báo cáo audit).

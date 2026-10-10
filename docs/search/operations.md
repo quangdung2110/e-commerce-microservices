@@ -2,11 +2,13 @@
 doc_id: search-operations
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
-evidence: []
-verified_against_commit: null
+evidence:
+  - java/services/search-service/src/main/resources/application.yml
+  - java/services/search-service/src/main/java/com/ecommerce/search/common/SearchMetrics.java
+  - java/services/search-service/src/main/java/com/ecommerce/search/worker
 ---
 
 # Search Service — Vận hành
@@ -57,8 +59,12 @@ phải khi consumer lag cao — lag không ảnh hưởng khả năng phục v�
 | Pagination | `size` mặc định và tối đa | Có | Không | Không |
 | Lịch job | Cron cho rebuild suggestion, recompute count, purge tombstone | Có | Không | Có |
 | Suggestion rebuild | `suggestion_min_docs`, ratio tối thiểu với version trước (`0.80`), hot prefix, PIT keep-alive, lease/renewal và retention rollback | Có | Không | Không, nếu cấu hình động |
-| Cửa sổ tombstone | `search.tombstone.protection-window`, mặc định `35d`: số ngày giữ tombstone trước khi purge. Phải lớn hơn retention dài nhất của topic Search tiêu thụ (hiện 30 ngày, `t.inventory.stock.events.v1`); khi retention topic đổi phải nâng cửa sổ cùng lúc ([ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)) | Có | Không | Không |
-| Thumbnail | CDN base URL (`CDN_BASE_URL`) và URL placeholder (`THUMBNAIL_PLACEHOLDER_URL`) dùng để dựng `thumbnail_url` = base + `/` + `thumbnail_storage_key` percent-encode từng segment. Phải bằng `PDP_MEDIA_CDN_BASE_URL`/`PDP_MEDIA_PLACEHOLDER_URL` của Product Detail BFF, vốn dựng URL cùng cách, để thẻ sản phẩm và PDP trỏ cùng file; local là bucket MinIO `product-media` qua `http://localhost:8088/media` | Có | Không | Không, nếu cấu hình động |
+| Cửa sổ tombstone | `search.tombstone.protection-window`, mặc định `45d`: thời gian giữ tombstone trước khi purge. Phải lớn hơn thời gian dài nhất một record đã consume còn nằm trên broker = retention dài nhất (30 ngày, `t.inventory.stock.events.v1`) + `segment.ms` (mặc định 7 ngày) + biên; khi retention hoặc `segment.ms` của topic đổi phải nâng cửa sổ cùng lúc ([ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md)) | Có | Không | Không |
+| Thumbnail | CDN base URL (`CDN_BASE_URL`, mặc định `https://cdn.local`) và URL placeholder (`THUMBNAIL_PLACEHOLDER_URL`) dùng để dựng `thumbnail_url` = base + `/` + `thumbnail_storage_key` percent-encode từng segment. Base phải là URL http(s) tuyệt đối **không có `/` cuối** — service không khởi động nếu sai — và bằng `PDP_MEDIA_CDN_BASE_URL`/`CART_MEDIA_CDN_BASE_URL`/`CHECKOUT_MEDIA_CDN_BASE_URL`, vốn dựng URL cùng cách, để thẻ sản phẩm, PDP, giỏ hàng và checkout trỏ cùng file; local là bucket MinIO `product-media` qua `http://localhost:8088/media` | Có | Không | Có |
+| Consumer retry | `search.consumer.retry-backoff` (5s): nghỉ trước khi giao lại một batch bị `nack` | Có | Không | Không |
+| Vòng đời reindex | `search.lifecycle.*`: `lease-duration` 2m, `lease-renew-interval` 30s, `watchdog-interval` 30s, `max-resume-attempts` 3, `control-debounce` 2m, `control-auto-start` true, `precondition-enabled` true, `min-free-disk-ratio` 1.5, `old-index-retention` 24h, `cleanup-cron` hằng giờ, `cleanup-enabled` true | Có | Không | Có |
+| Kiểm tra cutover | `search.verify.*`: `enabled`, `sample-size-per-bucket` (100 → mẫu 200 SKU), `hot-queries` (danh sách `q` phải có hit trên index mới nếu index hiện hành có) | Có | Không | Có |
+| HTTP server | `server.max-http-request-header-size` 40KB, để một request hợp lệ ở cận trên của OpenAPI (cursor 16384, 50 filter × 256, q 256) không bị Tomcat cắt; Gateway/ingress phía trước phải cho phép cỡ tương đương | Có | Không | Có |
 | Export nội bộ | Base URL của Product/Inventory/Review export, timeout, cờ bật export Review, `availability_snapshot_max_sessions` và `rating_export_max_sessions` (đều mặc định `2`) | Có | Không | Có |
 | CORS | Danh sách origin được phép | Có | Không | Có |
 
@@ -73,8 +79,8 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 |---|---|---|
 | `http_server_requests_seconds` | histogram | `uri`, `method`, `status` |
 | `es_query_duration_seconds` | histogram | `index`, `query_type` |
-| `kafka_consumer_lag` | gauge | `topic`, `partition`, `group` |
-| `search_indexing_total` | counter | `topic`, `event_type`, `status` |
+| `kafka_consumer_fetch_manager_records_lag_max` (và `..._records_lag{topic,partition}` khi partition đã được fetch) | gauge | `client_id` (và `topic`, `partition`); metric chuẩn của Kafka client do `MicrometerConsumerListener` gắn vào, không phải metric Search tự đặt |
+| `search_indexing_total` | counter | `topic`, `event_type`, `status` (gồm `redelivery`: batch bị `nack`) |
 | `search_indexing_lag_seconds` | histogram | `topic` |
 | `search_event_ignored_total` | counter | `topic`, `event_type` |
 | `search_document_missing_total` | counter | `topic`, `event_type` |
@@ -83,7 +89,12 @@ minh; không ghi giá trị secret hoặc tên secret vào tài liệu này.
 | `search_zombie_update_blocked_total` | counter | `topic`, `event_type` |
 | `search_indexing_total{status="guard_blocked"}` | counter | `topic`, `event_type` |
 | `search_job_duration_seconds` | histogram | `job` |
-| `search_reindex_state` | gauge | `phase` |
+| `search_reindex_state` | gauge | `phase` (`STARTED`, `BUILDING`, `CATCHING_UP`, `CUTOVER`, `COMPLETED`, `FAILED`, `SUPERSEDED`, `CANCELLED`, `ROLLED_BACK`); đúng một phase bằng 1 |
+| `search_reindex_lifecycle_total` | counter | `kind`: `resumed`, `abandoned`, `cancelled`, `rolled_back`, `auto_started` |
+| `search_reindex_cutover_check_total` | counter | `check`: `count_drift`, `sample_diff`, `smoke`; `outcome`: `ok`, `fail` |
+| `search_index_cleanup_total` | counter | `template`: `products`, `categories`, `search_suggestions` |
+| `search_category_snapshot_export_total`, `search_product_snapshot_export_total` | counter | `status` |
+| `search_category_orphan_node_total` | counter | Không có |
 | `search_inventory_availability_export_total` | counter | `status`: `ok`, `snapshot_session_expired`, `replay_window_expired`, `fail` |
 | `search_inventory_availability_snapshot_age_seconds` | gauge | Không có |
 | `search_inventory_snapshot_session_ttl_seconds` | gauge | Không có; thời gian còn lại của session đang page, để cảnh báo trước khi hết hạn |
@@ -128,6 +139,9 @@ gian trong ứng dụng.
 | Enrichment miss tăng | Vượt nền bình thường | Low | Search on-call | Lệch danh mục |
 | Job không chạy | Job hằng ngày không hoàn thành đúng cửa sổ | Medium | Search on-call | Job thất bại |
 | Reindex quá hạn | Run vượt giới hạn thời gian hoặc `FAILED` | Medium | Search on-call | Reindex |
+| Reindex bị bỏ rơi | `search_reindex_lifecycle_total{kind="resumed"}` tăng, hoặc `kind="abandoned"` bất kỳ | Medium | Search on-call | Reindex thất bại |
+| Cutover bị từ chối | `search_reindex_cutover_check_total{outcome="fail"}` tăng | Medium | Search on-call | Reindex thất bại |
+| Batch bị giao lại liên tục | `search_indexing_total{status="redelivery"}` tăng đều trên cùng một topic | High | Search on-call (+ owner của topic nếu là `document_missing`) | Consumer lag, Lệch projection |
 | Đĩa Elasticsearch | Vượt ngưỡng cảnh báo dung lượng | High | Platform | Dung lượng cluster |
 
 Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
@@ -136,17 +150,20 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 
 | Sự cố | Hành vi |
 |---|---|
-| Elasticsearch không sẵn sàng | Toàn bộ API đọc trả 503; readiness fail; consumer không commit offset và lag tăng |
+| Elasticsearch không sẵn sàng | Toàn bộ API đọc trả 503; readiness fail; mỗi batch bị `nack` và giao lại sau 5s (offset không commit, lag tăng), nên khi Elasticsearch trở lại không mất event |
 | Cluster `yellow` | Vẫn phục vụ; cảnh báo; hoãn reindex |
 | Đĩa gần đầy | Elasticsearch có thể chuyển index sang read-only; indexing dừng, đọc còn chạy; phải giải phóng dung lượng trước khi khôi phục ghi |
 | Kafka không sẵn sàng | API đọc không ảnh hưởng; dữ liệu ngày càng cũ; consumer tự kết nối lại |
 | Consumer lag cao | Dữ liệu cũ; tăng số instance tới trần partition; kiểm tra thao tác diện rộng đang chiếm băng thông ghi |
 | Producer đổi schema | `search_payload_invalid_total` tăng; event bị bỏ qua; cần phối hợp với producer rồi reindex |
 | Product export API lỗi | Chỉ ảnh hưởng reindex; traffic đọc bình thường |
-| Inventory readiness API lỗi | Catalog consumer không commit offset; Inventory chưa được publish SKU mới; dữ liệu hiện hữu tiếp tục phục vụ |
+| Inventory readiness API lỗi | Batch catalog bị `nack` và giao lại cho tới khi đăng ký thành công; Inventory chưa được publish SKU mới; dữ liệu hiện hữu tiếp tục phục vụ |
+| `document_missing` khi apply availability | Vi phạm contract readiness: batch bị `nack` và giao lại, partition đó đứng lại cho tới khi document tồn tại hoặc owner sửa; không upsert |
 | Inventory availability export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Inventory |
 | Review rating snapshot export lỗi | Reindex không được cutover; giữ alias cũ và phối hợp Review |
-| Job singleton kẹt lock | Job bỏ chu kỳ; số đếm và suggestion cũ dần |
+| Process reindex chết giữa chừng | Lease `full-reindex` hết hạn sau tối đa 2 phút; watchdog của một replica resume run từ stage đã lưu (tối đa 3 lần) rồi `RUN_ABANDONED`; trigger không bị chặn vĩnh viễn |
+| Index mới không qua kiểm tra cutover | Run `FAILED`, index mới bị xóa, alias giữ nguyên |
+| Job singleton kẹt lock | Job bỏ chu kỳ tối đa tới khi lease hết hạn; số đếm và suggestion cũ dần |
 | Deploy nhiều version song song | An toàn nếu mapping không đổi; đổi mapping bắt buộc đi qua reindex |
 
 ## 7. Degraded behavior
@@ -184,8 +201,8 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
   rồi mới rollout code phụ thuộc mapping mới nếu có.
 - Code mới phải đọc được document do version cũ ghi và ngược lại trong suốt thời
   gian rollout.
-- Rollback dữ liệu là alias swap ngược về index version trước; giữ index cũ tối
-  thiểu 24 giờ.
+- Rollback dữ liệu là alias swap ngược về index version trước (`POST /reindex-runs/{run_id}/rollback`, một lệnh
+  `_aliases` atomic); index cũ được giữ 24 giờ sau cutover rồi bị `IndexCleanupJob` xóa.
 - Đổi `group.id` của consumer sẽ đặt lại vị trí đọc; chỉ làm khi có chủ đích và
   hiểu rõ hệ quả với `auto.offset.reset`.
 
@@ -200,19 +217,23 @@ nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 | Elasticsearch outage | Cluster đỏ, đĩa đầy, index bị chuyển read-only |
 | Lệch projection | Availability `document_missing` là readiness violation: dừng ACK, xác minh registration/document, rồi bootstrap per-SKU availability + change feed. `SNAPSHOT_SESSION_EXPIRED` là nhánh khác hẳn: tạo session mới tại `W'` và page lại từ đầu, không đọc change feed từ `W` cũ; rating/enrichment xử lý theo nguồn |
 | Contract drift | `search_payload_invalid_total` tăng sau khi producer deploy |
-| Reindex thất bại | Hủy run, dọn index thừa, hoặc rollback alias |
-| Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone |
+| Reindex thất bại | `GET /reindex-runs/{id}` đọc `failure.code`/`message`; run `FAILED` đã xóa index dở nên chỉ cần sửa nguyên nhân (export lỗi, kiểm tra cutover không đạt, hết hạn) rồi trigger lại; `REINDEX_PRECONDITION_FAILED` thì chờ cluster hồi phục; hủy run đang chạy bằng `POST .../cancellation`; rollback alias bằng `POST .../rollback` (chỉ trong 24 giờ sau cutover) |
+| Reindex bị bỏ rơi | Run đứng yên không có tiến độ: lease `full-reindex` hết hạn sau ≤ 2 phút và watchdog resume; nếu `RUN_ABANDONED` thì đọc log của các lần resume để biết stage nào chết, sửa nguyên nhân rồi trigger lại |
+| Rollback suggestion | Thủ công, không có API: `_aliases` gỡ `search_suggestions` khỏi index hiện hành và gắn vào rollback version (`search_suggestions_v<N-1>`, luôn được giữ); kiểm tra bằng `GET /suggestions` rồi chạy rebuild khi nguyên nhân đã sửa |
+| Job thất bại | Chạy lại thủ công rebuild suggestion, recompute count, purge tombstone (chờ lịch kế tiếp; local profile `dev` chạy count mỗi 5 phút, suggestion mỗi 15 phút) |
 | Zombie update | `search_zombie_update_blocked_total` tăng bất thường |
 
-Không runbook nào được đánh dấu hoàn chỉnh trong đợt refactor này; nội dung chi
-tiết phải viết cùng với vận hành thực tế.
+Các runbook trên là điểm xuất phát đã khớp với hành vi của code; chi tiết từng bước phải được bổ sung từ vận hành thực
+tế.
 
 ## 11. Workers và scheduled jobs
 
 | Worker/Job | Trigger | Concurrency | Idempotency | Chạy lại | Telemetry |
 |---|---|---|---|---|---|
 | Indexing worker | Kafka, liên tục | Theo partition | Guard theo nguồn | Bằng offset Kafka | Lag, tỉ lệ indexing, độ trễ |
-| Full reindex job | API hoặc lịch bảo trì | Singleton, một run tại một thời điểm | Checkpoint theo chunk | Resume hoặc chạy run mới | Tiến độ, pha, kết quả |
+| Full reindex job | `POST /reindex-runs`, hoặc tự động khi cây category đổi (request yên lặng 2 phút) | Singleton qua lease `full-reindex`, một run tại một thời điểm | Checkpoint stage và cursor ở mỗi trang | Watchdog resume run bị bỏ rơi (≤ 3 lần), hoặc chạy run mới | Tiến độ, pha, kết quả, `search_reindex_*` |
+| Reindex watchdog / auto starter | Mỗi 30s, trên mọi replica | Lease quyết định replica hành động | Lease atomic | Chạy lại an toàn | `search_reindex_lifecycle_total` |
+| Index cleanup | Hằng giờ | Singleton qua lease `index-cleanup` | Lọc theo marker `INDEX_RETIRED` và trạng thái hiện tại | Chạy lại an toàn | `search_index_cleanup_total` |
 | Suggestions rebuilder | Hằng ngày, giờ thấp điểm | Singleton qua ES lease lock | Build index mới mỗi lần; source alias đổi hoặc validation fail thì không swap | Chạy lại an toàn bất cứ lúc nào | Số document, validation, lock, source generation, version/rollback |
 | Category count recompute | Định kỳ | Singleton | Ghi giá trị tuyệt đối | Chạy lại an toàn | Thời lượng, số danh mục |
 | Tombstone purger | Hằng ngày, giờ thấp điểm | Singleton | Lọc theo trạng thái hiện tại | Chạy lại an toàn | Số purge, tuổi tombstone |
@@ -223,7 +244,9 @@ enforce bằng giới hạn action/byte, rate và in-flight request; không đư
 `requests_per_second`, vốn chỉ là tham số của một số ES task API. Khi cluster trả
 429/503 hoặc timeout, job phải dừng dispatch mới, retry chunk hiện tại với backoff có
 jitter và hạ tốc độ hiệu lực trước khi tăng dần lại sau các bulk thành công. Lịch chạy
-cụ thể là `TBD` cho tới khi đọc từ cấu hình runtime.
+mặc định nằm trong `application.yml`: suggestion 03:00 hằng ngày, purge tombstone 02:30 hằng ngày, recompute `product_count`
+mỗi 4 giờ, dọn index hằng giờ. Profile `dev` (local) bật lại recompute (mỗi 5 phút) và rebuild suggestion (mỗi 15 phút) —
+nếu không thì gợi ý và số đếm danh mục ở local luôn trống — và vẫn tắt purge.
 
 ## Product grouping and PIT rollout (ADR-020)
 

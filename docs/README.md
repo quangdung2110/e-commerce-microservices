@@ -140,7 +140,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 > Tài liệu theo cấu trúc chuẩn trong `docs/_templates`, `scope: current`: đã implement trong
 > `java/services/promotion-service` và đã đối soát với source/migration/test (audit 2026-10-10,
 > ADR-019). HTTP v1 và Events v1 `implemented`; chưa `verified` (chưa có consumer test với Promotion thật
-> và E2E Debezium).
+> và E2E Promotion → Product; đoạn outbox → Kafka đã test với Debezium thật).
 
 | File | Mô tả |
 |---|---|
@@ -260,7 +260,7 @@ Service Contract Matrix legacy đã bị xóa.
 | [auth/README.md](./auth/README.md) | Auth Service — Identity Provider đã implement (`go/services/auth-service`), `scope: current`: account, session, JWKS, listener internal cho Notification; ADR-001..009 (gồm thứ tự publish/marker, mesh cho listener internal, compare-and-set account, đăng nhập kiểm mật khẩu trước trạng thái). Contract còn `proposed` trong `contracts/ADOPTION.md`. |
 | [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
 | [review/README.md](./review/README.md) | Review Service — entitlement, review, media, moderation, legal takedown, privacy erasure và rating aggregate; đã đồng bộ với `java/services/review-service` theo `docs/_templates/service-documentation` (ADR-001..013); HTTP v1, internal v1 và Events v1 `implemented`, `HttpContractIT` kiểm route và response với OpenAPI. |
-| [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [search/README.md](./search/README.md) | Search Service — Elasticsearch projection cho storefront search/browse, đã đồng bộ với `java/services/search-service` theo `docs/_templates/service-documentation` (ADR-001..022: no-DLQ, reindex ba pha có resume/cancel/rollback/verify, tombstone window 45 ngày, hiệu chỉnh sau audit 2026-10-10); HTTP v2 `implemented`, `HttpErrorMappingIT` và `ReindexLifecycleIT` kiểm lỗi giao thức và vòng đời reindex trên Elasticsearch thật. |
 | [notification/README.md](./notification/README.md) | Notification Service — thiết kế `proposed`, runtime Go: lane ưu tiên, pipeline hai ranh giới, tracking SES, idempotency, ordering, backpressure, catalog template, Decide, data model, contract và interface (`contracts/events/notification/v1`, `contracts/http/notification`). |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |

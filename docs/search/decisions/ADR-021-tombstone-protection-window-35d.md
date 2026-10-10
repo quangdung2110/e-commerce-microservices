@@ -1,12 +1,13 @@
 ---
 doc_id: search-adr-021
 service: search
-status: accepted
+status: superseded
 date: 2026-10-09
 decision_owners:
   - Search Service team
 supersedes: null
 extends: ADR-011-tombstone-and-purge-window
+superseded_by: ADR-022-post-implementation-audit-corrections
 evidence:
   - java/services/search-service/src/main/resources/application.yml
   - java/services/search-service/src/main/java/com/ecommerce/search/config/SearchProperties.java
@@ -17,6 +18,10 @@ evidence:
 ---
 
 # ADR-021 — Cửa sổ bảo vệ tombstone là 35 ngày
+
+> **Đã bị thay (2026-10-10).** [ADR-022](./ADR-022-post-implementation-audit-corrections.md) nâng cửa sổ lên 45 ngày vì Kafka
+> xóa theo segment (record sống thêm tới `segment.ms`, mặc định 7 ngày, sau `retention.ms`). Quy tắc "cửa sổ dài hơn mọi thứ còn nằm trên
+> broker" của ADR-011 và cách tính 30 ngày + biên ở dưới vẫn đúng; chỉ con số 35 ngày là sai. Nội dung gốc giữ nguyên bên dưới.
 
 ## Status
 

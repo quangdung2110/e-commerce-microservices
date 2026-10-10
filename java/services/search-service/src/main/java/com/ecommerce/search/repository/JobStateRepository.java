@@ -7,7 +7,10 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.GetResponse;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import com.ecommerce.search.config.SearchProperties;
+import com.ecommerce.search.domain.document.IndexRetiredDocument;
 import com.ecommerce.search.domain.document.LeaseLockDocument;
+import com.ecommerce.search.domain.document.ReindexCancelDocument;
+import com.ecommerce.search.domain.document.ReindexRequestDocument;
 import com.ecommerce.search.domain.document.ReindexRunDocument;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,6 +82,192 @@ public class JobStateRepository {
                 .sort(sort -> sort.field(f -> f.field("started_at").order(SortOrder.Desc))),
                 ReindexRunDocument.class);
         return response.hits().hits().stream().findFirst().map(hit -> hit.source());
+    }
+
+    /** Newest first, optionally narrowed to one status. */
+    public List<ReindexRunDocument> listRuns(Optional<String> status, int limit) throws IOException {
+        SearchResponse<ReindexRunDocument> response = client.search(builder -> builder
+                .index(index())
+                .size(limit)
+                .trackTotalHits(track -> track.enabled(false))
+                .query(q -> q.bool(bool -> {
+                    bool.filter(f -> f.term(t -> t.field("doc_kind").value(ReindexRunDocument.DOC_KIND)));
+                    status.ifPresent(value -> bool.filter(f -> f.term(t -> t.field("status").value(value))));
+                    return bool;
+                }))
+                .sort(sort -> sort.field(f -> f.field("started_at").order(SortOrder.Desc))),
+                ReindexRunDocument.class);
+        return response.hits().hits().stream()
+                .map(hit -> hit.source())
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    }
+
+    /**
+     * A cancellation is a document of its own, not a flag inside the run: the running job
+     * replaces the whole run document at every checkpoint and would otherwise erase a request
+     * that arrived between two of its saves.
+     */
+    public void requestCancel(String runId, String actor, Instant at) throws IOException {
+        client.index(builder -> builder
+                .index(index())
+                .id(ReindexCancelDocument.docId(runId))
+                .document(new ReindexCancelDocument(ReindexCancelDocument.DOC_KIND, runId, actor, at))
+                .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+    }
+
+    public boolean isCancelRequested(String runId) throws IOException {
+        return client.exists(builder -> builder.index(index()).id(ReindexCancelDocument.docId(runId))).value();
+    }
+
+    public void clearCancel(String runId) throws IOException {
+        client.delete(builder -> builder
+                .index(index()).id(ReindexCancelDocument.docId(runId))
+                .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+    }
+
+    // ---------------------------------------------------------------- coalesced reindex request
+
+    public Optional<ReindexRequestDocument> findReindexRequest() throws IOException {
+        GetResponse<ReindexRequestDocument> response = client.get(
+                builder -> builder.index(index()).id(ReindexRequestDocument.DOC_ID), ReindexRequestDocument.class);
+        return response.found() ? Optional.ofNullable(response.source()) : Optional.empty();
+    }
+
+    /**
+     * Records one {@code catalog-reindex-requested}: creates the pending request or raises the
+     * revision of its root category, and moves {@code updated_at} to {@code now}. Concurrent
+     * listener threads race on this document, so it is written with a sequence-number check and
+     * retried; the revision only ever grows, which makes a repeated event harmless.
+     */
+    @SuppressWarnings("unchecked")
+    public void mergeReindexRequest(String rootCategoryId, long revision, Instant now) throws IOException {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            GetResponse<ReindexRequestDocument> current = client.get(
+                    builder -> builder.index(index()).id(ReindexRequestDocument.DOC_ID),
+                    ReindexRequestDocument.class);
+
+            Map<String, Object> checkpoint = new java.util.LinkedHashMap<>();
+            Map<String, Object> roots = new java.util.LinkedHashMap<>();
+            Instant firstAt = now;
+            if (current.found() && current.source() != null) {
+                ReindexRequestDocument existing = current.source();
+                if (existing.checkpoint() != null) {
+                    checkpoint.putAll(existing.checkpoint());
+                    Object known = existing.checkpoint().get("roots");
+                    if (known instanceof Map<?, ?> map) {
+                        roots.putAll((Map<String, Object>) map);
+                    }
+                }
+                if (existing.startedAt() != null) {
+                    firstAt = existing.startedAt();
+                }
+            }
+            roots.merge(rootCategoryId, revision,
+                    (old, added) -> Math.max(((Number) old).longValue(), ((Number) added).longValue()));
+            checkpoint.put("roots", roots);
+            ReindexRequestDocument merged = new ReindexRequestDocument(
+                    ReindexRequestDocument.DOC_KIND, "CATEGORY_TREE_CHANGED", firstAt, now, checkpoint);
+            try {
+                if (current.found()) {
+                    client.index(builder -> builder
+                            .index(index()).id(ReindexRequestDocument.DOC_ID).document(merged)
+                            .ifSeqNo(current.seqNo()).ifPrimaryTerm(current.primaryTerm())
+                            .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+                } else {
+                    client.create(builder -> builder
+                            .index(index()).id(ReindexRequestDocument.DOC_ID).document(merged)
+                            .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+                }
+                return;
+            } catch (ElasticsearchException e) {
+                if (e.status() != 409) {
+                    throw e;
+                }
+                log.debug("reindex request was updated concurrently, merging again (attempt {})", attempt + 1);
+            }
+        }
+        throw new IOException("could not persist the reindex request after repeated version conflicts");
+    }
+
+    /** Remembers when an automatic run was last started for the pending request. */
+    public void markReindexRequestAttempt(Instant at) throws IOException {
+        try {
+            client.update(builder -> builder
+                            .index(index())
+                            .id(ReindexRequestDocument.DOC_ID)
+                            .retryOnConflict(5)
+                            .refresh(co.elastic.clients.elasticsearch._types.Refresh.True)
+                            .doc(Map.of("checkpoint", Map.of("last_attempt_at", at))),
+                    ReindexRequestDocument.class);
+        } catch (ElasticsearchException e) {
+            if (e.status() != 404) {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Drops the pending request once a completed run satisfied it, unless a newer event arrived
+     * after the cutoff: a request that arrived after the run started asks for a tree the run
+     * may not have seen.
+     */
+    public void deleteReindexRequestNotNewerThan(Instant cutoff) throws IOException {
+        GetResponse<ReindexRequestDocument> current = client.get(
+                builder -> builder.index(index()).id(ReindexRequestDocument.DOC_ID), ReindexRequestDocument.class);
+        if (!current.found() || current.source() == null) {
+            return;
+        }
+        Instant updatedAt = current.source().updatedAt();
+        if (updatedAt != null && updatedAt.isAfter(cutoff)) {
+            return;
+        }
+        try {
+            client.delete(builder -> builder
+                    .index(index()).id(ReindexRequestDocument.DOC_ID)
+                    .ifSeqNo(current.seqNo()).ifPrimaryTerm(current.primaryTerm())
+                    .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+        } catch (ElasticsearchException e) {
+            if (e.status() != 409 && e.status() != 404) {
+                throw e;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- retired indices
+
+    public void markIndexRetired(String index, String runId, Instant at) throws IOException {
+        client.index(builder -> builder
+                .index(index())
+                .id(IndexRetiredDocument.docId(index))
+                .document(new IndexRetiredDocument(IndexRetiredDocument.DOC_KIND, index, runId, at))
+                .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+    }
+
+    /** Called when an index becomes current again (rollback) or is gone. */
+    public void clearIndexRetired(String index) throws IOException {
+        client.delete(builder -> builder
+                .index(index())
+                .id(IndexRetiredDocument.docId(index))
+                .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+    }
+
+    /** Retirement instant per physical index name. */
+    public Map<String, Instant> retiredIndices() throws IOException {
+        SearchResponse<IndexRetiredDocument> response = client.search(builder -> builder
+                .index(index())
+                .size(1000)
+                .trackTotalHits(track -> track.enabled(false))
+                .query(q -> q.term(t -> t.field("doc_kind").value(IndexRetiredDocument.DOC_KIND))),
+                IndexRetiredDocument.class);
+        Map<String, Instant> retired = new java.util.HashMap<>();
+        response.hits().hits().forEach(hit -> {
+            IndexRetiredDocument doc = hit.source();
+            if (doc != null && doc.targetIndex() != null && doc.finishedAt() != null) {
+                retired.put(doc.targetIndex(), doc.finishedAt());
+            }
+        });
+        return retired;
     }
 
     // ---------------------------------------------------------------- lease locks

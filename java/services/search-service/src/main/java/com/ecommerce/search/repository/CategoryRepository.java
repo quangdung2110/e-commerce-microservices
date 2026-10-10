@@ -67,12 +67,14 @@ public class CategoryRepository {
                         .query(query)
                         .sort(sort -> sort.field(f -> f.field("level").order(SortOrder.Asc)))
                         .sort(sort -> sort.field(f -> f.field("category_id").order(SortOrder.Asc)))
+                        .allowPartialSearchResults(false)
                         .timeout(properties.query().categoryTimeout().toMillis() + "ms");
                 if (cursor != null) {
                     builder.searchAfter(cursor);
                 }
                 return builder;
             }, CategoryDocument.class);
+            SearchCompleteness.require(response, "category scan");
 
             var hits = response.hits().hits();
             hits.forEach(hit -> {
@@ -107,8 +109,10 @@ public class CategoryRepository {
                 .size(1)
                 .trackTotalHits(track -> track.enabled(false))
                 .query(q -> q.bool(bool -> bool.filter(notDeleted()).filter(matcher)))
+                .allowPartialSearchResults(false)
                 .timeout(properties.query().categoryTimeout().toMillis() + "ms"),
                 CategoryDocument.class);
+        SearchCompleteness.require(response, "category lookup");
         return response.hits().hits().stream().findFirst().map(hit -> hit.source());
     }
 

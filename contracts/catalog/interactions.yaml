@@ -45,7 +45,7 @@ interactions:
     provider: search-service
     consumers: [api-gateway]
     contract: http/search/v2/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Bốn API storefront anonymous cộng hai operation admin reindex. Một hit là một SKU;
       facet và category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên

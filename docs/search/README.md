@@ -2,35 +2,43 @@
 doc_id: search-overview
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
 evidence:
   - docs/search/schema
-verified_against_commit: null
+  - contracts/http/search/v2/openapi.yaml
+  - contracts/events/product/v1/asyncapi.yaml
+  - contracts/events/inventory/v1/asyncapi.yaml
+  - contracts/events/review/v1/asyncapi.yaml
+  - java/services/search-service/src/main/java/com/ecommerce/search
+  - java/services/search-service/src/test/java/com/ecommerce/search
 ---
 
 # Search Service — Service Overview
 
-> Điểm bắt đầu để hiểu Search Service. Tài liệu mô tả thiết kế hiện hành đã được
-> align với [Product Service](../product/README.md) và
-> [Inventory](../inventory/interfaces.md#6-public-events); trạng thái vẫn là `proposed` cho
-> tới khi được đối chiếu với implementation.
+> Điểm bắt đầu để hiểu Search Service. Tài liệu mô tả thiết kế hiện hành, đã được
+> đồng bộ với [Product Service](../product/README.md),
+> [Inventory](../inventory/interfaces.md#6-public-events), [Review](../review/README.md) và với
+> implementation (ADR-001..022; lần đối chiếu gần nhất:
+> [ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md)).
 
 ## 1. Service status
 
 - Service đang `running`. Implementation tại
   [`java/services/search-service`](../../java/services/search-service): Java 21,
   Spring Boot 3.3, Elasticsearch Java client 8.11, Spring Kafka.
-- Tài liệu ở mức `proposed`: thiết kế đã chốt ở mức document nhưng chưa đối chiếu
-  từng dòng code, nên `verified_against_commit` là `null`.
-- Contract adoption `pilot`: OpenAPI storefront/admin v2 đã có ở
-  [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml).
-   Contract Review cho event rating và snapshot export đã được định nghĩa ở mức
-   `proposed`; implementation/contract test giữa Review và Search vẫn là gap.
+- Tài liệu ở mức `implemented`: mọi mục bên dưới đã được đối chiếu với code và test của service. Phần còn thiếu được
+  liệt kê trung thực ở [§9 Known gaps](#9-known-gaps).
+- Contract adoption `implemented`: OpenAPI storefront/admin v2
+  ([`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml), `2.2.0`) được provider
+  phục vụ và frontend dùng; v1 đã bị gỡ hoàn toàn. Search consume AsyncAPI Product, Inventory và Review v1 và gọi các
+  export/readiness API của ba service đó; cả hai phía đều chạy. Chưa `verified` vì chưa có contract test chéo giữa Search
+  và producer ([`contracts/ADOPTION.md`](../../contracts/ADOPTION.md)).
 - Elasticsearch là store duy nhất. Không có PostgreSQL, không có Redis.
-- Bốn file mapping trong `schema/` là nguồn chuẩn của implementation hiện hành:
-  ba index phục vụ buyer cộng index nội bộ `search_jobs` cho state của job singleton.
+- Bốn file mapping trong `schema/` là nguồn chuẩn của implementation hiện hành, được test so từng byte với bản
+  trong artifact: ba index phục vụ buyer cộng index nội bộ `search_jobs` cho state của các job (run reindex, request
+  reindex đang chờ, marker index đã thay, yêu cầu hủy, lease).
 
 ## 2. Mục tiêu
 
@@ -43,7 +51,7 @@ ranking) chạy trên inverted index.
 ## 3. Boundary
 
 Search chịu trách nhiệm: query layer cho buyer, projection Elasticsearch từ event
-của Product/Inventory/Review, vòng đời index (mapping, alias, reindex) và chất
+của Product/Inventory/Review, vòng đời index (mapping, alias, reindex, rollback, dọn index cũ) và chất
 lượng tìm kiếm (analyzer, ranking, suggestion).
 
 Search **không** chịu trách nhiệm: sở hữu catalog, quyết định giá, quyết định tồn
@@ -83,19 +91,20 @@ Elasticsearch của Search; mọi ghi đi qua Kafka consumer hoặc job nội b�
 - Gợi ý autocomplete search-as-you-type từ index suggestion pre-compute.
 - Duyệt cây danh mục kèm số lượng sản phẩm đang hiển thị.
 - Trả bộ filter khả dụng cho một trang danh mục.
-- Đồng bộ projection catalog, tồn kho và rating từ event upstream.
-- Reindex zero-downtime khi mapping hoặc dữ liệu cần rebuild.
+- Đồng bộ projection catalog, tồn kho và rating từ event upstream, với retry thật sự khi một batch không áp dụng được.
+- Reindex zero-downtime có kiểm tra trước cutover, resume khi run bị bỏ rơi, hủy, rollback và tự khởi chạy khi cây
+  category đổi.
 
 ## 6. Dependencies
 
 | Direction | Service/System | Protocol | Purpose | Required/Optional | Contract |
 |---|---|---|---|---|---|
 | Inbound | Storefront qua API Gateway | HTTP | Search, suggest, browse, facet | Required | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
-| Inbound | Admin qua API Gateway | HTTP | Trigger và theo dõi full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
+| Inbound | Admin qua API Gateway | HTTP | Trigger, theo dõi, liệt kê, hủy và rollback full reindex | Optional | [`contracts/http/search/v2`](../../contracts/http/search/v2/openapi.yaml) |
 | Inbound | `product-service` | Kafka | Catalog, giá công bố, trạng thái, tombstone | Required | [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) |
 | Inbound | `inventory-service` | Kafka | Snapshot `is_in_stock` theo SKU do Inventory tính | Required | [Inventory AsyncAPI v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
 | Inbound | `review-service` | Kafka | Rating aggregate theo product | Required cho rating freshness; không nằm trên query hot path | [AsyncAPI Review v1](../../contracts/events/review/v1/asyncapi.yaml) |
-| Inbound | `product-service` | Kafka | Control reindex khi category tree đổi | Required | `t.catalog.control.events`, Product AsyncAPI v1 |
+| Inbound | `product-service` | Kafka | Control reindex khi category tree đổi (tự dẫn tới một run) | Required | `t.catalog.control.events`, [AsyncAPI Product v1](../../contracts/events/product/v1/asyncapi.yaml) |
 | Outbound | `product-service` | HTTP nội bộ | Export Category/Product kèm replay offsets cho full reindex | Required | [Product interfaces](../product/interfaces.md) |
 | Outbound | `inventory-service` | HTTP nội bộ | Đăng ký/revoke readiness và đọc fixed-watermark per-SKU availability export | Required | [Inventory Export OpenAPI v1](../../contracts/http/inventory/exports/v1/openapi.yaml) |
 | Outbound | `review-service` | HTTP nội bộ | Export rating aggregate snapshot cho full reindex | Required để cutover index giữ đầy đủ rating | [Review internal OpenAPI v1](../../contracts/http/review/internal/v1/openapi.yaml) |
@@ -113,9 +122,9 @@ cho projection, không đưa nó vào đường reserve/stock authoritative.
 | `SEARCH-INV-002` | Một document trong index `products` là một SKU, `_id = sku_id`. Mỗi item API search là một Product đại diện bởi SKU giá thấp nhất thỏa bộ lọc (ADR-020). |
 | `SEARCH-INV-003` | Mọi count hiển thị cho browse/facet phải đếm DISTINCT `product_id`, không dùng `doc_count` theo SKU. |
 | `SEARCH-INV-004` | Event cũ hơn state hiện tại của document không được ghi đè state đó; guard theo từng nguồn dữ liệu. |
-| `SEARCH-INV-005` | Event availability hoặc rating không được tạo document mới; chỉ Product được tạo document. Search phải đăng ký readiness sau khi document đã tồn tại; Inventory không được publish/export availability trước mốc đó. Missing document khi apply availability là contract violation, không ACK và tuyệt đối không upsert. |
+| `SEARCH-INV-005` | Event availability hoặc rating không được tạo document mới; chỉ Product được tạo document. Search phải đăng ký readiness sau khi document đã tồn tại; Inventory không được publish/export availability trước mốc đó. Missing document khi apply availability là contract violation, không ACK (batch được `nack` và giao lại) và tuyệt đối không upsert. |
 | `SEARCH-INV-006` | Document đã tombstone không được sống lại bởi event đến trễ trước khi bị purge. |
-| `SEARCH-INV-007` | Mọi lệnh ghi index đi qua write alias; không ghi trực tiếp vào index versioned trừ pha catch-up của reindex. |
+| `SEARCH-INV-007` | Mọi lệnh ghi index đi qua write alias; không ghi trực tiếp vào index versioned trừ pha catch-up (và tail replay) của reindex. |
 
 Giải thích và nơi enforcement ở [Domain](./domain.md).
 
@@ -125,35 +134,26 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 |---|---|---|
 | [Architecture](./architecture.md) | Thành phần, processing và consistency model | Khi thay đổi cấu trúc hoặc luồng xử lý |
 | [Domain](./domain.md) | Document model, rule hiển thị, guard, error | Khi thay đổi business logic |
-| [Interfaces](./interfaces.md) | HTTP API và event tiêu thụ | Khi tích hợp với Search |
+| [Interfaces](./interfaces.md) | HTTP API, event tiêu thụ và error catalog | Khi tích hợp với Search |
 | [Workflows](./workflows.md) | Luồng end-to-end và failure path | Khi sửa một use case |
 | [Data](./data.md) | Ownership, index model và lifecycle | Khi sửa mapping hoặc dữ liệu |
-| [Operations](./operations.md) | SLO, alert, failure mode, worker | Khi deploy hoặc xử lý sự cố |
+| [Operations](./operations.md) | SLO, alert, failure mode, worker, runbook | Khi deploy hoặc xử lý sự cố |
 | [Development](./development.md) | Chạy, build và test local | Khi phát triển service |
 | [Decisions](./decisions/README.md) | ADR | Khi cần hiểu lý do thiết kế |
 | [`schema/`](./schema) | Index template và painless script | Khi đổi mapping hoặc script |
 
 ## 9. Known gaps
 
-- **HTTP contract mới chỉ ở mức proposed.** OpenAPI v2 đã mô tả bốn API storefront
-  và hai operation admin reindex, nhưng provider/frontend chưa migrate và chưa có
-   contract test. Contract Review v1 cũng mới là target contract và chưa có
-   provider/consumer contract test.
-- **Implementation đã được viết lại theo bộ tài liệu này.** Thế hệ code cũ (một field
-  `version` chung, giá `original_price`/`promotional_price`, `is_in_stock` suy ra từ
-  status, `product_count` cộng trừ theo event, Draft Cleanup Job gọi endpoint
-  `orphan-drafts` không tồn tại, HTTP v1 legacy) đã bị gỡ hoàn toàn. Tài liệu vẫn ở
-  mức `proposed` vì `verified_against_commit` chưa được cập nhật và contract test giữa
-  Search với ba producer vẫn chưa tồn tại.
 - **Chưa có SLO số.** Ngưỡng latency, freshness và alert threshold còn là `TBD`
   cho tới khi có số liệu production.
-- **Chưa có contract test** giữa Search và ba producer.
-- **Cross-service contract chưa được implement.** Product đã chốt
-  `thumbnail_storage_key` trong `sku-upserted` và export Category/Product kèm replay
-  offsets; Inventory đã có contract đích cho per-SKU availability, readiness và snapshot/change export. Các
-  contract vẫn mang trạng thái `proposed` và cần producer implementation, contract
-  test, rồi mới chuyển Search khỏi adapter legacy.
-- **Search Product cards đã đổi ngữ nghĩa.** Backend/frontend cùng dùng `total_products`, signed PIT cursor và một card/Product; consumer pilot cần rollout đồng bộ. Xem ADR-020.
+- **Chưa có contract test chéo** giữa Search và ba producer (Product, Inventory, Review), nên các contract chưa lên
+  `verified`. `SnapshotExportClientTest` và `InventoryReadinessClientTest` là client test phía consumer, chưa chạy với fixture
+  sinh từ contract.
+- **Test bắt buộc trong [Workflows](./workflows.md) chưa đủ.** Đã có: đường listener thật với Kafka
+  (`ConsumerRedeliveryIT`), toàn bộ vòng đời reindex trên Elasticsearch và Kafka thật
+  (`ReindexLifecycleIT`), tombstone purge, projection và query. Chưa có test tích hợp riêng cho rebuild suggestion
+  (`SuggestionRebuildJob`), recompute `product_count` (`CategoryProductCountJob`) và catch-up có event thật trên cả bốn
+  topic; các job này mới được kiểm qua unit test của phần logic thuần (`SuggestionCandidateTest`, `SuggestionTextTest`).
 - **Không có field `created_at` cho sort `newest`.** Mapping đích chỉ có `updated_at`
   và allowlist của `catalog_upsert.painless` không cho ghi `created_at`, nên `newest`
   sắp theo `updated_at` — nghĩa là một lần đổi giá cũng đẩy SKU lên đầu. Sửa đúng cần
@@ -168,6 +168,19 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
   descriptor (snapshot từ producer cũ) cũng còn dẫn xuất.
 - **Nhãn nhóm facet cache 60 giây** trong `FacetLabelResolver`; đổi tên attribute hiển thị
   chậm tối đa chừng đó sau khi snapshot được áp dụng.
+- **Enrichment category lỗi I/O bị coi là miss.** `CategoryEnrichment` nuốt `IOException` của lần đọc category và index
+  document không có field category dẫn xuất (`SEARCH-BR-008`); guard `catalog_revision` làm lần phát lại cùng revision
+  thành no-op, nên document chỉ hồi phục ở revision kế tiếp hoặc ở reindex.
+- **`search_zombie_update_blocked_total` không được tăng.** Script canonical dùng cùng `ctx.op = 'none'` cho revision cũ và
+  document đã tombstone, nên cả hai đếm vào `search_indexing_total{status="guard_blocked"}`.
+- **Rollback của suggestion là thao tác thủ công** theo runbook (một lệnh `_aliases`); không có API hay trạng thái
+  `ROLLED_BACK` cho suggestion build. Rollback của reindex run thì có API.
+- **Cluster có replica cần nâng `min-free-disk-ratio`.** Precondition so free disk với kích thước *primary* của index hiện hành;
+  một index mới kèm replica chiếm nhiều hơn.
+- **Tail replay là best effort.** Nếu không đọc hết, run vẫn `COMPLETED` với `checkpoint.tail_replay = INCOMPLETE` và các
+  document đổi giữa lúc catch-up hội tụ và lúc swap giữ trạng thái cũ cho tới event kế tiếp hoặc reindex sau.
+- **Search Product cards đã đổi ngữ nghĩa.** Backend/frontend cùng dùng `total_products`, signed PIT cursor và một card/Product;
+  rollout đã đồng bộ. Xem ADR-020.
 
 ## Product cards (2026-09-30)
 

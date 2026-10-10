@@ -2,11 +2,12 @@
 doc_id: search-workflows
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
-evidence: []
-verified_against_commit: null
+evidence:
+  - java/services/search-service/src/main/java/com/ecommerce/search
+  - java/services/search-service/src/test/java/com/ecommerce/search
 ---
 
 # Search Service — Workflows
@@ -19,18 +20,20 @@ verified_against_commit: null
 
 | ID | Workflow | Trigger | Actor | Status |
 |---|---|---|---|---|
-| `WF-SEARCH-001` | Tìm kiếm sản phẩm | API | Buyer | proposed |
-| `WF-SEARCH-002` | Gợi ý autocomplete | API | Buyer | proposed |
-| `WF-SEARCH-003` | Duyệt cây danh mục | API | Buyer | proposed |
-| `WF-SEARCH-004` | Facet của một danh mục | API | Buyer | proposed |
-| `WF-SEARCH-005` | Chiếu catalog từ Product | Event | Indexing worker | proposed |
-| `WF-SEARCH-006` | Chiếu snapshot danh mục Product | Event | Indexing worker | proposed |
-| `WF-SEARCH-007` | Chiếu tồn kho từ Inventory | Event | Indexing worker | proposed |
-| `WF-SEARCH-008` | Chiếu rating từ Review | Event | Indexing worker | proposed |
-| `WF-SEARCH-009` | Full reindex ba pha | API/Schedule | Admin, reindex job | proposed |
-| `WF-SEARCH-010` | Rebuild suggestion hằng ngày | Schedule | Rebuilder | proposed |
-| `WF-SEARCH-011` | Recompute `product_count` | Schedule | Job | proposed |
-| `WF-SEARCH-012` | Purge tombstone | Schedule | Job | proposed |
+| `WF-SEARCH-001` | Tìm kiếm sản phẩm | API | Buyer | implemented |
+| `WF-SEARCH-002` | Gợi ý autocomplete | API | Buyer | implemented |
+| `WF-SEARCH-003` | Duyệt cây danh mục | API | Buyer | implemented |
+| `WF-SEARCH-004` | Facet của một danh mục | API | Buyer | implemented |
+| `WF-SEARCH-005` | Chiếu catalog từ Product | Event | Indexing worker | implemented |
+| `WF-SEARCH-006` | Chiếu snapshot danh mục Product | Event | Indexing worker | implemented |
+| `WF-SEARCH-007` | Chiếu tồn kho từ Inventory | Event | Indexing worker | implemented |
+| `WF-SEARCH-008` | Chiếu rating từ Review | Event | Indexing worker | implemented |
+| `WF-SEARCH-009` | Full reindex ba pha | API/Control event | Admin, auto starter, reindex job | implemented |
+| `WF-SEARCH-010` | Rebuild suggestion hằng ngày | Schedule | Rebuilder | implemented |
+| `WF-SEARCH-011` | Recompute `product_count` | Schedule | Job | implemented |
+| `WF-SEARCH-012` | Purge tombstone | Schedule | Job | implemented |
+| `WF-SEARCH-013` | Dọn index đã bị thay | Schedule | Job | implemented |
+| `WF-SEARCH-014` | Hủy, rollback và phục hồi run reindex | API/Watchdog | Admin, watchdog | implemented |
 
 ---
 
@@ -41,7 +44,8 @@ verified_against_commit: null
 **Trigger.** GET /api/v2/search/products qua Gateway; chỉ Search và Elasticsearch.
 
 **Happy path.**
-1. Validate/chuẩn hóa q, size và category; decode/kiểm tra chữ ký cursor trước khi mở PIT.
+1. Validate/chuẩn hóa q, size và category (giới hạn độ dài, tối đa 50 `filter`, mỗi token phải decode được; mọi vi phạm trả
+   cùng lúc là `400`), resolve `category` (không khớp là `400`); decode/kiểm tra chữ ký cursor trước khi mở PIT.
 2. Build SKU query với visibility, full text, category, filter attribute (OR cùng code, AND khác code), giá, stock và promotion.
 3. Mở PIT hoặc dùng PIT cursor. Composite scan mọi Product bucket theo product_id; top_hits chọn selling_price_vnd asc rồi sku_id asc. Facet cùng snapshot chỉ cần tính trong batch đầu.
 4. Sort Product theo lựa chọn, tie product_id asc; cắt trang theo offset. total_products là số bucket chính xác. SKU đại diện không đổi theo lựa chọn sort.
@@ -74,7 +78,7 @@ cụm từ giúp hoàn tất truy vấn, không phải link đến một Product
 `ELASTICSEARCH_UNAVAILABLE`; client phải coi dropdown rỗng là chấp nhận được và
 không chặn thao tác tìm kiếm.
 
-**Timeout và retry.** Timeout 2s, không retry.
+**Timeout và retry.** Timeout 2s: Elasticsearch trả `timed_out` hoặc shard lỗi thì Search trả `504 SEARCH_TIMEOUT`, không bao giờ một danh sách thiếu; không retry.
 
 **Idempotency và concurrency.** Thuần đọc. Trong lúc rebuilder swap alias, request
 đang chạy vẫn đọc index cũ; không có cửa sổ lỗi.
@@ -129,7 +133,7 @@ không làm hỏng request mà rơi về nhãn dẫn xuất. Cùng cơ chế áp
 `GET /api/v2/search/products`.
 
 **Failure paths.** Danh mục không tồn tại → `CATEGORY_NOT_FOUND`. Aggregation quá
-hạn → `SEARCH_TIMEOUT`.
+hạn (5s), `timed_out` hoặc shard lỗi → `SEARCH_TIMEOUT` (`SEARCH-BR-016`); không bao giờ trả facet có số đếm thiếu.
 
 **Concurrency.** Số đếm facet và số đếm trong `WF-SEARCH-001` được tính bằng cùng
 bộ filter, nên phải khớp nhau trong sai số của `cardinality` xấp xỉ.
@@ -182,13 +186,13 @@ không bị đổi, nên guard của Inventory vẫn nguyên vẹn.
 
 **Events emitted.** Không có.
 
-**Failure paths.** Elasticsearch timeout/429/503 → không commit offset, để Kafka
-gửi lại. Mapping conflict hoặc payload hỏng → log, metric `search_payload_invalid_total`,
+**Failure paths.** Elasticsearch timeout/429/503 hoặc đăng ký/revoke readiness lỗi → không commit offset, `nack` batch để Kafka
+giao lại sau 5s (chỉ "không ACK" thì không đủ). Mapping conflict hoặc payload hỏng → log, metric `search_payload_invalid_total`,
 bỏ qua, ACK. Document đang tombstone → script bỏ qua, ghi metric zombie.
 Enrichment miss → metric `search_category_enrichment_miss_total`, vẫn index.
 
 **Timeout và retry.** Timeout ghi Elasticsearch ở mức giây; retry thuộc về Kafka
-qua việc không commit offset. Không có DLQ; lỗi không tự hồi phục được phục hồi
+qua `nack` (không commit offset, giao lại sau `retry-backoff`). Không có DLQ; lỗi không tự hồi phục được phục hồi
 bằng full reindex.
 
 **Idempotency.** Guard `catalog_revision` cộng snapshot semantics: apply lại cùng
@@ -230,9 +234,10 @@ Search thành owner của cây danh mục.
 2. Apply `category-deleted` bằng
    [`category_tombstone.painless`](./schema/scripts/category_tombstone.painless)
    để tombstone node, không upsert.
-3. `catalog-reindex-requested` được coalesce theo root category/revision, sau đó
-   chạy reindex từ category export trước Product export. Không `_update_by_query`
-   theo path trong request worker.
+3. `catalog-reindex-requested` được **lưu bền** (một document `reindex-request:pending`, gộp theo root category với revision cao
+   nhất) trước khi ACK; không lưu được thì `nack`. Request yên lặng `control-debounce` (2 phút) mà không có run đang chạy thì
+   `ReindexAutoStarter` tạo một run với actor `system:catalog-control`, export category trước Product
+   ([WF-SEARCH-009](#wf-search-009--full-reindex-ba-pha)). Không `_update_by_query` theo path trong request worker.
 
 **State/data changes.** Category document; SKU documents chỉ nhận category data mới
 qua full reindex.
@@ -241,7 +246,8 @@ qua full reindex.
 metric và giữ projection cũ. Reindex lỗi trước alias swap → read/write alias cũ giữ nguyên.
 
 **Idempotency.** Guard `category_revision`; control event coalesce theo root category
-và revision nên lặp lại vô hại.
+và revision (revision chỉ tăng) nên lặp lại vô hại. Một request đến sau khi run bắt đầu làm run `SUPERSEDED` nhưng không bị mất:
+nó vẫn nằm đó cho run kế tiếp; chỉ run `COMPLETED` bắt đầu sau nó mới xóa nó.
 
 **Concurrency.** Category event cùng key có ordering; reindex vẫn singleton.
 
@@ -269,8 +275,8 @@ trên document `_id = sku_id` đang tồn tại → copy `is_in_stock` nếu rev
 → commit offset. Search không có inbox/dedupe hay index Inventory riêng.
 
 **Failure paths.** `document_missing_exception` là vi phạm readiness contract → tăng
-`search_document_missing_total`, page Search + Inventory, không commit offset và không
-upsert. Document tombstone → script bỏ qua và ACK. Lỗi tạm thời của Elasticsearch →
+`search_document_missing_total`, page Search + Inventory, không commit offset (`nack`: batch được giao lại cho tới khi document
+tồn tại, partition đứng lại) và không upsert. Document tombstone → script bỏ qua và ACK. Lỗi tạm thời của Elasticsearch →
 không commit offset.
 
 **Idempotency và ordering.** Guard `availability_revision` per-SKU biến duplicate/event
@@ -329,7 +335,7 @@ thuộc Search; worker ACK chúng không side effect và không ghi payload vào
 `conflicts=proceed` và throttle; guard `review_revision`.
 
 **Failure paths.** Không có document khớp → không phải lỗi, ghi metric. Lỗi tạm
-thời → không commit offset. Query chạy quá lâu → có thể để lại trạng thái áp dụng
+thời → không commit offset (`nack`, giao lại sau 5s). Query chạy quá lâu → có thể để lại trạng thái áp dụng
 một phần; lần chạy lại sẽ hội tụ vì thao tác là ghi giá trị tuyệt đối.
 
 **Idempotency và ordering.** Guard `review_revision`; key `product_id` giữ thứ tự
@@ -349,58 +355,69 @@ chưa có document; rating giảm sau khi review bị xóa.
 
 **Mục tiêu.** Đổi mapping hoặc rebuild dữ liệu mà không dừng đọc và ghi.
 
-**Trigger.** `POST /api/v2/search/reindex-runs` bởi admin, hoặc lịch bảo trì.
+**Trigger.** `POST /api/v2/search/reindex-runs` bởi admin; hoặc tự động khi Product phát
+`catalog-reindex-requested` ([WF-SEARCH-006](#wf-search-006--chiếu-snapshot-danh-mục-product)): request được lưu bền, đợi yên lặng
+`control-debounce` rồi `ReindexAutoStarter` gọi cùng thao tác trigger với actor `system:catalog-control`. Không có lịch
+bảo trì.
 
-**Preconditions.** Cluster `green`; còn dung lượng cho một index đầy đủ kèm
-replica; không có run nào chưa kết thúc; mapping mới đã được review trong
-[`schema/`](./schema).
+**Preconditions.** Không có run nào chưa kết thúc (lease `full-reindex` còn trống); cluster không `red` và free disk ≥
+`min-free-disk-ratio` × kích thước primary store của index hiện hành (`yellow` được chấp nhận); mapping mới đã được review
+trong [`schema/`](./schema). Một run chưa kết thúc mà lease đã hết hạn được xử lý trước ([WF-SEARCH-014](#wf-search-014--hủy-rollback-và-phục-hồi-run-reindex)).
+
+**Singleton và nhịp sống.** Run giữ lease `full-reindex` (tạo atomic, fencing token) và gia hạn mỗi 30s từ một heartbeat thread
+riêng; không gia hạn được (lease đã sang owner khác) thì run dừng ngay mà không ghi đè trạng thái.
+
+**Stage và checkpoint.** `CREATE_INDICES → BUILD_CATEGORIES → BUILD_CATALOG → BUILD_AVAILABILITY → BUILD_RATING → CATCH_UP →
+VERIFY → CUTOVER → DONE`. Stage hiện tại, hai index đích, cursor của từng nguồn, session Inventory/Review, các SKU bị defer
+và offsets được ghi vào document run ở mỗi trang, **sau khi** trang đó đã vào index. Mỗi stage an toàn khi chạy lại vì mọi ghi
+đều có guard revision; một run bị bỏ rơi được resume từ stage đã lưu.
 
 **Happy path.**
-1. **Build catalog.** Tạo `products_v{N+1}` từ mapping mới. Export Category trước,
-   import toàn bộ Category snapshot và lưu `replay_from_offsets` của
-   `t.category.events`; rồi keyset export Product theo chunk, lưu
-   `replay_from_offsets` của `t.product.events` và ghi checkpoint sau mỗi chunk để
-   resume. Mỗi chunk import phải được ghi bằng `_bulk`, bị chặn đồng thời bởi
-   `bulk_max_actions` và `bulk_max_bytes`; không tạo bulk request vượt hai ngưỡng
-   này. Offsets của mỗi source do Product chụp trước scan, cố định trong export
-   session. SKU mới nhận giá trị rating mặc định `0/0` cho tới khi snapshot Review
-   được apply.
-2. **Build availability.** Tạo Inventory snapshot session tại fixed
-   `export_watermark = W`; import trực tiếp mọi row per-SKU `is_in_stock` với
-   `availability_revision` vào Product document đã build, rồi đọc change feed với
-   `sequence > W`. Nếu một SKU được tạo sau Product snapshot nên chưa có trong index
-   mới, defer fact đó tới sau Product catch-up; không upsert và không tạo
-   warehouse/position projection hay index phụ. Kafka offset không phải Inventory boundary.
-   Checkpoint của pha này lưu `snapshot_id`, `expires_at`, watermark hiệu lực và
-   `next_cursor`. Session hết hạn — kể cả khi run bị dừng rồi resume muộn hơn 24 giờ —
-   xử lý theo quy tắc `SNAPSHOT_SESSION_EXPIRED` ở WF-SEARCH-007: ghi watermark mới
-   `W'`, bỏ mọi cursor cũ và page lại từ đầu.
-3. **Build rating.** Tạo Review export session sau catalog, rồi lấy mọi page rating
-   aggregate qua `session_id`. Mỗi aggregate được apply vào toàn bộ SKU khớp
-   `product_id` bằng một `_update_by_query` với `conflicts=proceed`, guard
-   `review_revision` và throttle bằng `requests_per_second` của ES task API — **không**
-   phải `_bulk`: aggregate khóa theo `product_id` còn document khóa theo `_id = sku_id`,
-   và Search không giữ reverse lookup giữa hai khóa đó
-   ([`SEARCH-INV-005`](./README.md#7-critical-invariants)). Đây là ngoại lệ duy nhất
-   trong ba bước Build; bước 1 và 2 địa chỉ hóa theo `_id` nên vẫn dùng `_bulk` chunked.
-   Session trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert SKU
-   và không thay đổi catalog/availability field. Session 404/410 làm hỏng toàn bộ run
-   rating: offsets đã ghi thuộc về session đã chết nên phải bị thay, tạo session mới và
-   import lại từ trang đầu. Số session cho một lần build bị chặn bởi
-   `rating_export_max_sessions`; vượt ngưỡng thì `FAILED` thay vì lặp.
-4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm
-   `search-reindex-{run_id}` seek inclusive từ `replay_from_offsets` Product
-   (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable
-   change-feed checkpoint rồi chuyển sang live topic. Các consumer ghi **trực tiếp** vào
-   `products_v{N+1}` chứ không qua write alias. Search không tự chụp catalog
-   watermark. Product create/tombstone được ưu tiên trước availability của cùng SKU;
-   mọi availability đã defer được đọc/apply lại sau Product catch-up. Guard giữ nguyên
-   như luồng thường. Kết thúc khi không còn deferred SKU và lag bằng 0 qua nhiều
-   chu kỳ poll liên tiếp, publisher lag đã hội tụ và không phát sinh lỗi mới trong
-   cửa sổ quan sát.
-5. **Cutover.** Kiểm tra chênh lệch số document trong ngưỡng cho phép, sample diff
-   trên tập SKU nóng, smoke test các truy vấn phổ biến, rồi chuyển cả read alias
-   và write alias sang index mới bằng **một** lệnh `_aliases` atomic.
+1. **Build catalog.** Tạo `products_v{N+1}` và `categories_v{N+1}` từ mapping mới (ghi vào checkpoint ngay). Export Category
+   trước, import toàn bộ Category snapshot và lưu `replay_from_offsets` của `t.category.events`; rồi keyset export Product
+   theo chunk, lưu `replay_from_offsets` của `t.product.events`. Mỗi chunk import ghi bằng `_bulk`, bị chặn đồng thời bởi
+   `bulk_max_actions` và `bulk_max_bytes`; không tạo bulk request vượt hai ngưỡng này. Cursor export của Product là stateless và mang
+   offsets, nên resume giữa chừng nhận lại đúng boundary. SKU mới nhận rating mặc định `0/0` cho tới khi snapshot Review được
+   apply.
+2. **Build availability.** Tạo Inventory snapshot session tại fixed `export_watermark = W`; import trực tiếp mọi row per-SKU
+   `is_in_stock` với `availability_revision` vào Product document đã build, rồi đọc change feed với `sequence > W`. Nếu một SKU
+   được tạo sau Product snapshot nên chưa có trong index mới, defer fact đó tới sau Product catch-up; không upsert và không
+   tạo warehouse/position projection hay index phụ. Kafka offset không phải Inventory boundary. Checkpoint lưu `snapshot_id`,
+   `expires_at`, watermark hiệu lực, `cursor` và danh sách SKU defer. Session hết hạn — kể cả khi run bị dừng rồi resume muộn hơn
+   24 giờ — xử lý theo quy tắc `SNAPSHOT_SESSION_EXPIRED` ở WF-SEARCH-007: ghi watermark mới `W'`, bỏ mọi cursor cũ và page lại từ
+   đầu. Run được resume tiếp tục session và cursor đã lưu trước, rồi mới rơi về quy tắc này.
+3. **Build rating.** Tạo Review export session sau catalog, rồi lấy mọi page rating aggregate qua `session_id`. Mỗi aggregate
+   được apply vào toàn bộ SKU khớp `product_id` bằng một `_update_by_query` với `conflicts=proceed`, guard `review_revision` và
+   throttle bằng `requests_per_second` của ES task API — **không** phải `_bulk`: aggregate khóa theo `product_id` còn document khóa
+   theo `_id = sku_id`, và Search không giữ reverse lookup giữa hai khóa đó
+   ([`SEARCH-INV-005`](./README.md#7-critical-invariants)). Đây là ngoại lệ duy nhất trong ba bước Build; bước 1 và 2 địa chỉ hóa
+   theo `_id` nên vẫn dùng `_bulk` chunked. Session trả `replay_from_offsets` đã chụp trước lúc scan; snapshot không upsert SKU và
+   không thay đổi catalog/availability field. Session 404/410 làm hỏng toàn bộ run rating: offsets đã ghi thuộc về session đã chết
+   nên phải bị thay, tạo session mới và import lại từ trang đầu. Số session cho một lần build bị chặn bởi `rating_export_max_sessions`;
+   vượt ngưỡng thì `FAILED` thay vì lặp.
+4. **Catch-up.** Chỉ sau khi import xong mọi snapshot, chạy consumer group tạm `search-reindex-{run_id}` seek inclusive từ
+   `replay_from_offsets` Product (`t.category.events`, `t.product.events`) và Review; Inventory tiếp tục từ durable change-feed
+   checkpoint. Các consumer ghi **trực tiếp** vào `products_v{N+1}`/`categories_v{N+1}` chứ không qua write alias. Search không tự
+   chụp catalog watermark. Product create/tombstone được ưu tiên trước availability của cùng SKU; mọi availability đã defer được
+   đọc/apply lại sau Product catch-up. Guard giữ nguyên như luồng thường. Kết thúc khi không còn deferred SKU và poll rỗng
+   `catch-up-zero-lag-polls` lần liên tiếp. Một batch mà index không nhận được **không bị bỏ qua**: consumer seek lại và áp dụng
+   lại với backoff, quá `bulk.max-retries` thì run `FAILED`. Khi hội tụ, run ghi vị trí kết thúc mỗi partition và thời điểm hội tụ.
+5. **Verify** (status `CUTOVER`). Kiểm tra supersede lần nữa rồi chạy ba kiểm tra trên index mới; một kiểm tra không đạt là
+   `FAILED`, index mới bị xóa, alias giữ nguyên:
+   - *Số document* lệch không quá `max-doc-count-drift-ratio` so với index đang phục vụ (bỏ qua ở lần build đầu tiên).
+   - *Sample diff*: `2 × sample-size-per-bucket` (200) SKU từ index đang phục vụ — 100 có `updated_at` mới nhất, 100 có
+     `product_rating_count` lớn nhất, đều `is_deleted = false` — được fetch từ index mới. Sai khi SKU thiếu, khi
+     `catalog_revision`/`availability_revision`/`review_revision` thấp hơn index đang phục vụ, hoặc khi cùng `catalog_revision`
+     mà giá hoặc trạng thái khác. SKU mà live indexer đã đổi sau thời điểm catch-up hội tụ không tính (tail replay lo phần đó).
+   - *Smoke query*: truy vấn hiển thị mặc định (`in_stock=false`, mọi SKU hiển thị) và aggregation facet chạy được trên index mới,
+     và mỗi `hot-queries` cấu hình có hit trên index mới nếu index đang phục vụ có.
+6. **Cutover.** Ghi hai index sắp bị thay vào checkpoint, kiểm tra run vẫn giữ lease và không bị supersede, rồi chuyển **bốn**
+   alias (`products`, `products_write`, `categories`, `categories_write`) sang index mới bằng **một** lệnh `_aliases` atomic. Hai
+   index bị thay nhận marker `INDEX_RETIRED` để job dọn index tính 24 giờ. Run chuyển `COMPLETED`.
+7. **Tail replay.** Live indexer vẫn ghi vào index cũ cho tới khi alias đổi, nên những gì nó áp dụng giữa lúc catch-up hội tụ và
+   lúc swap không có trong index mới. Run đọc lại từ vị trí kết thúc catch-up (offsets từng partition và change feed Inventory)
+   vào index mới, rồi xóa control request đến trước lúc run bắt đầu. Đọc không hết thì ghi `checkpoint.tail_replay = INCOMPLETE`
+   (run vẫn `COMPLETED`); document tự lành ở event kế tiếp hoặc reindex sau. Lease được giữ tới khi tail xong.
 
 **Bulk và throttle.** Job phải áp dụng backpressure từ Elasticsearch: rate limiter
 phía client chỉ dispatch `_bulk` ở tốc độ `bulk_requests_per_second`, và không vượt
@@ -411,38 +428,33 @@ chunk mới, retry **đúng chunk** bằng exponential backoff có jitter trong 
 đồng thời hạ tốc độ hiệu lực; tốc độ chỉ tăng dần lại sau một cửa sổ bulk thành công.
 Vượt retry/deadline thì fail hoặc resume từ checkpoint, không được bỏ qua chunk.
 
-**State/data changes.** Index mới được tạo; alias trỏ sang index mới; index cũ giữ
-lại tối thiểu 24 giờ.
+**State/data changes.** Index mới được tạo; alias trỏ sang index mới; index cũ giữ lại 24 giờ (rồi bị
+[WF-SEARCH-013](#wf-search-013--dọn-index-đã-bị-thay) xóa) để rollback.
 
-**Failure paths.** Build lỗi → resume từ checkpoint hoặc hủy run và xóa index mới;
-alias không đổi nên traffic không bị ảnh hưởng. Product/Review export thiếu
-`replay_from_offsets`, Inventory snapshot/change checkpoint không chứng minh được
-handoff tại **watermark hiệu lực cuối cùng**, hoặc availability vẫn thiếu target document
-sau Product catch-up → không được cutover; tập page dở ở `W` ghép với change feed ở `W'`
-không phải là handoff hợp lệ. Tạo lại snapshot session vượt
-`availability_snapshot_max_sessions`, hoặc Review export session vượt
-`rating_export_max_sessions` → run `FAILED`. Catch-up/publisher lag không hội tụ
-→ hủy run. `catalog-reindex-requested` mới trong lúc Build/Catch-up → đánh dấu run
-`SUPERSEDED`, giữ alias cũ và coalesce run mới. Kiểm tra trước cutover không đạt → hủy
-run. Lỗi sau cutover → swap alias ngược về index cũ.
+**Failure paths.** Build lỗi (export, bulk quá retry, session quá `max-sessions`) → `FAILED`, index đã dựng bị xóa, alias không đổi
+nên traffic không bị ảnh hưởng. Product/Review export thiếu `replay_from_offsets`, Inventory snapshot/change checkpoint không
+chứng minh được handoff tại **watermark hiệu lực cuối cùng**, hoặc availability vẫn thiếu target document sau Product catch-up → không
+được cutover; tập page dở ở `W` ghép với change feed ở `W'` không phải là handoff hợp lệ. Catch-up không hội tụ trong
+`catch-up-deadline` → `FAILED`. `catalog-reindex-requested` mới sau khi run bắt đầu → `SUPERSEDED`, giữ alias cũ, request được giữ cho
+run kế tiếp. Kiểm tra trước cutover không đạt → `FAILED`. Admin hủy → `CANCELLED`. Mất lease → run dừng và không ghi gì. Owner chết
+→ watchdog resume hoặc `RUN_ABANDONED` (WF-SEARCH-014). Lỗi sau cutover → rollback bằng API.
 
-**Timeout và retry.** Mỗi chunk có timeout, retry/backoff và hạ throttle cho
-429/503 như quy tắc bulk ở trên. Toàn bộ run có giới hạn thời gian; vượt giới hạn thì
-chuyển `FAILED` thay vì chạy vô hạn.
+**Timeout và retry.** Mỗi chunk có timeout, retry/backoff và hạ throttle cho 429/503 như quy tắc bulk ở trên. Toàn bộ run có
+giới hạn thời gian (`run-deadline`, 6 giờ, tính lại ở mỗi lần resume); vượt giới hạn thì chuyển `FAILED` thay vì chạy vô hạn.
 
 **Idempotency.** Trigger trùng bị chặn bởi `REINDEX_ALREADY_RUNNING`. Backfill có
 checkpoint nên chạy lại không nhân bản dữ liệu; ghi vào index mới đều có guard.
 
-**Concurrency.** Đúng một run tại một thời điểm; job cần lock singleton. Consumer
+**Concurrency.** Đúng một run tại một thời điểm, bảo đảm bằng lease `full-reindex`. Consumer
 group chính vẫn chạy bình thường trên index cũ trong suốt quá trình.
 
-**Compensation.** Rollback bằng alias swap ngược. Nếu rollback muộn hơn cửa sổ
-catch-up, chấp nhận mất vài phút dữ liệu mới trên index cũ và phải chạy lại reindex
-([ADR-006](./decisions/ADR-006-three-phase-reindex.md)).
+**Compensation.** Rollback bằng API trả alias về index cũ trong một lệnh. Dữ liệu ghi vào index mới sau cutover không có trong
+index cũ: chấp nhận mất vài phút dữ liệu và chạy lại reindex ([ADR-006](./decisions/ADR-006-three-phase-reindex.md),
+[ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md)).
 
 **Metrics.** Tiến độ từng source của build, export-session ID và offsets theo
-source/topic, tuổi snapshot availability/rating, lag publisher/catch-up theo topic, số run
-supersede, chênh lệch số document, thời lượng từng pha, kết quả run; cùng số
+source/topic, tuổi snapshot availability/rating, lag catch-up theo topic, số run supersede, chênh lệch số document, thời lượng
+từng pha, kết quả run, `search_reindex_cutover_check_total`, `search_reindex_lifecycle_total`; cùng số
 action/byte mỗi bulk, bulk in-flight, tốc độ cấu hình/hiệu lực, thời gian bị throttle,
 429/503/timeout và số retry.
 
@@ -452,10 +464,11 @@ event cũ/trùng sau snapshot; snapshot session hết hạn giữa pha Build ava
 resume checkpoint; Review export session hết hạn giữa lúc page rating → session mới,
 page lại từ đầu và catch-up seek theo offsets của session mới; vượt
 `rating_export_max_sessions` → run `FAILED`; control event supersede run; reindex khi
-đang có tải ghi;
-chunk chạm giới hạn action hoặc byte; throttle giới hạn số bulk in-flight; 429/503 làm
-backoff và hạ tốc độ; hủy giữa build; catch-up không hội tụ; cutover rồi rollback;
-trigger trùng.
+đang có tải ghi; chunk chạm giới hạn action hoặc byte; throttle giới hạn số bulk in-flight; 429/503 làm
+backoff và hạ tốc độ; hủy giữa build; catch-up không hội tụ; catch-up gặp batch lỗi tạm thời; verify từ chối index thụt lùi;
+cutover rồi rollback; trigger trùng; resume từ stage đã lưu; run bị bỏ rơi quá số lần resume; trigger không bị run đã chết chặn.
+Đa số được phủ bởi `FullReindexJobTest` và `ReindexLifecycleIT` ([Development §6](./development.md)); catch-up với event thật
+trên cả bốn topic và áp lực ghi đồng thời chưa có test riêng ([README §9](./README.md#9-known-gaps)).
 
 ---
 
@@ -511,8 +524,9 @@ sổ bulk thành công. Hết retry/deadline thì abort run, giữ alias hiện 
 **Failure paths.** Không lấy được lock → bỏ qua run, không chờ hoặc chạy song song.
 Lỗi scan/bulk/PIT, kể cả bulk cạn retry/deadline, source alias đổi, hoặc validation
 gate không đạt → `ABORTED`, xóa index mới, đóng PIT/release lock và giữ alias cũ.
-Phát hiện chất lượng kém sau swap → atomic rollback alias về version trước, đánh dấu
-`ROLLED_BACK`; không xóa rollback version trong cửa sổ retention.
+Phát hiện chất lượng kém sau swap → rollback thủ công bằng một lệnh `_aliases` về version trước
+(runbook, [Operations §10](./operations.md#10-runbooks)); build vẫn ở `SWAPPED` vì suggestion không có API rollback. Rollback
+version không bị xóa bởi [WF-SEARCH-013](#wf-search-013--dọn-index-đã-bị-thay).
 
 **Idempotency.** Mỗi lần chạy tạo index mới; chạy lại trong cùng ngày chỉ tạo một
 version khác và không làm hỏng dữ liệu đang phục vụ.
@@ -597,10 +611,11 @@ nên document tombstone không sống lại và Search không đăng ký lại r
 vậy `409` là lệch trạng thái giữa Search và Inventory, không phải lỗi tạm thời — không
 retry, không purge SKU đó, ghi metric và điều tra.
 
-**Preconditions.** Cửa sổ bảo vệ (35 ngày) phải dài hơn retention của mọi topic Search
-tiêu thụ (dài nhất 30 ngày, `t.inventory.stock.events.v1`) và Inventory readiness của
+**Preconditions.** Cửa sổ bảo vệ (45 ngày) phải dài hơn thời gian dài nhất một record đã consume còn nằm trên broker
+(retention dài nhất 30 ngày của `t.inventory.stock.events.v1` + `segment.ms` mặc định 7 ngày + biên) và Inventory readiness của
 SKU đã bị revoke
 ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md),
+[ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md), thay con số của
 [ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)).
 
 **Failure paths.** Lỗi giữa chừng → lần chạy sau tiếp tục; không có trạng thái cần
@@ -616,6 +631,72 @@ dọn. Xóa nhầm là không thể phục hồi trực tiếp; phục hồi b�
 event trễ tới sau khi đã purge không tạo lại document từ availability/review; revoke
 readiness lỗi thì chưa được purge; revoke trả `409` thì SKU không được purge, không
 retry và được báo động.
+
+
+---
+
+## WF-SEARCH-013 — Dọn index đã bị thay
+
+**Mục tiêu.** Giải phóng dung lượng của index versioned không còn phục vụ, sau khi đã giữ đủ lâu để rollback.
+
+**Trigger.** Cron `search.lifecycle.cleanup-cron` (hằng giờ) trên mọi replica; lease `index-cleanup` chọn một replica.
+
+**Happy path.** Với `products`, `categories` và `search_suggestions`:
+1. Liệt kê mọi index `<template>_v*`; loại index đang có alias phục vụ và index của run chưa kết thúc.
+2. Index chưa có marker `INDEX_RETIRED` nhận marker `now` (đồng hồ 24 giờ bắt đầu từ lúc job thấy nó) và không bị xóa trong lượt này.
+3. `products`/`categories`: xóa mọi index non-current có marker cũ hơn `old-index-retention` (24 giờ). `search_suggestions`:
+   version retired mới nhất *đã có marker từ trước lượt này* là rollback version và luôn được giữ; các version cũ hơn xóa khi
+   quá retention.
+4. Xóa marker của index đã xóa hoặc đã biến mất.
+
+**Failure paths.** Lỗi giữa chừng → lượt sau tiếp tục từ trạng thái hiện tại; không có gì cần dọn tay. Không lấy được lease → bỏ lượt.
+
+**Idempotency.** Lọc theo trạng thái hiện tại nên chạy lại an toàn.
+
+**Metrics.** `search_index_cleanup_total{template}`, `search_job_duration_seconds{job="index-cleanup"}`.
+
+**Test scenarios.** Index quá retention bị xóa; index mới retired còn nguyên; index chưa có marker nhận marker và còn nguyên; rollback
+version của suggestion được giữ dù đã cũ; index in-flight của một build suggestion không bị coi là rollback version; index đang phục
+vụ không bao giờ bị xóa (`ReindexLifecycleIT`).
+
+---
+
+## WF-SEARCH-014 — Hủy, rollback và phục hồi run reindex
+
+**Mục tiêu.** Cho admin và hệ thống kiểm soát một run reindex sau khi nó đã bắt đầu.
+
+**Hủy** (`POST /reindex-runs/{run_id}/cancellation`, admin).
+1. Run phải chưa kết thúc và chưa `CUTOVER`, nếu không `409 REINDEX_RUN_NOT_CANCELLABLE`.
+2. Search ghi document `cancel:<run_id>` (tách khỏi run document vì job ghi đè document đó ở mỗi checkpoint) và trả `202`.
+3. Run kiểm cờ ở mỗi trang của Build và mỗi vòng poll của Catch-up; thấy cờ thì xóa index đã dựng, ghi `CANCELLED` với
+   `failure.code = RUN_CANCELLED`, xóa cờ và nhả lease. Alias không đổi.
+4. Nếu lease của run đã hết hạn (không còn owner), Search kết thúc run ngay trong request: cũng xóa index, ghi `CANCELLED`, nhả lease.
+
+**Rollback** (`POST /reindex-runs/{run_id}/rollback`, admin, đồng bộ `200`).
+1. Run phải `COMPLETED`, đã thay một index (không phải lần build đầu), và bốn alias hiện vẫn trỏ vào đúng index mà run đã tạo; hai
+   index trước đó phải còn tồn tại. Nếu không `409 REINDEX_ROLLBACK_UNAVAILABLE` (lý do trong `detail`).
+2. Search giữ lease `full-reindex` (owner `rollback:<run_id>`) để không chạy cùng một run khác hay tail replay; không lấy được lease
+   → `409`.
+3. Một lệnh `_aliases` trả bốn alias về hai index cũ; marker retired của hai index cũ bị xóa, hai index mới nhận marker `now`;
+   run chuyển `ROLLED_BACK`.
+4. Dữ liệu ghi vào index mới sau cutover không có trong index cũ; vận hành trigger reindex mới để hội tụ.
+
+**Phục hồi run bị bỏ rơi** (`ReindexWatchdog`, mỗi 30s trên mọi replica; cũng chạy ngay ở đầu trigger).
+1. Tìm run chưa kết thúc. Lease `full-reindex` còn hạn → owner còn sống, bỏ qua.
+2. Lease hết hạn hoặc không có → replica thử giành lease (atomic). Thua → bỏ qua.
+3. Thắng và `resume_attempts < max-resume-attempts` (3): tăng `resume_attempts`, lưu, rồi chạy lại job với document đã lưu; job tiếp tục
+   từ stage đã lưu ([WF-SEARCH-009](#wf-search-009--full-reindex-ba-pha)).
+4. Thắng và hết lượt: xóa index dở, ghi `FAILED` với `RUN_ABANDONED`, nhả lease; trigger mới được nhận.
+
+**Failure paths.** Hủy/rollback khi Elasticsearch lỗi → `503`/`504`; không có trạng thái dở vì cờ hủy là một document và rollback là một lệnh atomic.
+Watchdog không đọc được `search_jobs` → log cảnh báo và thử lại ở lượt sau.
+
+**Metrics.** `search_reindex_lifecycle_total{kind}`: `cancelled`, `rolled_back`, `resumed`, `abandoned`.
+
+**Test scenarios.** Hủy giữa build (index bị xóa, slot trống); hủy run đã kết thúc hoặc đang `CUTOVER`; hủy run không còn owner;
+rollback thành công; rollback run không `COMPLETED`, lần build đầu, đã có cutover mới hơn, index trước đã bị dọn, đang có run khác;
+resume từ stage đã lưu; hết lượt resume → `RUN_ABANDONED`; trigger không bị run đã chết chặn (`FullReindexJobTest`,
+`ReindexRunServiceTest`, `ReindexRecoveryTest`, `ReindexLifecycleIT`).
 
 ---
 

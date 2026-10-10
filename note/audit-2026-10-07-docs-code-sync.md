@@ -49,9 +49,11 @@
 | A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát — ✅ đã kiểm chứng và sửa 2026-10-09 (ADR-006) |
 | N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý |
 | U9 | User | Profile đã xoá (ẩn danh) vẫn ghi lại được PII |
-| S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt *(phía Inventory đã sửa 2026-10-09: retention đúng 30d, xem I8; Search chưa)* |
+| S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt *(phía Inventory đã sửa 2026-10-09: retention đúng 30d, xem I8; Search sửa 2026-10-09 lên 35d và kiểm chứng lại 2026-10-10: 35d vẫn thiếu độ trễ xóa theo segment, nay 45d, xem S22)* |
 | I3 | Inventory | Kiểm role ADMIN/allowlist trên URI thô → né được bằng `%xx`/`;` *(đã sửa 2026-10-09)* |
-| S6 | Search | URL Product mặc định `:8080`, Product chạy `:8081` → full reindex lỗi ở compose |
+| S6 | Search | URL Product mặc định `:8080`, Product chạy `:8081` → full reindex lỗi ở compose — ✅ đúng và đã sửa 2026-10-09 |
+| S8 | Search | Batch không ACK **không bao giờ được Kafka gửi lại** (AckMode.MANUAL không `nack`) → Inventory readiness lỗi thì SKU không bao giờ có availability; ADR-005/019 hứa điều không xảy ra — phát hiện 2026-10-10, ✅ đã sửa (`nack`, `ConsumerRedeliveryIT`) |
+| S17 | Search | `ReindexRunDocument.isTerminal()` bị serialize thành field `terminal`, `search_jobs` là `dynamic: strict` → mọi lần ghi run đều lỗi — phát hiện 2026-10-10, ✅ đã sửa (`SearchJobsDocumentsMatchMappingTest`, `ReindexLifecycleIT`) |
 | X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call — ✅ Auth (A10, ADR-007) và User (U10) đã sửa 2026-10-09; ⏳ còn Notification (N3) |
 
 ---
@@ -80,7 +82,7 @@
 - Cart HTTP v1 "proposed — code cũ dùng nhiều error shape và giá float64": code đã dùng delta/Money/problem+json. `interactions.yaml` lại ghi `checkout-reads-cart-snapshot: implemented`.
 - Product gRPC v1 "proposed — proto bị copy, package/service name cũ, giá double": package `ecommerce.product.v1` và Money đã đúng; chỉ còn việc proto bị copy (P7). `interactions.yaml` ghi `implemented`.
 - Review HTTP v1 "Service chưa có runtime": `java/services/review-service` đã có.
-- Search HTTP v2 "frontend vẫn gọi `/api/v1/search/**`": gateway và `interactions.yaml` nói v1 đã bị gỡ khỏi router (bước 4 frontend).
+- Search HTTP v2 "frontend vẫn gọi `/api/v1/search/**`": gateway và `interactions.yaml` nói v1 đã bị gỡ khỏi router (bước 4 frontend). *(✅ 2026-10-10: đúng, frontend gọi `/api/v2/search/**`; dòng ADOPTION nay `implemented`, S27)*
 - Order Events v1 "Checkout chưa có runtime": Checkout đã implement. *(✅ đã sửa 2026-10-09; câu nằm ở dòng Order **HTTP** v1, không phải Events. Dòng Checkout "frontend … chưa gọi" và dòng Product gRPC "Checkout chưa có test tương đương" cũng sai và đã sửa, xem K8/K9)*
 - Promotion HTTP v1 "24 operation": thực có 25 (PR3).
 - Product Detail BFF (phát hiện 2026-10-09, B3): không có dòng cho PDP HTTP v1; dòng Product ghi BFF thiếu consumer test và dòng Review ghi BFF "chưa chạy với fixture sinh từ contract" dù `ProviderFixturesContractTest` validate fixture của cả ba provider. ✅ đã thêm dòng PDP HTTP v1 và sửa hai dòng provider.
@@ -425,8 +427,12 @@
 >    số test, catalog lỗi, index/sequence trong `data.md`, clone bỏ rule invalidated/tombstoned, `docs/order/interfaces.md` §1.
 > - **Còn mở / không thuộc đợt này:** `reason` của `transitions` chỉ log và `reason` của `grants` bị bỏ (không audit trail bền);
 >   public discovery/options chỉ đánh giá 200 promotion đầu; X3 (`UNAUTHENTICATED` vs `UNAUTHORIZED`); Promotion chưa consume
->   `USER_DELETED`; chưa có consumer contract test từ Checkout/Order, chưa E2E Debezium/Kafka; test `customerRefundIsNotAWorkflow`
+>   `USER_DELETED`; chưa có consumer contract test từ Checkout/Order; test `customerRefundIsNotAWorkflow`
 >   chỉ khẳng định state không đổi.
+> - **CDC (2026-10-10, sau commit đầu):** `OutboxCdcIntegrationTest` chạy file connector đóng gói trên Debezium/Kafka thật
+>   (45 test xanh). Phát hiện: `EventRouter` bỏ field `null` tường minh (`discount.max_discount_vnd`) nên "lên wire nguyên văn"
+>   của AsyncAPI sai một chút (vô hại: Product dùng `hasNonNull`); đã sửa contract. Script `register-checkout-connectors.ps1`
+>   nhận thêm `promotion`; `kafka/README.md` sửa `max_replication_slots` 4 → 10 (compose). Chưa có test chạy cùng Product consumer.
 
 ### PR8 🔴 [SECURITY/BUG] `technical-cancellations` không có guard như docs mô tả — ✅ đúng và đã sửa 2026-10-10 (ADR-019)
 - Docs (`domain.md` BR-018, `interfaces.md` §2.3, `workflows.md` WF-PROMO-006, `operations.md` RB-08, OpenAPI): chỉ `promotion-legacy-migrator`, bắt buộc header `X-Legacy-Migration-Proof` + body `migration_record_id`, `pre_financial_watermark_evidence_sha256`; "`order-service` is denied by mesh **and application policy**".
@@ -577,35 +583,74 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 
 ## 10. Search (`docs/search`, `contracts/http/search/v2`, `java/services/search-service`)
 
-### S4 🔴 Tombstone protection window không dài hơn retention topic
+> **Kiểm chứng 2026-10-10** (đọc toàn bộ docs, OpenAPI, code, rồi chạy test; chi tiết quyết định ở
+> [Search ADR-022](../docs/search/decisions/ADR-022-post-implementation-audit-corrections.md)). **Cả bảy mục S1–S7 đều
+> đúng** (S4 chưa đủ, S5 đã cũ), nhưng báo cáo **bỏ sót 20 lỗi** (S8–S27), trong đó có hai lỗi nghiêm trọng mà
+> nhận định "Đã khớp" cuối mục này che mất: batch lỗi không bao giờ được Kafka gửi lại (S8) và không một lần ghi run
+> reindex nào vào Elasticsearch thật thành công (S17). Nhận định "docs khớp code" của báo cáo gốc chỉ đúng với
+> schema/script/route; không đúng với hành vi (retry, reindex, lỗi HTTP, metric). Toàn bộ đã sửa cùng docs/contract.
+> Test sau sửa: 192 unit + 75 integration (Elasticsearch/Kafka thật), xanh.
+
+### S4 🔴 Tombstone protection window không dài hơn retention topic — ✅ đúng; sửa 2026-10-09 lên 35d, nâng lên 45d 2026-10-10 (S22)
 - Quy tắc SEARCH-INV-006 / ADR-011 / `data.md`: cửa sổ bảo vệ tombstone "phải dài hơn retention của mọi topic Search tiêu thụ".
 - `application.yml` `search.tombstone.protection-window: 30d` (comment ghi "topic là 14d"), nhưng `t.inventory.stock.events.v1` retention là **"30d-minimum"** (Inventory AsyncAPI).
-- **2026-10-09 — kiểm chứng đúng; đã xử lý phía Inventory** (retention topic đúng 30d, sàn và trần; xem I8). **Phía Search đã xử lý 2026-10-09:** `protection-window` nâng lên 35d (default record + `application.yml`), sửa comment "14d" (retention dài nhất thật là 30d của topic Inventory, các topic khác 14d), đồng bộ docs Search, ADR-021 mở rộng ADR-011, thêm `TombstoneProtectionWindowTest`.
-- Hệ quả: sau purge, event availability được replay gặp document không tồn tại → bị coi là vi phạm readiness → Search không ACK → partition kẹt.
-- Sửa: tăng window (> 30d, ví dụ 45d) và/hoặc xử lý riêng trường hợp document đã purge; cập nhật comment + docs.
+- **2026-10-09 — kiểm chứng đúng; đã xử lý phía Inventory** (retention topic đúng 30d, sàn và trần; xem I8). **Phía Search đã xử lý 2026-10-09:** `protection-window` nâng lên 35d, sửa comment "14d" (retention dài nhất thật là 30d của topic Inventory, các topic khác 14d), ADR-021, `TombstoneProtectionWindowTest`.
+- **2026-10-10 — 35d vẫn chưa đủ** (S22): Kafka xóa theo segment nên record sống thêm tới `segment.ms` (mặc định 7 ngày) sau `retention.ms`; tối thiểu phải là 30d + 7d. Chủ dự án chọn **45d** (30d retention + 7d segment + 8d dư); ADR-022 thay con số của ADR-021; `TombstoneProtectionWindowTest` kiểm ≥ 30d + 7d + 5d.
+- Hệ quả khi thiếu: sau purge, event availability được replay gặp document không tồn tại → bị coi là vi phạm readiness → Search không ACK → partition kẹt.
 
-### S6 🔴 [BUG local] URL Product sai cổng
+### S6 🔴 [BUG local] URL Product sai cổng — ✅ đúng; đã sửa 2026-10-09
 - `application.yml`: `export.product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8080}`. `docker-compose.yml` (service `search-service`) không đặt `PRODUCT_INTERNAL_URL`. Product chạy cổng 8081 (Product `server.port`, traefik label 8081; PDP/Promotion dùng `:8081`).
 - Hệ quả: full reindex lỗi khi gọi export Product/Category.
-- Sửa: đổi default sang `:8081` và/hoặc thêm env vào compose.
+- Sửa: default `:8081` ở yml và `SearchProperties`, env trong compose gốc và compose riêng của Search.
 
-### S7 🟡 CDN base URL mặc định có dấu `/` cuối
-- `media.cdn-base-url` mặc định `https://cdn.local/`; quy ước (Cart/PDP ops) là không có `/` cuối và phải bằng nhau giữa Cart/PDP/Search/Checkout. Compose override đúng (`http://localhost:8088/media`).
+### S7 🟡 CDN base URL mặc định có dấu `/` cuối — ✅ đúng; đã sửa 2026-10-10
+- `media.cdn-base-url` mặc định `https://cdn.local/`; quy ước (Cart/PDP ops) là không có `/` cuối và phải bằng nhau giữa Cart/PDP/Search/Checkout. Compose gốc override đúng (`http://localhost:8088/media`); **compose riêng của Search còn `http://localhost:9000/media/` (có `/` cuối) — báo cáo gốc bỏ sót, đã sửa**.
+- Sửa: default `https://cdn.local`; `Media` validate khi khởi động (URL tuyệt đối `http`/`https`, không `/` cuối; không bắt buộc https theo quyết định của chủ dự án) — fail-fast thay vì sinh URL sai `//`; `SearchPropertiesMediaTest`.
 
-### S1 🟡 README tự mâu thuẫn
+### S1 🟡 README tự mâu thuẫn — ✅ đúng; đã sửa 2026-10-10 (README viết lại theo trạng thái thật)
 - §1 "Service đang running ... HTTP v1 legacy đã gỡ hoàn toàn" vs §9 "OpenAPI v2 ... provider/frontend chưa migrate" và "Cross-service contract chưa được implement ... cần producer implementation ... rồi mới chuyển Search khỏi adapter legacy" (Product/Inventory/Review producer đều đã có, không còn adapter legacy).
 - §6 dòng Product Kafka: "Contract: Cần tạo: AsyncAPI product" — đã có `contracts/events/product/v1/asyncapi.yaml`.
 
-### S2 🟡 Docs nói gateway còn route v1
+### S2 🟡 Docs nói gateway còn route v1 — ✅ đúng; đã sửa 2026-10-10
 - `interfaces.md` §2 "Gateway hiện định tuyến `GET /api/v1/search/**` là public-read"; §6 "Frontend/Gateway còn dùng route v1 là migration gap". `docs/gateway/runtime-contract.md` + compose chỉ route `/api/v2/search/*` và nói router v1 đã bỏ.
 
-### S3 🟡 Glossary cursor cũ
+### S3 🟡 Glossary cursor cũ — ✅ đúng; đã sửa 2026-10-10
 - `domain.md` glossary: "Cursor = chuỗi base64 mã hoá sort values của hit cuối" — hiện là signed cursor generation 2 mang PIT + query chuẩn hoá (interfaces, ADR-020).
 
-### S5 🟡 `facet_definitions` vẫn chưa có (xem P4)
-- Search tự dựng `code/label` từ token (đã case-fold, bỏ dấu). Gap được ghi ở cả hai phía.
+### S5 🟡 `facet_definitions` vẫn chưa có (xem P4) — ⚠️ báo cáo đã cũ
+- Product đã phát `facet_definitions` (P4, Product ADR-019) và Search đã đọc từ 2026-10-09 (`FacetLabelResolver`, nhãn nhóm facet; nhãn option vẫn dẫn xuất từ token). Không còn là gap.
 
-Đã khớp: 6 endpoint == OpenAPI v2; mapping ES + painless script trong `docs/search/schema` giống hệt từng byte resource của code; topic; header `X-Service-Identity: search-service`; bearer `REVIEW_INTERNAL_TOKEN` cho Review export.
+### Phát hiện mới 2026-10-10 (không có trong báo cáo gốc)
+Mỗi mục đều có test đỏ trước khi sửa hoặc dẫn chứng trực tiếp trong code; bảng đầy đủ ở ADR-022.
+
+| Mã | Mức | Phát hiện | Đã sửa |
+|---|---|---|---|
+| S8 | 🔴 | Batch không ACK không bao giờ được gửi lại (`AckMode.MANUAL`, không `nack`); batch sau thành công commit offset vượt qua batch lỗi. Mọi câu "không commit offset để Kafka gửi lại" (ADR-005/019, operations §6) sai | ✅ `Acknowledgment.nack(index, 5s)`; `ConsumerRedeliveryIT` |
+| S9 | 🔴 | `@ExceptionHandler(Exception.class)` nuốt lỗi giao thức: body hỏng, sai Content-Type, route lạ, sai method đều `500`; `trace_id` thiếu khi client không gửi `X-Request-Id` và lọt schema Problem khi id < 16 ký tự | ✅ `ResponseEntityExceptionHandler`; `HttpErrorMappingIT` (19) |
+| S10 | 🟠 | Run `SUPERSEDED` bị ghi đè thành `FAILED` ngay sau đó | ✅ xử lý exception riêng |
+| S11 | 🟠 | Aggregation facet/category/suggestion và job `product_count` bỏ qua `timed_out`/shard lỗi → ghi số đếm thiếu như thể đầy đủ | ✅ `SearchCompleteness`; `ProductSearchRepositoryAggregateTest` |
+| S12 | 🟠 | Gauge Micrometer giữ weak reference tới số đã box → `NaN` sau lần GC đầu; `search_reindex_state` không bao giờ về 0 | ✅ cell sở hữu + `strongReference(true)`; `SearchMetricsGaugeTest` |
+| S13 | 🔴 | `catalog-reindex-requested` chỉ được nhớ trong bộ nhớ, không có code nào khởi chạy reindex (ADR-013/017 và docs Product giả định Search tự chạy) | ✅ lưu bền trong `search_jobs` trước ACK, debounce, actor `system:catalog-control` (quyết định của chủ dự án) |
+| S14 | 🟠 | Catch-up bỏ qua kết quả apply → mất event mà run vẫn cutover; live indexer ghi vào index cũ giữa catch-up và swap, đoạn đó không bao giờ tới index mới | ✅ rewind + backoff; ghi vị trí kết thúc; tail replay sau cutover |
+| S15 | 🔴 | Run crash giữ slot singleton vĩnh viễn; kiểm "có run chưa kết thúc" bằng đọc-rồi-ghi, không atomic | ✅ lease `full-reindex` + fencing + watchdog |
+| S16 | 🟠 | Docs hứa mà code không có: resume theo checkpoint, sample diff + smoke trước cutover, kiểm cluster/đĩa khi trigger, dọn index cũ 24h, `ROLLED_BACK`, hủy run, "lịch bảo trì" | ✅ implement (stage + checkpoint, `ReindexVerifier`, `ReindexPreconditions`, `IndexCleanupJob`, API cancel/rollback/list) |
+| S17 | 🔴 | `isTerminal()` thành field `terminal`; `search_jobs` strict → mọi lần ghi run lỗi `strict_dynamic_mapping_exception`; chưa test nào ghi run vào ES thật | ✅ `@JsonIgnore`; `SearchJobsDocumentsMatchMappingTest` + `ReindexLifecycleIT` |
+| S18 | 🟠 | OpenAPI khai `q ≤ 256`, `category ≤ 180`, `filter ≤ 50 × 256`, `cursor ≤ 16384` nhưng code không kiểm; token `filter` sai bị bỏ qua và trả `200`; Tomcat 8KB không nhận nổi request hợp lệ cỡ lớn | ✅ kiểm đủ → `400`; `max-http-request-header-size: 40KB` |
+| S19 | 🟡 | Profile `dev` (compose gốc dùng) tắt cả ba job → gợi ý và `product_count` ở local luôn trống/0, docs không nói | ✅ dev bật product_count (5 phút) và suggestion (15 phút); purge vẫn tắt |
+| S20 | 🟡 | Metric `kafka_consumer_lag` trong operations §4 không tồn tại | ✅ `MicrometerConsumerListener` → `kafka_consumer_fetch_manager_records_lag_max`; docs dùng tên thật |
+| S21 | 🟡 | Mã 401 của Search là `UNAUTHORIZED` (code + OpenAPI) nhưng không có trong bảng lỗi docs; Search không nằm trong X3 | ✅ giữ tên, ghi vào error catalog, thêm vào X3 |
+| S22 | 🔴 | Cửa sổ 35d (ADR-021) không tính độ trễ xóa theo segment của Kafka (xem S4) | ✅ 45d, ADR-022 |
+| S23 | 🟡 | `category` không tồn tại ở search là `400`, không phải tìm toàn catalog — hành vi đúng nhưng chưa được viết | ✅ ghi vào OpenAPI/docs |
+| S24 | 🟡 | Cutover chuyển alias `products` và `categories` bằng hai lệnh `_aliases` riêng; docs nói "một lệnh atomic" | ✅ code đổi thành một lệnh `_aliases` cho cả bốn alias |
+| S25 | 🟡 | Docs liệt kê "Test bắt buộc" không tồn tại (listener, rebuild suggestion, recompute count, full reindex) | ✅ phần đã có test ghi rõ tên; phần chưa có ghi ở Known gaps của `README.md` |
+| S26 | 🟡 | `contracts/events/product/v1/asyncapi.yaml` khai `consumer-managed-retry-with-dlq` + DLQ cho topic Product mà Search không dùng DLQ, không có câu nói mỗi consumer chọn chính sách của mình (Review có) | ✅ thêm chú thích ở đầu `channels` |
+| S27 | 🟡 | `interactions.yaml`/ADOPTION/OpenAPI còn `proposed`, "một hit là một SKU"; frontend được ghi là còn gọi v1 | ✅ `implemented`, OpenAPI `2.2.0`, ADOPTION và catalog cập nhật |
+
+**Còn mở thật sự** (đã ghi ở `docs/search/README.md` §9): chưa có SLO số; chưa có contract test chéo với Product/Inventory/Review
+(nên Search HTTP v2 chưa `verified`); chưa có IT riêng cho rebuild suggestion, recompute `product_count` và catch-up có event thật trên cả
+bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `created_at`; rollback của suggestion index không có API (runbook thủ công).
+
+Đã khớp (xác nhận lại 2026-10-10): 4 endpoint storefront + 5 operation admin == OpenAPI v2; mapping ES + painless script trong `docs/search/schema` giống hệt từng byte resource của code; topic; header `X-Service-Identity: search-service`; bearer `REVIEW_INTERNAL_TOKEN` cho Review export.
 
 ---
 
@@ -821,7 +866,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 - `docs/mesh/runtime-contract.md` §5.2 nói dẫn xuất từ `interactions.yaml`, nhưng có dòng không có trong catalog (Product snapshot cho `promotion-service` — P5) và tên principal khác (N5). Đồng bộ lại sau khi sửa G5.
 
 ### X3 🟡 Tên mã lỗi thiếu identity không thống nhất
-- Auth/User: `UNAUTHORIZED`; Cart/Product/Promotion/Inventory/Checkout: `UNAUTHENTICATED`. Chọn một tên trong `contracts/conventions/http.md`.
+- Auth/User/Search: `UNAUTHORIZED` (Search: 2026-10-10, có trong code, OpenAPI và nay cả error catalog); Cart/Product/Promotion/Inventory/Checkout: `UNAUTHENTICATED`. Chọn một tên trong `contracts/conventions/http.md`.
 
 ### X4 🟡 Bảng mã lỗi không được liệt kê trong OpenAPI
 - Đa số OpenAPI chỉ mô tả response, không enum `code`; docs domain thiếu nhiều mã (A1, U3, C8, P3, PR7). Đề xuất mỗi service có "error catalog" đầy đủ (code, HTTP, retryable) trong `interfaces.md`, như Inventory và Checkout đã làm.
@@ -868,9 +913,10 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 - [x] U5 User: consumer `complaint-received` trên `t.notification.outcomes.v1` (ADR-009). *(2026-10-09)*
 - [x] C11 Cart: TTL idempotency upsert lấy từ config (sửa cả `docs/cart/scripts/upsert_item.lua`). *(2026-10-09)*
 - [x] C12 Cart: consumer `USER_DELETED` + `purge_cart.lua` (ADR-014); Auth contract/docs/catalog đã thêm Cart vào consumers. *(2026-10-09)*
-- [x] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge. *(2026-10-09: `protection-window` = 35d, ADR-021, `TombstoneProtectionWindowTest`)*
+- [x] S4 Search: tăng tombstone protection window > 30d / xử lý document đã purge. *(2026-10-09: 35d, ADR-021; 2026-10-10: 45d vì Kafka xóa theo segment, ADR-022, `TombstoneProtectionWindowTest`)*
 - [x] S6 Search: default URL Product `:8081` (yml, `SearchProperties`, compose gốc + compose riêng của Search). *(2026-10-09)*
-- [ ] S7 Search: bỏ `/` cuối ở default CDN URL.
+- [x] S7 Search: bỏ `/` cuối ở default CDN URL + validate fail-fast + sửa compose riêng của Search. *(2026-10-10)*
+- [x] S8–S27 Search: phát hiện mới 2026-10-10 (redelivery bằng `nack`, lỗi HTTP không `500`, giới hạn tham số, gauge, vòng đời reindex đầy đủ: lease/resume/cancel/rollback/verify/cleanup/tự chạy từ control event, dev profile, 45d, CDN, retry-policy Product AsyncAPI). *(2026-10-10; ADR-022, 192 unit + 75 IT xanh; OpenAPI `2.2.0`, `generated/search.ts`)*
 - [x] P5 Product: tách allowlist snapshot cho Promotion (`snapshot-clients`, Promotion không còn đọc được export). *(2026-10-09)*
 - [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout có `ProtoCopyTest` tương đương, K8)*
 - [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
@@ -901,7 +947,7 @@ Docs chặt chẽ nhất, code khớp contract gần như hoàn toàn.
 - [x] Promotion: PR1–PR3, PR5–PR7, PR10, README §9. *(2026-10-10; cộng ADR-019, `scope: current`, catalog lỗi 34 mã, bảng cấu hình đầy đủ, mô tả health đúng code, bảng test thật, `docs/README.md` §5, `docs/order/interfaces.md` §1)*
 - [ ] Inventory: I1, I2.
 - [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
-- [ ] Search: S1–S3, S5.
+- [x] Search: S1–S3, S5 (cộng S8–S27: README viết lại, `architecture`/`domain`/`interfaces`/`data`/`operations`/`development`/`workflows` đồng bộ, WF-SEARCH-013/014 mới, ADR-022, `docs/README.md`, `docs/frontend/step-4-verification.md`). *(2026-10-10)*
 - [x] PDP BFF: B1, B2 (đã sửa từ Product sync), cộng B3–B13 phát hiện khi kiểm chứng. *(2026-10-09; ADR-008)*
 - [ ] Order: O1, O2. *(K1, K2 xong 2026-10-09; phần Checkout của O1 xong)*
 - [ ] Payment: PY2, PY3.
