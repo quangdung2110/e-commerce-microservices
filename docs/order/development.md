@@ -28,10 +28,10 @@ Spring Boot 3.3, JDBC + Flyway, Spring Kafka, Temporal Java SDK 1.25.1.
 | `src/main/java/com/ecommerce/order/web` | Controller public/internal, `IdentityFilter`, problem+json |
 | `.../service` | Saga activities (`CheckoutSaga`, `RefundSaga`, `ScopeFinalization`), command/query/search, outbox/notification, reconciliation |
 | `.../workflow` | Bốn Temporal workflow + `OrderActivities` |
-| `.../messaging` | Payment/Inventory/Delivery intake (durable inbox), Kafka listeners, receipt observer |
+| `.../messaging` | Payment/Inventory intake (durable inbox), Kafka listeners, receipt observer |
 | `.../worker` | Workflow dispatcher (SignalWithStart), closed-target resolver, reconcilers, trimmer |
 | `.../store` | SQL tường minh, row lock/CAS |
-| `src/main/resources/db/migration` | `V1__order_baseline.sql` |
+| `src/main/resources/db/migration` | `V1__order_baseline.sql`, `V2__admin_delivery_confirmation.sql` |
 | `src/main/resources/kafka` | Debezium connector multi-destination outbox |
 
 ## 2. Chạy local và dependency
@@ -58,9 +58,10 @@ Payment chạy theo profile riêng (`docker compose --profile payment up -d paym
 Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout có runtime
 (`docker compose up -d checkout-service`, [checkout/development.md](../checkout/development.md)); khi
 chỉ thử Order, vẫn có thể gọi `POST /internal/v1/checkout-order-submissions` thủ công với
-`X-Service-Identity: checkout-service` trên service network/cổng 8095. Delivery chưa có runtime:
-phát Delivery fact `com.ecommerce.delivery.order-line.delivered.v1` thủ công lên
-`t.delivery.order.events.v1` khi cần thử auto-complete.
+`X-Service-Identity: checkout-service` trên service network/cổng 8095. Không có Delivery service: để
+thử hoàn tất đơn, ghi physical dispatch ở Inventory Admin rồi gọi
+`POST /api/v1/admin/orders/{order_id}/delivery-confirmations` (nút "Xác nhận đã giao" ở trang chi tiết đơn
+của Admin, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ## 3. Cấu hình local
 
@@ -91,7 +92,7 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Nhóm | Test |
 |---|---|
 | Domain | `DomainRulesTest` (largest remainder, normalizer `đ`, tab/ui status, cancel reason mapping, JCS), `CheckoutRulesTest` (hash, invariants), `HttpRemoteTest` (classify unknown/rejected) |
-| Checkout/payment | `CheckoutFlowIT`: happy path tới `COMPLETED`, replay/409, Promotion `409 PROMOTION_RECALCULATION_NEEDED`, Inventory `REJECT_ALL`, deadline cancel + capture-after-terminal, Buyer cancel idempotent, capture thắng cancel, FAILED retry attempt, duplicate/stale fact, proof trước dispatch, post-capture repair + manual fulfilment |
+| Checkout/payment | `CheckoutFlowIT`: happy path tới `COMPLETED` (dispatch rồi Admin delivery confirmation), replay/409, Promotion `409 PROMOTION_RECALCULATION_NEEDED`, Inventory `REJECT_ALL`, deadline cancel + capture-after-terminal, Buyer cancel idempotent, capture thắng cancel, FAILED retry attempt, duplicate/stale fact, Admin delivery confirmation (cần dispatch trước, 403/400/422/404, all-or-nothing, replay/409, đúng một `order.completed.v1`, gauge quá hạn), post-capture repair + manual fulfilment |
 | Refund | `RefundFlowIT`: return một lần + refund đúng một lần + close `REFUNDED`, scope sai/chưa giao, refund fail + external settlement, reversal sau success, timeout 30 ngày + no-payout close-incomplete, Admin pre-dispatch reject/accept, finalization `RECOVERY_REQUIRED` rồi hoàn tất |
 | Read/search | `QueryIT`: owner/404/admin/403/401, card/keyset/`q` không dấu |
 | Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
@@ -172,7 +173,7 @@ phân bổ discount theo largest remainder; multiplicity không deferred.
 Chạy checkout success, từng pre-payment failure, post-capture forward-repair failure,
 cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, anomalous
 success after terminal non-capture (reconciliation only), multi-warehouse physical
-dispatch and separate Delivery proof including proof-before-dispatch replay,
+dispatch and the separate Admin delivery confirmation (rejected before dispatch, all-or-nothing, replay),
 Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
 verification, refund success/fail/reverse after `REFUNDED`, dispute
 opened/funds-withdrawn/reinstated/won/lost theo thứ tự lệch mà không đổi FSM, external

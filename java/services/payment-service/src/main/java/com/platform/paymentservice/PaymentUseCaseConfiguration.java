@@ -8,6 +8,7 @@ import com.platform.paymentservice.application.port.out.IdempotencyPort;
 import com.platform.paymentservice.application.port.out.InitiatePaymentPort;
 import com.platform.paymentservice.application.port.out.PaymentClientDataPort;
 import com.platform.paymentservice.application.port.out.PaymentProviderPort;
+import com.platform.paymentservice.application.port.out.PaymentQueryPort;
 import com.platform.paymentservice.application.port.out.RefundPaymentPort;
 import com.platform.paymentservice.application.port.out.RefundPollingPort;
 import com.platform.paymentservice.application.port.out.ProviderOperationPort;
@@ -33,6 +34,7 @@ import com.platform.paymentservice.application.service.CancelPaymentService;
 import com.platform.paymentservice.application.service.DeclinePaymentService;
 import com.platform.paymentservice.domain.DeclinePolicy;
 import com.platform.paymentservice.application.service.PaymentClientDataService;
+import com.platform.paymentservice.application.service.PaymentQueryService;
 import com.platform.paymentservice.application.service.RefundPaymentService;
 import com.platform.paymentservice.application.service.RefundPollerService;
 import com.platform.paymentservice.application.service.ProviderRecoveryService;
@@ -98,6 +100,11 @@ class PaymentUseCaseConfiguration {
                 persistence, operations, provider, cipher, ids, clock, fingerprints,
                 stateMachine, publishableKey, sessionTtl, clientSecretMargin, leaseTtl,
                 safeReplayHorizon, sessionTtl.plus(Duration.ofHours(24)), retryDelay);
+    }
+
+    @Bean
+    PaymentQueryService paymentQueryService(PaymentQueryPort queries) {
+        return new PaymentQueryService(queries);
     }
 
     @Bean

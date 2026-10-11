@@ -100,6 +100,8 @@ public abstract class AbstractIntegrationTest {
     protected WorkflowDispatcher dispatcher;
     @Autowired
     protected Reconcilers reconcilers;
+    @Autowired
+    protected io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
     // ------------------------------------------------------------------ HTTP
 
@@ -267,7 +269,7 @@ public abstract class AbstractIntegrationTest {
                 ((Number) refund.get("active_payment_attempt_number")).intValue(), 0, data));
     }
 
-    // ------------------------------------------------------------------ Inventory / Delivery facts
+    // ------------------------------------------------------------------ Inventory facts and Admin delivery confirmation
 
     protected void dispatchAll(long orderId) throws Exception {
         for (Map<String, Object> line : jdbc.queryForList("""
@@ -289,24 +291,26 @@ public abstract class AbstractIntegrationTest {
         fulfillment.handleDispatch(Long.toString(orderId), mapper.writeValueAsString(event));
     }
 
+    /** Admin delivery confirmation (ADR-021) of every line of the order in one call. */
     protected void deliverAll(long orderId) throws Exception {
-        for (Map<String, Object> line : jdbc.queryForList(
-                "SELECT id, allocated_warehouse_id FROM order_item_lines WHERE order_id = ? ORDER BY id", orderId)) {
-            deliver(orderId, ((Number) line.get("id")).longValue(), (String) line.get("allocated_warehouse_id"),
-                    "proof-" + orderId + "-" + line.get("id"));
+        List<Map<String, Object>> lines = new java.util.ArrayList<>();
+        for (Long lineId : lineIds(orderId)) {
+            lines.add(deliveryLine(lineId, "TRK-" + orderId + "-" + lineId));
+        }
+        Response response = confirmDelivery(orderId, lines);
+        if (response.status() != 200) {
+            throw new AssertionError("Delivery confirmation failed " + response.status() + " " + response.body());
         }
     }
 
-    protected void deliver(long orderId, long lineId, String warehouse, String proofId) throws Exception {
-        ObjectNode event = mapper.createObjectNode();
-        event.put("specversion", "1.0").put("id", UUID.randomUUID().toString())
-                .put("source", "/services/delivery").put("type", "com.ecommerce.delivery.order-line.delivered.v1")
-                .put("subject", "orders/" + orderId + "/lines/" + lineId).put("time", Instant.now().toString());
-        event.putObject("data").put("order_id", Long.toString(orderId)).put("order_line_id", Long.toString(lineId))
-                .put("warehouse_id", warehouse).put("delivery_proof_id", proofId)
-                .put("delivery_proof_sha256", "a".repeat(64)).put("delivered_at", Instant.now().toString())
-                .put("aggregate_revision", 2);
-        fulfillment.handleDelivery(Long.toString(orderId), mapper.writeValueAsString(event));
+    protected Map<String, Object> deliveryLine(long lineId, String reference) {
+        return Map.of("order_line_id", Long.toString(lineId), "delivered_at", Instant.now().toString(),
+                "delivery_reference", reference);
+    }
+
+    protected Response confirmDelivery(long orderId, List<Map<String, Object>> lines) throws Exception {
+        return call(admin(MockMvcRequestBuilders.post("/api/v1/admin/orders/" + orderId + "/delivery-confirmations"))
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("lines", lines))));
     }
 
     protected void inspectionCompleted(long orderId, long[][] lines) throws Exception {

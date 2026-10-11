@@ -88,6 +88,12 @@ order:
     inspection-wait: 30d
   search:
     default-window: 90d
+  fulfillment:
+    # Alert/metric threshold only (order.fulfillment.delivery_confirmation_overdue): a line
+    # dispatched this long ago without an Admin delivery confirmation. It never auto-delivers.
+    delivery-confirmation-overdue: 7d
+    # Tolerance for a delivered_at slightly ahead of the server clock.
+    delivered-at-future-skew: 5m
   notification:
     frontend-base-url: ${ORDER_FRONTEND_BASE_URL:http://localhost:3000}
     payment-method-label: "Thanh toán trực tuyến"
@@ -112,13 +118,11 @@ order:
     consumers-enabled: ${ORDER_CONSUMERS_ENABLED:true}
     payment-topic: t.payment.events.v2
     inventory-topic: t.inventory.order.events.v1
-    delivery-topic: t.delivery.order.events.v1
     order-topic: t.order.events
     notification-topic: t.notification.transactional.v1
     payment-group: order-payment-consumer
     inventory-ship-group: order-inventory-ship-consumer
     inventory-return-group: order-inventory-return-consumer
-    delivery-group: order-delivery-consumer
     receipt-group: order-outbox-receipt-observer
   workers:
     enabled: ${WORKERS_ENABLED:true}

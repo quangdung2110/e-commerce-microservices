@@ -56,6 +56,11 @@ export const ORDER_MESSAGES: Record<string, string> = {
   CHECKOUT_PAYMENT_WINDOW_EXHAUSTED: "Thời gian giữ hàng không còn đủ để thanh toán.",
   ORDER_CANCELLED_DURING_PREPARATION: "Đơn hàng đã được huỷ trước khi thanh toán sẵn sàng.",
   ORDER_UNAVAILABLE: "Thông tin đơn hàng đang gián đoạn. Vui lòng thử lại sau.",
+  DELIVERY_REQUIRES_DISPATCH: "Dòng hàng chưa được kho ghi nhận xuất kho nên chưa thể xác nhận đã giao.",
+  DELIVERY_ALREADY_CONFIRMED:
+    "Dòng hàng này đã được xác nhận giao với mã tham chiếu hoặc thời điểm khác.",
+  INVALID_DELIVERY_CONFIRMATION:
+    "Thông tin xác nhận giao hàng chưa hợp lệ. Thời điểm giao phải sau lúc xuất kho và không ở tương lai.",
   ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED:
     "Không thể hoàn tiền tự động vì đã có sản phẩm rời kho.",
   PROMOTION_RECALCULATION_NEEDED: "Voucher cần được tính lại. Vui lòng xem lại đơn hàng.",

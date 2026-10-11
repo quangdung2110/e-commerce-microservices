@@ -3,6 +3,24 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-11 (Order O3 — delivery confirmation)
+
+- Order HTTP v1 is `1.1.0` (additive): new `POST /api/v1/admin/orders/{order_id}/delivery-confirmations`
+  (`confirmDeliveryAsAdmin`, ADMIN only). It is the **only** way a line moves `DISPATCHED -> DELIVERED`; the last
+  confirmation completes the order and emits `order.completed.v1`. Body `lines[] {order_line_id, delivered_at,
+  delivery_reference}` (1–100 unique lines, all-or-nothing); synchronous `200` with `DeliveryConfirmationResult`; no
+  `Idempotency-Key` (idempotent by line state). New problem codes: `DELIVERY_REQUIRES_DISPATCH` (`409`, line still
+  `PROCESSING`), `DELIVERY_ALREADY_CONFIRMED` (`409`, different reference/time on an already delivered line),
+  `INVALID_DELIVERY_CONFIRMATION` (`422`, unknown/duplicate line, `delivered_at` before dispatch or in the future).
+  Frontend `generated/order.ts` regenerated.
+- Order Events v1 is `1.1.0`: the `deliveryFacts` channel and `consumeDeliveryFacts` operation are removed.
+  **Removed contract:** `contracts/events/delivery/v1` (`com.ecommerce.delivery.order-line.delivered.v1`,
+  `t.delivery.order.events.v1`). No Delivery service ever existed, so no provider or consumer migration is needed
+  (the contract was `proposed`). Inventory `line-dispatched` is unchanged and still means only "left the warehouse".
+- Notification `ORDER_COMPLETED` descriptions (contract + Go copy) say "every line confirmed delivered by an Admin".
+- See [Order ADR-021](../docs/order/decisions/ADR-021-admin-delivery-confirmation.md).
+
+
 ## 2026-10-10 (Notification sync)
 
 - Notification internal HTTP v1 is `1.1.0` (additive; `x-adoption-status` stays `proposed`):

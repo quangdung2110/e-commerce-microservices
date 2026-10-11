@@ -15,7 +15,8 @@ verified_against_commit: null
 # Order Service — Thiết kế dữ liệu
 
 > Đây là logical/physical design. Migration chuẩn là
-> `java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql`; các câu
+> `java/services/order-service/src/main/resources/db/migration/` (`V1__order_baseline.sql`,
+> `V2__admin_delivery_confirmation.sql`); các câu
 > SQL dưới đây chỉ minh họa và migration là nguồn chân lý khi có khác biệt cú pháp.
 
 ## 1. Quyền sở hữu dữ liệu
@@ -145,32 +146,34 @@ erDiagram
       bigint refund_amount_locked_minor
       varchar inventory_refund_scope_id
       varchar refund_transaction_id UK
-      uuid inspection_event_id UK
+      uuid inventory_inspection_event_id UK
       bigint inventory_scope_revision
       varchar inventory_scope_finalization_status
       int inventory_scope_finalization_generation
       varchar inventory_scope_terminal_state
     }
     ORDER_ADMIN_REFUND_ATTEMPTS {
-      uuid id PK
+      uuid attempt_id PK
       bigint order_id FK
       varchar workflow_id UK
       varchar inventory_command_id UK
       varchar status
     }
     ORDER_WORKFLOW_DISPATCHES {
-      uuid id PK
+      uuid dispatch_id PK
       bigint order_id FK
       varchar workflow_id UK
       varchar workflow_type
       varchar status
     }
     ORDER_CONSUMED_EVENTS {
-      uuid event_id PK
-      bigint order_id FK
-      varchar source
+      varchar source PK
+      varchar event_id PK
+      bigint order_id
+      varchar stream_id
       bigint source_revision
-      varchar payload_hash
+      varchar payload_sha256
+      varchar status
     }
     ORDER_SAGA_CHECKPOINTS {
       uuid id PK
@@ -185,10 +188,16 @@ erDiagram
       uuid case_id UK
       bigint case_revision
       varchar case_status
+      varchar owner_queue
+    }
+    ORDER_RECONCILIATION_OBLIGATIONS {
+      uuid obligation_id PK
+      uuid case_id FK
+      varchar obligation_type
+      varchar resource_id
+      varchar status
+      bigint revision
       varchar resolution_type
-      varchar decision_id UK
-      varchar evidence_digest
-      uuid decided_by
     }
     ORDER_REFUND_CASE_LINES {
       bigint refund_case_order_id FK
@@ -251,7 +260,7 @@ không phụ thuộc address book bị sửa/xóa về sau.
 | `saga_phase` | `VARCHAR(50)` | Durable checkpoint summary: pre-payment, cancelling, post-capture repair or financial reconciliation; not reconstructed from Redis/Temporal alone. |
 | `last_event_sequence_id` | `BIGINT NOT NULL DEFAULT 0` | Counter đơn điệu per order cho event Order tự phát |
 | `paid_at` | `TIMESTAMPTZ` nullable | Thời điểm first/only captured payment được Order commit |
-| `completed_at` | `TIMESTAMPTZ` nullable | Thời điểm verified final-line delivery hoàn tất master |
+| `completed_at` | `TIMESTAMPTZ` nullable | Thời điểm Admin xác nhận giao line cuối và master hoàn tất |
 | `cancelled_at` | `TIMESTAMPTZ` nullable | Thời điểm pre-payment cancellation và cleanup hoàn tất |
 | `refunded_at` | `TIMESTAMPTZ` nullable | Economic-resolution time khi master vào `REFUNDED`: provider success hoặc external full-payout settlement; phân biệt bằng refund case status |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` | Audit timestamps |
@@ -289,7 +298,8 @@ viết lại lịch sử đơn.
 | `discount_share_minor` | `BIGINT` | Immutable share của `orders.total_discount_minor`, phân bổ proportional largest-remainder; tổng mọi line share đúng bằng order discount |
 | `net_amount_minor` | `BIGINT` | `quantity * unit_price_minor - discount_share_minor`, không âm; Buyer selected-line refund cộng field này |
 | `fulfillment_status` | `VARCHAR(50)` | Authoritative line FSM `PROCESSING/DISPATCHED/DELIVERED` |
-| `dispatch_event_id`, `delivery_proof_id`, `delivery_proof_sha256`, `delivered_at` | `UUID/VARCHAR/VARCHAR(64)/TIMESTAMPTZ` nullable | Immutable fact identity/proof receipt sau mỗi transition; raw proof/PII không lưu ở Order; duplicate phải replay/no-op |
+| `dispatch_event_id`, `dispatch_reservation_revision`, `dispatched_at` | `UUID/BIGINT/TIMESTAMPTZ` nullable | Identity, revision và `handed_over_at` của Inventory dispatch fact đã áp (I1); duplicate là no-op |
+| `delivery_reference`, `delivery_confirmed_by`, `delivered_at` | `VARCHAR(128)/UUID/TIMESTAMPTZ` nullable | Bản ghi Admin xác nhận giao (I2, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)): mã vận đơn/biên nhận (không unique, nhiều line cùng kiện có thể dùng chung), UUID Admin (`X-User-Id`) và thời điểm khách nhận. CHECK: `fulfillment_status='DELIVERED'` khi và chỉ khi có `delivered_at` + `delivery_reference`. Không lưu proof/PII ngoài tham chiếu này |
 | `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất; cũng là nguồn của `product_name` trong `order.completed.v1` |
 | `snapshot_variant_name` | `VARCHAR(255)` nullable | Nhãn biến thể từ Checkout `items[].variant_name`; nguồn duy nhất của `variant_name` trong `order.completed.v1` và notification |
 | `snapshot_image_url` | `VARCHAR(2048)` nullable | Ảnh lúc mua; khớp public/internal OpenAPI URI limit; cũng là nguồn của `product_image_url` trong `order.completed.v1` |
@@ -576,7 +586,7 @@ Ambiguous state remains `RETRY` or `QUARANTINED` with alert, never starts the ol
 
 `order_consumed_events` has primary key `(source,event_id)` plus event type, order ID,
 `stream_id`, source aggregate revision/financial version, payload SHA-256, validation and
-routing status (`RECEIVED`, `PENDING_IDENTITY_BIND`, `PENDING_PREREQUISITE`, `ROUTED`,
+routing status (`RECEIVED`, `PENDING_IDENTITY_BIND`, `ROUTED`,
 `APPLIED`, `REJECTED`) and timestamps. Semantic uniqueness is
 `(source,event_type,stream_id,source_revision)`, never `(source,order_id,revision)`.
 The inbox insert, routing checkpoint and workflow message commit together. Request replay mirrors
@@ -591,7 +601,7 @@ command ID/key, request digest, canonical remote resource reference and
 sanitized response payload/digest, outcome and timestamps. Reserve checkpoint must persist
 `inventory_allocation_plan_id` and the complete `(checkout_line_reference, order_line_id,
 allocated_warehouse_id, quantity)` mapping; it is the local proof used by
-dispatch/delivery consumers. An ambiguous
+the dispatch consumer. An ambiguous
 Inventory/Payment/Promotion response is resolved by its command query/replay and then updates
 this checkpoint; compensation/recovery may never infer that an unknown remote mutation failed.
 Accepted Inventory Reserve additionally copies its exact `expires_at` to
@@ -677,6 +687,32 @@ là `outbox_events.event_id`, đồng thời là CloudEvents `id` ổn định x
 một receipt observer insert idempotently sau khi nhìn thấy message trên Kafka. Trimmer chỉ
 xóa row cũ đã có receipt; observer outage gây retention leak an toàn, không gây mất event.
 
+### 3.12. Cột triển khai bổ sung
+
+Các cột dưới đây có trong migration nhưng không thuộc mô tả logic ở các mục trên; chúng phục vụ
+vận hành/idempotency và không đổi hợp đồng nghiệp vụ.
+
+| Bảng | Cột | Ý nghĩa |
+|---|---|---|
+| `orders` | `pricing_hash`, `items_hash`, `promotion_campaign_revision` | Hash và revision của checkout snapshot đã chấp nhận (`CheckoutRules`), dùng so khớp khi attach/replay submission |
+| `orders` | `cancel_reason_detail` | Mã chi tiết cho `PRE_PAYMENT_SAGA_FAILED` (ví dụ `INVENTORY_RESERVATION_REJECTED`), nguồn của hiển thị `out_of_stock`/`checkout_failed` trong notification |
+| `order_promotions` | `reserved_at` | Thời điểm Promotion Reserve được accept |
+| `order_operations` | `owner_role`, `result_reference` | `BUYER`/`ADMIN` của người tạo (quyết định ai đọc được operation); tham chiếu kết quả (refund request ID, attempt number…) |
+| `order_workflow_dispatches` | `task_queue`, `input_digest`, `lease_owner`, `lease_until`, `last_error` | Queue Temporal, digest input chống start khác payload, lease của dispatcher (`FOR UPDATE SKIP LOCKED`) và lỗi cuối |
+| `order_workflow_messages` | `task_queue`, `start_input`, `payload_digest`, `replacement_message_id`, `lease_owner`, `lease_until`, `last_error` | Cùng vai trò như trên cho `SignalWithStart`, cộng input để start-if-absent, digest payload và message thay thế khi `REROUTED` |
+| `order_consumed_events` | `reject_reason`, `received_at` | Lý do quarantine (`REJECTED`) và thời điểm nhận (replay theo thứ tự đến) |
+| `order_saga_checkpoints` | `response_digest` | Digest response đã sanitize của remote command |
+| `order_refund_cases` | `inventory_scope_registered_revision` | `scope_revision` Inventory trả khi đăng ký scope |
+| `order_refund_cases` | `inventory_scope_finalization_operation`, `inventory_scope_finalization_reason` | `CLOSE`/`CLOSE_INCOMPLETE`/`CANCEL` và reason đã đóng băng của intent |
+| `order_refund_cases` | `refund_command_id`, `refund_failure_code`, `refund_reversal_reason_code` | Command ID Payment refund ổn định; `error_code` của `refund.failed`; `reason_code` của `refund.reversed` |
+| `order_refund_cases` | `manual_verification_reason` | Lý do vào `MANUAL_VERIFICATION_REQUIRED` (timeout 30 ngày, scope bị Inventory từ chối…) |
+| `order_admin_refund_attempts` | `actor_id`, `outcome_digest` | Admin tạo attempt; digest outcome Inventory đã chứng minh |
+| `order_financial_reconciliation_cases` | `owner_queue`, `opened_at`, `closed_at` | Hàng đợi sở hữu (mặc định `FINANCE_OPS`) và mốc mở/đóng envelope |
+| `order_reconciliation_obligations` | `accounting_case_reference`, `opened_at`, `closed_at` | Mã vụ kế toán của decision đóng obligation; mốc mở/đóng |
+| `order_reconciliation_evidence` | `evidence_id`, `recorded_at` | Khóa và thời điểm append evidence bất biến |
+| `order_reconciliation_decisions` | `expected_case_revision`, `actor_id`, `workload_principal`, `accounting_case_reference` | Optimistic-concurrency revision đã gửi, người ra quyết định (`X-Actor-Id`), workload mesh và mã vụ kế toán |
+| `outbox_delivery_receipts` | `kafka_partition`, `kafka_offset` | Vị trí message mà receipt observer đã thấy |
+
 ## 4. Ràng buộc và chỉ mục
 
 - PK/FK theo mô hình §2; `orders.checkout_token` unique; refund case PK theo
@@ -699,12 +735,15 @@ xóa row cũ đã có receipt; observer outage gây retention leak an toàn, kh�
 - Index `(inventory_scope_finalization_status, updated_at)` finds unresolved scope work
   independently of case financial status; generation-specific checkpoint identity must
   be unique and retain previous rejected attempts.
+- `order_item_lines` có CHECK `ck_order_item_lines_delivery_record` (line `DELIVERED` khi và chỉ khi có
+  `delivered_at` và `delivery_reference`) và partial index `idx_oil_dispatched_unconfirmed(dispatched_at)
+  WHERE fulfillment_status='DISPATCHED'` cho gauge quá hạn xác nhận giao (V2, ADR-021).
 - Unique `order_item_lines(order_id, allocation_plan_line_reference)`; không đặt unique
   toàn cục hay theo plan lên line reference (ADR-020 §18).
 - `order_consumed_events` dùng PK `(source,event_id)` và semantic unique
   `(source,event_type,stream_id,source_revision)`; cùng revision của hai aggregate hoặc
   hai event type khác nhau không được đụng nhau.
-- Index `order_workflow_dispatches(status, created_at)`,
+- Index `order_workflow_dispatches(status, available_at, created_at)` (cộng partial unique live `workflow_id`),
   `order_workflow_messages(status, available_at, created_at)`,
   `order_saga_checkpoints(order_id, workflow_lane, phase, operation, resource_id,
   generation)`, `order_reconciliation_obligations(case_id,status,updated_at)` và
@@ -725,8 +764,7 @@ CREATE INDEX idx_orders_created_id
 CREATE INDEX idx_orders_status_payment_created
   ON orders (status, payment_status, created_at DESC, id DESC);
 CREATE INDEX idx_orders_final_amount_minor_created
-  ON orders (final_amount_minor, created_at DESC, id DESC)
-  WHERE final_amount_minor IS NOT NULL;
+  ON orders (final_amount_minor, created_at DESC, id DESC);
 CREATE INDEX idx_oil_snapshot_name_search
   ON order_item_lines USING gin
   (snapshot_name_search gin_trgm_ops);
@@ -749,7 +787,7 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
 - Any command that requires Temporal start/attach also inserts
   `order_workflow_dispatches` in that same transaction. The dispatcher can retry after
   process crash; API acceptance never relies on a successful in-process start.
-- Payment/Inventory/Delivery consumer transaction validates identity/version, inserts
+- Payment/Inventory consumer transaction validates identity/version, inserts
   durable inbox evidence and an `order_workflow_messages` row in the same commit, then
   ACKs Kafka. A separate dispatcher uses Temporal `SignalWithStart` with stable
   scoped `message_id`; a crash before/after the RPC is harmless because workflow state
@@ -764,9 +802,9 @@ GIN trigram dự kiến tốn khoảng 3–5 lần kích thước cột gốc; c
   atomically. A pending no-payout intent blocks Payment initiation; incoming inspection
   completion still persists evidence without dispatching payout. Receipt recording locks
   the matching generation and atomically resolves finalization/case/operation/reconciliation.
-- Delivery consumer persists its proof/inbox and CASes a single line
-  `DISPATCHED -> DELIVERED`; proof tới trước dispatch được giữ
-  `PENDING_PREREQUISITE` và replay khi dispatch evidence tới. Sau mỗi thay đổi delivery
+- Admin delivery confirmation (ADR-021) khóa order rồi các line, CAS từng line
+  `DISPATCHED -> DELIVERED` kèm `delivery_reference`/`delivery_confirmed_by`/`delivered_at`, tất cả hoặc không
+  line nào, rồi chạy `TryCompleteOrder` trong cùng transaction. Sau mỗi thay đổi delivery
   hoặc financial repair, cùng một `TryCompleteOrder` convergence routine recomputes item
   state. Chỉ khi master là `PROCESSING`, mọi line `DELIVERED` và mọi post-capture
   obligation bắt buộc đã đóng thì routine mới CAS sang `COMPLETED` và insert

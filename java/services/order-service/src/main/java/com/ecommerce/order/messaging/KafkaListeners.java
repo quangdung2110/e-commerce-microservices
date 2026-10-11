@@ -52,12 +52,6 @@ public class KafkaListeners {
         ack.acknowledge();
     }
 
-    @KafkaListener(topics = "${order.kafka.delivery-topic}", groupId = "${order.kafka.delivery-group}")
-    public void delivery(ConsumerRecord<String, String> record, Acknowledgment ack) {
-        fulfillment.handleDelivery(record.key(), record.value());
-        ack.acknowledge();
-    }
-
     /** Receipt observer (ADR-016): exact (event_id, destination) proof used by the trimmer. */
     @KafkaListener(topics = {"${order.kafka.order-topic}", "${order.kafka.notification-topic}"},
             groupId = "${order.kafka.receipt-group}")

@@ -80,7 +80,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({MissingRequestHeaderException.class, MissingServletRequestParameterException.class,
             MethodArgumentTypeMismatchException.class, HttpMediaTypeNotSupportedException.class})
     public ResponseEntity<Object> badInput(Exception e, HttpServletRequest request) {
-        return invalid(e.getMessage(), List.of(), request);
+        // Spring's own messages name Java classes and parameter types; the wire gets a fixed sentence.
+        String detail = switch (e) {
+            case MissingRequestHeaderException header -> "Missing required header " + header.getHeaderName();
+            case MissingServletRequestParameterException parameter ->
+                    "Missing required parameter " + parameter.getParameterName();
+            case MethodArgumentTypeMismatchException mismatch -> "Invalid value for parameter " + mismatch.getName();
+            default -> "Unsupported request content type";
+        };
+        return invalid(detail, List.of(), request);
     }
 
     @ExceptionHandler({NoResourceFoundException.class, HttpRequestMethodNotSupportedException.class})

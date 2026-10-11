@@ -5,6 +5,7 @@ import com.ecommerce.order.common.Json;
 import com.ecommerce.order.domain.BuyerTab;
 import com.ecommerce.order.domain.OrderStatus;
 import com.ecommerce.order.domain.PaymentStatus;
+import com.ecommerce.order.service.DeliveryConfirmationService;
 import com.ecommerce.order.service.OrderCommandService;
 import com.ecommerce.order.service.OrderQueryService;
 import com.ecommerce.order.service.OrderSearchService;
@@ -38,13 +39,15 @@ public class OrderController {
     private final OrderQueryService queries;
     private final OrderSearchService search;
     private final OrderCommandService commands;
+    private final DeliveryConfirmationService deliveries;
     private final Json json;
 
     public OrderController(OrderQueryService queries, OrderSearchService search, OrderCommandService commands,
-                           Json json) {
+                           DeliveryConfirmationService deliveries, Json json) {
         this.queries = queries;
         this.search = search;
         this.commands = commands;
+        this.deliveries = deliveries;
         this.json = json;
     }
 
@@ -147,6 +150,12 @@ public class OrderController {
                                                     @RequestHeader("Idempotency-Key") String key,
                                                     @Valid @RequestBody CommandDtos.AdminPreDispatchRefundRequest body) {
         return commands.adminPreDispatchRefund(orderId, Caller.current(), key, json.tree(body));
+    }
+
+    @PostMapping("/api/v1/admin/orders/{orderId}/delivery-confirmations")
+    public ResponseEntity<ObjectNode> confirmDelivery(@PathVariable String orderId,
+                                                      @Valid @RequestBody CommandDtos.DeliveryConfirmationRequest body) {
+        return privateOk(deliveries.confirm(orderId, Caller.current(), json.tree(body)));
     }
 
     private static ResponseEntity<ObjectNode> privateOk(ObjectNode body) {

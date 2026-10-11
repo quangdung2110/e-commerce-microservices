@@ -12,6 +12,7 @@ public record OrderProperties(
         Checkout checkout,
         Refund refund,
         Search search,
+        Fulfillment fulfillment,
         Notification notification,
         Temporal temporal,
         Clients clients,
@@ -45,10 +46,12 @@ public record OrderProperties(
                           String paymentBaseUrl, Duration connectTimeout, Duration readTimeout) {
     }
 
-    public record Kafka(boolean consumersEnabled, String paymentTopic, String inventoryTopic, String deliveryTopic,
+    public record Fulfillment(Duration deliveryConfirmationOverdue, Duration deliveredAtFutureSkew) {
+    }
+
+    public record Kafka(boolean consumersEnabled, String paymentTopic, String inventoryTopic,
                         String orderTopic, String notificationTopic, String paymentGroup,
-                        String inventoryShipGroup, String inventoryReturnGroup, String deliveryGroup,
-                        String receiptGroup) {
+                        String inventoryShipGroup, String inventoryReturnGroup, String receiptGroup) {
     }
 
     public record Workers(boolean enabled, String instanceId, Duration dispatchInterval, int dispatchBatchSize,

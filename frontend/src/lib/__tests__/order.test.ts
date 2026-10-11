@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { OrderDetail, OrderLine } from "@/lib/api/order";
-import { addressText, canAdminCancelOrder, canAdminRefundBeforeDispatch, isTerminalOrderOperation, paymentAttemptNumber, selectedReturnAmount } from "@/lib/order";
+import { addressText, canAdminCancelOrder, canAdminConfirmDelivery, canAdminRefundBeforeDispatch, dispatchedLines, isTerminalOrderOperation, paymentAttemptNumber, selectedReturnAmount } from "@/lib/order";
 
 describe("order helpers", () => {
   it("chỉ nhận attempt number từ result reference đúng dạng", () => {
@@ -48,4 +48,21 @@ describe("order helpers", () => {
     } as unknown as OrderDetail;
     expect(canAdminRefundBeforeDispatch(dispatched)).toBe(false);
   });
+  it("chỉ cho xác nhận giao khi có dòng đã xuất kho và đơn ở trạng thái cho phép (ADR-021)", () => {
+    const line = (status: string, id: string) => ({ order_line_id: id, fulfillment_status: status });
+    const order = (status: string, lines: Array<{ order_line_id: string; fulfillment_status: string }>) =>
+      ({ order_status: status, items: [{ lines }] }) as unknown as OrderDetail;
+
+    expect(canAdminConfirmDelivery(order("PROCESSING", [line("PROCESSING", "1")]))).toBe(false);
+    expect(canAdminConfirmDelivery(order("PROCESSING", [line("DELIVERED", "1")]))).toBe(false);
+    expect(canAdminConfirmDelivery(order("PROCESSING", [line("DISPATCHED", "1"), line("PROCESSING", "2")]))).toBe(true);
+    expect(canAdminConfirmDelivery(order("PAID", [line("DISPATCHED", "1")]))).toBe(true);
+    expect(canAdminConfirmDelivery(order("FINANCIAL_RECONCILIATION_REQUIRED", [line("DISPATCHED", "1")]))).toBe(true);
+    expect(canAdminConfirmDelivery(order("COMPLETED", [line("DISPATCHED", "1")]))).toBe(false);
+    expect(canAdminConfirmDelivery(order("RETURN_REQUESTED", [line("DISPATCHED", "1")]))).toBe(false);
+
+    const mixed = order("PROCESSING", [line("DISPATCHED", "1"), line("DELIVERED", "2"), line("DISPATCHED", "3")]);
+    expect(dispatchedLines(mixed).map((l) => l.order_line_id)).toEqual(["1", "3"]);
+  });
+
 });

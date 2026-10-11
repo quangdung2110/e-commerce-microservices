@@ -78,8 +78,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/architecture.md](./order/architecture.md) | Temporal/Kafka/CDC, component, consistency, concurrency và topology. |
 | [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
 | [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
-| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
-| [order/workflows.md](./order/workflows.md) | Checkout, timeout, delivery proof, return/refund, durable scope finalization, late recovery và financial reconciliation. |
+| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các contract Payment, Promotion, Inventory và Finance/Ops. |
+| [order/workflows.md](./order/workflows.md) | Checkout, timeout, Admin xác nhận giao hàng, return/refund, durable scope finalization, late recovery và financial reconciliation. |
 | [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
 | [order/development.md](./order/development.md) | Build/test/chạy local, hiện trạng test tự động và migration. |
 | [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR, gồm ADR-020 chốt runtime và các điểm làm rõ khi implement. |
@@ -158,15 +158,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
-## 6. Delivery Service (target)
+## 6. Delivery
 
-> Delivery là boundary target/proposed cho verified customer-delivery proof. Repository
-> chưa có provider implementation; Inventory physical-dispatch không thay thế proof này.
-
-| File | Mô tả |
-|---|---|
-| [delivery/README.md](./delivery/README.md) | Boundary, ownership và điều kiện phát verified proof cho từng order line. |
-| [Delivery Events AsyncAPI v1](../contracts/events/delivery/v1/asyncapi.yaml) | `com.ecommerce.delivery.order-line.delivered.v1` cho Order; target/proposed. |
+> Không có Delivery service. Physical dispatch thuộc Inventory; delivery state thuộc Order và chỉ đổi
+> bằng Admin delivery confirmation ([Order ADR-021](./order/decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ---
 
@@ -208,7 +203,6 @@ Service Contract Matrix legacy đã bị xóa.
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
 | Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
-| Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
 | Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
@@ -269,8 +263,8 @@ Service Contract Matrix legacy đã bị xóa.
 | [user/README.md](./user/README.md) | User Service — profile, address book, preferences; đã đồng bộ với `go/services/user-service` theo `docs/_templates/service-documentation` (ADR-001..012). |
 
 > Các service trên sẽ được sync ở giai đoạn tiếp theo. Các service Checkout, Order,
-> Payment và Inventory được đồng bộ ở mức thiết kế (Promotion đã đồng bộ với code, xem §5); Delivery chỉ là boundary
-> target/proposed, chưa có implementation (không phải Shipping Service legacy).
+> Payment và Inventory được đồng bộ ở mức thiết kế (Promotion đã đồng bộ với code, xem §5). Không có Delivery
+> service: Admin xác nhận giao hàng qua Order ([Order ADR-021](./order/decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ---
 

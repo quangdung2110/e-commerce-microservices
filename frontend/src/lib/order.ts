@@ -44,6 +44,21 @@ export function selectedReturnAmount(lines: OrderLine[]): number | null {
   return total;
 }
 
+const DELIVERY_CONFIRMABLE_STATUSES = new Set<OrderDetail["order_status"]>([
+  "PAID",
+  "PROCESSING",
+  "FINANCIAL_RECONCILIATION_REQUIRED",
+]);
+
+/** Dòng đã được kho xuất (DISPATCHED) nhưng Admin chưa xác nhận đã giao (Order ADR-021). */
+export function dispatchedLines(order: OrderDetail): OrderLine[] {
+  return orderLines(order).filter((line) => line.fulfillment_status === "DISPATCHED");
+}
+
+export function canAdminConfirmDelivery(order: OrderDetail): boolean {
+  return DELIVERY_CONFIRMABLE_STATUSES.has(order.order_status) && dispatchedLines(order).length > 0;
+}
+
 export function canAdminCancelOrder(order: OrderDetail): boolean {
   return order.order_status === "PENDING_PAYMENT";
 }

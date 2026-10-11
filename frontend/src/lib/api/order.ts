@@ -18,6 +18,8 @@ export type OperationAccepted = Schemas["OperationAccepted"];
 export type ReturnOperationAccepted = Schemas["ReturnOperationAccepted"];
 export type BuyerReturnRequest = Schemas["BuyerReturnRequest"];
 export type AdminPreDispatchRefundRequest = Schemas["AdminPreDispatchRefundRequest"];
+export type DeliveryConfirmationRequest = Schemas["DeliveryConfirmationRequest"];
+export type DeliveryConfirmationResult = Schemas["DeliveryConfirmationResult"];
 export type PaymentAttempt = Schemas["PaymentAttempt"];
 export type RefundCase = Schemas["RefundCase"];
 export type OrderListParams = NonNullable<operations["listMyOrders"]["parameters"]["query"]>;
@@ -98,6 +100,14 @@ export const orderApi = {
         `${ADMIN_ORDER_BASE}/${encodeURIComponent(orderId)}/cancellation-requests`,
         { reason_code: "ADMIN_FORCE_CANCEL" },
         { headers: idempotencyHeaders(commandId) }
+      )
+    ).data,
+
+  confirmDelivery: async (orderId: string, body: DeliveryConfirmationRequest) =>
+    (
+      await api.post<DeliveryConfirmationResult>(
+        `${ADMIN_ORDER_BASE}/${encodeURIComponent(orderId)}/delivery-confirmations`,
+        body
       )
     ).data,
 

@@ -22,7 +22,7 @@ verified_against_commit: null
 
 Order nằm sau API Gateway cho Buyer/Admin và nhận submit nội bộ từ Checkout.
 Service điều phối Inventory, Promotion và Payment bằng Temporal activities; nhận
-payment/refund signal và Inventory dispatch/inspection completion qua Kafka; công bố thay đổi Order qua
+payment/refund signal và Inventory dispatch/inspection completion qua Kafka, và Admin delivery confirmation qua HTTP; công bố thay đổi Order qua
 transactional outbox và WAL CDC.
 
 PostgreSQL vừa là source of truth vừa là read path cho detail và search/filter.
@@ -148,7 +148,7 @@ reconciliation, không hồi sinh order đã hủy.
 | Pre-payment compensation | `CancelOrderActivity` | Commit cancel sau cleanup |
 | Post-capture repair | `QueryOrReplayRemoteCommandActivity` | Resolve unknown Inventory/Promotion outcome by stable command ID/receipt |
 | Post-capture repair | `EscalateFinancialReconciliationActivity` | Preserve paid fact and checkpoints when a required proof cannot be recovered |
-| Convergence | `TryCompleteOrderActivity` | Sau financial/delivery proof, hoàn tất order chỉ khi mọi line delivered và mọi required obligation đã đóng |
+| Convergence | `TryCompleteOrderActivity` | Sau Admin delivery confirmation hoặc financial repair, hoàn tất order chỉ khi mọi line delivered và mọi required obligation đã đóng |
 
 Workflow dùng Temporal `Selector`/signal-versus-timer semantics ở payment wait;
 implementation cụ thể có thể dùng API SDK tương đương nhưng phải giữ quyết định đơn
@@ -194,10 +194,11 @@ downstream có thể trễ theo CDC/consumer lag; chưa có SLO tối đa cho đ
   cancellation waits provider non-capture/capture fact. Chỉ attempt `FAILED` mới được
   retry trước immutable order deadline khi Inventory/Promotion holds còn hiệu lực;
   `EXPIRED`/`CANCELED` là terminal non-capture và không được retry.
-- Delivery proof contract v1 is target-owned by Delivery; Inventory physical dispatch only
-  updates a line `DISPATCHED` and cannot complete master. Proof tới trước dispatch được
-  park/replay; Order may complete only after every line has verified proof và financial
-  obligations đã converge.
+- Không có Delivery service ([ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)): Inventory
+  physical dispatch only updates a line `DISPATCHED` and cannot complete master. Admin delivery
+  confirmation chỉ nhận line đã `DISPATCHED` (nên không có proof tới trước dispatch) và chạy
+  `TryCompleteOrder` trong cùng transaction; Order may complete only after every line is confirmed và
+  financial obligations đã converge.
 - Event Order partition theo `order_id`; counter `last_event_sequence_id` tăng đơn
   điệu theo order. Line consumer guard thêm `order_line_id`.
 - Không dùng UUID event theo thứ tự từ điển và không còn optimistic `version`.
@@ -211,7 +212,6 @@ Mặc định một process chạy tất cả vai trò dưới đây; cờ `TEMP
 - Payment Kafka consumer group `order-payment-consumer`.
 - Inventory Kafka consumer groups `order-inventory-ship-consumer` và
   `order-inventory-return-consumer`.
-- Delivery Kafka consumer group `order-delivery-consumer`.
 - Temporal worker đăng ký ba task queue: `order-checkout-queue`,
   `order-refund-queue`, `order-financial-reconciliation-queue`.
 - Runtime đã chốt: Java 21 + Spring Boot 3.3 + Temporal Java SDK tại

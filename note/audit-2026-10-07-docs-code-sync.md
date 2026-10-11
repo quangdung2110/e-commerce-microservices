@@ -31,7 +31,7 @@
 | Lỗi lặp lại khắp nơi | Nhãn trạng thái cũ ("proposed", "chưa có implementation") trong `docs/README.md`, `contracts/catalog/services.yaml`, `contracts/ADOPTION.md`, `interactions.yaml` và frontmatter nhiều file. |
 
 ### Thứ tự sửa đề xuất
-1. Quyết định Delivery (O3) — chặn toàn bộ luồng hoàn tất đơn.
+1. Quyết định Delivery (O3) — chặn toàn bộ luồng hoàn tất đơn. *(✅ 2026-10-11: chủ dự án chọn Admin xác nhận giao hàng trong Order, ADR-021.)*
 2. Sửa bug code 🔴: PY1, PR8/PR10, A9, U9, N1/U4, S4, S6.
 3. Chọn một mô hình xác thực internal (X2) và áp dụng đồng nhất cho Go + Java.
 4. Đồng bộ catalog/adoption/index (G1–G5, C1, P5, N5, X1), sau đó dẫn xuất lại mesh policy.
@@ -43,8 +43,8 @@
 
 | Mã | Service | Tóm tắt |
 |---|---|---|
-| O3 | Order (+ Delivery) | Không có Delivery provider; đơn không bao giờ `COMPLETED` |
-| PY1 | Payment | Thiếu `GET /v1/payments/{id}` và `GET /v1/refunds/{id}` mà Order đang gọi |
+| O3 | Order (+ Delivery) | Không có Delivery provider; đơn không bao giờ `COMPLETED` — ✅ đúng; đã sửa 2026-10-11 (Order ADR-021: Admin xác nhận giao hàng qua Order API, bỏ hẳn Delivery) |
+| PY1 | Payment | Thiếu `GET /v1/payments/{id}` và `GET /v1/refunds/{id}` mà Order đang gọi — ✅ đúng; đã thêm 2026-10-11 (`PaymentQueryController`) |
 | PR8 + PR10 | Promotion | `technical-cancellations` mở cho `order-service`, không kiểm proof; docs nói đã chặn — ✅ đã kiểm chứng đúng và sửa 2026-10-10 (Promotion ADR-019) |
 | A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát — ✅ đã kiểm chứng và sửa 2026-10-09 (ADR-006) |
 | N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý — ✅ đúng; User đã sửa 2026-10-09 (U4, ADR-009), nay cả hai mặc định `false` |
@@ -60,10 +60,11 @@
 
 ## 2. Toàn cục / catalog / index
 
-### G1 🟡 Link tới Delivery README đã bị xoá
+### G1 🟡 Link tới Delivery README đã bị xoá — ✅ đã sửa 2026-10-11 (không có Delivery; xem O3/O7)
 - Vị trí: `docs/README.md` §6, `contracts/catalog/services.yaml` (`delivery-service.docs: docs/delivery/README.md`), Order docs.
 - Hiện trạng: `docs/delivery/README.md` đang bị xoá trong working tree (git status `D`). Link gãy. Liên quan O3.
 - Sửa: hoặc khôi phục file (nếu giữ boundary Delivery), hoặc cập nhật mọi chỗ tham chiếu theo quyết định mới.
+- **Đã sửa 2026-10-11:** chọn bỏ Delivery (Order ADR-021). `docs/README.md` §6 chỉ còn ghi chú "không có Delivery service", bảng topic bỏ `t.delivery.order.events.v1`; `contracts/catalog/services.yaml` thực tế không có `delivery-service` (G3 không áp dụng). Quét lại bằng `git grep` không còn tham chiếu Delivery ngoài các ADR lịch sử (có ghi chú ADR-021) và CHANGELOG.
 
 ### G2 🟡 `docs/README.md` ghi trạng thái cũ
 - §3 Payment: "HTTP v1 và payment facts v2 ... chưa xác minh implementation".
@@ -719,23 +720,53 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 
 ## 12. Order (`docs/order`, `contracts/http/order/**`, `contracts/events/order/v1`, `java/services/order-service`)
 
-### O3 🔴 [SYSTEM GAP] Order phụ thuộc Delivery service không tồn tại
-- Order chỉ `PROCESSING → COMPLETED` (T8.3, INV-ORD-006) khi mọi line có `com.ecommerce.delivery.order-line.delivered.v1`. Buyer return (INV-ORD-014) yêu cầu mọi line `DELIVERED`. Kéo theo: event `order.completed.v1` (Review entitlement) và notification `ORDER_COMPLETED`.
-- Không có provider Delivery; `docs/delivery/README.md` đang bị xoá; Order vẫn consume `t.delivery.order.events.v1` (`application.yml` `delivery-topic`).
-- Hệ quả: hiện không đơn nào lên `COMPLETED` → không có review, không trả hàng/hoàn tiền buyer.
-- Sửa (cần quyết định + ADR): (a) khôi phục boundary Delivery docs + làm provider; hoặc (b) cơ chế tạm (admin/system xác nhận giao hàng, hoặc coi physical dispatch + thời gian là delivered) và cập nhật Order domain/workflows/contract.
+> **Kiểm chứng lại và sửa xong 2026-10-11 (mục Order).** Đọc toàn bộ `docs/order` (8 file + ADR-001..020), hai OpenAPI,
+> AsyncAPI, migration, controller/filter/service/consumer/worker và đối chiếu với Inventory (docs, workflow OpenAPI, event
+> schema, ADR-009/012/018/021), Payment (OpenAPI, schema event v2, controller), Promotion, Notification, `contracts/catalog`,
+> `ADOPTION.md` và frontend. Kết luận: **O3 đúng nhưng báo cáo chưa nêu rõ gốc rễ** (không chỉ "thiếu provider": *không service
+> nào* — kể cả Inventory — phát "đã giao"; tài liệu Inventory ghi Order sở hữu delivery state), **O1 đúng cả ba ý**, **O2 đã lỗi
+> thời** (câu "contract target exists" không còn trong `interfaces.md`), phần "Đã khớp" đúng ở những gì đã kiểm (path, header,
+> config, schema), và báo cáo **bỏ sót O4–O8** bên dưới. Chạy lại toàn bộ test Order sau khi sửa.
+
+### O3 🔴 [SYSTEM GAP] Order phụ thuộc Delivery service không tồn tại — ✅ đúng; đã sửa 2026-10-11 (Order ADR-021)
+- Order chỉ `PROCESSING → COMPLETED` (T8.3, INV-ORD-006) khi mọi line `DELIVERED`; Buyer return (INV-ORD-014) cần mọi line `DELIVERED`. Kéo theo `order.completed.v1` (Review entitlement) và `ORDER_COMPLETED`.
+- **Gốc rễ (báo cáo gốc thiếu):** Inventory chỉ phát `reservation.line-dispatched` (hàng đã rời kho). Docs Inventory (README, domain, workflows, ADR-012/021) ghi đó *không phải* shipment/delivery state và "Order sở hữu delivery state". Thiết kế cũ (Inventory ADR-009, đã superseded) coi tín hiệu xuất kho là "đã giao"; Order ADR-011 tách hai việc và giả định một Delivery service phát `com.ecommerce.delivery.order-line.delivered.v1`. Service đó chưa từng có, `docs/delivery/README.md` bị xoá ngày 2026-10-07, và `contracts/events/delivery/v1` + consumer `order-delivery-consumer` chỉ chờ một provider không tồn tại. Hệ quả: không đơn nào `COMPLETED` → không review, không trả hàng, không `ORDER_COMPLETED` (cũng là lý do `docs/frontend/live-local-2026-10-11.md` còn mở gate "Buyer return từ đơn mới").
+- **Quyết định của chủ dự án (2026-10-11):** Admin xác nhận giao hàng trong Order; không khôi phục Delivery, không coi dispatch là đã giao, không tự động theo thời gian.
+- **Đã sửa:**
+  - API: `POST /api/v1/admin/orders/{order_id}/delivery-confirmations` (Order HTTP `1.1.0`): `lines[] {order_line_id, delivered_at, delivery_reference}` (1–100 line duy nhất), đồng bộ, all-or-nothing dưới khoá order, chỉ nhận line `DISPATCHED`, idempotent theo trạng thái line, line cuối chạy `TryCompleteOrder` ngay trong transaction (phát `order.completed.v1` + `ORDER_COMPLETED`). Mã lỗi mới `DELIVERY_REQUIRES_DISPATCH`, `DELIVERY_ALREADY_CONFIRMED`, `INVALID_DELIVERY_CONFIRMATION`.
+  - Code: `DeliveryConfirmationService`; bỏ consumer/topic/group Delivery, parking `PENDING_PREREQUISITE` và replay proof; `FulfillmentIntake` chỉ còn dispatch (không bao giờ `DELIVERED`/`COMPLETED`); gauge `order.fulfillment.delivery_confirmation_overdue` (line `DISPATCHED` quá 7 ngày, chỉ cảnh báo); migration `V2__admin_delivery_confirmation.sql` (đổi `delivery_proof_id` → `delivery_reference` không unique, thêm `delivery_confirmed_by`, bỏ digest/event ID, CHECK `DELIVERED` ⇔ có bản ghi xác nhận).
+  - Contract: xoá `contracts/events/delivery/v1`; Order Events `1.1.0` bỏ channel/operation Delivery; catalog, `ADOPTION.md`, `CHANGELOG.md`; mô tả `ORDER_COMPLETED` của Notification (contract + bản copy Go).
+  - Docs: ADR-021 mới; README, domain (INV-006/014, T8.3, I2, §3), interfaces (§1, §2.1, §5, §6), workflows (WF-ORDER-006a viết lại), data, operations, development, architecture; ghi chú vào ADR-010/011/015/020; `docs/README.md` §6, `docs/review/README.md`, `java/services/order-service/README.md`.
+  - Frontend: nút "Xác nhận đã giao" ở trang chi tiết đơn của Admin (`DeliveryConfirmationDialog`), type sinh lại, thông báo lỗi tiếng Việt.
+  - Test: `CheckoutFlowIT.adminDeliveryConfirmationNeedsDispatchAndCompletesOrderOnLastLine`, `dispatchedButUnconfirmedLinesAreCountedAsOverdue`; test cũ "proof trước dispatch" bị thay vì không còn kịch bản đó.
+- Giới hạn còn lại (đã ghi ở README §9): lời xác nhận của Admin không phải bằng chứng xác thực từ bên thứ ba; đơn bị bỏ quên ở `PROCESSING` chỉ được cảnh báo, không tự hoàn tất.
 
 ### K1/K2 (cross Checkout) — xem mục Checkout.
 
-### O1 🟡 README cũ / tự mâu thuẫn
-- §1 còn câu boilerplate "Mức áp dụng contract liên service chưa được đánh giá trong lần tái cấu trúc này" ngay dưới dòng nói contract đã implemented.
-- §6: PostgreSQL "Logical design, chưa có migration evidence"; Debezium "Cấu hình chưa có evidence" — đã có `V1__order_baseline.sql` và `debezium-connector-order-outbox.json` (README §1 nói đã smoke test).
-- §9: "Checkout Service ... chưa có runtime" — Checkout đã implement. *(✅ đã sửa phần Checkout 2026-10-09, cùng `docs/order/development.md` §2 mà báo cáo bỏ sót; phần Delivery và phần còn lại của O1 chưa sửa)*
+### O1 🟡 README cũ / tự mâu thuẫn — ✅ đúng cả ba ý; đã sửa 2026-10-11
+- §1 boilerplate "Mức áp dụng contract liên service chưa được đánh giá…" (xoá); §6 PostgreSQL "chưa có migration evidence" và Debezium "chưa có evidence" (nay trỏ `V1`/`V2` và `debezium-connector-order-outbox.json`); §9 Checkout (đã sửa 2026-10-09) và Delivery (sửa theo O3). Thêm: `operations.md` §1 vẫn nói "auto-complete delay".
 
-### O2 🟡 `interfaces.md` §1
-- Promotion activities "contract target exists" — README ghi implemented.
+### O2 🟡 `interfaces.md` §1 — ❌ đã lỗi thời
+- Câu "contract target exists" cho Promotion không còn trong `interfaces.md` (Promotion sync 2026-10-10 đã sửa). Không cần sửa.
 
-Đã khớp: path public/internal == OpenAPI; HTTP client tới Inventory/Promotion/Payment (path, `Idempotency-Key`, `X-Correlation-ID`, `X-Causation-ID`, `X-Service-Identity`); schema `order-paid`/`order-completed` khớp consumer Cart/Review; config (window 15m, skew 30s, submit wait 12s, outbox 15d, Redis mirror 7d, search 90d) == operations.md; mapping `cancel_reason` → Inventory release reason và → Payment cancel reason khớp contract; Order gửi `checkout_channel=CHECKOUT` khi Reserve Promotion.
+### O4 🟡 [báo cáo bỏ sót] Bảng mã lỗi của `domain.md` §7 sai và thiếu — ✅ đã sửa 2026-10-11
+- `ErrorCode` có 28 mã (nay 31); `domain.md` §7 chỉ liệt kê 13 và trong đó `REFUND_WINDOW_EXPIRED` không tồn tại trong code (legacy; Release 1 không có cửa sổ trả hàng), còn `PAYMENT_TIMEOUT`, `MANUAL_VERIFICATION_REQUIRED`, `REFUND_SCOPE_FINALIZATION_CONFLICT` là `cancel_reason`/trạng thái chứ không phải mã HTTP. Thiếu: `INVALID_REQUEST`, `UNAUTHENTICATED`, `REFUND_CASE_ALREADY_EXISTS`, `PAYMENT_RETRY_NOT_ELIGIBLE`, `OPERATION_IN_PROGRESS`, `INVENTORY_RESERVATION_REJECTED`, `PAYMENT_INITIATION_REJECTED`, `CHECKOUT_PAYMENT_WINDOW_EXHAUSTED`, `ORDER_CANCELLED_DURING_PREPARATION`, `INVALID_CHECKOUT_SNAPSHOT`, `STALE_CASE_REVISION`, `RESOLUTION_NOT_PERMITTED`, `RECONCILIATION_EVIDENCE_INVALID`, `SUBMISSION_IN_PROGRESS`, `DEPENDENCY_UNAVAILABLE`, `ORDER_UNAVAILABLE`. Cột `retryable` cũ cũng sai so với code (`PROMOTION_RECALCULATION_NEEDED`, `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` ghi "Có", code `false`).
+- Sửa: `domain.md` §7 viết lại thành error catalog đầy đủ (HTTP, `retryable`, điều kiện, nơi xuất hiện); `interfaces.md` trỏ tới đó. (Phần X4 chung: OpenAPI vẫn không enum `code`.)
+
+### O5 🟡 [báo cáo bỏ sót] `data.md` lệch migration — ✅ đã sửa 2026-10-11
+- ~60 cột có trong migration nhưng không có trong `data.md` (`pricing_hash`, `items_hash`, `promotion_campaign_revision`, `cancel_reason_detail`, `dispatched_at`, cột lease/digest của dispatch/message, cột refund-case, `owner_queue`…); sơ đồ ER sai khoá/tên (`id` thay vì `attempt_id`/`dispatch_id`, inbox PK, `inspection_event_id`, các cột `resolution_type`/`decision_id`/`evidence_digest`/`decided_by` không tồn tại trong bảng case); index `order_workflow_dispatches` và `idx_orders_final_amount_minor_created` khác migration.
+- Sửa: thêm §3.12 "Cột triển khai bổ sung", sửa ER và các index, ghi CHECK/index của V2.
+
+### O6 🟡 [báo cáo bỏ sót] Thông báo lỗi 400 lộ tên lớp Java — ✅ đã sửa 2026-10-11
+- `GlobalExceptionHandler.badInput` trả `e.getMessage()` của Spring, ví dụ `?tab=BOGUS` lộ `com.ecommerce.order.domain.BuyerTab` và `java.lang.String` (cùng loại R5 của Review). Nay trả câu cố định ("Invalid value for parameter tab"…); `QueryIT` kiểm.
+
+### O7 🟡 [báo cáo bỏ sót] Docs ngoài `docs/order` còn tham chiếu Delivery — ✅ đã sửa 2026-10-11
+- `docs/README.md` §6 và bảng topic, `docs/review/README.md` ("Review không có entitlement thật vì thiếu Delivery"), `docs/notification/07-templates.md` + catalog + schema `ORDER_COMPLETED` ("mọi line có delivery proof"), `contracts/events/order/v1`. Gộp G1 (link Delivery README gãy) — `services.yaml` thực tế không có `delivery-service`.
+
+### O8 🟡 [báo cáo bỏ sót] Phụ thuộc Payment chưa có provider — PY1
+- Order gọi `getPayment`/`getRefund` (quyết định `CLOSE_WITH_EXTERNAL_FINANCIAL_REMEDIATION`, ADR-020 §16) nhưng Payment chưa có hai route. Xem PY1 (đã sửa cùng ngày).
+
+Đã khớp: path public/internal == OpenAPI (đã so lại từng route); HTTP client tới Inventory/Promotion/Payment (path, `Idempotency-Key`, `X-Correlation-ID`, `X-Service-Identity`; lưu ý Order không gửi `X-Causation-ID` cho Payment/Promotion vì hợp đồng của hai bên không dùng); schema `order-paid`/`order-completed` khớp consumer Cart/Review; config (window 15m, skew 30s, submit wait 12s, outbox 15d, Redis mirror 7d, search 90d) == operations.md; mapping `cancel_reason` → Inventory release reason và → Payment cancel reason khớp contract; Order gửi `checkout_channel=CHECKOUT` khi Reserve Promotion; consumer Payment dùng đúng `source`, `type`, `dataschema`, `payment_transaction_id`, `financial_state_version`, `refund_amount`.
 
 ---
 
@@ -921,7 +952,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 ## 17. Checklist sửa (đánh dấu khi xong)
 
 ### Code
-- [ ] PY1 Payment: thêm `GET /v1/payments/{id}`, `GET /v1/refunds/{id}`.
+- [x] PY1 Payment: thêm `GET /v1/payments/{id}`, `GET /v1/refunds/{id}`. *(2026-10-11: `PaymentQueryController`, `PaymentQueryPort`, `PaymentQueryControllerTest`, `PaymentQueryIT`)*
 - [x] PR8/PR10 Promotion: guard technical-cancellations (allowlist migrator, proof header, DTO, migration cột) hoặc gỡ route. *(2026-10-10: chọn hiện thực guard — `legacy-migration-clients`, `LegacyTechnicalCancellationRequest`, proof header = `migration_record_id` (`403`), migration `V2`; ADR-019)*
 - [x] PR2 Promotion: enforce `checkout_channel=CHECKOUT` ở calculate + reserve. *(2026-10-10: `400 INVALID_REQUEST`, như voucher-options)*
 - [x] Promotion (ngoài báo cáo, 2026-10-10): E1 confirm/legacy cancel trùng đồng thời replay thay vì `409`; E8 `confirm` redeem wallet bị lazy-`EXPIRED` dưới reservation; E11 route lạ/sai method/Content-Type là `404`/`405`/`400` không `500`; E2 `no-store` ở voucher-options; E5 bỏ bump version fence ở consumer tombstone.
@@ -945,7 +976,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
 - [x] N4 Notification: gửi `X-Service-Identity` khi gọi Auth. *(báo cáo sai: đã gửi từ trước, không cần sửa)*
 - [x] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; Notification chuyển 2026-10-10, D-21)*
-- [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
+- [x] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`. *(2026-10-11: Admin xác nhận giao hàng trong Order, ADR-021; bỏ Delivery; frontend có nút xác nhận)*
 - [x] X5 Order/Product/Promotion/Review: filter kiểm quyền theo path đã decode + bỏ `;param` (`UrlPathHelper`), mỗi service một `*PathTest` (đỏ → xanh); Checkout `RequestContextFilter` cùng cách (không phải lỗi bảo vệ). *(2026-10-09)*
 - [x] K5 Checkout: bốn span nghiệp vụ `checkout.preview`/`voucher_options`/`submit`/`recovery`, `checkout.dependency`, `checkout.redis` (`Spans`, `TracingSpansTest`; kiểm đột biến: bỏ Reactor context thì 5/6 test đỏ). *(2026-10-09)*
 - [x] X5 Go: đã rà middleware gin của cart/auth/user/notification + gateway-auth + cấu hình Traefik — không có lỗ hổng cùng mẫu, chỉ thêm `cart-service/.../router_path_test.go`. *(2026-10-09)*
@@ -962,7 +993,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; N5 xong 2026-10-10: principal `notification-ops` có trong services.yaml và interaction)*
 
 ### Docs
-- [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
+- [ ] G1/G2 `docs/README.md` (trạng thái, số ADR, số operation). *(G1 Delivery link xong 2026-10-11; §6 Delivery và dòng Order/Delivery trong bảng đã sửa; phần còn lại của G2 chưa)*
 - [x] Auth: A1–A8, A14 (cộng ADR-006..009, error catalog đầy đủ, bảng cấu hình, `scope: current`/`status: implemented`). *(2026-10-09)*
 - [x] User: U1–U3, U6, U7, U8 (cộng U4, U5, U9–U11 ở docs; frontmatter `scope: current`/`status: implemented`, error catalog đầy đủ, bảng cấu hình, WF-USER-009). *(2026-10-09)*
 - [x] Cart: C2–C5, C8–C10, C12. *(2026-10-09)*
@@ -972,7 +1003,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [x] Review: R1–R10 (R1, R2 từ báo cáo gốc; R3–R10 phát hiện khi kiểm chứng). *(2026-10-09)*
 - [x] Search: S1–S3, S5 (cộng S8–S27: README viết lại, `architecture`/`domain`/`interfaces`/`data`/`operations`/`development`/`workflows` đồng bộ, WF-SEARCH-013/014 mới, ADR-022, `docs/README.md`, `docs/frontend/step-4-verification.md`). *(2026-10-10)*
 - [x] PDP BFF: B1, B2 (đã sửa từ Product sync), cộng B3–B13 phát hiện khi kiểm chứng. *(2026-10-09; ADR-008)*
-- [ ] Order: O1, O2. *(K1, K2 xong 2026-10-09; phần Checkout của O1 xong)*
+- [x] Order: O1–O8 *(O2 đã lỗi thời; K1, K2 xong 2026-10-09; 2026-10-11: ADR-021, error catalog, `data.md` §3.12, ER/index; xem mục 12)*
 - [ ] Payment: PY2, PY3.
 - [x] Checkout: K3 (frontmatter, `interfaces.md`, `docs/README.md` §1, catalog, ADOPTION, ADR-010) và K5–K11 (span và cấu hình tracing, trường log, `429` status, test proto, docs ngoài Checkout, `TimeLimiter`/scheduler, chi tiết nhỏ). *(2026-10-09)*
 - [x] Notification: N2, N5, N6 và N7–N22 phát hiện thêm. *(2026-10-10; D-21…D-24, OpenAPI internal 1.1.0, `providerwatch`, `ADOPTION.md` ba dòng, bản đồ test §2.8; unit + integration xanh. Nợ test còn lại ghi ở N17)*

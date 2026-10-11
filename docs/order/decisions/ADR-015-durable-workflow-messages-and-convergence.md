@@ -18,6 +18,9 @@ evidence:
 
 `Accepted` — 2026-10-05. Refine ADR-001, ADR-005 và ADR-011.
 
+> **Cập nhật ADR-021 (2026-10-11):** không có Delivery service; "verified Delivery proof" trong ADR này nay là
+> Admin delivery confirmation trên Order ([ADR-021](./ADR-021-admin-delivery-confirmation.md)). Quyết định còn lại giữ nguyên.
+
 ## Bối cảnh
 
 Transaction inbox rồi gọi Temporal trực tiếp có dual-write gap: process có thể chết sau

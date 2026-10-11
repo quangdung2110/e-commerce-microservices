@@ -49,7 +49,7 @@ public class OrderStore {
             long id, long orderId, long orderItemId, String allocationPlanId, String lineReference,
             String warehouseId, String skuId, String productId, int quantity, long unitPriceMinor,
             long discountShareMinor, long netAmountMinor, FulfillmentStatus fulfillmentStatus,
-            UUID dispatchEventId, Instant dispatchedAt, String deliveryProofId, String deliveryProofSha256,
+            UUID dispatchEventId, Instant dispatchedAt, String deliveryReference, UUID deliveryConfirmedBy,
             Instant deliveredAt, String snapshotName, String snapshotVariantName, String snapshotImageUrl,
             String snapshotAttributesJson, String snapshotCategoryIdsJson) {
     }
@@ -95,8 +95,8 @@ public class OrderStore {
             rs.getString("allocated_warehouse_id"), rs.getString("sku_id"), rs.getString("product_id"),
             rs.getInt("quantity"), rs.getLong("unit_price_minor"), rs.getLong("discount_share_minor"),
             rs.getLong("net_amount_minor"), FulfillmentStatus.valueOf(rs.getString("fulfillment_status")),
-            Db.uuid(rs, "dispatch_event_id"), Db.instant(rs, "dispatched_at"), rs.getString("delivery_proof_id"),
-            rs.getString("delivery_proof_sha256"), Db.instant(rs, "delivered_at"), rs.getString("snapshot_name"),
+            Db.uuid(rs, "dispatch_event_id"), Db.instant(rs, "dispatched_at"), rs.getString("delivery_reference"),
+            Db.uuid(rs, "delivery_confirmed_by"), Db.instant(rs, "delivered_at"), rs.getString("snapshot_name"),
             rs.getString("snapshot_variant_name"), rs.getString("snapshot_image_url"),
             rs.getString("snapshot_attributes"), rs.getString("snapshot_category_ids"));
 
@@ -250,11 +250,6 @@ public class OrderStore {
                 Map.of("order", orderId, "id", lineId), LINE).stream().findFirst();
     }
 
-    public Optional<LineRow> lineByProof(String proofId) {
-        return jdbc.query("SELECT * FROM order_item_lines WHERE delivery_proof_id = :proof",
-                Map.of("proof", proofId), LINE).stream().findFirst();
-    }
-
     public List<PromotionRow> promotions(long orderId) {
         return jdbc.query("SELECT * FROM order_promotions WHERE order_id = :order ORDER BY id",
                 Map.of("order", orderId), PROMOTION);
@@ -270,14 +265,23 @@ public class OrderStore {
                 .addValue("revision", reservationRevision).addValue("at", Db.ts(dispatchedAt))) == 1;
     }
 
-    /** CAS DISPATCHED -> DELIVERED for exactly one line with its verified proof (I2). */
-    public boolean markDelivered(long lineId, UUID eventId, String proofId, String proofSha256, Instant deliveredAt) {
+    /** CAS DISPATCHED -> DELIVERED for exactly one line with its Admin confirmation record (I2, ADR-021). */
+    public boolean markDelivered(long lineId, String reference, UUID confirmedBy, Instant deliveredAt) {
         return jdbc.update("""
-                UPDATE order_item_lines SET fulfillment_status = 'DELIVERED', delivery_event_id = :event,
-                    delivery_proof_id = :proof, delivery_proof_sha256 = :sha, delivered_at = :at, updated_at = NOW()
+                UPDATE order_item_lines SET fulfillment_status = 'DELIVERED', delivery_reference = :reference,
+                    delivery_confirmed_by = :by, delivered_at = :at, updated_at = NOW()
                 WHERE id = :id AND fulfillment_status = 'DISPATCHED'
-                """, new MapSqlParameterSource().addValue("id", lineId).addValue("event", eventId)
-                .addValue("proof", proofId).addValue("sha", proofSha256).addValue("at", Db.ts(deliveredAt))) == 1;
+                """, new MapSqlParameterSource().addValue("id", lineId).addValue("reference", reference)
+                .addValue("by", confirmedBy).addValue("at", Db.ts(deliveredAt))) == 1;
+    }
+
+    /** Lines dispatched at least {@code age} ago that still await the Admin delivery confirmation. */
+    public long countDispatchedUnconfirmed(java.time.Duration age) {
+        Long count = jdbc.getJdbcTemplate().queryForObject("""
+                SELECT COUNT(*) FROM order_item_lines
+                WHERE fulfillment_status = 'DISPATCHED' AND dispatched_at < NOW() - (? * INTERVAL '1 second')
+                """, Long.class, age.toSeconds());
+        return count == null ? 0 : count;
     }
 
     /** Recomputes the derived delivery-unit status from its lines. */

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useCommand } from "@/hooks/use-command";
 import { useCursorPager } from "@/hooks/use-cursor-list";
@@ -9,6 +9,7 @@ import {
   orderApi,
   type AdminOrderListParams,
   type AdminPreDispatchRefundRequest,
+  type DeliveryConfirmationRequest,
   type OperationAccepted,
   type OrderOperation,
 } from "@/lib/api/order";
@@ -89,6 +90,23 @@ export function useAdminOrderCommand(orderId: string) {
         throw error;
       }
     },
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: adminOrderKeys.detail(orderId) }),
+        queryClient.invalidateQueries({ queryKey: adminOrderKeys.lists() }),
+      ]);
+    },
+  });
+}
+
+/**
+ * Admin xác nhận giao hàng (Order ADR-021). Lệnh đồng bộ và idempotent theo trạng thái dòng,
+ * nên không cần `Idempotency-Key` hay polling operation: thử lại cùng nội dung luôn an toàn.
+ */
+export function useAdminDeliveryConfirmation(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: DeliveryConfirmationRequest) => orderApi.confirmDelivery(orderId, body),
     onSettled: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: adminOrderKeys.detail(orderId) }),

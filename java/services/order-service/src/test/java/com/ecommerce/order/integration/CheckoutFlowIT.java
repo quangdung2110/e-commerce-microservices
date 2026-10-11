@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -260,27 +261,99 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
     }
 
     @Test
-    void deliveryProofBeforeDispatchIsParkedThenReplayed() throws Exception {
+    void adminDeliveryConfirmationNeedsDispatchAndCompletesOrderOnLastLine() throws Exception {
         long orderId = paidOrder(Fixtures.submission(Fixtures.defaultLines(), 0, null));
-        List<Map<String, Object>> lines = jdbc.queryForList(
-                "SELECT id, sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE order_id = ? ORDER BY id",
-                orderId);
-        Map<String, Object> first = lines.get(0);
-        long lineId = ((Number) first.get("id")).longValue();
-        deliver(orderId, lineId, (String) first.get("allocated_warehouse_id"), "proof-early-" + orderId);
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId))
-                .isEqualTo("PROCESSING");
-        dispatch(orderId, lineId, (String) first.get("allocated_warehouse_id"), (String) first.get("sku_id"),
+        List<Long> lines = lineIds(orderId);
+        String path = "/api/v1/admin/orders/" + orderId + "/delivery-confirmations";
+
+        // Nothing is dispatched yet: the confirmation is refused and changes nothing.
+        Response early = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-1")));
+        assertThat(early.status()).isEqualTo(409);
+        assertThat(early.body().path("code").asText()).isEqualTo("DELIVERY_REQUIRES_DISPATCH");
+        assertThat(lineStatus(lines.get(0))).isEqualTo("PROCESSING");
+
+        // Dispatch alone never delivers (Inventory physical dispatch is not delivery).
+        Map<String, Object> first = jdbc.queryForMap(
+                "SELECT sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE id = ?", lines.get(0));
+        dispatch(orderId, lines.get(0), (String) first.get("allocated_warehouse_id"), (String) first.get("sku_id"),
                 ((Number) first.get("quantity")).intValue());
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId))
-                .isEqualTo("DELIVERED");
-        // The same proof cannot deliver another line; a mismatched warehouse is quarantined.
-        Map<String, Object> second = lines.get(1);
-        long secondId = ((Number) second.get("id")).longValue();
-        dispatch(orderId, secondId, "WH-OTHER", (String) second.get("sku_id"), ((Number) second.get("quantity")).intValue());
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, secondId))
-                .isEqualTo("PROCESSING");
+        assertThat(lineStatus(lines.get(0))).isEqualTo("DISPATCHED");
+
+        // Authorization and input validation.
+        assertThat(call(buyer(MockMvcRequestBuilders.post(path), user()).contentType("application/json")
+                .content("{\"lines\":[]}")).status()).isEqualTo(403);
+        assertThat(confirmDelivery(orderId, List.of()).status()).isEqualTo(400);
+        assertThat(confirmDelivery(orderId, List.of(deliveryLine(999999999L, "TRK-X"))).status()).isEqualTo(422);
+        assertThat(confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "A"), deliveryLine(lines.get(0), "B")))
+                .body().path("code").asText()).isEqualTo("INVALID_DELIVERY_CONFIRMATION");
+        Response future = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
+                "delivered_at", Instant.now().plusSeconds(3600).toString(), "delivery_reference", "TRK-F")));
+        assertThat(future.status()).isEqualTo(422);
+        Response beforeDispatch = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
+                "delivered_at", Instant.now().minusSeconds(3600).toString(), "delivery_reference", "TRK-B")));
+        assertThat(beforeDispatch.status()).isEqualTo(422);
+        assertThat(call(admin(MockMvcRequestBuilders.post("/api/v1/admin/orders/424242424/delivery-confirmations"))
+                .contentType("application/json").content(mapper.writeValueAsString(
+                        Map.of("lines", List.of(deliveryLine(lines.get(0), "TRK-N")))))).status()).isEqualTo(404);
+
+        // All-or-nothing: a dispatched line plus a not-yet-dispatched line changes neither.
+        Response mixed = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-1"),
+                deliveryLine(lines.get(1), "TRK-2")));
+        assertThat(mixed.status()).isEqualTo(409);
+        assertThat(lineStatus(lines.get(0))).isEqualTo("DISPATCHED");
+
+        // First line confirmed: the order stays PROCESSING and the unit is partially delivered.
+        Map<String, Object> confirmed = deliveryLine(lines.get(0), "TRK-1");
+        Response one = confirmDelivery(orderId, List.of(confirmed));
+        assertThat(one.status()).isEqualTo(200);
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "DeliveryConfirmationResult", one.body());
+        assertThat(one.body().path("order_completed").asBoolean()).isFalse();
         assertThat(orderStatus(orderId)).isEqualTo("PROCESSING");
+        assertThat(jdbc.queryForObject("SELECT delivery_confirmed_by::text FROM order_item_lines WHERE id = ?",
+                String.class, lines.get(0))).isEqualTo("99999999-9999-4999-8999-999999999999");
+        // Same line, same reference and time replays; a different reference conflicts.
+        assertThat(confirmDelivery(orderId, List.of(confirmed)).status()).isEqualTo(200);
+        Response changed = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-OTHER")));
+        assertThat(changed.status()).isEqualTo(409);
+        assertThat(changed.body().path("code").asText()).isEqualTo("DELIVERY_ALREADY_CONFIRMED");
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).isEmpty();
+
+        // Dispatch and confirm the remaining lines: the last confirmation completes the master once.
+        for (Long lineId : lines.subList(1, lines.size())) {
+            Map<String, Object> row = jdbc.queryForMap(
+                    "SELECT sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE id = ?", lineId);
+            dispatch(orderId, lineId, (String) row.get("allocated_warehouse_id"), (String) row.get("sku_id"),
+                    ((Number) row.get("quantity")).intValue());
+        }
+        List<Map<String, Object>> rest = new java.util.ArrayList<>();
+        for (Long lineId : lines.subList(1, lines.size())) {
+            rest.add(deliveryLine(lineId, "TRK-REST"));
+        }
+        Response last = confirmDelivery(orderId, rest);
+        assertThat(last.status()).isEqualTo(200);
+        assertThat(last.body().path("order_completed").asBoolean()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("COMPLETED");
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).hasSize(1);
+        assertThat(notificationTemplates(orderId)).containsExactly("ORDER_CONFIRMED", "ORDER_COMPLETED");
+        // A late replay of an already applied confirmation neither fails nor emits another fact.
+        assertThat(confirmDelivery(orderId, List.of(confirmed)).status()).isEqualTo(200);
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).hasSize(1);
+        validateAgainstContracts(orderId);
+    }
+
+    @Test
+    void dispatchedButUnconfirmedLinesAreCountedAsOverdue() throws Exception {
+        long orderId = paidOrder(Fixtures.submission(Fixtures.defaultLines(), 0, null));
+        dispatchAll(orderId);
+        jdbc.update("UPDATE order_item_lines SET dispatched_at = NOW() - INTERVAL '8 days' WHERE order_id = ?", orderId);
+        Double overdue = meterRegistry.get("order.fulfillment.delivery_confirmation_overdue").gauge().value();
+        assertThat(overdue).isGreaterThanOrEqualTo((double) lineIds(orderId).size());
+        deliverAll(orderId);
+        awaitStatus(orderId, "COMPLETED");
+    }
+
+    private String lineStatus(long lineId) {
+        return jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId);
     }
 
     @Test

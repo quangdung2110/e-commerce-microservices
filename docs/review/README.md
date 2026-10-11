@@ -131,10 +131,8 @@ late/replayed input from writing that direct identity back.
   not lose it: a transient failure is retried without a time limit and a failed hard purge is
   retried every day ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)).
 - Entitlements exist only after Order publishes `ORDER_COMPLETED`, which Order does when every
-  line has a verified Delivery proof. Until the Delivery boundary that Order depends on
-  exists (see the Order documentation), no order reaches `COMPLETED` in a real environment,
-  so Review grants no entitlement there; the Review side is complete and tested with
-  `ORDER_COMPLETED` supplied directly.
+  line was confirmed delivered by an Admin ([Order ADR-021](../order/decisions/ADR-021-admin-delivery-confirmation.md)).
+  There is no Delivery service; an order stays `PROCESSING` until an Admin confirms delivery.
 - Review does not drop `review_outbox` partitions. Partition cleanup needs evidence from
   Kafka Connect and the replication slot that a month has been fully published, which Review
   cannot see, so it is an operator action ([operations.md](./operations.md#5-outbox-operational-rule)).

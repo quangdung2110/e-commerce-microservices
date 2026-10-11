@@ -1,11 +1,11 @@
 package com.ecommerce.order.worker;
 
 import com.ecommerce.order.config.OrderProperties;
-import com.ecommerce.order.messaging.FulfillmentIntake;
 import com.ecommerce.order.service.InboxReplayer;
 import com.ecommerce.order.service.OrderConvergence;
 import com.ecommerce.order.service.WorkflowEnqueuer;
 import com.ecommerce.order.store.InboxStore;
+import com.ecommerce.order.store.OrderStore;
 import com.ecommerce.order.store.OutboxStore;
 import com.ecommerce.order.store.RefundStore;
 import com.ecommerce.order.store.WorkflowOutboxStore;
@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Durable convergence owners (INV-ORD-030): replay parked proofs/bindings, re-dispatch
+ * Durable convergence owners (INV-ORD-030): replay parked identity bindings, re-dispatch
  * unfinished scope finalization (including financially terminal cases), converge
  * deliverable orders, and trim the outbox only behind exact delivery receipts.
  */
@@ -35,7 +35,6 @@ public class Reconcilers {
     private final InboxStore inbox;
     private final RefundStore refunds;
     private final OutboxStore outbox;
-    private final FulfillmentIntake fulfillment;
     private final InboxReplayer replayer;
     private final OrderConvergence convergence;
     private final WorkflowEnqueuer enqueuer;
@@ -43,14 +42,13 @@ public class Reconcilers {
     private final TransactionTemplate tx;
     private final OrderProperties properties;
 
-    public Reconcilers(InboxStore inbox, RefundStore refunds, OutboxStore outbox, FulfillmentIntake fulfillment,
-                       InboxReplayer replayer, OrderConvergence convergence, WorkflowEnqueuer enqueuer,
-                       NamedParameterJdbcTemplate jdbc, TransactionTemplate tx, OrderProperties properties,
-                       WorkflowOutboxStore workflowOutbox, MeterRegistry meters) {
+    public Reconcilers(InboxStore inbox, RefundStore refunds, OutboxStore outbox, InboxReplayer replayer,
+                       OrderConvergence convergence, WorkflowEnqueuer enqueuer, NamedParameterJdbcTemplate jdbc,
+                       TransactionTemplate tx, OrderProperties properties, WorkflowOutboxStore workflowOutbox,
+                       OrderStore orders, MeterRegistry meters) {
         this.inbox = inbox;
         this.refunds = refunds;
         this.outbox = outbox;
-        this.fulfillment = fulfillment;
         this.replayer = replayer;
         this.convergence = convergence;
         this.enqueuer = enqueuer;
@@ -58,6 +56,10 @@ public class Reconcilers {
         this.tx = tx;
         this.properties = properties;
         Gauge.builder("order.workflow_message.pending", workflowOutbox, WorkflowOutboxStore::pendingMessages)
+                .register(meters);
+        Gauge.builder("order.fulfillment.delivery_confirmation_overdue", orders,
+                        o -> o.countDispatchedUnconfirmed(properties.fulfillment().deliveryConfirmationOverdue()))
+                .description("Lines dispatched longer ago than order.fulfillment.delivery-confirmation-overdue without an Admin delivery confirmation")
                 .register(meters);
     }
 
@@ -75,9 +77,6 @@ public class Reconcilers {
 
     /** One pass; public for tests. */
     public void reconcileOnce() {
-        for (Long orderId : inbox.ordersWithParked("PENDING_PREREQUISITE", 100)) {
-            fulfillment.replayPrerequisites(orderId);
-        }
         for (Long orderId : inbox.ordersWithParked("PENDING_IDENTITY_BIND", 100)) {
             replayer.replayIdentityBind(orderId);
         }

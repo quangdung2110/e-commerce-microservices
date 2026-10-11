@@ -20,8 +20,8 @@ import java.util.Map;
 /**
  * {@code TryCompleteOrder} (INV-ORD-006/030, ADR-015): the single convergence routine run
  * after every delivery change and after financial repair returns to PROCESSING. It
- * completes the master only when it is PROCESSING, every line is DELIVERED by verified
- * proof and no post-capture repair obligation is open. Callers hold the order row lock.
+ * completes the master only when it is PROCESSING, every line is DELIVERED by Admin
+ * confirmation (ADR-021) and no post-capture repair obligation is open. Callers hold the order row lock.
  */
 @Component
 public class OrderConvergence {

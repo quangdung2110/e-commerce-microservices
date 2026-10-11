@@ -260,7 +260,7 @@ interactions:
     consumers: [api-gateway]
     contract: http/order/v1/openapi.yaml
     status: implemented
-    notes: Buyer and Admin reads, lifecycle commands, FAILED-only payment-attempt request before the immutable deadline/while resource holds remain accepted, and operation polling use trusted Gateway identity.
+    notes: Buyer and Admin reads, lifecycle commands, FAILED-only payment-attempt request before the immutable deadline/while resource holds remain accepted, and operation polling use trusted Gateway identity. Admin delivery confirmation (POST /api/v1/admin/orders/{order_id}/delivery-confirmations, Order ADR-021) is the only way a dispatched line becomes DELIVERED and an order COMPLETED; there is no Delivery service.
 
   - id: order-initiates-payment
     protocol: http
@@ -488,8 +488,8 @@ interactions:
       the Order multi-destination outbox, with deterministic template_data from the
       Order snapshot/config only, a required per-order notification sequence, and
       per-destination delivery receipts. Payment
-      and Delivery facts are not consumed by Notification because they carry no
-      user_id; Order relays those milestones.
+      facts are not consumed by Notification because they carry no user_id; Order
+      relays those milestones.
 
   - id: notification-resolves-auth-contact
     protocol: http

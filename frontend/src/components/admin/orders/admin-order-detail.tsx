@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, LoaderCircle, PackageCheck, RotateCcw } from "lucide-react";
+import { ArrowLeft, LoaderCircle, PackageCheck, RotateCcw, Truck } from "lucide-react";
 
 import { IdChip } from "@/components/admin/id-chip";
+import { DeliveryConfirmationDialog } from "@/components/admin/orders/delivery-confirmation-dialog";
 import { PageHeader } from "@/components/admin/page-header";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { OrderLineCard } from "@/components/orders/order-line-card";
@@ -37,7 +38,9 @@ import { REFUND_STATUS_LABELS } from "@/lib/labels/order";
 import {
   addressText,
   canAdminCancelOrder,
+  canAdminConfirmDelivery,
   canAdminRefundBeforeDispatch,
+  dispatchedLines,
 } from "@/lib/order";
 
 type AdminAction = "cancel" | "refund";
@@ -50,6 +53,7 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
   const [confirmation, setConfirmation] = useState("");
   const [reasonCode, setReasonCode] = useState("");
   const [reasonDetails, setReasonDetails] = useState("");
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
 
   function openAction(next: AdminAction) {
     command.reset();
@@ -118,6 +122,7 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
   const data = order.data;
   const canCancel = canAdminCancelOrder(data);
   const canRefund = canAdminRefundBeforeDispatch(data);
+  const canConfirmDelivery = canAdminConfirmDelivery(data);
   const operation = command.data?.operation;
   const actionFailure = operation?.failure
     ? problemMessage({ problem: operation.failure })
@@ -224,7 +229,11 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
                 <RotateCcw aria-hidden />
                 Hoàn tiền trước xuất kho
               </Button>
-              {!canCancel && !canRefund ? (
+              <Button className="w-full" disabled={!canConfirmDelivery || command.isPending} onClick={() => setDeliveryOpen(true)}>
+                <Truck aria-hidden />
+                Xác nhận đã giao
+              </Button>
+              {!canCancel && !canRefund && !canConfirmDelivery ? (
                 <p className="text-caption text-muted-foreground">
                   Đơn hiện không có thao tác vòng đời tự động phù hợp. Nếu đã có dòng rời kho, cần xử lý theo quy trình sự cố thủ công.
                 </p>
@@ -239,6 +248,15 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
           </Card>
         </aside>
       </section>
+
+      {deliveryOpen ? (
+        <DeliveryConfirmationDialog
+          orderId={orderId}
+          lines={dispatchedLines(data)}
+          open={deliveryOpen}
+          onOpenChange={setDeliveryOpen}
+        />
+      ) : null}
 
       <Dialog open={action !== null} onOpenChange={(open) => { if (!open) closeAction(); }} disablePointerDismissal={command.isPending}>
         <DialogContent showCloseButton={!command.isPending}>

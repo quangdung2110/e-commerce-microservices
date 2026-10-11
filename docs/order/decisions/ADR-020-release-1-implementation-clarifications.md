@@ -42,6 +42,10 @@ return chờ xác minh thủ công).
 
 ## Quyết định
 
+
+> **Cập nhật ADR-021 (2026-10-11):** không có Delivery service; "verified Delivery proof" trong ADR này nay là
+> Admin delivery confirmation trên Order ([ADR-021](./ADR-021-admin-delivery-confirmation.md)). Quyết định còn lại giữ nguyên.
+
 ### Runtime
 
 Order Service là Java 21 + Spring Boot 3.3 (JDBC + Flyway, không JPA), Spring Kafka và
@@ -69,7 +73,7 @@ và Payment.
    `TO_RECEIVE=IN_DELIVERY`, `COMPLETED`, `CANCELLED`,
    `RETURN_REQUESTED=RETURN_IN_PROGRESS`, `REFUNDED`,
    `FINANCIAL_RECONCILIATION_REQUIRED=UNDER_REVIEW`. `ui_status_rank` là rank của tab.
-6. **Delivery `source`** là `/services/delivery` theo convention CloudEvents chung.
+6. ~~**Delivery `source`** là `/services/delivery`~~ — bị thay thế bởi ADR-021: không có Delivery fact.
 
 ### Domain
 

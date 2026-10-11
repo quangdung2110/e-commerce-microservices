@@ -22,7 +22,7 @@ Cần định nghĩa SLI/SLO cho HTTP availability/error/latency; search p95/p99
 class A/B; PostgreSQL pool; Redis request-replay errors; Kafka consumer lag/oldest event;
 outbox-to-Kafka age/receipt age; Temporal schedule-to-start/activity/workflow completion;
 workflow-message oldest pending age; checkout success/timeout/cancel fact/forward repair;
-refund wait age; capture-after-terminal anomaly và auto-complete delay. Error budget và
+refund wait age; capture-after-terminal anomaly và độ trễ xác nhận giao hàng (dispatch → Admin confirmation). Error budget và
 ngưỡng số chưa được chốt.
 
 Liveness chỉ kiểm tra process. Readiness write API cần PostgreSQL; Temporal outage
@@ -41,12 +41,13 @@ restart process.
 |---|---|---|---|
 | `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `DB_POOL_SIZE` | PostgreSQL source of truth/read path, `READ COMMITTED` | `jdbc:postgresql://localhost:15432/order_service`, pool 24 | Có |
 | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `ORDER_REDIS_MIRROR_ENABLED` | Request replay mirrors, timeout 200 ms, fail-open | `localhost:6379`, bật; `order.redis-mirror.ttl=7d` | Có |
-| `KAFKA_BROKERS`, `ORDER_CONSUMERS_ENABLED` | Bốn consumer group + receipt observer `order-outbox-receipt-observer` | `localhost:29092`, bật | Có (khi có security) |
+| `KAFKA_BROKERS`, `ORDER_CONSUMERS_ENABLED` | Ba consumer group (`order-payment-consumer`, `order-inventory-ship-consumer`, `order-inventory-return-consumer`) + receipt observer `order-outbox-receipt-observer` | `localhost:29092`, bật | Có (khi có security) |
 | `TEMPORAL_TARGET`, `TEMPORAL_NAMESPACE`, `TEMPORAL_ENABLED`, `TEMPORAL_WORKER_ENABLED` | Temporal client + worker ba queue `order-checkout-queue`, `order-refund-queue`, `order-financial-reconciliation-queue` | `localhost:7233`, `default`, bật | Có (TLS khi có) |
 | `order.temporal.activity-timeout`, `activity-max-attempts` | Activity start-to-close/retry burst | 30 giây, 3 lần; hết burst thì workflow sleep có backoff rồi thử lại | Không |
 | `order.checkout.payment-window`, `clock-skew-safety`, `submit-wait` | Business ceiling; safety trừ vào hold expiry; thời gian HTTP chờ `PAYMENT_READY` | 15 phút, 30 giây, 12 giây (mesh timeout 15 giây) | Không |
 | `order.refund.inspection-wait` | Inventory inspection gate trước manual verification | 30 ngày | Không |
 | `order.search.default-window` | Khoảng mặc định khi thiếu `created_from/to` | 90 ngày | Không |
+| `order.fulfillment.delivery-confirmation-overdue`, `delivered-at-future-skew` | Ngưỡng của gauge `order.fulfillment.delivery_confirmation_overdue` (line `DISPATCHED` chưa được Admin xác nhận giao; không bao giờ tự giao); sai lệch tối đa của `delivered_at` ở tương lai | 7 ngày, 5 phút | Không |
 | `INVENTORY_BASE_URL`, `PROMOTION_BASE_URL`, `PAYMENT_BASE_URL`, `order.clients.*-timeout` | Remote activities; gửi `X-Service-Identity: order-service` | `:8094`, `:8085`, `:8089`; connect 2 giây, read 10 giây | Không |
 | `ORDER_FRONTEND_BASE_URL` | Dựng `order_url`/`review_url` cho notification | `http://localhost:3000` | Không |
 | `WORKERS_ENABLED`, `order.workers.*` | Dispatcher (poll 200 ms + nudge sau commit, lease 30 giây), reconciler 30 giây | bật | Không |
@@ -68,6 +69,7 @@ Metrics tối thiểu:
 - Kafka consume result/retry/lag/oldest age/duplicate và CDC connector lag/error.
 - Temporal workflow started/completed/failed/timed-out, activity retry, signal route
   miss, compensation failure, workflow age theo type.
+- Fulfilment: counter `order.fulfillment.dispatched`/`delivered`, gauge `order.fulfillment.delivery_confirmation_overdue`.
 - Business counters: order created/paid/cancelled/completed, capture-after-terminal anomaly,
   return rejected, refund waiting/processing/succeeded/failed, oldest refund wait.
 - Scope finalization status/oldest pending age, recovery/conflict count and no-payout
@@ -93,6 +95,7 @@ và CDC publish.
 | Compensation failed | Activity cạn retry | Critical | Saga recovery |
 | Capture after terminal non-capture | Obligation mới hoặc chưa resolve; order không được hồi sinh | Critical | Payment + Finance/Ops |
 | Refund waiting overdue | Gần/quá 30 ngày không confirmation | Cao | Returns Ops |
+| Delivery confirmation overdue | `order.fulfillment.delivery_confirmation_overdue` > 0 (line `DISPATCHED` quá 7 ngày chưa xác nhận giao) | Trung bình | Warehouse/Ops Admin: xác nhận giao qua `delivery-confirmations` hoặc điều tra thất lạc |
 | Refund failed/reversed | Event critical lane xuất hiện | Critical | Payment/Ops |
 | Refund scope finalization unresolved | Three Activity attempts exhausted, durable guard conflict, mismatched receipt, or pending age beyond agreed budget | Cao | Order on-call + Inventory; frozen command query/replay and audited reconciliation |
 | CDC/outbox lag | Oldest outbox chưa publish vượt ngưỡng | Cao | Data platform/Order |
@@ -118,7 +121,7 @@ và CDC publish.
 | Workflow start failure after accepted API | Dispatcher retries/attaches durable workflow dispatch; no accepted command is lost |
 | DB commit before Temporal RPC / RPC response lost | Workflow-message dispatcher retries `SignalWithStart` với cùng scoped `message_id`; workflow state carries dedup across Continue-As-New and activity remains DB-idempotent; không ACK/xóa message khi chưa có durable acknowledgement |
 | Workflow target đã closed trước dispatch | Reuse policy cấm start lại; reconcile DB proof để mark applied/stale no-op hoặc atomic reroute sang named recovery owner; ambiguous giữ retry/quarantine + alert |
-| Delivery proof before dispatch | Persist `PENDING_PREREQUISITE`; dispatch consumer/replayer validate mapping rồi apply proof và chạy convergence |
+| Admin quên xác nhận giao | Đơn ở `PROCESSING` không tự hoàn tất, Review/Buyer return chưa mở; gauge quá hạn cảnh báo; hệ thống không suy ra `DELIVERED` từ thời gian hay từ dispatch |
 | Mixed-version deploy | Workflow code phải replay-compatible; consumer validates additive financial fields/version; additive rollout |
 | Search extension/index lỗi | Không có ES fallback; fail có quan sát hoặc giới hạn query theo policy |
 
@@ -164,12 +167,11 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Outbox CDC pipeline | WAL row `outbox_events` | Destination allowlist + partition key; connector offset | Kafka Connect retry/DLQ/backoff; Order facts hoặc Notification command topic |
 | Outbox receipt observer | Messages on each allowed destination | PK event/topic, idempotent insert | Supplies per-row deletion proof; outage retains rows |
 | Payment consumer | `t.payment.events.v2` | Exact accepted types; stream-scoped inbox + mapping/amount/currency/per-transaction version guard | Atomically persist evidence/workflow message; dispute chỉ update obligation evidence |
-| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + `reservation_revision` + line/warehouse guard | `DISPATCHED`, replay prerequisite proof, convergence |
-| Delivery proof consumer | `t.delivery.order.events.v1` | Durable inbox + proof ID/digest + aggregate revision + line/warehouse guard | Park before dispatch; otherwise CAS `DELIVERED` + convergence |
+| Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + `reservation_revision` + line/warehouse guard | `DISPATCHED` (không bao giờ `DELIVERED`/`COMPLETED`) |
 | Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence + workflow message in one transaction |
 | Workflow start dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API crash |
 | Workflow message dispatcher | `order_workflow_messages` | Stable message ID + `SignalWithStart`; DB leases with `SKIP LOCKED` | Retry until Temporal durable acknowledgement; duplicate history is no-op |
-| Prerequisite/convergence reconciler | Pending proofs, open required obligations, deliverable orders | Order lock + deterministic guards | Replay proof; invoke `TryCompleteOrder`; never infer evidence |
+| Prerequisite/convergence reconciler | Payment fact chờ identity bind, open required obligations, orders `PROCESSING` mà mọi line đã `DELIVERED` | Order lock + deterministic guards | Replay identity bind; invoke `TryCompleteOrder`; never infer evidence |
 | Refund scope finalization reconciler | Unresolved finalization metadata/checkpoints, including financially terminal Buyer cases | Same scope/generation/command; conflict requires audited decision | Restore durable finalization dispatch on `order-refund-queue`; never call Payment |
 | Temporal worker | Three task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry burst; durable history/continue-as-new |
 | Outbox trimmer | Hàng ngày, ví dụ 04:00 | Một execution logic; exact receipt guard | Xóa row >15 ngày + safety delay chỉ khi receipt khớp destination |

@@ -61,7 +61,7 @@ class IdentityFilterPathTest {
                 "X-User-Roles", "X-Actor-Id", "ADMIN", List.of("checkout-service"),
                 List.of("finance-ops", "accounting-ops"));
         OrderProperties properties = new OrderProperties(identity, null, null, null, null, null, null, null, null,
-                null, null);
+                null, null, null);
         ObjectMapper mapper = new ObjectMapper();
         mvc = MockMvcBuilders.standaloneSetup(new StubController())
                 .addFilters(new IdentityFilter(properties, new Problems(mapper), mapper))
