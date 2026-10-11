@@ -1,6 +1,6 @@
 # Observability
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Ba câu hỏi hệ thống phải trả lời được
 
@@ -53,7 +53,7 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 
 | Metric | Kiểu | Label | Ý nghĩa |
 |---|---|---|---|
-| `dependency_request_duration_seconds` | histogram | `dependency` (`auth_contact`/`auth_content`/`ses`/`smtp`/`sqs`), `lane`, `status` | |
+| `dependency_request_duration_seconds` | histogram | `dependency` (`auth_contact`/`auth_content`/`ses`/`smtp`/`sqs`/`ses_health`/`smtp_health`), `lane` (`none` cho `*_health`), `status` | `*_health` là health probe của watchdog ([06-backpressure.md](./06-backpressure.md) §5) |
 | `dependency_error_rate` | derived | `dependency` | 5xx + timeout / tổng, 5 phút |
 | `circuit_breaker_state` | gauge (0 closed / 1 half-open / 2 open) | `dependency` | |
 | `bulkhead_in_use` / `bulkhead_capacity` | gauge | `lane`, `channel`, `resource` (`threads`/`http_conns`/`db_conns`) | Saturation theo vách ngăn |
@@ -85,7 +85,7 @@ Prometheus, prefix `notification_`. Label chuẩn: `lane`, `channel`, `template`
 | `outbox_unpublished_count` / `outbox_oldest_age_seconds` | gauge | — | Chỉ có nghĩa với poller; với Debezium theo dõi connector lag ở Kafka Connect |
 | `table_dead_tuple_ratio` | gauge | `table` | Từ `pg_stat_user_tables`; bloat của `notification_delivery` |
 | `inbox_unread_recompute_total` | counter | — | Redis miss/lệch; tăng đột biến = Redis flap |
-| `ops_calls_total` | counter | `operation`, `result` | Ops API; audit chi tiết nằm ở `ops_audit` |
+| `ops_calls_total` | counter | `operation`, `result` | Ops API (`result` = HTTP status) và auto-pause bulk của watchdog (`operation=autoPauseBulkEmail`, `result` = `ok`/`error`); audit chi tiết nằm ở `ops_audit` |
 
 Mọi metric khai báo trong `internal/telemetry/metrics.go` với prefix `notification_`; `/metrics` nằm trên listener internal `8081`.
 
@@ -111,6 +111,7 @@ Gom từ [06-backpressure.md](./06-backpressure.md) §7 và [08-decide.md](./08-
 | Ticket | `DlqNonEmptyCritical` | bất kỳ row DLQ nào ở lane critical | R-04 |
 | Ticket | `FrequencyCapDegraded` | Redis lỗi, fail-open đang bật | R-10 |
 | Ticket | `DeadTupleBloat` | `table_dead_tuple_ratio{table=notification_delivery} > 0.2` | R-11 |
+| Ticket | `BulkAutoPaused` | `increase(ops_calls_total{operation="autoPauseBulkEmail",result="ok"}[15m]) > 0` hoặc `lane_paused{lane="bulk",channel="email"} == 1` kéo dài | R-02 (resume thủ công) |
 | Info | `LocaleFallback` | `render_locale_fallback_total` tăng | — |
 | Info | `ExpiredRateHigh` | `EXPIRED / DECIDED > 1 %` theo lane | Xem lại `max_age` hoặc lag |
 
@@ -195,6 +196,8 @@ Cộng **timeline support** ở §5 là công cụ riêng, không phải dashboa
 | Endpoint | Ý nghĩa | Kiểm tra |
 |---|---|---|
 | `/livez` | Process sống | Không phụ thuộc gì |
-| `/readyz` | Sẵn sàng nhận việc theo `ROLE` | Postgres ping; Redis ping (không bắt buộc với `deliver` — limiter fail-closed); Kafka metadata (`consumer`); template registry đã load; với `track`: SQS reachable |
+| `/readyz` | Sẵn sàng nhận việc | **Chỉ Postgres ping** (pool `control`, timeout 3 s tổng). Trả `200 {"status":"UP"}` hoặc `503 {"status":"DOWN","failed":[...]}` |
+
+Có chủ ý không kiểm Redis, Kafka, SQS hay SES: Redis lỗi được thiết kế thoái hoá an toàn (limiter fail-closed về `quota / limiter_fallback_replicas`, frequency cap fail-open, unread recompute từ DB — R-10); consumer Kafka và poller SQS tự retry nên một broker/queue chập chờn không nên kéo pod ra khỏi Service; template registry và catalog đã được nạp và render thử **trước** khi process mở listener ([12-render.md](./12-render.md) §4), nên process chưa sẵn sàng thì không bao giờ lên được tới `/readyz`. Dependency nào hỏng đều lộ qua metric và alert (§2–§3), không qua readiness.
 
 Traefik không route health; mesh dùng readiness của Endpoints ([gateway design](../gateway/design.md)). Breaker mở với SES **không** làm readiness fail — service vẫn nhận request và xếp hàng, đó là hành vi mong muốn.

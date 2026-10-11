@@ -74,8 +74,8 @@ Biến `AUTH_INTERNAL_TLS_CERT_FILE`, `AUTH_INTERNAL_TLS_KEY_FILE`,
 `AUTH_INTERNAL_ALLOWED_CALLERS`. `security.rate_limit.internal_per_client` (600/phút theo IP)
 đổi thành `internal_per_resource` (120/phút theo caller và tài nguyên). Notification đã gửi
 `X-Service-Identity: notification-service` trên mọi lời gọi nên không phải đổi; các cấu hình
-`NOTIFICATION_AUTH_TLS_*` của nó trở thành tùy chọn và thuộc phạm vi dọn dẹp riêng của
-Notification (audit N3). Vì budget theo tài nguyên, không có trần tổng cho Notification; trần
+`NOTIFICATION_AUTH_TLS_*` của nó trở thành thừa và thuộc phạm vi dọn dẹp riêng của
+Notification (audit N3; đã bỏ hẳn ngày 2026-10-10, [Notification D-21](../../notification/decisions.md)). Vì budget theo tài nguyên, không có trần tổng cho Notification; trần
 đó do rate limit phía client của Notification và policy mesh đảm nhiệm.
 
 ## Migration impact

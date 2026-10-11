@@ -47,14 +47,14 @@
 | PY1 | Payment | Thiếu `GET /v1/payments/{id}` và `GET /v1/refunds/{id}` mà Order đang gọi |
 | PR8 + PR10 | Promotion | `technical-cancellations` mở cho `order-service`, không kiểm proof; docs nói đã chặn — ✅ đã kiểm chứng đúng và sửa 2026-10-10 (Promotion ADR-019) |
 | A9 | Auth | Lỗi Redis sau commit → `USER_DELETED` không bao giờ được phát — ✅ đã kiểm chứng và sửa 2026-10-09 (ADR-006) |
-| N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý |
+| N1 / U4 | User + Notification | User mặc định `marketing_enabled=true`, Notification mặc định `false` → gửi marketing khi chưa đồng ý — ✅ đúng; User đã sửa 2026-10-09 (U4, ADR-009), nay cả hai mặc định `false` |
 | U9 | User | Profile đã xoá (ẩn danh) vẫn ghi lại được PII |
 | S4 | Search | Tombstone window 30d không dài hơn retention topic Inventory (≥30d) → partition có thể kẹt *(phía Inventory đã sửa 2026-10-09: retention đúng 30d, xem I8; Search sửa 2026-10-09 lên 35d và kiểm chứng lại 2026-10-10: 35d vẫn thiếu độ trễ xóa theo segment, nay 45d, xem S22)* |
 | I3 | Inventory | Kiểm role ADMIN/allowlist trên URI thô → né được bằng `%xx`/`;` *(đã sửa 2026-10-09)* |
 | S6 | Search | URL Product mặc định `:8080`, Product chạy `:8081` → full reindex lỗi ở compose — ✅ đúng và đã sửa 2026-10-09 |
 | S8 | Search | Batch không ACK **không bao giờ được Kafka gửi lại** (AckMode.MANUAL không `nack`) → Inventory readiness lỗi thì SKU không bao giờ có availability; ADR-005/019 hứa điều không xảy ra — phát hiện 2026-10-10, ✅ đã sửa (`nack`, `ConsumerRedeliveryIT`) |
 | S17 | Search | `ReindexRunDocument.isTerminal()` bị serialize thành field `terminal`, `search_jobs` là `dynamic: strict` → mọi lần ghi run đều lỗi — phát hiện 2026-10-10, ✅ đã sửa (`SearchJobsDocumentsMatchMappingTest`, `ReindexLifecycleIT`) |
-| X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call — ✅ Auth (A10, ADR-007) và User (U10) đã sửa 2026-10-09; ⏳ còn Notification (N3) |
+| X2 (A10/U10/N3) | Auth, User, Notification | App-level mTLS mâu thuẫn mô hình mesh; production sau Istio ambient sẽ từ chối mọi internal call — ✅ Auth (A10, ADR-007) và User (U10) đã sửa 2026-10-09; ✅ Notification (N3, D-21) đã sửa 2026-10-10 — X2 hoàn tất |
 
 ---
 
@@ -75,7 +75,7 @@
 
 ### G3 🟡 `contracts/catalog/services.yaml` sai trạng thái
 - `payment-service`: `runtime: java-planned`, `status: documented`, `contract_adoption: not_started` — code đã có (`java/services/payment-service`, Gate 3).
-- `notification-service`: `runtime: go-planned`, `status: documented` — code phase 1 có ở `go/services/notification-service`.
+- `notification-service`: `runtime: go-planned`, `status: documented` — code phase 1 có ở `go/services/notification-service`. *(✅ 2026-10-10: `runtime: go`, `status: implemented`; thêm `notification-ops`, N2/N5)*
 - `delivery-service.docs` trỏ file đã xoá (G1).
 
 ### G4 🟡 `contracts/ADOPTION.md` cũ
@@ -91,9 +91,9 @@
 - `cart-publishes-cart-events` sai hoàn toàn (C1).
 - Thiếu interaction Promotion → Product snapshot (P5).
 - `notification-publishes-outcomes` liệt kê `user-service` là consumer `complaint-received`, nhưng User chưa có consumer (U5). *(đã xong 2026-10-09: User consume complaint-received, catalog cập nhật)*
-- `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5).
+- `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5). *(✅ 2026-10-10: consumer `[notification-ops]`)*
 - Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3). *(2026-10-09: chỉ hai trong bốn còn `proposed` — `checkout-previews-inventory-allocation` và `checkout-reads-user-address-snapshot` đã `implemented` từ các đợt sync Inventory/User; nay cả bốn `implemented`.)*
-- `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2).
+- `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2). *(✅ 2026-10-10: `notification-*` phía provider đã `implemented`; Payment còn lại)*
 - `storefront-queries-product-detail` và `product-detail-bff-queries-product-catalog` vẫn `proposed` dù cả hai phía chạy (B3, phát hiện 2026-10-09). ✅ đã `implemented`; ghi chú `preview_limit` của `product-detail-bff-queries-review-summary` theo `PDP_REVIEW_PREVIEW_LIMIT`.
 
 ---
@@ -831,32 +831,55 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 
 ## 15. Notification (`docs/notification`, `contracts/events/notification/v1`, `contracts/http/notification/**`, `go/services/notification-service`)
 
-### N1 🔴 [cross User, compliance] Gửi marketing khi user chưa đồng ý
-- Xem U4. `docs/notification/08-decide.md` §5: thiếu preference → `marketing_enabled=false` ("gửi marketing cho người chưa từng đồng ý là rủi ro compliance"). User nguồn mặc định `true` và reconciliation đẩy `true` sang → marketing (vd `CART_ABANDONED` lane bulk) được gửi cho user chưa opt-in.
-- Sửa: thống nhất mặc định với User (ưu tiên `false` ở nguồn).
+> **Kiểm chứng lại 2026-10-10** (đọc toàn bộ 18 file `docs/notification`, các contract, ~19k dòng Go; unit và integration xanh trước khi sửa). Kết luận về báo cáo gốc: **N1 đúng** (đã sửa ở nguồn), **N2 đúng và rộng hơn**, **N3 đúng**, **N4 sai**, **N5 đúng**, **N6 đúng nhưng thiếu**; "Đã khớp" đúng ở các điểm đã kiểm lại (xem cuối mục) nhưng bỏ sót nhiều lệch (N7–N22). Đã sửa hết theo quyết định của chủ dự án (D-21…D-24 trong `docs/notification/decisions.md`); `unit` và `-tags integration` xanh sau khi sửa.
+>
+> Quyết định của chủ dự án: N3 bỏ hẳn cấu hình TLS ở tầng app; N5 thêm `notification-ops` vào `services.yaml`; N6 thêm header `x-dlq-consumer-group` + ghi tài liệu, giữ tên topic; N2 `services.yaml` → `go/implemented`, docs → `implemented`, `ADOPTION.md` ba dòng `proposed`; N8 implement cả auto-pause bulk lẫn health probe (pause chỉ bulk × email, resume thủ công); N9 và N10 sửa docs; N12 NULL `dedup_key`/`source_ref`; N16 thống nhất 50/s; N17 bản đồ test + test rẻ.
 
-### N3 🔴 Internal API dùng app-level mTLS (xem X2) — ⏳ chưa sửa (Notification). Phía Auth đã chuyển sang mô hình mesh 2026-10-09 nên các cấu hình `NOTIFICATION_AUTH_TLS_*` của client trở thành tùy chọn/thừa
-- `internal/api/router/internal.go`: không phải dev + không có app mTLS → log "every status/ops call will be rejected". Mesh docs nói Istio ambient thực thi, app không thấy cert → production sau mesh sẽ từ chối mọi call status/ops nếu không cấu hình TLS ở app.
+### N1 🔴 [cross User, compliance] Gửi marketing khi user chưa đồng ý — ✅ đúng khi audit; đã sửa 2026-10-09 ở phía User (U4, User ADR-009); Notification không cần đổi
+- Phía Notification vốn đã đúng: `entity.DefaultPreference` đặt `MarketingEnabled=false`, `TestDecide_Preferences` (IT-PREF-04) và `TestE2E_CartAbandonedPolicies` khoá hành vi. Phía User: migration `0002_marketing_opt_in_default`, `entity/preferences.go` mặc định `false`, schema `user-preferences-updated` ghi opt-in. Hai bên nay cùng mặc định `false`.
 
-### N4 🟡 Client gọi Auth không gửi `X-Service-Identity` — ❌ báo cáo sai (kiểm chứng 2026-10-09): `client.go:294` gửi header khi `auth.service_identity` khác rỗng, mặc định `notification-service`, test `client_test.go` assert header
-- `internal/infrastructure/auth/client.go` không set header `X-Service-Identity: notification-service`, trong khi Auth internal OpenAPI nói caller gửi để attribution. Không gây lỗi (Auth bỏ qua header).
+### N3 🔴 Internal API dùng app-level mTLS (xem X2) — ✅ đúng; đã sửa 2026-10-10 (Notification D-21)
+- Hiện trạng đã xác nhận: `middleware/service_identity.go` đọc CN của client cert và chỉ nhận header khi `app.env=development`; `config.Validate()` đòi mTLS ở production; client Auth nạp `NOTIFICATION_AUTH_TLS_*`. Sau mesh `Request.TLS` luôn rỗng → mọi call status/ops bị `401` hoặc production không khởi động.
+- Sửa theo Auth ADR-007 / User ADR-008: bỏ hẳn TLS ở tầng app (`internal.tls_*`, `client_ca_file`, `auth.tls_*`, `ca_file`, mTLS trong `server.go`, điều kiện production); `X-Service-Identity` bắt buộc ở **mọi** môi trường (thiếu `401`, ngoài allowlist `403`), allowlist rỗng là lỗi khởi động. OpenAPI internal `1.1.0` khai header và `securitySchemes`. Test: `TestInternalIdentityIsHeaderAllowlistInEveryEnvironment`, `TestInternalIdentityConfiguration`.
 
-### N5 🟡 Tên principal ops không thống nhất
-- `interactions.yaml` `notification-ops-operates-notification`: consumers `[finance-ops]` ("acting with the notification-ops principal"); mesh matrix + `configs/application.yaml` `ops_principals: [notification-ops]`. `notification-ops` không có trong `services.yaml`.
+### N4 🟡 Client gọi Auth không gửi `X-Service-Identity` — ❌ báo cáo sai (xác nhận lại 2026-10-10): `client.go` gửi header khi `auth.service_identity` khác rỗng, mặc định `notification-service`, `client_test.go` assert header; Auth chỉ kiểm header đó (ADR-007). Không cần sửa.
 
-### N6 🟡 DLQ dùng chung giữa consumer
-- User và Notification cùng đẩy message lỗi của `t.auth.events` vào `t.auth.events.dlq` (Auth AsyncAPI định nghĩa một DLQ cho channel). Khi redrive phải lọc theo consumer group — chưa được ghi ở docs nào.
+### N5 🟡 Tên principal ops không thống nhất — ✅ đúng; đã sửa 2026-10-10
+- `interactions.yaml` ghi consumer `finance-ops` cho `notification-ops-operates-notification` trong khi mesh matrix (`ecommerce/notification-ops`), code và docs đều dùng `notification-ops`, và `services.yaml` không có service này. Sửa: thêm `notification-ops` (operator-workload, `documented`) vào `services.yaml`; consumer của interaction là `[notification-ops]`.
 
-### N2 🟡 Nhãn trạng thái
-- README "**Trạng thái:** `proposed`" dù mã phase 1 đã có (19k dòng); `services.yaml` go-planned/documented; interactions `notification-*` proposed.
+### N6 🟡 DLQ dùng chung giữa consumer — ✅ đúng nhưng thiếu; đã sửa 2026-10-10 (Notification D-22)
+- Báo cáo chỉ nêu `t.auth.events.dlq` (User + Notification). Thực tế dùng chung ít nhất: `t.auth.events.dlq` (cả **Review**, ADR-013), `t.review.events.dlq` (aggregator Review), `t.user.events.dlq` (Chat sau này) và **`t.cart.events.dlq` — DLQ phía *producer* của Cart, payload JSON `{reason, outbox_key,...}` không phải CloudEvent**, nên hai định dạng trộn nhau. Đề xuất "lọc theo consumer group" không thực hiện được vì message DLQ của Notification chỉ mang `x-dlq-reason` và `x-dlq-source-topic`.
+- Sửa: thêm header `x-dlq-consumer-group` (test `TestProcessWithRetry`), giữ tên topic, ghi danh sách DLQ dùng chung và quy tắc lọc ở `10-interfaces.md` §9 và R-04.
 
-Đã khớp: consumer `t.auth.notification.events` (group `notification-auth-critical`), `t.auth.events` (user lifecycle), `t.review.events`, `t.cart.events`, `t.user.events`, `t.notification.{critical,transactional,bulk}.v1`; producer `t.notification.outcomes.v1`; route inbox + internal == OpenAPI; 15 template trong `templates/catalog.yaml` == code; path Auth contact/content; schema `ORDER_*` khớp quy tắc composer của Order (enum `reason`, `refund_expected=false`).
+### N2 🟡 Nhãn trạng thái — ✅ đúng và rộng hơn; đã sửa 2026-10-10
+- Thực tế: README và 17 file còn lại của `docs/notification` ghi `proposed`; `services.yaml` `go-planned/documented`; `docs/README.md` mục notification "thiết kế proposed"; các interaction `notification-*` `proposed`; `ADOPTION.md` **không có dòng nào** cho Notification (G4 không nêu). Sửa: docs → `implemented (phase 1)` kèm giới hạn (chưa load test, SES thật chưa kiểm); `services.yaml` → `runtime: go`, `status: implemented`; bốn interaction phía provider → `implemented`; `ADOPTION.md` thêm ba dòng (Events v1, HTTP v1 inbox, Internal HTTP v1) ở `proposed` kèm khoảng cách còn lại; `x-adoption-status` của bốn file contract giữ `proposed`.
+- Lưu ý: `interactions.yaml` đang có thay đổi chưa commit của phiên khác (phần Search, `gateway-routes-notification-inbox` từ `implemented` sang `proposed`, `notification-consumes-cart-abandoned` sang `implemented`). Đã đặt inbox về `implemented` vì frontend (`lib/api/notification.ts`) gọi qua Gateway; các sửa còn lại của phiên khác được giữ nguyên.
+
+### Phát hiện mới 2026-10-10 (không có trong báo cáo gốc)
+- **N7 🟡** `07-templates.md` §5.1 nói Auth tạo hai `delivery_id` để `EMAIL_CHANGED` đến cả email cũ lẫn mới; Auth chỉ cảnh báo email **cũ** (một delivery; email mới nhận OTP xác minh). — ✅ sửa docs.
+- **N8 🟠** `06-backpressure.md` §5 hứa (a) bulk tự pause khi breaker mở > 1 giờ, (b) thăm dò half-open bằng health-check provider; code không có cả hai. — ✅ implement `workers/providerwatch`: health probe (SES `GetAccount`, SMTP `NOOP`) khi half-open và không ai thăm dò trong 15 s; auto-pause bulk × email sau `deliver.breaker_auto_pause_after` (1 h), `updated_by=system:breaker-watchdog`, có `ops_audit`, resume thủ công; breaker thêm `UnhealthySince`, `AllowIdleProbe`; config `breaker_auto_pause_after`, `health_probe_interval`, `health_probe_idle`; IAM thêm `ses:GetAccount`; alert `BulkAutoPaused` (D-23). Test: `providerwatch/watchdog_test.go`, `breaker_test.go`, `TestSender_HealthCheck` (SES, SMTP).
+- **N9 🟡** `04-idempotency.md` §4 bước 7: webhook `Delivery` "recover" row `FAILED (lease_expired)` thành `DELIVERED`; Track chỉ correlate theo `provider_message_id` mà row chết trước `mark_sent` không có message id → event `UNMATCHED` rồi `IGNORED`. — ✅ sửa docs và comment của `TransitionTracked` (D-22).
+- **N10 🟡** `14-observability.md` §8 nói `/readyz` kiểm Redis, Kafka metadata, SQS; code chỉ ping Postgres (các check còn lại là hàm luôn trả OK). — ✅ sửa docs (kèm lý do thiết kế) và bỏ ba entry giả trong `main.go`.
+- **N11 🟡** `09-data-model.md` §4.2 và R-11 đặt `autovacuum_*` trên bảng cha partition — Postgres không cho; migration `002` đặt trên từng partition. — ✅ sửa docs (R-11 nêu cả partition tạo tay).
+- **N12 🟠 [privacy]** `USER_DELETED` chỉ NULL `user_id`/`template_data`/`subject` ở request và `user_id`/`subject` ở delivery; `dedup_key` (nhúng order/review/cart id) và `source_ref` (Auth `delivery_id`) sống 90 ngày, trong khi đường tombstone NULL cả hai. — ✅ sửa code (`AnonymizeByUser` ở hai repo, D-24); `TestE2E_UserDeleted` kiểm cả hai bảng; docs 09 §10 và 11 §2/§4.
+- **N13 🟠 [contract]** OpenAPI internal thiếu response thật: `400` (`redriveDelivery`), `404` (`getLaneState`, `addManualSuppression`), `409` (`setReplayMode`), `503`; mô tả `securitySchemes` sai sau N3; và **lỗi YAML** ở `ReplayMode.ignore_events_older_than` (dấu phẩy trong description không quote) làm Redocly từ chối file. — ✅ OpenAPI `1.1.0`; Redocly và AsyncAPI validate sạch.
+- **N14 🟡** `10-interfaces.md` thiếu `GET /ops/lanes/{lane}` và danh mục mã lỗi (X4 phần Notification). — ✅ thêm §8 (mã lỗi) và §9 (DLQ dùng chung).
+- **N15 🟡** `13-development.md` bảng cấu hình thiếu phần lớn key (email SES/SMTP, track, deliver, jobs...). — ✅ viết lại đủ theo `config.go`.
+- **N16 🟡** Quota email mâu thuẫn: `01-lanes.md` 20/50/80 (150/s) so với README §5, `06` §4.1 và config dev 50/s (10/20/15 + 5 dự trữ); `13` nói dev = bảng 01 chia 10 (sai). — ✅ thống nhất 50/s.
+- **N17 🟠 [test]** Test contract chống example của consumer (`handlers_test.go`) dùng đường dẫn thiếu một cấp `../` nên **luôn `Skip`**; không test nào validate event outcome với JSON Schema; hai example `notification-failed`/`complaint-received` không tồn tại; `15-verification.md` liệt kê ~45 test "bắt buộc" mà nhiều cái không có hoặc không mang ID. — ✅ sửa đường dẫn và đổi `Skip` thành `Fatal` (cả `catalog_test.go`); thêm `outcome_contract_test.go` (4 loại event × biến thể + 4 example) và hai example; thêm `15-verification.md` §2.8 "Bản đồ test thật". **Nợ test còn lại** (ghi ở §2.8): IT-LANE-01, IT-SEND-02/03 (toxiproxy), IT-PII-01, IT-PART-01 (đồng hồ giả), kill process thật cho IT-IDEM-04, sáu case envelope của IT-CTR-06, validate response HTTP với OpenAPI.
+- **N18 🟡** `delivery_lease_expired_total` luôn gắn `lane="all"` dù docs nêu label `lane`. — ✅ `ReapExpiredLeases` trả đếm theo lane (`TestReaperCountsLeaseExpiryPerLane`).
+- **N19 🟡** `08-decide.md` §7 thiếu `auth_unavailable`, `daily_quota`, `retry_budget_defer`; không nói OTP thiếu `expires_at` là `FAILED invalid_template_data`. — ✅ sửa docs.
+- **N20 🟡** `07` §4 ghi bulk + suppression "Không gửi" (in-app vẫn gửi); `abandonment_cycle` của `CART_ABANDONED` là optional trong schema; `12` §6 thiếu `reasonLabel`, `dict`; README §7 mục 5 còn ghi User "còn mở" (đã implement) và "14 runbook" (thực 15). — ✅ sửa docs.
+- **N21 🟡 [test hạ tầng]** Suite integration chập chờn (test Postgres khác nhau lúc fail "should have N item(s)") vì worker của môi trường E2E chạy suốt process và tranh row `notification_delivery` với test Postgres khi máy chậm. — ✅ `quiesceE2E()` dừng worker E2E trước test Postgres đầu tiên có claim.
+- **N22 ⚠ ghi nhận, không đổi hành vi** `INCR` frequency cap nằm ngoài transaction Postgres nên consumer retry sau lỗi DB đếm thêm một lần (một bulk có thể bị `SKIPPED frequency_cap` sớm hơn). Hiếm; đã ghi vào `08-decide.md` §6.
+
+Đã khớp (kiểm lại từng điểm 2026-10-10): consumer `t.auth.notification.events` (group `notification-auth-critical`), `t.auth.events`, `t.review.events`, `t.cart.events`, `t.user.events`, `t.notification.{critical,transactional,bulk}.v1`, producer `t.notification.outcomes.v1` == `configs/application.yaml` và AsyncAPI; sáu type Auth, hai type Review, type Cart và `preferences-updated` khớp schema nguồn; 9 + 5 operation (internal + inbox) == OpenAPI **về route và method** (response code lệch ở N13); 15 template trong `catalog.yaml` == code, catalog và 5 schema `ORDER_*` byte-equal (test); path Auth contact/content và payload khớp OpenAPI Auth; schema `ORDER_*` khớp `NotificationComposer` của Order (`variant_name` null, enum `reason`, `refund_expected=false`, URL tuyệt đối); bốn event outcome sinh ra validate được với schema (test mới).
 
 ---
 
 ## 16. Vấn đề xuyên suốt
 
-### X2 🔴 Hai mô hình xác thực internal không tương thích — 🔶 đã xong Auth (ADR-007) và User (ADR-008) 2026-10-09; còn Notification (N3)
+### X2 🔴 Hai mô hình xác thực internal không tương thích — ✅ đã xong Auth (ADR-007), User (ADR-008) 2026-10-09 và Notification (D-21) 2026-10-10
 - Contract + `docs/mesh/runtime-contract.md`: Istio ambient thực thi mTLS + AuthorizationPolicy theo principal; service **không** thấy cert; `X-Service-Identity` chỉ để attribution/defense-in-depth.
 - Service Go (Auth, User, Notification): kiểm mTLS/CN ở tầng app, production bắt buộc cert, bỏ qua header.
 - Service Java (Product, Promotion, Inventory, Order, Checkout, PDP, Search...) và Cart (Go): kiểm allowlist header `X-Service-Identity` sau mesh.
@@ -921,7 +944,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [ ] P7 Product: build proto từ `contracts/`. *(2026-10-09: chọn giữ bản copy + `ProtoCopyDriftTest`, gRPC v1 vẫn `proposed`; Checkout có `ProtoCopyTest` tương đương, K8)*
 - [x] P4 Product: phát `facet_definitions` trong category event và export (ADR-019). *(2026-10-09; Search đã đọc, chỉ nhãn nhóm — nhãn option vẫn dẫn xuất)*
 - [x] N4 Notification: gửi `X-Service-Identity` khi gọi Auth. *(báo cáo sai: đã gửi từ trước, không cần sửa)*
-- [ ] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; còn Notification)*
+- [x] X2: thống nhất mô hình xác thực internal (Auth/User/Notification). *(User chuyển sang mô hình mesh 2026-10-09, ADR-008; Auth chuyển 2026-10-09, ADR-007; Notification chuyển 2026-10-10, D-21)*
 - [ ] O3: quyết định + implement đường tới `DELIVERED`/`COMPLETED`.
 - [x] X5 Order/Product/Promotion/Review: filter kiểm quyền theo path đã decode + bỏ `;param` (`UrlPathHelper`), mỗi service một `*PathTest` (đỏ → xanh); Checkout `RequestContextFilter` cùng cách (không phải lỗi bảo vệ). *(2026-10-09)*
 - [x] K5 Checkout: bốn span nghiệp vụ `checkout.preview`/`voucher_options`/`submit`/`recovery`, `checkout.dependency`, `checkout.redis` (`Spans`, `TracingSpansTest`; kiểm đột biến: bỏ Reactor context thì 5/6 test đỏ). *(2026-10-09)*
@@ -935,8 +958,8 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; K3 xong 2026-10-09 (cả bốn interaction Checkout, ba dòng ADOPTION Checkout/Order/Product gRPC); còn N5, PY2, N2).
-- [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; còn N5)*
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; K3 xong 2026-10-09 (cả bốn interaction Checkout, ba dòng ADOPTION Checkout/Order/Product gRPC); N5 và N2 của Notification xong 2026-10-10; còn PY2).
+- [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; N5 xong 2026-10-10: principal `notification-ops` có trong services.yaml và interaction)*
 
 ### Docs
 - [ ] G1/G2 `docs/README.md` (Delivery link, trạng thái, số ADR, số operation).
@@ -952,5 +975,5 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [ ] Order: O1, O2. *(K1, K2 xong 2026-10-09; phần Checkout của O1 xong)*
 - [ ] Payment: PY2, PY3.
 - [x] Checkout: K3 (frontmatter, `interfaces.md`, `docs/README.md` §1, catalog, ADOPTION, ADR-010) và K5–K11 (span và cấu hình tracing, trường log, `429` status, test proto, docs ngoài Checkout, `TimeLimiter`/scheduler, chi tiết nhỏ). *(2026-10-09)*
-- [ ] Notification: N2, N5, N6.
+- [x] Notification: N2, N5, N6 và N7–N22 phát hiện thêm. *(2026-10-10; D-21…D-24, OpenAPI internal 1.1.0, `providerwatch`, `ADOPTION.md` ba dòng, bản đồ test §2.8; unit + integration xanh. Nợ test còn lại ghi ở N17)*
 - [ ] X3/X4: thống nhất tên mã lỗi và error catalog.

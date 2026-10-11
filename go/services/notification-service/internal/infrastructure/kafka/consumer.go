@@ -267,6 +267,7 @@ func (h *groupHandler) deadLetter(ctx context.Context, msg *sarama.ConsumerMessa
 	defer cancel()
 	headers := CopyHeaders(msg)
 	headers[HeaderDLQTopic] = msg.Topic
+	headers[HeaderDLQGroup] = h.src.Group
 	if err := h.dlq.PublishDeadLetter(dlqCtx, h.src.DLQ, msg.Key, msg.Value, headers, reason); err != nil {
 		h.logger.Error("message could not be dead-lettered", append(fields, zap.NamedError("dlq_error", err))...)
 		return

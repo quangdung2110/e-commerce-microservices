@@ -58,8 +58,9 @@ type Config struct {
 
 type AppConfig struct {
 	Name string `mapstructure:"name"`
-	// Env is development | staging | production. Only development accepts the
-	// unauthenticated X-Service-Identity header on the internal listener.
+	// Env is development | staging | production. development relaxes the
+	// production-only checks and lets the privacy HMAC key fall back to a fixed
+	// dev key.
 	Env string `mapstructure:"env"`
 	// Role is all | api | consumer | deliver | track | jobs.
 	Role string `mapstructure:"role"`
@@ -95,20 +96,14 @@ type ServerConfig struct {
 // InternalConfig is the cluster-internal listener (status, ops, metrics,
 // health). Never published through the gateway.
 type InternalConfig struct {
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	TLSCertFile  string `mapstructure:"tls_cert_file"`
-	TLSKeyFile   string `mapstructure:"tls_key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
-	// Principals allowed on the status endpoints (mesh principal / cert CN, or
-	// X-Service-Identity in development).
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+	// StatusPrincipals are the X-Service-Identity values allowed on the status
+	// endpoints. The mesh authenticates the caller; this list is defence in depth
+	// (decisions.md D-21).
 	StatusPrincipals []string `mapstructure:"status_principals"`
 	// Principals allowed on the ops endpoints.
 	OpsPrincipals []string `mapstructure:"ops_principals"`
-}
-
-func (i InternalConfig) MutualTLSEnabled() bool {
-	return i.TLSCertFile != "" && i.TLSKeyFile != "" && i.ClientCAFile != ""
 }
 
 type DatabaseConfig struct {
@@ -280,9 +275,6 @@ type AuthConfig struct {
 	BaseURL         string        `mapstructure:"base_url"`
 	Timeout         time.Duration `mapstructure:"timeout"`
 	ServiceIdentity string        `mapstructure:"service_identity"`
-	TLSCertFile     string        `mapstructure:"tls_cert_file"`
-	TLSKeyFile      string        `mapstructure:"tls_key_file"`
-	CAFile          string        `mapstructure:"ca_file"`
 	// Client-side limits per lane so a bulk drain never floods Auth
 	// (06-backpressure.md §3). 0 = unlimited.
 	RatePerSecond LaneValues[float64] `mapstructure:"rate_per_second"`
@@ -365,6 +357,15 @@ type DeliverConfig struct {
 	// ControlPollInterval is how often workers re-read lane pause state.
 	ControlPollInterval time.Duration `mapstructure:"control_poll_interval"`
 	Breaker             BreakerConfig `mapstructure:"breaker"`
+	// BreakerAutoPauseAfter is how long the provider breaker may stay unhealthy
+	// before the watchdog pauses bulk email (06-backpressure.md §5); 0 disables.
+	BreakerAutoPauseAfter time.Duration `mapstructure:"breaker_auto_pause_after"`
+	// HealthProbeInterval is how often the watchdog looks at the breaker and, when
+	// it is half-open and idle, asks the provider directly; 0 disables the watchdog.
+	HealthProbeInterval time.Duration `mapstructure:"health_probe_interval"`
+	// HealthProbeIdle is how long a half-open breaker must have gone without any
+	// probe before the health check is used instead of waiting for a real row.
+	HealthProbeIdle time.Duration `mapstructure:"health_probe_idle"`
 	// UseListenNotify wakes critical workers through Postgres NOTIFY.
 	UseListenNotify bool `mapstructure:"use_listen_notify"`
 	// OrderingLease is how long a worker owns the per-Order-subject
@@ -540,12 +541,15 @@ func (c *Config) Validate() error {
 		if c.Email.Provider != "ses" {
 			return fmt.Errorf("config: production requires email.provider=ses")
 		}
-		if !c.Internal.MutualTLSEnabled() {
-			return fmt.Errorf("config: production requires mTLS on the internal listener")
-		}
 		if c.Track.Enabled && !c.Track.VerifySignature {
 			return fmt.Errorf("config: production requires track.verify_signature=true")
 		}
+	}
+	if !hasName(c.Internal.StatusPrincipals) {
+		return fmt.Errorf("config: internal.status_principals must name at least one service")
+	}
+	if !hasName(c.Internal.OpsPrincipals) {
+		return fmt.Errorf("config: internal.ops_principals must name at least one service")
 	}
 	if c.Deliver.Lease <= c.Email.SendTimeout+c.Auth.Timeout {
 		return fmt.Errorf("config: deliver.lease must exceed email.send_timeout + auth.timeout")
@@ -563,6 +567,9 @@ func (c *Config) Validate() error {
 	if c.Deliver.OrderingBusyRetry <= 0 {
 		return fmt.Errorf("config: deliver.ordering_busy_retry must be > 0")
 	}
+	if c.Deliver.BreakerAutoPauseAfter < 0 || c.Deliver.HealthProbeInterval < 0 || c.Deliver.HealthProbeIdle < 0 {
+		return fmt.Errorf("config: deliver.breaker_auto_pause_after, health_probe_interval and health_probe_idle must be >= 0")
+	}
 	if c.Privacy.HMACKeyVersion < 1 || c.Privacy.HMACKeyVersion > math.MaxInt16 {
 		return fmt.Errorf("config: privacy.hmac_key_version must be in 1..%d", math.MaxInt16)
 	}
@@ -576,6 +583,16 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) IsProduction() bool { return c.App.IsProduction() }
+
+// hasName reports whether the list holds at least one non-blank entry.
+func hasName(list []string) bool {
+	for _, s := range list {
+		if strings.TrimSpace(s) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.name", "notification-service")
@@ -723,6 +740,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("deliver.breaker.failure_ratio", 0.5)
 	v.SetDefault("deliver.breaker.open_duration", "30s")
 	v.SetDefault("deliver.breaker.half_open_successes", 3)
+	v.SetDefault("deliver.breaker_auto_pause_after", "1h")
+	v.SetDefault("deliver.health_probe_interval", "10s")
+	v.SetDefault("deliver.health_probe_idle", "15s")
 	v.SetDefault("deliver.use_listen_notify", true)
 	v.SetDefault("deliver.ordering_lease", "45s")
 	v.SetDefault("deliver.ordering_heartbeat_interval", "10s")

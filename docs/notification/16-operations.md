@@ -1,6 +1,6 @@
 # Operations và runbook
 
-**Trạng thái:** `proposed` — runbook viết trước khi có runtime để implement bám theo; mỗi bước tham chiếu ops API ([10-interfaces.md](./10-interfaces.md) §6) hoặc `notifctl` ([13-development.md](./13-development.md) §5). Alert kích hoạt từng runbook ở [14-observability.md](./14-observability.md) §3.
+**Trạng thái:** `implemented` (phase 1) — runbook bám ops API ([10-interfaces.md](./10-interfaces.md) §6) và `notifctl` ([13-development.md](./13-development.md) §5); alert kích hoạt từng runbook ở [14-observability.md](./14-observability.md) §3. Runbook chưa được diễn tập trên cluster thật.
 
 ## 1. SLO đề xuất
 
@@ -46,7 +46,7 @@ Mỗi runbook: triệu chứng → xác nhận → hành động → kết thúc
 
 1. Xác nhận: `circuit_breaker_state{dependency=ses} == 2`; `dependency_request_duration{ses}` timeout hay 5xx; AWS Health Dashboard / SES console.
 2. Phase 1 không có provider dự phòng: **in-app vẫn gửi**, critical `RETRY` 30 s không tăng `attempt`, OTP quá `expires_at` tự `EXPIRED` — user xin mã mới khi SES hồi.
-3. Nếu sự cố > 15 phút: `notifctl lane bulk pause` (không cần thiết về mặt kỹ thuật vì breaker đã chặn, nhưng tránh bão thăm dò half-open từ bulk).
+3. Nếu sự cố > 15 phút: `notifctl lane bulk pause` (không cần thiết về mặt kỹ thuật vì breaker đã chặn, nhưng tránh bão thăm dò half-open từ bulk). Nếu breaker không đóng quá `deliver.breaker_auto_pause_after` (1 h), watchdog **tự pause bulk × email** (`updated_by = system:breaker-watchdog`, có dòng trong `ops_audit`, alert `BulkAutoPaused`); khi đó SES đã hồi phục thì phải **resume thủ công** (`notifctl lane bulk resume --channel email`) — watchdog không tự resume. Khi breaker half-open mà không row nào thăm dò, watchdog gọi health-check của provider (SES `GetAccount`) để đóng mạch ([06-backpressure.md](./06-backpressure.md) §5).
 4. Nếu lỗi là `Throttling` hoặc `Daily quota exceeded` chứ không phải outage → R-05.
 5. Kết thúc: breaker `CLOSED`, resume bulk, theo dõi `retry_budget_ratio` khi xả; kiểm tra `finished_total{EXPIRED}` để biết bao nhiêu OTP đã mất — đó là số user phải xin lại mã.
 
@@ -65,6 +65,7 @@ Mỗi runbook: triệu chứng → xác nhận → hành động → kết thúc
 3. Liên hệ owner producer với: `source`, `template`, `reason_code`, ví dụ `event_id`. Với Order: kiểm tra `publishNotificationRequests` và `templates/ORDER_*.schema.json`.
 4. Sau khi producer sửa: request cũ trong DLQ **không** redrive (payload sai); producer phát lại nếu nghiệp vụ cần (dedup lớp B chặn trùng nếu cùng `dedup_key`).
 5. Với critical: DLQ critical nghĩa là OTP/reset không tới — xem `source` (Auth) ngay, leo thang nếu > 5 phút.
+6. DLQ Kafka (`*.dlq`, khác với bảng `notification_request`): nhiều topic dùng chung với service khác (`t.auth.events.dlq`, `t.review.events.dlq`, `t.user.events.dlq`, `t.cart.events.dlq`). Chỉ xử lý message có header `x-dlq-consumer-group` thuộc Notification (`notification-user-lifecycle`, `notification-review-transactional`, `notification-preferences`, `notification-cart-bulk`, `notification-auth-critical`, `notification-{critical,transactional,bulk}`); không redrive cả topic ([10-interfaces.md](./10-interfaces.md) §9).
 
 ### R-05 · SES quota (`SesDailyQuotaNearLimit`, Throttling)
 
@@ -110,7 +111,7 @@ Mỗi runbook: triệu chứng → xác nhận → hành động → kết thúc
 ### R-11 · Bloat `notification_delivery` (`DeadTupleBloat`, claim chậm)
 
 1. Xác nhận: `pg_stat_user_tables` cho partition tháng hiện tại; `EXPLAIN (ANALYZE)` câu claim dùng `idx_delivery_ready` không.
-2. `VACUUM (VERBOSE) notification_delivery_<tháng>`; kiểm tra `autovacuum_vacuum_scale_factor = 0.01` đã áp cho bảng cha (kế thừa xuống partition).
+2. `VACUUM (VERBOSE) notification_delivery_y<năm>m<tháng>`; kiểm tra `autovacuum_vacuum_scale_factor = 0.01` đã áp cho **chính partition** (`SELECT reloptions FROM pg_class WHERE relname = 'notification_delivery_y2026m10'`): Postgres không cho đặt reloption này trên bảng cha, hàm `notification_ensure_partition` đặt cho từng partition khi tạo. Partition tạo tay bằng `CREATE TABLE ... PARTITION OF` (R-08) **không** có cài đặt này — chạy `ALTER TABLE <partition> SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_analyze_scale_factor = 0.005)`.
 3. Nếu autovacuum không theo kịp liên tục: tăng `autovacuum_max_workers` / giảm `autovacuum_vacuum_cost_delay` cho DB này; cân nhắc partition theo tuần nếu số đo §3 của [15-verification.md](./15-verification.md) cho thấy volume cao hơn giả định.
 
 ### R-12 · Xin production access SES (một lần, trước khi có user thật)
@@ -175,5 +176,5 @@ Auth publish best-effort không outbox: retry 3 lần rồi bỏ ([README §4](.
 
 - Ops API chỉ trong mesh, principal `notification-ops`; mọi call có audit. Không có "god mode" qua Gateway.
 - Credential: Postgres, Redis, AWS (SES + SQS) qua secret manager; dev dùng compose env. Không bao giờ trong `application.yaml`.
-- IAM cho production: policy tối thiểu `ses:SendEmail` (giới hạn theo configuration set và identity), `sqs:ReceiveMessage/DeleteMessage/GetQueueAttributes` trên đúng queue. Không `ses:*`.
+- IAM cho production: policy tối thiểu `ses:SendEmail` (giới hạn theo configuration set và identity), `ses:GetAccount` (health probe của watchdog, không giới hạn được theo resource), `sqs:ReceiveMessage/DeleteMessage/GetQueueAttributes` trên đúng queue. Không `ses:*`.
 - Truy cập DB production của người: read-only role không thấy `template_data` (view che cột) trừ khi có ticket; không có cột email để lộ.

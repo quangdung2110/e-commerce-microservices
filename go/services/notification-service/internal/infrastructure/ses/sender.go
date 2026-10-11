@@ -50,6 +50,7 @@ const (
 // fake through NewSenderWithClient's parameter type).
 type API interface {
 	SendEmail(ctx context.Context, params *sesv2.SendEmailInput, optFns ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error)
+	GetAccount(ctx context.Context, params *sesv2.GetAccountInput, optFns ...func(*sesv2.Options)) (*sesv2.GetAccountOutput, error)
 }
 
 // Sender sends through SESv2 with a per-lane bulkhead (06-backpressure.md
@@ -357,4 +358,25 @@ func validHeader(name, value string) bool {
 		}
 	}
 	return true
+}
+
+var _ port.HealthChecker = (*Sender)(nil)
+
+// HealthCheck asks SES for the account (GetAccount: no mail is sent, no quota
+// is spent). An unreachable API or an account whose sending is disabled is
+// unhealthy; the breaker treats it like a failed delivery probe.
+func (s *Sender) HealthCheck(ctx context.Context) error {
+	if s.cfg.SendTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.SendTimeout)
+		defer cancel()
+	}
+	out, err := s.client.GetAccount(ctx, &sesv2.GetAccountInput{})
+	if err != nil {
+		return fmt.Errorf("ses: get account: %w", err)
+	}
+	if !out.SendingEnabled {
+		return errors.New("ses: account sending is disabled")
+	}
+	return nil
 }

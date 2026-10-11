@@ -96,3 +96,48 @@ func TestPrivacyKeyFromEnvironment(t *testing.T) {
 		t.Fatalf("version from env: %d", k.ActiveVersion())
 	}
 }
+
+// D-21: the mesh authenticates callers, so production needs no TLS material
+// at the application layer and the allowlists must not be empty.
+func TestInternalIdentityConfiguration(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Internal.StatusPrincipals, ","); got != "order-service,finance-ops" {
+		t.Fatalf("status principals: %s", got)
+	}
+	if got := strings.Join(cfg.Internal.OpsPrincipals, ","); got != "notification-ops" {
+		t.Fatalf("ops principals: %s", got)
+	}
+
+	prod := *cfg
+	prod.App.Env = "production"
+	prod.Email.Provider = "ses"
+	prod.Privacy.HMACKey = strings.Repeat("p", 32)
+	if err := prod.Validate(); err != nil {
+		t.Fatalf("production must not require application-level mTLS: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"status": func(c *Config) { c.Internal.StatusPrincipals = []string{" "} },
+		"ops":    func(c *Config) { c.Internal.OpsPrincipals = nil },
+	} {
+		c := *cfg
+		mutate(&c)
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "internal."+name+"_principals") {
+			t.Fatalf("%s: want an allowlist error, got %v", name, err)
+		}
+	}
+}
+
+func TestInternalPrincipalsFromEnvironment(t *testing.T) {
+	t.Setenv("NOTIFICATION_INTERNAL_STATUS_PRINCIPALS", "order-service,support-tool")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Internal.StatusPrincipals, ","); got != "order-service,support-tool" {
+		t.Fatalf("override from env: %s", got)
+	}
+}

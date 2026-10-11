@@ -330,11 +330,3 @@ func TestNewClientRejectsEmptyBaseURL(t *testing.T) {
 	_, err := NewClient(config.AuthConfig{}, time.Minute, nil, nil, nil, nil)
 	require.Error(t, err)
 }
-
-func TestNewClientRejectsMissingTLSFiles(t *testing.T) {
-	cfg := testConfig("http://auth")
-	cfg.TLSCertFile = "/nonexistent/cert.pem"
-	cfg.TLSKeyFile = "/nonexistent/key.pem"
-	_, err := NewClient(cfg, time.Minute, nil, nil, nil, nil)
-	require.Error(t, err)
-}

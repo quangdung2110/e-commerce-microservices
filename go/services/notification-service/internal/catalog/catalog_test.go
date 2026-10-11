@@ -94,7 +94,7 @@ func TestValidateTemplateData(t *testing.T) {
 func TestEmbeddedCopiesMatchContracts(t *testing.T) {
 	want, err := os.ReadFile(filepath.Join(contractsTemplates, "catalog.yaml"))
 	if err != nil {
-		t.Skipf("contracts not available: %v", err)
+		t.Fatalf("contracts not available (fix contractsTemplates): %v", err)
 	}
 	if !bytes.Equal(want, Raw()) {
 		t.Fatal("internal/catalog/catalog.yaml differs from contracts/events/notification/v1/templates/catalog.yaml")

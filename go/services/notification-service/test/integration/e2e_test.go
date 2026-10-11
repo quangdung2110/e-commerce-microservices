@@ -392,8 +392,12 @@ func TestE2E_UserDeleted(t *testing.T) {
 	}
 	var leftover int
 	require.NoError(t, testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM notification_request WHERE id = $1 AND (subject IS NOT NULL OR template_data IS NOT NULL OR user_id IS NOT NULL)`, req.ID).Scan(&leftover))
-	assert.Equal(t, 0, leftover, "request anonymised")
+		`SELECT count(*) FROM notification_request WHERE id = $1 AND (subject IS NOT NULL OR template_data IS NOT NULL OR user_id IS NOT NULL OR dedup_key IS NOT NULL OR source_ref IS NOT NULL)`, req.ID).Scan(&leftover))
+	assert.Equal(t, 0, leftover, "request anonymised, including the keys that embed the order id")
+	var deliveryLeft int
+	require.NoError(t, testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM notification_delivery WHERE request_id = $1 AND (dedup_key IS NOT NULL OR source_ref IS NOT NULL OR subject IS NOT NULL)`, req.ID).Scan(&deliveryLeft))
+	assert.Equal(t, 0, deliveryLeft, "deliveries lose dedup_key, source_ref and subject")
 	skipped, err := testStore.Deliveries().GetByID(context.Background(), pending.ID)
 	require.NoError(t, err)
 	assert.Equal(t, entity.StatusSkipped, skipped.Status)

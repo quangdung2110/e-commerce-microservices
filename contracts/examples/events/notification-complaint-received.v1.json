@@ -1,0 +1,22 @@
+{
+  "specversion": "1.0",
+  "id": "5d7e2b94-8c1a-4f36-a0e9-71b4c3d2e8f6",
+  "type": "com.ecommerce.notification.complaint-received.v1",
+  "source": "/services/notification",
+  "subject": "deliveries/3c8a1e75-9b24-4d60-8f17-5a2e6c0b9d41",
+  "time": "2026-09-21T08:02:11Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/notification/v1/schemas/notification-complaint-received.schema.json",
+  "correlationid": "order-checkout-2f6b1c8a-7d03-4e95-b1a4-0c9e5d3a7f12",
+  "data": {
+    "delivery_id": "3c8a1e75-9b24-4d60-8f17-5a2e6c0b9d41",
+    "request_id": "e0b9a4d2-6c35-4871-9f0a-2d8c7b1e3a56",
+    "template": "CART_ABANDONED",
+    "lane": "bulk",
+    "channel": "email",
+    "user_id": "0f6d3a8e-6a4e-4d0d-9c3b-2b1e6f7a8c9d",
+    "provider": "ses",
+    "occurred_at": "2026-09-21T08:02:10Z",
+    "marketing_disabled": true
+  }
+}

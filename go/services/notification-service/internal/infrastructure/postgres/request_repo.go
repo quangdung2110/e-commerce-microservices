@@ -72,11 +72,12 @@ func (r *RequestRepository) GetByID(ctx context.Context, id uuid.UUID) (*entity.
 }
 
 // AnonymizeByUser keeps decision and timestamps for metrics/audit and drops
-// what identifies the person (11-privacy.md §4, 09 §10).
+// what identifies the person (11-privacy.md §4, 09 §10): user_id, subject, template_data
+// and the keys that embed an aggregate id (dedup_key, source_ref).
 func (r *RequestRepository) AnonymizeByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
 	const query = `
 		UPDATE notification_request
-		SET user_id = NULL, template_data = NULL, subject = NULL
+		SET user_id = NULL, template_data = NULL, subject = NULL, dedup_key = NULL, source_ref = NULL
 		WHERE user_id = $1`
 	tag, err := r.q.Exec(ctx, query, userID)
 	if err != nil {

@@ -101,6 +101,23 @@ type e2eEnv struct {
 	containers []testcontainers.Container
 }
 
+// quiesceE2E stops the shared e2e workers. They keep polling notification_delivery
+// for as long as the process lives, so a Postgres test that inserts a row and
+// claims it a moment later races with them on a slow machine and sees a row
+// already SENDING. Go runs the e2e files first (alphabetical), so stopping them
+// before the first claim-based Postgres test costs nothing; an e2e test that
+// runs afterwards is skipped instead of talking to a dead environment.
+var e2eQuiesced atomic.Bool
+
+func quiesceE2E() {
+	if e2eShared == nil {
+		return
+	}
+	e2eQuiesced.Store(true)
+	e2eShared.cancel()
+	e2eShared.wg.Wait()
+}
+
 func e2eTeardown() {
 	if e2eShared == nil {
 		return
@@ -124,6 +141,9 @@ func e2eTeardown() {
 
 func e2e(t *testing.T) *e2eEnv {
 	t.Helper()
+	if e2eQuiesced.Load() {
+		t.Skip("e2e workers were stopped by an earlier Postgres test (run the e2e tests first)")
+	}
 	e2eOnce.Do(func() { e2eShared, e2eSetupErr = startE2E() })
 	if e2eSetupErr != nil {
 		t.Fatalf("e2e setup: %v", e2eSetupErr)

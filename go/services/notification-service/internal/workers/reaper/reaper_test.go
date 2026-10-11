@@ -17,7 +17,9 @@ type deliveries struct {
 	port.DeliveryRepository
 }
 
-func (deliveries) ReapExpiredLeases(context.Context, time.Time) (int64, error) { return 0, nil }
+func (deliveries) ReapExpiredLeases(context.Context, time.Time) (map[entity.Lane]int64, error) {
+	return nil, nil
+}
 func (deliveries) PendingStats(context.Context, time.Time) ([]entity.PendingStat, error) {
 	return nil, nil
 }
@@ -70,4 +72,34 @@ func TestReaperWithoutOrderingRepo(t *testing.T) {
 	w := New(deliveries{}, nil, nil, time.Second, time.Second, clock.NewFake(time.Now()), telemetry.New(), nil)
 	w.ReapOnce(context.Background())
 	w.ExportStats(context.Background())
+}
+
+type laneDeliveries struct {
+	deliveries
+	reaped map[entity.Lane]int64
+}
+
+func (d laneDeliveries) ReapExpiredLeases(context.Context, time.Time) (map[entity.Lane]int64, error) {
+	return d.reaped, nil
+}
+
+// delivery_lease_expired_total carries the lane of the reaped row
+// (14-observability.md §2.2), so R-07 can tell which lane is losing leases.
+func TestReaperCountsLeaseExpiryPerLane(t *testing.T) {
+	m := telemetry.New()
+	d := laneDeliveries{reaped: map[entity.Lane]int64{entity.LaneCritical: 2, entity.LaneBulk: 5}}
+	w := New(d, nil, nil, time.Second, time.Second, clock.NewFake(time.Now()), m, nil)
+
+	if got := w.ReapOnce(context.Background()); got != 7 {
+		t.Fatalf("total reaped = %d", got)
+	}
+	for lane, want := range map[string]float64{"critical": 2, "bulk": 5, "transactional": 0} {
+		var out dto.Metric
+		if err := m.DeliveryLeaseExpired.WithLabelValues(lane).Write(&out); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Counter.GetValue(); got != want {
+			t.Fatalf("lane %s: %v, want %v", lane, got, want)
+		}
+	}
 }

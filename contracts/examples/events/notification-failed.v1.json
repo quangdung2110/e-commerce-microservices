@@ -1,0 +1,25 @@
+{
+  "specversion": "1.0",
+  "id": "9a3f6c1d-52b8-4e0a-b7d4-3e8c2a1f6d58",
+  "type": "com.ecommerce.notification.failed.v1",
+  "source": "/services/notification",
+  "subject": "deliveries/7d2e9c40-3b1f-4f6a-8e21-0c9d5a7b3e10",
+  "time": "2026-09-20T10:47:30Z",
+  "datacontenttype": "application/json",
+  "dataschema": "/contracts/events/notification/v1/schemas/notification-failed.schema.json",
+  "correlationid": "order-checkout-9d40d5ae-c636-4d55-bf7d-bad6d388bd7f",
+  "data": {
+    "delivery_id": "7d2e9c40-3b1f-4f6a-8e21-0c9d5a7b3e10",
+    "request_id": "5b1c0f2e-2f0a-4d0e-9c1a-1a2b3c4d5e6f",
+    "template": "ORDER_CONFIRMED",
+    "lane": "transactional",
+    "channel": "email",
+    "user_id": "0f6d3a8e-6a4e-4d0d-9c3b-2b1e6f7a8c9d",
+    "subject": "orders/1000234",
+    "provider": "ses",
+    "occurred_at": "2026-09-20T10:47:30Z",
+    "final_status": "FAILED",
+    "reason_code": "provider_error",
+    "attempts": 8
+  }
+}

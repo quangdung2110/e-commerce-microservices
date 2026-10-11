@@ -1,6 +1,6 @@
 # Lane ưu tiên
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1) — số liệu tải trong file này là giả định thiết kế, chưa đo (README §5).
 
 ## 1. Vấn đề
 
@@ -16,9 +16,9 @@ Một partition Kafka là log tuần tự: consumer đọc từ offset thấp l�
 
 ### Ví dụ: đêm flash sale
 
-- 20:00 marketing đẩy 300.000 email khuyến mãi vào Kafka trong 2 phút. Worker gửi được 150 email/s (quota provider).
+- 20:00 marketing đẩy 300.000 email khuyến mãi vào Kafka trong 2 phút. Quota provider chỉ cho gửi 50 email/s (README §5).
 - 20:03 một user hết phiên, Auth phát `userOtpRequested`. OTP hết hạn sau 5 phút.
-- Với một topic chung 24 partition, message OTP rơi vào partition đang có ~12.500 email khuyến mãi phía trước, mỗi partition được ~6 email/s → OTP được gửi sau **~35 phút**.
+- Với một topic chung 24 partition, message OTP rơi vào partition đang có ~12.500 email khuyến mãi phía trước, mỗi partition được ~2 email/s → OTP được gửi sau **~100 phút**.
 
 Dashboard lúc đó: delivered 100 %, error 0 %, lag đang giảm. Không alert nào bắn. Sự cố chỉ lộ ra qua ticket support sáng hôm sau — và chỉ với những user đăng nhập trong lúc chiến dịch chạy, tức những người đang muốn mua.
 
@@ -36,7 +36,7 @@ Lane = một đường đi vật lý riêng **từ đầu đến cuối**. Phả
 |---|---|---|
 | **Topic** | 1 topic `notification.requests` | `t.notification.critical.v1`, `t.notification.transactional.v1`, `t.notification.bulk.v1` |
 | **Consumer group + worker pool** | 1 pool đọc tất cả; pool bận xả bulk thì không có tay rảnh cho critical | Consumer group riêng, deliver pool riêng cho từng lane |
-| **Quota provider** | 1 rate limiter 150/s dùng chung; 30 worker bulk chiếm hết, provider trả `429` cho chính worker critical | Critical được dành riêng một phần quota mà bulk không được mượn |
+| **Quota provider** | 1 rate limiter 50/s dùng chung; 30 worker bulk chiếm hết, provider trả `429` cho chính worker critical | Critical được dành riêng một phần quota mà bulk không được mượn |
 
 Trong một lane, ordering vẫn theo partition key của producer (ví dụ `user_id`). Lane tách theo *loại*, không tách theo *người*.
 
@@ -61,9 +61,11 @@ Kafka topic ──partition──▶ Kafka consumer ──INSERT──▶ Bảng
 
 | Lane | Topic | Partition | Consumer (ranh giới 1) | Deliver pool (ranh giới 2) | Quota email | DLQ |
 |---|---|---|---|---|---|---|
-| Critical | `t.notification.critical.v1` | 3 | 1–3 replica, group `notification-critical` | 10 thread | 20/s dành riêng | `t.notification.critical.v1.dlq` |
-| Transactional | `t.notification.transactional.v1` | 12 | 2–6 replica, group `notification-transactional` | 20 thread | 50/s dành riêng | `t.notification.transactional.v1.dlq` |
-| Bulk | `t.notification.bulk.v1` | 24 | 2–12 replica, group `notification-bulk` | 30 thread | tối đa 80/s | `t.notification.bulk.v1.dlq` |
+| Critical | `t.notification.critical.v1` | 3 | 1–3 replica, group `notification-critical` | 10 thread | 10/s dành riêng | `t.notification.critical.v1.dlq` |
+| Transactional | `t.notification.transactional.v1` | 12 | 2–6 replica, group `notification-transactional` | 20 thread | 20/s dành riêng | `t.notification.transactional.v1.dlq` |
+| Bulk | `t.notification.bulk.v1` | 24 | 2–12 replica, group `notification-bulk` | 30 thread | tối đa 15/s | `t.notification.bulk.v1.dlq` |
+
+Cột quota khớp [06-backpressure.md](./06-backpressure.md) §4.1 và [README §5](./README.md) (SES `MaxSendRate` giả định 50/s = 10 critical + 20 transactional + 15 bulk + 5 dự trữ cho critical đột biến); số worker và partition là giả định riêng của file này.
 
 Giải thích:
 

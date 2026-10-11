@@ -1,6 +1,6 @@
 # Template và render
 
-**Trạng thái:** `proposed` — runtime Go (D-15).
+**Trạng thái:** `implemented` (phase 1) — runtime Go (D-15).
 
 ## 1. Ranh giới của Render
 
@@ -119,6 +119,8 @@ Ghi chú:
 | `plural .Quantity "sản phẩm"` | | `vi` không đổi dạng; giữ để `en` dùng |
 | `truncate .Name 60` | | Cắt theo rune, thêm `…`; dùng cho in-app |
 | `mask .PaymentMethodLabel` | | Không cần — label đã che sẵn từ Order; func tồn tại để test khẳng định không có số thẻ lọt qua (regex 13–19 chữ số → lỗi) |
+| `reasonLabel .Reason` | `buyer` → "Bạn đã yêu cầu huỷ đơn hàng" | Dịch enum `reason` của `ORDER_CANCELLED` sang câu tiếng Việt; giá trị ngoài enum là lỗi render |
+| `dict "k" v ...` | | Dựng map nhỏ để truyền tham số cho sub-template; không đọc dữ liệu ngoài |
 
 Không có func nào gọi ra ngoài, đọc file hay đọc env.
 

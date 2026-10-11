@@ -508,7 +508,7 @@ interactions:
     provider: cart-service
     consumers: [notification-service]
     contract: events/cart/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Only fact-style input in phase 1: CART_ABANDONED is mapped by Notification to the
       bulk template CART_ABANDONED; dedup_key cart_abandoned:{cart_id}:{abandonment_cycle}.
@@ -518,13 +518,15 @@ interactions:
     provider: notification-service
     consumers: [analytics-service, user-service]
     contract: events/notification/v1/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       t.notification.outcomes.v1 carries delivered, bounced, failed and complaint-received
-      per delivery, keyed by user_id, without template_data or email. User consumes
-      complaint-received (group user-service, DLQ t.notification.outcomes.v1.dlq) to switch off
-      marketing_enabled at the source and ignores the other outcomes; the consumer is implemented
-      (User ADR-009). Analytics is the only other consumer.
+      per delivery, keyed by user_id, without template_data or email. Notification writes every
+      event to its outbox in the same transaction as the state change (Debezium connector or the
+      built-in poller) and a contract test validates all four types and the public examples against
+      the JSON Schemas. User consumes complaint-received (group user-service, DLQ
+      t.notification.outcomes.v1.dlq) to switch off marketing_enabled at the source and ignores the
+      other outcomes; the consumer is implemented (User ADR-009). Analytics has no runtime yet.
 
   - id: gateway-routes-notification-inbox
     protocol: http
@@ -536,26 +538,32 @@ interactions:
       In-app inbox for the authenticated user: cursor list, unread count, mark read,
       archive, mark-all-read. All responses no-store. No preference endpoints (User
       Service owns them), no realtime in phase 1, no webhook route (SES events arrive
-      via SNS -> SQS).
+      via SNS -> SQS). Routed by Traefik with the authenticated chain; the frontend
+      (lib/api/notification.ts) consumes it.
 
   - id: support-queries-notification-status
     protocol: http
     provider: notification-service
     consumers: [order-service, finance-ops]
     contract: http/notification/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
       Read-only timeline per request_id or per subject for support/admin tooling;
       returns statuses, attempts and error codes, never template_data or addresses.
+      The mesh authorizes the caller principal; Notification only checks the
+      X-Service-Identity allowlist (order-service, finance-ops) in every environment
+      (Notification D-21). No consumer implements the call yet.
 
   - id: notification-ops-operates-notification
     protocol: http
     provider: notification-service
-    consumers: [finance-ops]
+    consumers: [notification-ops]
     contract: http/notification/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: >-
-      Finance Ops workload acting with the notification-ops principal, not routed through
-      the public Gateway: pause/resume lane, redrive
-      delivery or DLQ batch, manual suppression, replay mode. Idempotency-Key required,
-      every call audited. Phase 1 may implement these as a CLI sharing the same handlers.
+      SRE workload acting with the notification-ops principal (services.yaml), not routed
+      through the public Gateway: pause/resume lane, redrive delivery or DLQ batch,
+      manual suppression, replay mode. Idempotency-Key required on every mutation, every
+      call audited. The mesh authorizes the principal; Notification checks the
+      X-Service-Identity allowlist (notification-ops) in every environment (Notification D-21).
+      notifctl calls the same endpoints.

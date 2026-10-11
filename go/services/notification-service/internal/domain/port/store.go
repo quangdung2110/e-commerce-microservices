@@ -94,8 +94,8 @@ type DeliveryRepository interface {
 	// provider inbox, sent_at = delivered_at = at.
 	MarkDeliveredInApp(ctx context.Context, id uuid.UUID, workerID string, templateVersion string, at time.Time) (bool, error)
 	// ReapExpiredLeases moves SENDING rows past lease_until back to RETRY with
-	// last_error_code = lease_expired and returns how many.
-	ReapExpiredLeases(ctx context.Context, now time.Time) (int64, error)
+	// last_error_code = lease_expired and returns how many per lane.
+	ReapExpiredLeases(ctx context.Context, now time.Time) (map[entity.Lane]int64, error)
 
 	// TransitionTracked applies a provider-reported status by rank
 	// (03-tracking.md §5.1): SENT(1) < DELIVERED(2) < BOUNCED(3). It updates

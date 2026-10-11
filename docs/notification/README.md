@@ -1,6 +1,6 @@
 # Notification Service
 
-**Trạng thái:** `proposed` — mã nguồn phase 1 đã có tại `go/services/notification-service` (Go), chưa có load test. Mọi con số trong bộ tài liệu này là giả định thiết kế và được đánh dấu rõ; chúng phải được chốt lại bằng đo đạc trước khi coi là cam kết. Những chỗ tài liệu được làm rõ hoặc sửa khi implement gom ở [decisions.md](./decisions.md) D-20.
+**Trạng thái:** `implemented` (phase 1) — mã nguồn tại `go/services/notification-service` (Go), unit test và integration test (Testcontainers: Postgres, Redis, Kafka, Mailpit, LocalStack) chạy được; **chưa** có load test và adapter SES thật chưa được kiểm với credential (chỉ test với endpoint giả). Contract Notification vẫn `proposed` trong [`contracts/ADOPTION.md`](../../contracts/ADOPTION.md) vì chưa có consumer contract test. Mọi con số tải trong bộ tài liệu này là giả định thiết kế và được đánh dấu rõ; chúng phải được chốt lại bằng đo đạc trước khi coi là cam kết. Những chỗ tài liệu được làm rõ hoặc sửa khi implement gom ở [decisions.md](./decisions.md) D-20…D-24.
 
 ## 1. Vấn đề cần giải quyết
 
@@ -35,7 +35,7 @@ Toàn bộ thiết kế đều suy ra từ ba câu này; khi có tranh luận v�
 | [13-development.md](./13-development.md) | Layout Go, môi trường dev (Mailpit, LocalStack, Debezium connector), cấu hình, khởi tạo lần đầu, vòng lặp phát triển. |
 | [14-observability.md](./14-observability.md) | Metric theo `stage × lane × channel`, alert theo mức, trace xuyên event → provider, timeline support, quy tắc log. |
 | [15-verification.md](./15-verification.md) | Test tích hợp bắt buộc gắn với từng quyết định; phép đo thay giả định; chaos nightly. |
-| [16-operations.md](./16-operations.md) | SLO, công tắc vận hành, 14 runbook, việc định kỳ, triển khai/rollback, bảo mật vận hành. |
+| [16-operations.md](./16-operations.md) | SLO, công tắc vận hành, 15 runbook, việc định kỳ, triển khai/rollback, bảo mật vận hành. |
 | [decisions.md](./decisions.md) | Các quyết định kiến trúc đã chốt trong thảo luận, kèm hệ quả. |
 
 Mỗi file đứng độc lập được, nhưng đọc theo thứ tự trên sẽ dễ hơn vì các khái niệm được xây dần.
@@ -93,7 +93,7 @@ Không còn. Mọi quyết định thiết kế phase 1 đã chốt (D-01…D-19
 
 ## 7. Contract
 
-Contract Notification sở hữu đã được viết (`x-adoption-status: proposed`), và các thay đổi cần thiết ở contract của service khác đã được áp trực tiếp trong repo. Tổng hợp ở [10-interfaces.md](./10-interfaces.md) §7.
+Contract Notification sở hữu đã được viết và provider đã chạy theo nó, nhưng `x-adoption-status` vẫn là `proposed` (xem `contracts/ADOPTION.md`: ba dòng Notification Events v1, HTTP v1, Internal HTTP v1 ghi khoảng cách còn lại). Các thay đổi cần thiết ở contract của service khác đã được áp trực tiếp trong repo. Tổng hợp ở [10-interfaces.md](./10-interfaces.md) §7.
 
 | # | Contract | Trạng thái | Ghi chú |
 |---|---|---|---|
@@ -101,7 +101,7 @@ Contract Notification sở hữu đã được viết (`x-adoption-status: propo
 | 2 | `GET /internal/v1/auth/users/{user_id}/notification-contact` trong [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) | **Đã thêm và đã implement trong auth-service** (listener internal 8081; `locale` luôn `null` ở phase 1) | Test tích hợp `TestHTTPInternalNotificationContact` của Auth |
 | 3 | Snapshot đơn hàng của Order có `name` sản phẩm | **Đã chốt ở target contract** | Checkout bắt buộc `items[].snapshot_name`; Order persist `order_item_lines.snapshot_name` và map sang notification `items[].name`, không runtime RPC |
 | 4 | [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml) (inbox) và [internal](../../contracts/http/notification/internal/v1/openapi.yaml) (status, ops) | **Đã viết** | Route Gateway và mesh policy đã khai báo |
-| 5 | User Service consume `notification.complaint-received.v1`; Analytics consume `t.notification.outcomes.v1` | **Còn mở với User, Analytics** | Đã ghi `x-consumers`; owner đăng ký phía họ |
+| 5 | User Service consume `notification.complaint-received.v1`; Analytics consume `t.notification.outcomes.v1` | **User đã implement** ([User ADR-009](../user/decisions/ADR-009-marketing-opt-in-and-complaint-opt-out.md): group `user-service`, DLQ `t.notification.outcomes.v1.dlq`); **Analytics còn mở** (service chưa có runtime) | Đã ghi `x-consumers`; owner đăng ký phía họ |
 
 Hạ tầng dev: **Mailpit**, **LocalStack** và container **notification-service** (host 8091 inbox, 8092 internal) trong `docker-compose.yml` dưới profile `notification`; DB `notification_db` trong `init-db.sh`; connector Debezium và script LocalStack ở `go/services/notification-service/deploy/`. Xem [13-development.md](./13-development.md).
 

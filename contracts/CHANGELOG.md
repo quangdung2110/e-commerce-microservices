@@ -3,6 +3,29 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-10 (Notification sync)
+
+- Notification internal HTTP v1 is `1.1.0` (additive; `x-adoption-status` stays `proposed`):
+  - Every operation now declares the required `X-Service-Identity` header. Caller authentication moved from application-level
+    mTLS to the service mesh ([Notification D-21](../docs/notification/decisions.md), same model as Auth ADR-007 and User
+    ADR-008): the application checks the header against an allowlist in every environment (missing → `401`, outside the
+    allowlist → `403`); it no longer terminates TLS and the header is accepted in every `app.env`, not only in development.
+    `securitySchemes` and the `401`/`403` descriptions say so.
+  - Responses the service already returned are now declared: `400` on `redriveDelivery` (past `expires_at` without a new one,
+    bad body or `Idempotency-Key`), `404` on `getLaneState` (lane outside the enum) and `addManualSuppression` (user without
+    a contact), `409` on `setReplayMode` (`Idempotency-Key` conflict) and `503` (`DEPENDENCY_UNAVAILABLE`, retryable) on the
+    idempotent mutations. Fixed a YAML defect in `ReplayMode.ignore_events_older_than` (an unquoted comma in the description
+    made Redocly reject the file).
+- Notification Events v1: new examples `notification-failed.v1.json` and `notification-complaint-received.v1.json`, referenced
+  from the AsyncAPI messages. Consumer DLQ messages written by Notification carry a new header `x-dlq-consumer-group`
+  (Notification D-22); several consumer DLQs (`t.auth.events.dlq`, `t.review.events.dlq`, `t.user.events.dlq`,
+  `t.cart.events.dlq`) are shared with other services and are listed in `docs/notification/10-interfaces.md` §9.
+- Catalog: `notification-service` is `runtime: go`, `status: implemented`; new operator workload `notification-ops` (the
+  principal the mesh and the code already used) replaces `finance-ops` as the consumer of
+  `notification-ops-operates-notification`; `notification-publishes-outcomes`, `gateway-routes-notification-inbox`,
+  `support-queries-notification-status` and `notification-ops-operates-notification` are `implemented` (provider side).
+  `ADOPTION.md` gains the three Notification rows, all `proposed` with the remaining gap.
+
 ## 2026-10-10 (Search sync)
 
 - Search HTTP v2 is `2.2.0` and `implemented` (was `proposed`). Additive, in the same major version:

@@ -28,9 +28,10 @@ type InternalDeps struct {
 
 // NewInternal builds the internal engine (port 8081): health, metrics, the
 // status API for support tools and the ops API for SRE. It is never
-// published through the gateway; the peer identity comes from mTLS (or the
-// X-Service-Identity header in development only) and each group has its own
-// allowlist (11-privacy.md §5, 13-development.md §7).
+// published through the gateway. The mesh decides who may reach it (mTLS and
+// AuthorizationPolicy per principal); the application only checks the
+// X-Service-Identity header against the allowlist of each group as defence in
+// depth (11-privacy.md §5, decisions.md D-21).
 func NewInternal(deps InternalDeps) *gin.Engine {
 	engine := newEngine(deps.Config, deps.Logger, nil)
 	if deps.Clock == nil {
@@ -48,25 +49,13 @@ func NewInternal(deps InternalDeps) *gin.Engine {
 		engine.GET(metricsPath, gin.WrapH(promhttp.HandlerFor(deps.Metrics.Registry, promhttp.HandlerOpts{})))
 	}
 
-	identity := middleware.ServiceIdentityConfig{
-		MutualTLS:   deps.Config.Internal.MutualTLSEnabled(),
-		Development: deps.Config.App.IsDevelopment(),
-	}
-	if !identity.MutualTLS {
-		if identity.Development {
-			deps.Logger.Warn("internal API accepts the unauthenticated X-Service-Identity header (development only)")
-		} else {
-			deps.Logger.Warn("internal API has neither mTLS nor development mode: every status/ops call will be rejected")
-		}
-	}
-
 	api := engine.Group("/internal/v1/notifications")
 
-	status := api.Group("", middleware.ServiceIdentity(identity, deps.Config.Internal.StatusPrincipals))
+	status := api.Group("", middleware.ServiceIdentity(deps.Config.Internal.StatusPrincipals))
 	status.GET("/requests/:request_id", middleware.Operation("getNotificationRequest"), deps.Status.GetRequest)
 	status.GET("/deliveries", middleware.Operation("listDeliveriesBySubject"), deps.Status.ListDeliveries)
 
-	ops := api.Group("/ops", middleware.ServiceIdentity(identity, deps.Config.Internal.OpsPrincipals))
+	ops := api.Group("/ops", middleware.ServiceIdentity(deps.Config.Internal.OpsPrincipals))
 	audit := middleware.Audit(deps.OpsRepo, deps.Clock, deps.Metrics, deps.Logger)
 	idempotent := middleware.Idempotency(deps.OpsRepo, deps.Clock)
 

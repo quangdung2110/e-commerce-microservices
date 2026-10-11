@@ -205,6 +205,10 @@ components:
       x-consumers: [analytics-service]
       payload:
         $ref: './schemas/notification-failed.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-failed.v1.json'
     notificationComplaintReceived:
       name: notificationComplaintReceivedV1
       title: NOTIFICATION_COMPLAINT_RECEIVED
@@ -215,3 +219,7 @@ components:
       x-consumers: [analytics-service, user-service]
       payload:
         $ref: './schemas/notification-complaint-received.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-complaint-received.v1.json'

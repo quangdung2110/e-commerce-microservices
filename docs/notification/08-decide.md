@@ -1,6 +1,6 @@
 # Stage Decide
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Decide làm gì và không làm gì
 
@@ -64,7 +64,7 @@ Hai cổng chạy **trước** Decide, cùng transaction ([02-pipeline.md](./02-
 | 12 | INSERT `delivery_dedup (dedup_key, channel)`; conflict | Kênh đó `SKIPPED (duplicate)` — không phải lỗi, không alert | Tất cả có `dedup_key` | — |
 | 13 | INSERT `notification_delivery` cho **mọi** kênh của template: kênh còn lại `status = PENDING`, `next_attempt_at` (= now, hoặc giờ quiet-hours), `expires_at = effective_expires_at`; kênh bị bỏ ở bước 8/12 `status = SKIPPED`, `skip_reason` = `channel_reason`, `finished_at = now` — để timeline support thấy vì sao kênh không đi | — | Tất cả | — |
 
-`decision` cuối cùng của request: `DECIDED` nếu có ít nhất một delivery `PENDING` được tạo; ngược lại `SKIPPED (duplicate)` khi mọi kênh bị bỏ vì dedup, `SKIPPED (all_channels_off)` khi mọi kênh bị bỏ vì preference; `FAILED` / `EXPIRED` / `IGNORED` (bước 1–6, 10, 11) không tạo delivery nào. Với Auth, `template` đã được gán ở Ingest ([10-interfaces.md](./10-interfaces.md) §2) nên bước 1 áp dụng bình thường; bước 3 chấp nhận `template_data = NULL` **chỉ** với ba template OTP/reset (secret, resolve lúc gửi).
+`decision` cuối cùng của request: `DECIDED` nếu có ít nhất một delivery `PENDING` được tạo; ngược lại `SKIPPED (duplicate)` khi mọi kênh bị bỏ vì dedup, `SKIPPED (all_channels_off)` khi mọi kênh bị bỏ vì preference; `FAILED` / `EXPIRED` / `IGNORED` (bước 1–6, 10, 11) không tạo delivery nào. Với Auth, `template` đã được gán ở Ingest ([10-interfaces.md](./10-interfaces.md) §2) nên bước 1 áp dụng bình thường; bước 3 chấp nhận `template_data = NULL` **chỉ** với ba template OTP/reset (secret, resolve lúc gửi). Với ba template đó bước 6 không có `max_age` cố định mà dùng đúng `expires_at` của event Auth (catalog `max_age: auth-expires_at`); event thiếu `expires_at` là lỗi contract của producer và ghi `FAILED (invalid_template_data)`.
 
 ### Vì sao bước 12 unique theo `(dedup_key, channel)`
 
@@ -98,7 +98,7 @@ Daily reconciliation của User Service (đã có trong contract) sẽ lấp ch�
 
 ## 6. Frequency cap và quiet hours — chi tiết
 
-**Frequency cap** (bulk): đếm ở Decide, không đếm ở Send. Hệ quả: một bulk được đếm rồi sau đó `EXPIRED` vẫn chiếm một slot trong ngày — chấp nhận, vì đếm ở Send sẽ để hai bulk cùng qua Decide rồi cùng gửi. Key `freq:{user_id}:{YYYY-MM-DD theo timezone user}`, TTL 48 h. Redis lỗi → fail-open (cho qua) + alert `frequency_cap_degraded`: bulk là kênh ít rủi ro nhất, chặn toàn bộ bulk vì Redis chết là phản ứng quá tay.
+**Frequency cap** (bulk): đếm ở Decide, không đếm ở Send. Hệ quả: một bulk được đếm rồi sau đó `EXPIRED` vẫn chiếm một slot trong ngày — chấp nhận, vì đếm ở Send sẽ để hai bulk cùng qua Decide rồi cùng gửi. Key `freq:{user_id}:{YYYY-MM-DD theo timezone user}`, TTL 48 h. Redis lỗi → fail-open (cho qua) + alert `frequency_cap_degraded`: bulk là kênh ít rủi ro nhất, chặn toàn bộ bulk vì Redis chết là phản ứng quá tay. Giới hạn đã biết: `INCR` Redis nằm ngoài transaction Postgres, nên nếu transaction của consumer lỗi sau bước 10 và message được retry tại chỗ thì Decide chạy lại và đếm thêm một lần; hiếm (chỉ khi DB lỗi giữa chừng) và hậu quả nhỏ (một bulk bị `SKIPPED (frequency_cap)` sớm hơn một lần).
 
 **Quiet hours** (bulk): 22:00–08:00 theo `timezone` của user. Decide đặt `next_attempt_at` một lần; worker không tính lại. Row có `next_attempt_at` trong tương lai vẫn là `PENDING` và không bị claim cho tới lúc đó (điều kiện `next_attempt_at <= now()` trong câu claim). Nếu `08:00 kế tiếp > effective_expires_at` thì `EXPIRED` ngay tại Decide, không tạo delivery — không có lý do tạo row mà chắc chắn sẽ hết hạn.
 
@@ -114,7 +114,7 @@ Mã lý do là **contract vận hành**: dashboard, alert và support đều đ�
 | `IGNORED` | `unmapped_fact`, `replay_too_old` | Không ai | Không |
 | `DECIDED` | — | | |
 
-Ở mức delivery, `skip_reason` (`channel_reason`) cho kênh bị bỏ hoặc row bị bỏ sau này: `preference_off`, `duplicate` (Decide); `suppressed` (worker, so `email_hash` sau khi resolve — §4), `email_unverified` (worker, bulk tới địa chỉ chưa xác minh — [10-interfaces.md](./10-interfaces.md) §4), `superseded` (consumer khi request Order có sequence thấp hơn, hoặc worker dưới ordering lease — [05-ordering.md](./05-ordering.md) §4), `user_deleted` (consumer `user.deleted`, [09-data-model.md](./09-data-model.md) §10). `last_error_code` của delivery `FAILED`/`RETRY`: `provider_error`, `no_recipient`, `content_expired`, `template_mismatch`, `render_failed`, `channel_not_allowed`, `lease_expired`, `breaker_open`, `rate_limited`, `lane_paused`, `ordering_busy`, `ordering_lease_lost`, `invalid_recipient`, `provider_rejected`; `EXPIRED` mang `expired`. Các mã `breaker_open`, `rate_limited`, `lane_paused`, `ordering_busy`, `ordering_lease_lost` là mã của `release` (không tính attempt) và không bao giờ ghi đè `lease_expired` ([04-idempotency.md](./04-idempotency.md) §3).
+Ở mức delivery, `skip_reason` (`channel_reason`) cho kênh bị bỏ hoặc row bị bỏ sau này: `preference_off`, `duplicate` (Decide); `suppressed` (worker, so `email_hash` sau khi resolve — §4), `email_unverified` (worker, bulk tới địa chỉ chưa xác minh — [10-interfaces.md](./10-interfaces.md) §4), `superseded` (consumer khi request Order có sequence thấp hơn, hoặc worker dưới ordering lease — [05-ordering.md](./05-ordering.md) §4), `user_deleted` (consumer `user.deleted`, [09-data-model.md](./09-data-model.md) §10). `last_error_code` của delivery `FAILED`/`RETRY`: `provider_error`, `no_recipient`, `content_expired`, `template_mismatch`, `render_failed`, `channel_not_allowed`, `lease_expired`, `breaker_open`, `rate_limited`, `lane_paused`, `ordering_busy`, `ordering_lease_lost`, `invalid_recipient`, `provider_rejected`, `auth_unavailable` (Auth internal API lỗi retryable; thành `FAILED` khi hết `max_attempts`), `retry_budget_defer` (retry bị đẩy xa vì retry budget, [06-backpressure.md](./06-backpressure.md) §6.1); `EXPIRED` mang `expired`. Các mã `breaker_open`, `rate_limited`, `lane_paused`, `daily_quota` (bulk chạm phần quota ngày của bulk, +1 h), `ordering_busy`, `ordering_lease_lost` là mã của `release` (không tính attempt) và không bao giờ ghi đè `lease_expired` ([04-idempotency.md](./04-idempotency.md) §3).
 
 ## 8. In-app đi cùng đường với email
 

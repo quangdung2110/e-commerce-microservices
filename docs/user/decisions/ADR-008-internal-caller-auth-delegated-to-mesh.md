@@ -62,7 +62,7 @@ IP) đổi thành `internal_per_user` (120/phút theo caller và user). Checkout
 `X-Service-Identity: checkout-service` nên không phải đổi. Auth và Notification còn dùng
 cùng mô hình mTLS ở tầng ứng dụng; chúng nằm ngoài quyết định này. (Cập nhật 2026-10-09: Auth đã
 áp dụng cùng quyết định ở [Auth ADR-007](../../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md);
-Notification vẫn còn.)
+Notification đã áp dụng ngày 2026-10-10: [Notification D-21](../../notification/decisions.md).)
 
 ## Xác minh
 

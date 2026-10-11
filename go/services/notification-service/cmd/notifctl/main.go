@@ -10,8 +10,9 @@
 //	notifctl partitions ensure [--months 2] --dsn ...
 //
 // The ops/status subcommands call the internal HTTP API (default
-// http://localhost:8092) with X-Service-Identity, which the service accepts
-// only in development; in a cluster the same calls go through the mesh.
+// http://localhost:8092) with X-Service-Identity, the allowlisted caller name the
+// service checks in every environment; in a cluster the mesh authenticates the
+// same calls (decisions.md D-21).
 package main
 
 import (

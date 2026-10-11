@@ -30,6 +30,10 @@ const (
 	HeaderTraceParent = "traceparent"
 	HeaderDLQReason   = "x-dlq-reason"
 	HeaderDLQTopic    = "x-dlq-source-topic"
+	// HeaderDLQGroup names the Notification consumer group that parked the
+	// message, so a redrive can tell it apart from other consumers sharing the
+	// same DLQ topic (decisions.md D-22).
+	HeaderDLQGroup = "x-dlq-consumer-group"
 )
 
 // Producer is a synchronous, idempotent producer (acks=all).
