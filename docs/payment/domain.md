@@ -11,6 +11,10 @@ verified_against_commit: null
 
 # Payment Service — Mô hình miền nghiệp vụ
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > File này gom dual FSM (Payment Transaction + Refund Transaction), guard rules,
 > audit trail và invariant. Database field và payload chi tiết nằm ở `data.md` và
 > `interfaces.md`. Các quyết định ADR-016…020 bổ sung verified webhook inbox,

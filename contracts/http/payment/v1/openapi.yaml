@@ -143,7 +143,7 @@ paths:
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/RefundResponse' } }
-        '400': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem', description: 'VALIDATION_FAILED, ORDER_MISMATCH, PAYMENT_NOT_SUCCESS or REFUND_AMOUNT_EXCEEDED; retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
@@ -236,7 +236,7 @@ components:
       in: header
       required: true
       description: Temporal Workflow ID propagated to logs, outbox headers, and the response.
-      schema: { type: string, minLength: 1, maxLength: 255 }
+      schema: { type: string, minLength: 1, maxLength: 128 }
     StripeSignature:
       name: Stripe-Signature
       in: header
@@ -247,7 +247,7 @@ components:
     CorrelationId:
       description: Echo of the request X-Correlation-Id.
       required: true
-      schema: { type: string, minLength: 1, maxLength: 255 }
+      schema: { type: string, minLength: 1, maxLength: 128 }
     PrivateNoStore:
       description: Order-facing Payment responses must never be cached.
       required: true

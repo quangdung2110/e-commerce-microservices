@@ -17,6 +17,10 @@ verified_against_commit: null
 
 # Payment Service — Giao diện tích hợp
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Contract chuẩn trên wire là [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml)
 > và [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml). Topic
 > webhook nội bộ có contract riêng tại
@@ -47,7 +51,15 @@ một webhook cho Stripe. Actuator/health không thuộc contract. Internal Open
 đúng 9 operation: list/claim/resolve review case, apply FSM correction, replay
 verified webhook, start reconciliation, set freeze, read immutable journal và read
 dispute. Mọi mutation dùng idempotency; resolve/correction/replay/reconciliation/
-freeze dùng maker-checker.
+freeze dùng maker-checker. Header attribution không thay cho mesh principal/RBAC.
+
+Manual correction FAILED bắt buộc `error_code`, CANCELED bắt buộc `reason_code`;
+terminal non-capture đòi evidence object `{id: stored PaymentIntent, status: canceled}`
+và `provider_status=canceled`. Evidence tham gia fingerprint. R1 refund tăng payment
+financial version dù status giữ nguyên. Manual INITIATING→PENDING chưa hỗ trợ.
+Start reconciliation chạy đồng bộ, thành công trả 202 với outcome COMPLETED; lỗi
+đã lưu theo key cần key mới nếu Ops muốn chạy lại. Freeze chặn ghi ledger tự động
+của balance lane; run đó FAILED và không advance watermark.
 
 ## 2. HTTP API v1
 
@@ -57,7 +69,7 @@ freeze dùng maker-checker.
 |---|---|
 | Base path | `/v1` nội bộ mesh. Riêng Stripe gọi public `/api/payments/webhook/stripe`; Gateway rewrite path sang `/v1/payments/webhook/stripe` và giữ nguyên raw body/header |
 | Xác thực | Mesh mTLS + `AuthorizationPolicy`; Order bắt buộc gửi `X-Service-Identity: order-service` để attribution/log nhưng header này không phải bằng chứng authentication |
-| Correlation | `X-Correlation-Id` bắt buộc trên 6 operation Order-facing (Order truyền Temporal Workflow ID); Payment echo lại và ghi vào `outbox_events.headers` |
+| Correlation | `X-Correlation-Id` 1–128 ký tự (khớp financial event schema), bắt buộc trên 6 operation Order-facing (Order truyền Temporal Workflow ID); Payment echo lại và ghi vào `outbox_events.headers` |
 | Idempotency | Header `Idempotency-Key` (16–255 ký tự) bắt buộc với ba command Order-facing `initiate/cancel/refund`; không áp dụng cho webhook; namespace là `(action, key)` và mỗi cặp chỉ có một fingerprint; xem §2.2 |
 | Money | `{ "amount_minor": <int64>, "currency": "VND" }`; VND zero-decimal, không nhân/chia |
 | ID | Payment sinh `TXN_<ULID>`, `RFD_<ULID>` (tối đa 64 ký tự trong DB); `refund_request_id`/evidence reference opaque ≤ 128; Order gửi `order_id` là chuỗi số dương vừa PostgreSQL `BIGINT` |
@@ -464,3 +476,12 @@ trước horizon retry đúng key, sau horizon chỉ lookup/reconcile (`INV-PAY-
 (chỉ route webhook), `contracts/catalog/interactions.yaml` (notes client-data, ADR-014),
 `docs/order/data.md` (không lưu client data), `docs/checkout` ADR-010 (không cache secret) đã
 được cập nhật cùng bộ tài liệu này.
+
+### Bằng chứng correction SUCCESS sau audit 2026-10-11
+
+Theo quyết định chủ dự án, PAYMENT_SUCCESS_CONFIRMED yêu cầu provider_status=succeeded,
+provider_object_id là Charge ch_, provider_response_json là object có id bằng
+PaymentIntent đã lưu, status=succeeded và latest_charge bằng Charge đó. Charge đã
+lưu nếu có cũng phải khớp. Journal CAPTURE dùng source CHARGE/ch_ chung với webhook
+và balance, tránh journal CHARGE/pi_ gây ghi kép. Bằng chứng do Finance Ops cung cấp;
+API không tự retrieve hoặc xác thực chữ ký của bằng chứng.

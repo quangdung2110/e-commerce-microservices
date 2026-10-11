@@ -80,11 +80,11 @@ final class PaymentQueryController {
 
     private static boolean validCommonHeaders(String identity, String correlationId) {
         return "order-service".equals(identity)
-                && correlationId != null && !correlationId.isBlank() && correlationId.length() <= 255;
+                && correlationId != null && !correlationId.isBlank() && correlationId.length() <= 128;
     }
 
     private static String safeCorrelation(String correlationId) {
-        return correlationId == null || correlationId.isBlank() || correlationId.length() > 255
+        return correlationId == null || correlationId.isBlank() || correlationId.length() > 128
                 ? "missing-correlation-id" : correlationId;
     }
 

@@ -32,7 +32,7 @@ class ReconciliationIT extends AbstractPaymentIT {
     void valid_provider_drift_is_corrected_through_fsm_with_history_outbox_and_journal() {
         ReconciliationService service = service(false);
 
-        assertThat(service.runObjectState(NOW.minusSeconds(3600), NOW, false, 100))
+        assertThat(service.runObjectState(NOW.minusSeconds(3600), NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id='TXN_RECON'", String.class))

@@ -88,9 +88,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 3. Payment Service (PG State + Outbox)
 
-> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ. HTTP v1 và payment
-> facts v2 đã có target contract nhưng chưa xác minh implementation/provider-consumer test.
+> Runtime Spring Boot/Stripe/PostgreSQL đã hiện thực và được kiểm chứng offline.
+> Audit 2026-10-11 bổ sung recovery/correction và đồng bộ contract;
+> [runtime status](./payment/runtime-status.md) liệt kê KMS/metrics/heartbeat và gate môi trường còn thiếu.
 
 | File | Mô tả |
 |---|---|
@@ -102,12 +102,12 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
 | [payment/workflows.md](./payment/workflows.md) | Mười bốn workflow: payment/refund, verified webhook/inbox recovery, provider recovery, review, dispute và subledger/balance reconciliation. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
-| [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
-| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 20 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
-| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
-| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; target/proposed. |
-| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
-| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; target/proposed. |
+| [payment/development.md](./payment/development.md) | Build/test/migration runtime hiện tại và gate môi trường. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 23 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
+| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; implemented (offline). |
+| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; implemented (offline). |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; implemented (offline). |
+| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; implemented (offline). |
 
 ---
 

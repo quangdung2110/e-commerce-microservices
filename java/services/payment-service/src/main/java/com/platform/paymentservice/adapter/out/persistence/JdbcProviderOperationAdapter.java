@@ -144,6 +144,7 @@ public final class JdbcProviderOperationAdapter implements ProviderOperationPort
                        updated_at = :finished_at
                  WHERE id = :id AND status IN ('REQUESTED','UNKNOWN')
                    AND lease_owner = :owner AND lease_token = :lease_token
+                   AND lease_expires_at > :finished_at
                 """)
                 .param("status", status.name()).param("object_id", objectId)
                 .param("request_id", result.providerRequestId()).param("provider_result", result.resultJson())

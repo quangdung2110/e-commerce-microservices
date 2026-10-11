@@ -3,6 +3,7 @@ package com.platform.paymentservice.application.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.paymentservice.application.port.out.CommitBatch;
+import com.platform.paymentservice.application.port.out.ClockPort;
 import com.platform.paymentservice.application.port.out.FinancialCommitPort;
 import com.platform.paymentservice.application.port.out.IdGeneratorPort;
 import com.platform.paymentservice.application.port.out.ProviderCurrentFactPort;
@@ -59,6 +60,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
     private final ObjectMapper json;
     private final DeclinePaymentService declines;
     private final ProviderCurrentFactPort currentFacts;
+    private final ClockPort clock;
     private final RefundStateMachine refundStateMachine = new RefundStateMachine();
     private final DisputeStateMachine disputeStateMachine = new DisputeStateMachine();
 
@@ -69,7 +71,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                                      PaymentStateMachine stateMachine,
                                      IdGeneratorPort ids,
                                      ObjectMapper json) {
-        this(parser, payments, inbox, commits, stateMachine, ids, json, null, null);
+        this(parser, payments, inbox, commits, stateMachine, ids, json, null, null, Instant::now);
     }
 
     public StripeWebhookEventHandler(StripeWebhookEventParserPort parser,
@@ -80,7 +82,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                                      IdGeneratorPort ids,
                                      ObjectMapper json,
                                      DeclinePaymentService declines) {
-        this(parser, payments, inbox, commits, stateMachine, ids, json, null, declines);
+        this(parser, payments, inbox, commits, stateMachine, ids, json, null, declines, Instant::now);
     }
 
     public StripeWebhookEventHandler(StripeWebhookEventParserPort parser,
@@ -91,7 +93,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                                      IdGeneratorPort ids,
                                      ObjectMapper json,
                                      ProviderCurrentFactPort currentFacts,
-                                     DeclinePaymentService declines) {
+                                     DeclinePaymentService declines, ClockPort clock) {
         this.parser = Objects.requireNonNull(parser);
         this.payments = Objects.requireNonNull(payments);
         this.inbox = Objects.requireNonNull(inbox);
@@ -101,6 +103,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
         this.json = Objects.requireNonNull(json);
         this.currentFacts = currentFacts;
         this.declines = declines;
+        this.clock = Objects.requireNonNull(clock);
     }
 
     @Override
@@ -165,6 +168,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                 throw new ProcessingException("provider checkpoint tie requires Stripe retrieve", true);
             ProviderCurrentFactPort.LookupResult lookup = currentFacts.retrievePaymentIntent(
                     event, payment.providerTransactionId());
+            now = clock.now();
             if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
                 throw new ProcessingException(unavailable.errorCode(), true);
             if (lookup instanceof ProviderCurrentFactPort.NoTransition noTransition) {
@@ -242,6 +246,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                 throw new ProcessingException("dispute checkpoint tie requires Stripe retrieve", true);
             ProviderCurrentFactPort.LookupResult lookup = currentFacts.retrieveDispute(
                     event, event.providerDisputeId());
+            now = clock.now();
             if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
                 throw new ProcessingException(unavailable.errorCode(), true);
             if (lookup instanceof ProviderCurrentFactPort.NoTransition noTransition)
@@ -395,6 +400,7 @@ public final class StripeWebhookEventHandler implements WebhookEventHandlerPort 
                 throw new ProcessingException("refund settlement requires Stripe retrieve", true);
             ProviderCurrentFactPort.LookupResult lookup = currentFacts.retrieveRefund(
                     event, refund.providerRefundId());
+            now = clock.now();
             if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
                 throw new ProcessingException(unavailable.errorCode(), true);
             if (lookup instanceof ProviderCurrentFactPort.NoTransition noTransition)

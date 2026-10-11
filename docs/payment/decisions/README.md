@@ -12,8 +12,7 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 - Khi có code, thêm migration/test/config/benchmark vào `evidence` và `Xác minh`.
 - Thay đổi provider, refund boundary, webhook processing, outbox pattern, lock
   strategy, event partition/payload hoặc retention phải cập nhật ADR liên quan.
-- Contract liên service sẽ được đối soát ở lần refactor riêng; ADR hiện tại bảo
-  toàn semantics, không tuyên bố contract đã verified.
+- Contract canonical đã lint/bundle và đối chiếu runtime offline. Sandbox/provider-consumer/CDC production phải có bằng chứng riêng; Accepted không có nghĩa mọi gate môi trường đã verified.
 
 ## Danh mục quyết định
 
@@ -42,3 +41,4 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-020](./ADR-020-financial-retention-privacy-and-disaster-recovery.md) | Retention 7 năm, webhook crypto-retention, privacy và DR fail-closed | Accepted | 2026-09-22 | Refines ADR-013 |
 | [ADR-021](./ADR-021-pin-stripe-java-and-api-version.md) | Pin `stripe-java 33.4.2` và Stripe API `2026-08-26.dahlia` | Accepted | 2026-09-22 | Refines ADR-003/018 |
 | [ADR-022](./ADR-022-refund-lifecycle-hardening.md) | Refund theo `Refund.status` của Stripe, reconcile refund `SUCCESS` 35 ngày, phạm vi thẻ, ledger dùng đúng balance transaction | Accepted | 2026-09-30 | Refines ADR-003/011/018/019 |
+| [ADR-023](./ADR-023-reconciliation-ownership-and-audit-corrections.md) | Session ownership/fencing, pagination, freeze và manual correction sau audit | Accepted | 2026-10-11 | Refines ADR-017/019/020 |

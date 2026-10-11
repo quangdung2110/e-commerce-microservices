@@ -127,7 +127,7 @@ final class PaymentOperationsController {
                     request.aggregateId(), request.trigger(), request.amountMinor(), request.currency(),
                     request.providerStatus(), request.providerObjectId(),
                     request.providerBalanceTransactionId(), request.providerResponseJson(),
-                    actor, approver, correlationId, idempotencyKey);
+                    actor, approver, correlationId, idempotencyKey, request.errorCode(), request.reasonCode());
             var result = service.correct(command, "ops:" + UUID.randomUUID());
             return switch (result.outcome()) {
                 case APPLIED -> ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "private, no-store")
@@ -213,7 +213,7 @@ final class PaymentOperationsController {
                 "DEPENDENCY_UNAVAILABLE", true, correlationId);
         try {
             var result = service.freeze(new ReconciliationOperationsService.FreezeCommand(
-                    request.frozen(), request.causeRef(), actor, approver,
+                    requireFrozen(request.frozen()), request.causeRef(), actor, approver,
                     correlationId, idempotencyKey), "ops:" + UUID.randomUUID());
             return operationResult(result, correlationId);
         } catch (IllegalArgumentException invalid) {
@@ -296,6 +296,11 @@ final class PaymentOperationsController {
         };
     }
 
+    private static boolean requireFrozen(Boolean frozen) {
+        if (frozen == null) throw new IllegalArgumentException("frozen is required");
+        return frozen;
+    }
+
     private static boolean validReadHeaders(String actor, String correlationId) {
         return actor != null && !actor.isBlank() && actor.length() <= 128
                 && correlationId != null && !correlationId.isBlank()
@@ -316,12 +321,14 @@ final class PaymentOperationsController {
             @JsonProperty("provider_status") String providerStatus,
             @JsonProperty("provider_object_id") String providerObjectId,
             @JsonProperty("provider_balance_transaction_id") String providerBalanceTransactionId,
-            @JsonProperty("provider_response_json") String providerResponseJson) {}
+            @JsonProperty("provider_response_json") String providerResponseJson,
+            @JsonProperty("error_code") String errorCode,
+            @JsonProperty("reason_code") String reasonCode) {}
     record ReconciliationRequest(
             String lane,
             @JsonProperty("window_from") Instant windowFrom,
             @JsonProperty("window_to") Instant windowTo) {}
-    record FreezeRequest(boolean frozen, @JsonProperty("cause_ref") String causeRef) {}
+    record FreezeRequest(Boolean frozen, @JsonProperty("cause_ref") String causeRef) {}
     record Money(@JsonProperty("amount_minor") long amountMinor, String currency) {}
     record JournalLine(@JsonProperty("line_no") short lineNo,
                        @JsonProperty("account_code") String accountCode,

@@ -1,5 +1,9 @@
 # Payment Service implementation gates
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 Checklist này quyết định khi nào thiết kế được phép đi tiếp. Một gate chỉ `PASS`
 khi mọi điều kiện có bằng chứng chạy được; không đánh dấu thủ công thay cho test.
 
@@ -130,3 +134,12 @@ thuộc Gate 3.
   `PAYMENT_STRIPE_SECRET_KEY`, `PAYMENT_STRIPE_PUBLISHABLE_KEY`,
   `PAYMENT_STRIPE_WEBHOOK_SECRETS`. Đây là release-environment validation riêng,
   không được thay bằng fake và không làm sai bằng chứng offline của Gate 3.
+
+### Audit bổ sung 2026-10-11
+
+Gate 3 chứng minh runtime/offline, không chứng minh KMS, custom payment metrics,
+automatic heartbeat hoặc production RBAC/DR. Phạm vi đã sửa và phần để đợt riêng
+ở [runtime-status.md](./runtime-status.md); lane recovery/manual correction theo
+[ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md).
+Kết quả kiểm chứng sau audit được lưu tại mục Payment của
+[audit docs/code sync](../../note/audit-2026-10-07-docs-code-sync.md).

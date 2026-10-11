@@ -18,7 +18,7 @@ class PaymentQueryIT extends AbstractPaymentIT {
 
     @Test
     void unknown_ids_are_empty() {
-        JdbcPaymentQueryAdapter queries = new JdbcPaymentQueryAdapter(jdbcClient);
+        JdbcPaymentQueryAdapter queries = new JdbcPaymentQueryAdapter(jdbcClient, transactions);
         assertThat(queries.findPayment(TXN)).isEmpty();
         assertThat(queries.findRefund(RFD)).isEmpty();
     }
@@ -26,7 +26,7 @@ class PaymentQueryIT extends AbstractPaymentIT {
     @Test
     void pending_payment_has_no_refund_and_no_disputes() {
         seedPayment("PENDING", null);
-        PaymentQueryPort.PaymentView view = new JdbcPaymentQueryAdapter(jdbcClient).findPayment(TXN).orElseThrow();
+        PaymentQueryPort.PaymentView view = new JdbcPaymentQueryAdapter(jdbcClient, transactions).findPayment(TXN).orElseThrow();
 
         assertThat(view.orderId()).isEqualTo(10002L);
         assertThat(view.paymentAttemptNumber()).isEqualTo(1);
@@ -51,7 +51,7 @@ class PaymentQueryIT extends AbstractPaymentIT {
         seedDispute("DSP_01K5V7M4R8Q2K7V6W5X1Y0ZABH", "dp_late", NOW.plusSeconds(3600));
         seedDispute(DSP, "dp_early", NOW.plusSeconds(60));
 
-        PaymentQueryPort.PaymentView view = new JdbcPaymentQueryAdapter(jdbcClient).findPayment(TXN).orElseThrow();
+        PaymentQueryPort.PaymentView view = new JdbcPaymentQueryAdapter(jdbcClient, transactions).findPayment(TXN).orElseThrow();
 
         assertThat(view.status()).isEqualTo("REFUNDING");
         assertThat(view.succeededAt()).isEqualTo(NOW);
@@ -63,10 +63,40 @@ class PaymentQueryIT extends AbstractPaymentIT {
         assertThat(view.disputes().getFirst().fundsState()).isEqualTo("UNCHANGED");
         assertThat(view.disputes().getFirst().closedAt()).isNull();
 
-        PaymentQueryPort.RefundView refund = new JdbcPaymentQueryAdapter(jdbcClient).findRefund(RFD).orElseThrow();
+        PaymentQueryPort.RefundView refund = new JdbcPaymentQueryAdapter(jdbcClient, transactions).findRefund(RFD).orElseThrow();
         assertThat(refund.paymentTransactionId()).isEqualTo(TXN);
         assertThat(refund.amountMinor()).isEqualTo(250_000L);
         assertThat(refund.currency()).isEqualTo("VND");
+    }
+
+    @Test
+    void query_keeps_one_financial_snapshot_when_a_refund_commits_between_nested_reads() {
+        seedPayment("SUCCESS", NOW);
+        var intercepted = org.mockito.Mockito.spy(jdbcClient);
+        var changed = new java.util.concurrent.atomic.AtomicBoolean();
+        var writer = new org.springframework.transaction.support.TransactionTemplate(transactions.getTransactionManager());
+        writer.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.contains("FROM refund_transactions WHERE payment_transaction_id") && changed.compareAndSet(false, true)) {
+                writer.executeWithoutResult(tx -> {
+                    jdbc.update("UPDATE payment_transactions SET status='REFUNDING',financial_state_version=4 WHERE id=?", TXN);
+                    jdbc.update("""
+                            INSERT INTO refund_transactions
+                              (id,payment_transaction_id,order_id,refund_request_id,command_idempotency_key,
+                               refund_amount_minor,reason,inventory_evidence,status)
+                            VALUES (?,?,10002,'refund-new','key-new',250000,'ADMIN_FORCE_REFUND_BEFORE_DISPATCH','{}','PENDING')
+                            """, RFD, TXN);
+                });
+            }
+            return invocation.callRealMethod();
+        }).when(intercepted).sql(org.mockito.ArgumentMatchers.anyString());
+        var view = new JdbcPaymentQueryAdapter(intercepted, transactions).findPayment(TXN).orElseThrow();
+        assertThat(changed).isTrue();
+        assertThat(view.status()).isEqualTo("SUCCESS");
+        assertThat(view.financialStateVersion()).isEqualTo(3);
+        assertThat(view.refund()).isNull();
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id=?", String.class, TXN)).isEqualTo("REFUNDING");
     }
 
     private void seedPayment(String status, Instant succeededAt) {

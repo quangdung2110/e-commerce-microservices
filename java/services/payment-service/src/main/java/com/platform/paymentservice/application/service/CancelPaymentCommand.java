@@ -18,6 +18,8 @@ public record CancelPaymentCommand(
         Objects.requireNonNull(correlationId);
         if (transactionId.isBlank() || idempotencyKey.isBlank() || correlationId.isBlank())
             throw new IllegalArgumentException("cancel identifiers must not be blank");
+        if (correlationId.length() > 128 || idempotencyKey.length() > 255)
+            throw new IllegalArgumentException("cancel identifiers are too long");
         if (orderId <= 0) throw new IllegalArgumentException("orderId must be positive");
     }
 }

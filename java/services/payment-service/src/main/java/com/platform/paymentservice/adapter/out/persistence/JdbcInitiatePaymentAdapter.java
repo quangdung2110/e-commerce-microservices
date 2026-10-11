@@ -288,7 +288,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            updated_at = :completed_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :completed_at
+                """)
                     .param("provider_id", completion.providerTransactionId())
                     .param("provider_result", completion.sanitizedProviderResultJson())
                     .param("provider_request_id", completion.providerRequestId())
@@ -309,7 +310,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                      WHERE idempotency_key = :key AND action = 'INITIATE'
                        AND status = 'IN_PROGRESS' AND lease_owner = :owner
                        AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :completed_at
+                """)
                     .param("payment_id", completion.transactionId())
                     .param("response_body", responseBody)
                     .param("completed_at", timestamp(completion.completedAt()))
@@ -388,7 +390,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            lease_expires_at = NULL, updated_at = :recorded_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :recorded_at
+                """)
                     .param("provider_result", unknown.sanitizedProviderResultJson())
                     .param("provider_request_id", unknown.providerRequestId())
                     .param("next_retry_at", timestamp(unknown.nextRetryAt()))
@@ -419,7 +422,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            lease_expires_at = NULL, updated_at = :recorded_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :recorded_at
+                """)
                     .param("provider_status", providerStatus)
                     .param("provider_result", failure.sanitizedProviderResultJson())
                     .param("provider_request_id", failure.providerRequestId())
@@ -472,7 +476,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                          WHERE idempotency_key = :key AND action = 'INITIATE'
                            AND status = 'IN_PROGRESS' AND lease_owner = :owner
                            AND lease_token = :lease_token
-                        """)
+                   AND lease_expires_at > :recorded_at
+                """)
                         .param("payment_id", failure.transactionId())
                         .param("response_body", responseBody)
                         .param("recorded_at", timestamp(failure.recordedAt()))
@@ -495,6 +500,7 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                  WHERE idempotency_key = :key AND action = 'INITIATE'
                    AND status = 'IN_PROGRESS' AND lease_owner = :owner
                    AND lease_token = :lease_token
+                   AND lease_expires_at > :now
                 """)
                 .param("now", timestamp(now)).param("key", key)
                 .param("owner", owner).param("lease_token", token).update();

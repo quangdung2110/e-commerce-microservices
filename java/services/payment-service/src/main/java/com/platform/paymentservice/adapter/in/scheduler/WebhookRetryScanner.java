@@ -27,6 +27,10 @@ public final class WebhookRetryScanner {
 
     @Scheduled(fixedDelayString = "${payment.webhook.retry.interval:PT30S}")
     public void scan() {
-        processor.claimDue(owner, batchSize).forEach(processor::processClaim);
+        for (int i = 0; i < batchSize; i++) {
+            var claimed = processor.claimDue(owner, 1);
+            if (claimed.isEmpty()) break;
+            processor.processClaim(claimed.getFirst());
+        }
     }
 }

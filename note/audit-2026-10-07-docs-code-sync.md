@@ -94,7 +94,7 @@
 - `notification-publishes-outcomes` liệt kê `user-service` là consumer `complaint-received`, nhưng User chưa có consumer (U5). *(đã xong 2026-10-09: User consume complaint-received, catalog cập nhật)*
 - `notification-ops-operates-notification` ghi consumer `finance-ops` trong khi mesh/code dùng principal `notification-ops` (N5). *(✅ 2026-10-10: consumer `[notification-ops]`)*
 - Các interaction của Checkout (`checkout-calculates-promotions`, `checkout-lists-voucher-options`, `checkout-previews-inventory-allocation`, `checkout-reads-user-address-snapshot`) vẫn `proposed` dù hai phía đã implement (K3). *(2026-10-09: chỉ hai trong bốn còn `proposed` — `checkout-previews-inventory-allocation` và `checkout-reads-user-address-snapshot` đã `implemented` từ các đợt sync Inventory/User; nay cả bốn `implemented`.)*
-- `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2). *(✅ 2026-10-10: `notification-*` phía provider đã `implemented`; Payment còn lại)*
+- `payment-publishes-payment-events`, `stripe-delivers-payment-webhook`, các `notification-*` vẫn `proposed` (PY2, N2). *(✅ 2026-10-10: `notification-*` phía provider đã `implemented`; ✅ 2026-10-11: ba interaction Payment đã `implemented`, PY2).*
 - `storefront-queries-product-detail` và `product-detail-bff-queries-product-catalog` vẫn `proposed` dù cả hai phía chạy (B3, phát hiện 2026-10-09). ✅ đã `implemented`; ghi chú `preview_limit` của `product-detail-bff-queries-review-summary` theo `PDP_REVIEW_PREVIEW_LIMIT`.
 
 ---
@@ -772,20 +772,174 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 
 ## 13. Payment (`docs/payment`, `contracts/http/payment/**`, `contracts/events/payment/**`, `java/services/payment-service`)
 
-### PY1 🔴 [BUG] Thiếu hai endpoint đọc
-- Contract `contracts/http/payment/v1/openapi.yaml` + `docs/payment/interfaces.md` §2.8 + README capability "Tra cứu": `GET /v1/payments/{transactionId}`, `GET /v1/refunds/{refundTransactionId}`.
-- Code `adapter/in/http/PaymentController.java` chỉ map `POST /initiate`, `POST /{id}/cancel`, `POST /{id}/refund`, `GET /{id}/client-data` (+ webhook).
-- Order gọi `GET /v1/payments/{id}` trong `service/ReconciliationDecisionService.java` (quyết định external settlement cần trạng thái Payment mới nhất) và có `getRefund` trong `client/HttpGateways.java` → 404/405 khi chạy.
-- Sửa: implement 2 endpoint theo schema `PaymentStatus`/`RefundStatus` (contract đã có field `disputes`), thêm test.
+> **Kiểm chứng bổ sung 2026-10-11:** báo cáo cũ đúng một phần nhưng không đầy đủ.
+> PY1 là lỗi lịch sử đã được sửa; PY2 đúng về catalog nhưng nhận xét untracked đã
+> lỗi thời; PY3 đúng. Câu “đã khớp toàn bộ config/15 facts/retention” quá rộng và bỏ
+> sót lỗi runtime bên dưới. Phạm vi mới sửa runtime/contract/docs; chủ dự án chọn
+> để KMS/metric nghiệp vụ/heartbeat cho đợt riêng. Xem
+> [runtime status](../docs/payment/runtime-status.md) và
+> [ADR-023](../docs/payment/decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md).
 
-### PY2 🟡 Nhãn trạng thái
-- `services.yaml` (java-planned/documented), `interactions.yaml` (`payment-publishes-payment-events`, `stripe-delivers-payment-webhook` proposed), `docs/README.md` §3 ("chưa xác minh implementation") vs Payment README "implemented, Gate 3".
-- `x-adoption-status: implemented` chỉ có trong working copy chưa commit; `contracts/http/payment/internal/` đang untracked.
+### PY1 🔴 [BUG lịch sử, đã đóng] Hai endpoint đọc
+- Đã có `PaymentQueryController`, `PaymentQueryPort`, `JdbcPaymentQueryAdapter`,
+  `PaymentQueryControllerTest`/`PaymentQueryIT`: GET payment/refund theo contract,
+  attribution/correlation/no-store và payment kèm refund/disputes.
+- Nhận xét “PaymentController chỉ map bốn route” không còn là bằng chứng thiếu API:
+  query nằm trong controller riêng. Bảng tóm tắt đã ghi sửa nhưng mục chi tiết cũ
+  vẫn để mở; đã thống nhất lại.
 
-### PY3 🟡 `contracts/generated/*` là output bị gitignore
-- Do `npm run generate:payment` sinh ra, bị `.gitignore`. Không nên coi là contract; có thể cũ so với nguồn.
+### PY2 🟡 [đã sửa] Catalog, adoption và docs index
+- Payment catalog từng là java-planned/documented/not_started; ba interaction
+  webhook/Finance Ops/events còn proposed. Đã đồng bộ java/implemented/pilot và
+  interaction implemented; public/internal HTTP/AsyncAPI nguồn đã tracked và
+  x-adoption-status implemented. Tuyên bố internal contract untracked không đúng
+  ở checkout được audit. `docs/README.md` đã đổi status và index.
+- “implemented” không chứng minh production ready; chưa có Sandbox/CDC/DR/load
+  evidence trong đợt này. Pilot phản ánh adoption chưa verified toàn hệ thống.
 
-Đã khớp: 12 bảng trong V1 == data.md; outbox `aggregate_type` luôn `Payment` → `t.payment.events.v2`, key = `order_id`; 15 event type (dispute/refund tạo bằng suffix); cancel reason/outcome khớp Order; header `X-Correlation-Id`; webhook `/v1/payments/webhook/stripe` + topic nội bộ `t.payment.webhooks.raw`; session 15m; cửa sổ webhook 300s / 256KiB; retention 7 năm/90 ngày/12 tháng/outbox 15 ngày; toàn bộ `payment.*` trong `application.yml` == bảng `operations.md`.
+### PY3 🟡 [đúng, không phải runtime bug] Generated bundles
+- `contracts/generated/*` là output bị gitignore, phải regenerate từ canonical
+  HTTP/AsyncAPI và không dùng bundle cũ để đánh giá provider.
+
+### PY4 🔴 [bỏ sót, đã sửa] HTTP validation và Problem shape
+- Refund PAYMENT_NOT_SUCCESS/REFUND_AMOUNT_EXCEEDED trả 422 dù docs yêu cầu 400.
+  Malformed JSON/type mismatch/DB failure không có Problem mapping thống nhất.
+  Key <16 ký tự được chấp nhận; correlation HTTP cho 255 nhưng event chỉ 128; Jackson nhận field lạ/coerce số→string và money
+  thập phân→integer. Thiếu frozen field có thể mặc định false và unfreeze.
+  Missing resolution_type gây Set.of().contains(null) NPE. Manual provider_object_id
+  cho 120 ký tự dù payment/refund/dispute identity ở DB chỉ chứa 100; đã thống nhất 100
+  và thêm regression (balance transaction identity vẫn 120 theo DB).
+- `PaymentHttpConfiguration`/`PaymentHttpExceptionHandler` từ chối sai schema,
+  map 400/503 có correlation/no-store, DTO Boolean frozen bắt buộc, null guard
+  resolution, correlation thống nhất≤128 và Ops interceptor enforce actor/approver/path/header lengths.
+  Internal OpenAPI bổ sung limit, error statuses, response headers/body.
+- Controller tests kiểm malformed/unknown/coerced JSON, fractional money,
+  refund HTTP 400, DB 503, missing frozen và maker-checker.
+
+### PY5 🔴 [bỏ sót, đã sửa] JSON fingerprint refund không escape
+- `RefundPaymentService.providerFingerprint` ghép opaque refund_request_id vào
+  JSON; dấu nháy/backslash có thể làm hỏng hoặc chèn metadata. Adapter bind intent
+  bằng textual replacement.
+- Dùng ObjectMapper/JSON tree; `RefundPaymentIT` kiểm quotes/backslash/newline,
+  metadata nguyên vẹn và same-key replay chỉ gọi provider một lần.
+
+### PY6 🔴 [bỏ sót, đã sửa] Query trộn financial snapshot
+- Payment query đọc parent/refund/disputes bằng các SELECT độc lập. Refund commit
+  giữa chúng có thể trả financial version cũ kèm refund mới cho Order.
+- Đọc trong read-only REPEATABLE READ transaction riêng trên primary.
+  `PaymentQueryIT` chủ động commit refund bằng connection khác giữa nested reads
+  để chứng minh snapshot nhất quán.
+
+### PY7 🔴 [bỏ sót, đã sửa] Manual correction không bảo toàn fact
+- PAYMENT_FAILED thiếu error_code, PAYMENT_CANCELED thiếu reason_code; evidence
+  chưa chứng minh intent canceled. Provider JSON bị bỏ khỏi idempotency fingerprint.
+  Correction R1 refund phát financial version +1 nhưng không cập nhật payment.
+  SUCCESS nhận pi_ như CHARGE source có thể ghi kép so với webhook ch_.
+- Theo lựa chọn chủ dự án: nhập mã explicit; non-capture proof có status=canceled
+  và id khớp stored PaymentIntent/provider_object_id. Evidence object tham gia
+  fingerprint; từ chối secret/card/contact keys biết trước. R1 đổi financial
+  version dù payment giữ status; dispute reinstatement source thống nhất webhook.
+  Chủ dự án chấp thuận SUCCESS bắt buộc Charge ch_ và proof intent id/succeeded/
+  latest_charge khớp, cùng Charge đã lưu nếu có; không dùng pi_ làm CHARGE source.
+- `ManualCorrectionIT` kiểm mã/proof, key reuse với evidence đổi, R1 version;
+  runtime event được đối chiếu canonical JSON Schema. Manual bind INITIATING→PENDING
+  và amount reversal API chưa có; docs không hứa runbook dùng capability chưa triển khai.
+
+### PY8 🔴 [bỏ sót, đã sửa] Lease hết hạn vẫn hoàn tất và lease hàng chờ
+- Completion SQL chỉ check token/owner, chưa check lease còn hạn. Recovery,
+  expiration và webhook scanner claim cả batch rồi gọi Stripe tuần tự, khiến
+  phần tử cuối chờ hết lease trước khi bắt đầu.
+- Webhook còn dùng timestamp trước provider retrieve để hoàn tất, kể cả khi retrieve
+  quá lease. Đã refresh clock sau retrieve cho payment/refund/dispute.
+- Completion check lease_expires_at > thời điểm hoàn tất; các scanner claim từng
+  phần tử trước xử lý. `ProviderOperationIT` kiểm hết lease mà chưa takeover vẫn
+  không được finish; `WebhookProcessorIT` kiểm provider retrieve quá lease không
+  takeover vẫn rollback state/journal/outbox. Heartbeat tự động chưa được triển khai theo phạm vi đã chọn.
+
+### PY9 🔴 [bỏ sót, đã sửa] Orphan RUNNING khóa lane vĩnh viễn
+- Partial unique RUNNING/lane không tự release khi process chết.
+- Theo yêu cầu chủ dự án: giữ session advisory lock/lane; session mất lock thì
+  successor đánh dấu old run FAILED/OWNER_SESSION_LOST và bắt đầu lại. Mỗi mutation
+  giữ run-row lock, kiểm tra session/status và join financial transaction; provider
+  ngoài transaction. Successor chờ mutation cũ hoàn tất, worker cũ sau takeover bị fence.
+- `ReconciliationOwnershipIT` kiểm live exclusion, pg_terminate_backend, takeover,
+  stale mutation rejection và concurrent successor chờ old transaction.
+- Nâng cấp lần này phải dừng reconciliation worker cũ; connection cần direct DB/session
+  pooling, không transaction pooling. V3 chỉ bỏ CHECK không âm của net refunded/fee totals; không đổi bảng/journal cũ hoặc xóa financial data.
+
+### PY10 🔴 [bỏ sót, đã sửa] Object reconciliation bỏ đói aggregate
+- Payment dùng hết limit thì refund/dispute không được quét; dispute no-op không
+  rotate thứ tự, và FAILED tại DB/canceled provider bị coi là drift.
+- Batch riêng mỗi nhóm (tối đa 3×batch), rotate observation cả dispute, FAILED/canceled
+  được coi khớp. Reconciliation/refund integration tests dùng limit=1 để kiểm các
+  nhóm sau vẫn chạy và áp dụng reversal lookback ADR-022.
+
+### PY11 🔴 [bỏ sót, đã sửa] Balance reconciliation thiếu trang và sai dedup/movement
+- Một page rồi COMPLETED dù hasMore; limit mặc định500 vượt Stripe max100; mang
+  starting_after từ cửa sổ cũ sang cửa sổ mới có thể bỏ movement mới. Không đọc bù
+  downtime. BALANCE_TRANSACTION source khác CHARGE/REFUND/DISPUTE của webhook gây
+  ghi kép khi journal trước không có balance ID. DuplicateKey bị nuốt kể cả amount
+  conflict. Math.abs(fee) ghi fee credit thành expense; refund_failure không hỗ trợ;
+  frozen balance vẫn ghi ledger.
+- Đọc hết page trong cửa sổ cố định, page≤100, cursor null mỗi cửa sổ; scheduler
+  resume theo watermark/failed window. Canonical source chung với financial commit,
+  duplicate phải khớp type/owner/amount/currency/lines; conflict fail closed. Kiểm
+  net/sign, hỗ trợ refund reversal, fee credit đảo accounts và signed totals.
+- Chủ dự án giao lựa chọn freeze: dừng balance auto posting, ghi FAILED với
+  AUTO_CORRECTION_FROZEN, giữ watermark và đọc bù sau unfreeze.
+- `BalanceReconciliationIT` kiểm pagination, new windows, replay, journal không
+  balance ID, amount conflict, fee credit và freeze/catchup.
+- Giới hạn được ghi chính xác: lỗi balance hiện FAILED/error_message, chưa tự tạo
+  review case; chưa so closing balance/bank statement; totals là dữ liệu đã đọc.
+- Đối chiếu primary source: [Stripe list BalanceTransactions](https://docs.stripe.com/api/balance_transactions/list),
+  [pagination](https://docs.stripe.com/api/pagination) và
+  [BalanceTransaction object](https://docs.stripe.com/api/balance_transactions/object).
+
+### PY12 🔴 [bỏ sót, đã sửa] Retention xóa control/recovery authority
+- Trimmer xóa latest CONTROL quá12tháng làm freeze quay về default; xóa command
+  idempotency khi provider operation vẫn active khiến recovery không claim được.
+  Legal hold của webhook dùng DB now() thay clock của run.
+- Giữ latest CONTROL, latest completed BALANCE_LEDGER watermark, active-operation
+  command slot; legal hold dùng cùng run clock. Retention integration kiểm control
+  vẫn giữ đúng trạng thái sau cutoff và các guard tài chính hiện hữu.
+
+### PY13 🟡 [bỏ sót, đã đồng bộ docs] Năng lực vận hành chưa triển khai
+- KMS/Vault adapter, payment_* instrumentation, automatic heartbeat chưa có.
+  Local cipher unit hỗ trợ previous keys nhưng runtime bean không bind keyring.
+  Non-retryable decline list hardcoded; property trong docs chưa bind. Health theo
+  role, replay limiter/jitter, export/privacy/DR tooling và application RBAC chưa có.
+- Chủ dự án chọn để các năng lực này đợt riêng. README/architecture/operations/
+  development/gates và runtime-status phân biệt implementation với target; loại
+  Redis khỏi topology runtime và sửa code tree/cấu hình/rotation instructions.
+  Mesh identity/RBAC vẫn là boundary bên ngoài, không được suy từ actor header.
+
+Đã đối chiếu: 12 bảng baseline, 3 FSM và provider checkpoint, 15 event types,
+full structured outbox/key order_id, webhook route/topic/256KiB/300s, session15m,
+single-shot refund và Inventory evidence, thời hạn retention. Không còn tuyên bố
+mọi property/metric/production capability đã triển khai chỉ vì xuất hiện trong docs.
+
+**Bằng chứng sau sửa (2026-10-11):**
+- `mvn -B verify -DargLine=-Dapi.version=1.44` qua Docker Maven/Java 21:
+  PASS 72 unit + 99 PostgreSQL integration = 171 test, 0 failures/errors/skipped.
+  Log local: `java/services/payment-service/target/audit-final-verify.log` (gitignored).
+- Sau chỉnh giới hạn provider object ID 100, chạy lại HTTP Ops/ArchUnit và toàn bộ
+  ManualCorrectionIT bằng `mvn verify -Dtest=PaymentOperationsControllerTest,ArchitectureTest
+  -Dit.test=ManualCorrectionIT -DargLine=-Dapi.version=1.44`: PASS 8 unit + 6 integration,
+  0 failures/errors/skipped. Tổng 172 ca khác nhau đã chạy qua hai lượt (có test chạy lại).
+  Log local: `java/services/payment-service/target/audit-correction-verify.log` (gitignored).
+- Hai canonical Payment OpenAPI: Redocly lint PASS, không warning; hai canonical
+  AsyncAPI: semantic validate PASS. Bốn bundle regenerate từ nguồn vào generated/
+  (gitignored). AsyncAPI chỉ có cảnh báo CLI config/anonymous telemetry mạng.
+- `validate-payment-runtime-events.cjs`: Ajv 2020 PASS 15 canonical example và ba
+  event correction thực tế, cùng conditional FAILED/CANCELED/SUCCESS request schema.
+- `validate-payment-gate2.ps1`: PASS (15 schema/facts, Order 13 types, 12 baseline
+  tables/triggers, fail-closed CDC config). `validate_docs.ps1`: PASS trong phạm vi
+  validator hiện có; kiểm riêng 167 local file links của docs/payment: PASS.
+- `contracts/tools/validate-contracts.ps1`: PASS với warning: PowerShell Test-Json
+  không resolve absolute schema $id và CLI optional không có trên PATH. Không coi
+  bước đó là semantic proof; Payment đã được validate riêng bằng pinned Node tools/Ajv.
+- `git diff --check`: PASS. Sandbox/Stripe network/Kafka CDC/DR/load: NOT RUN;
+  không dùng fake test để tuyên bố các gate môi trường đã đạt.
 
 ---
 
@@ -989,7 +1143,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [x] C6 Cart OpenAPI `servers` *(2026-10-09)*; [x] PR6 Promotion OpenAPI `servers` `promotion-service:8085` + `localhost:8085`; `docs/promotion/operations.md` ghi đúng default `localhost:8082`. *(2026-10-09; lưu ý audit nói 8082 là cổng User — trong compose gốc đó là cổng host của Product nên default code đúng, chỉ docs sai)*
 - [x] U8 User OpenAPI `maxItems: 50` cho `AddressList` (kèm 403 cho cổng internal, mô tả xoá default/account đã xoá). *(2026-10-09)*
 - [x] C9 Cart OpenAPI 429 cho GET. *(2026-10-09)*
-- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; K3 xong 2026-10-09 (cả bốn interaction Checkout, ba dòng ADOPTION Checkout/Order/Product gRPC); N5 và N2 của Notification xong 2026-10-10; còn PY2).
+- [ ] G3 `services.yaml`; G4 `ADOPTION.md` (phần Cart và hai dòng User HTTP/Events đã xong 2026-10-09); G5 `interactions.yaml` (C1 và `notification-consumes-cart-abandoned` đã xong 2026-10-09; U5 và interaction `checkout-reads-user-address-snapshot` (K3, phần User) đã xong 2026-10-09; P5 và ba interaction Product (`search-reindexes-product-catalog`, `product-publishes-catalog-events`, `promotion-validates-product-snapshot`) và ba dòng Product trong ADOPTION đã xong 2026-10-09; dòng PDP HTTP v1 trong ADOPTION, hai dòng provider (Product, Review) và hai interaction PDP (`storefront-queries-product-detail`, `product-detail-bff-queries-product-catalog`) đã xong 2026-10-09; hai dòng Auth HTTP/Events trong ADOPTION và bốn interaction `auth-*`/`notification-resolves-auth-*` đã xong 2026-10-09; K3 xong 2026-10-09 (cả bốn interaction Checkout, ba dòng ADOPTION Checkout/Order/Product gRPC); N5 và N2 của Notification xong 2026-10-10; PY2 Payment đã xong 2026-10-11).
 - [ ] X1 đồng bộ mesh matrix sau khi sửa catalog. *(2026-10-09: dòng Product snapshot của Promotion đã trỏ tới `promotion-validates-product-snapshot`; N5 xong 2026-10-10: principal `notification-ops` có trong services.yaml và interaction)*
 
 ### Docs
@@ -1004,7 +1158,7 @@ bốn topic; sort `newest` sắp theo `updated_at` vì mapping không có `creat
 - [x] Search: S1–S3, S5 (cộng S8–S27: README viết lại, `architecture`/`domain`/`interfaces`/`data`/`operations`/`development`/`workflows` đồng bộ, WF-SEARCH-013/014 mới, ADR-022, `docs/README.md`, `docs/frontend/step-4-verification.md`). *(2026-10-10)*
 - [x] PDP BFF: B1, B2 (đã sửa từ Product sync), cộng B3–B13 phát hiện khi kiểm chứng. *(2026-10-09; ADR-008)*
 - [x] Order: O1–O8 *(O2 đã lỗi thời; K1, K2 xong 2026-10-09; 2026-10-11: ADR-021, error catalog, `data.md` §3.12, ER/index; xem mục 12)*
-- [ ] Payment: PY2, PY3.
+- [x] Payment: PY2 catalog/adoption/docs; PY3 regenerate bốn canonical bundles (2026-10-11).
 - [x] Checkout: K3 (frontmatter, `interfaces.md`, `docs/README.md` §1, catalog, ADOPTION, ADR-010) và K5–K11 (span và cấu hình tracing, trường log, `429` status, test proto, docs ngoài Checkout, `TimeLimiter`/scheduler, chi tiết nhỏ). *(2026-10-09)*
 - [x] Notification: N2, N5, N6 và N7–N22 phát hiện thêm. *(2026-10-10; D-21…D-24, OpenAPI internal 1.1.0, `providerwatch`, `ADOPTION.md` ba dòng, bản đồ test §2.8; unit + integration xanh. Nợ test còn lại ghi ở N17)*
 - [ ] X3/X4: thống nhất tên mã lỗi và error catalog.

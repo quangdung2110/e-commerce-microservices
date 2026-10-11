@@ -199,13 +199,17 @@ public final class RefundPaymentService {
                 "release_reference", evidence.releaseReference());
     }
 
-    private static String providerFingerprint(String refundId, RefundPaymentCommand command) {
-        return "{\"provider_transaction_id\":null,\"amount_minor\":" + command.amount().amountMinor()
-                + ",\"currency\":\"VND\",\"metadata\":{"
-                + "\"order_id\":\"" + command.orderId() + "\","
-                + "\"refund_request_id\":\"" + command.refundRequestId() + "\","
-                + "\"refund_transaction_id\":\"" + refundId + "\","
-                + "\"payment_transaction_id\":\"" + command.transactionId() + "\"}}";
+    private String providerFingerprint(String refundId, RefundPaymentCommand command) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("provider_transaction_id", null);
+        value.put("amount_minor", command.amount().amountMinor());
+        value.put("currency", command.amount().currency());
+        value.put("metadata", Map.of("order_id", Long.toString(command.orderId()),
+                "refund_request_id", command.refundRequestId(),
+                "refund_transaction_id", refundId,
+                "payment_transaction_id", command.transactionId()));
+        try { return json.writeValueAsString(value); }
+        catch (JsonProcessingException impossible) { throw new IllegalStateException(impossible); }
     }
 
     private static Duration positive(Duration value, String name) {

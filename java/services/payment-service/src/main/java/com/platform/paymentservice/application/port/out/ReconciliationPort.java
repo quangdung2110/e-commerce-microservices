@@ -10,10 +10,15 @@ import java.util.List;
 import java.util.Optional;
 
 public interface ReconciliationPort {
+    /** Fence each mutation while holding the run row. Provider I/O must remain outside this call. */
+    <T> T owned(long runId, java.util.function.Supplier<T> mutation);
+
     Optional<Run> start(String lane, Instant windowFrom, Instant windowTo,
                         boolean autoCorrectionFrozen, Instant now);
 
     boolean currentFreeze(boolean fallback);
+
+    Instant resumeFrom(String lane, Instant requestedFrom);
 
     void setFreeze(boolean frozen, String actor, String causeRef, Instant now);
 
@@ -33,6 +38,8 @@ public interface ReconciliationPort {
 
     boolean recordRefundObservation(String refundId, int expectedVersion,
                                     String providerStatus, Instant observedAt);
+
+    boolean recordDisputeObservation(String disputeId, int expectedVersion, Instant observedAt);
 
     boolean openDrift(String paymentId, String refundId, String reviewCaseId,
                       String evidenceJson, Instant openedAt);

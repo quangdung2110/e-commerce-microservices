@@ -5,7 +5,6 @@ import com.platform.paymentservice.domain.PaymentStatus;
 import com.platform.paymentservice.domain.RefundStatus;
 import com.platform.paymentservice.domain.DisputeFundsState;
 import com.platform.paymentservice.domain.DisputeStatus;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -15,11 +14,17 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 @Component
 public final class JdbcReconciliationAdapter implements ReconciliationPort {
     private final JdbcClient jdbc;
     private final TransactionTemplate transactions;
+    private final Map<Long, Connection> owners = new ConcurrentHashMap<>();
 
     public JdbcReconciliationAdapter(JdbcClient jdbc, TransactionTemplate transactions) {
         this.jdbc = jdbc;
@@ -29,8 +34,18 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
     @Override
     public Optional<Run> start(String lane, Instant windowFrom, Instant windowTo,
                                boolean frozen, Instant now) {
+        Connection owner = acquire(lane);
+        if (owner == null) return Optional.empty();
         try {
-            Long id = jdbc.sql("""
+            Run run = transactions.execute(tx -> {
+                // The exclusive session lock proves any previous RUNNING row has lost its owner.
+                // Taking its row lock also waits for an already fenced mutation to finish.
+                jdbc.sql("""
+                        UPDATE reconciliation_runs SET status='FAILED',finished_at=:now,
+                               error_message='OWNER_SESSION_LOST'
+                         WHERE lane=:lane AND status='RUNNING'
+                        """).param("lane", lane).param("now", timestamp(now)).update();
+                Long id = jdbc.sql("""
                     INSERT INTO reconciliation_runs
                       (lane,window_from,window_to,provider_cursor_from,status,
                        auto_correction_frozen,started_at)
@@ -45,9 +60,65 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
                     .param("now", timestamp(now)).query(Long.class).single();
             String cursor = jdbc.sql("SELECT provider_cursor_from FROM reconciliation_runs WHERE id=:id")
                     .param("id", id).query(String.class).optional().orElse(null);
-            return Optional.of(new Run(id, lane, windowFrom, windowTo, cursor, frozen));
-        } catch (DuplicateKeyException anotherRunActive) {
-            return Optional.empty();
+                return new Run(id, lane, windowFrom, windowTo, cursor, frozen);
+            });
+            owners.put(run.id(), owner);
+            return Optional.of(run);
+        } catch (RuntimeException failure) {
+            release(owner);
+            throw failure;
+        }
+    }
+
+    private Connection acquire(String lane) {
+        int key = switch (lane) {
+            case "OBJECT_STATE" -> 1;
+            case "BALANCE_LEDGER" -> 2;
+            default -> throw new IllegalArgumentException("invalid reconciliation lane");
+        };
+        Connection connection = null;
+        try {
+            var manager = (DataSourceTransactionManager) transactions.getTransactionManager();
+            connection = manager.getDataSource().getConnection();
+            connection.setAutoCommit(true);
+            try (var statement = connection.prepareStatement("SELECT pg_try_advisory_lock(731024, ?)")) {
+                statement.setInt(1, key);
+                try (var result = statement.executeQuery()) {
+                    result.next();
+                    if (result.getBoolean(1)) return connection;
+                }
+            }
+            connection.close();
+            return null;
+        } catch (SQLException failure) {
+            release(connection);
+            throw new IllegalStateException("cannot acquire reconciliation ownership", failure);
+        }
+    }
+
+    @Override
+    public <T> T owned(long runId, Supplier<T> mutation) {
+        return transactions.execute(tx -> {
+            boolean active = jdbc.sql("SELECT status FROM reconciliation_runs WHERE id=:id FOR UPDATE")
+                    .param("id", runId).query(String.class).optional().filter("RUNNING"::equals).isPresent();
+            Connection owner = owners.get(runId);
+            try {
+                if (!active || owner == null || !owner.isValid(2))
+                    throw new IllegalStateException("reconciliation ownership lost");
+            } catch (SQLException lost) { throw new IllegalStateException("reconciliation ownership lost", lost); }
+            return mutation.get();
+        });
+    }
+
+    private void release(Connection owner) {
+        if (owner == null) return;
+        try {
+            // Explicitly unlock before returning a live session to the pool.
+            try (var statement = owner.createStatement()) { statement.execute("SELECT pg_advisory_unlock_all()"); }
+        } catch (SQLException ignored) {
+            try { owner.abort(Runnable::run); } catch (SQLException alsoLost) { /* session is gone */ }
+        } finally {
+            try { owner.close(); } catch (SQLException ignored) { /* session is gone */ }
         }
     }
 
@@ -58,6 +129,19 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
                  WHERE lane='CONTROL' AND status='COMPLETED'
                  ORDER BY finished_at DESC,id DESC LIMIT 1
                 """).query(Boolean.class).optional().orElse(fallback);
+    }
+
+    @Override
+    public Instant resumeFrom(String lane, Instant requestedFrom) {
+        return jdbc.sql("""
+                SELECT LEAST(CAST(:requested AS timestamptz),
+                       (SELECT window_to FROM reconciliation_runs WHERE lane=:lane AND status='COMPLETED'
+                         ORDER BY finished_at DESC,id DESC LIMIT 1),
+                       (SELECT min(window_from) FROM reconciliation_runs WHERE lane=:lane AND status='FAILED'
+                         AND started_at>=COALESCE((SELECT max(finished_at) FROM reconciliation_runs
+                              WHERE lane=:lane AND status='COMPLETED'),'-infinity'::timestamptz)))
+                """).param("requested", timestamp(requestedFrom)).param("lane", lane)
+                .query(Timestamp.class).single().toInstant();
     }
 
     @Override
@@ -164,6 +248,12 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
     }
 
     @Override
+    public boolean recordDisputeObservation(String id, int version, Instant at) {
+        return jdbc.sql("UPDATE payment_disputes SET version=version+1,updated_at=:at WHERE id=:id AND version=:version")
+                .param("at", timestamp(at)).param("id", id).param("version", version).update() == 1;
+    }
+
+    @Override
     public boolean openDrift(String paymentId, String refundId, String reviewCaseId,
                              String evidenceJson, Instant openedAt) {
         return Boolean.TRUE.equals(transactions.execute(status -> {
@@ -189,6 +279,7 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
 
     @Override
     public void complete(long runId, String cursor, Counts c, Instant finishedAt) {
+        try { owned(runId, () -> {
         int changed = jdbc.sql("""
                 UPDATE reconciliation_runs SET status='COMPLETED',provider_cursor_to=:cursor,
                        scanned_count=:scanned,drift_count=:drift,corrected_count=:corrected,
@@ -203,16 +294,28 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
                 .param("payouts", c.payoutAmountMinor()).param("finished", timestamp(finishedAt))
                 .param("id", runId).update();
         if (changed != 1) throw new IllegalStateException("reconciliation run is not active");
+        return null;
+        }); } finally { release(owners.remove(runId)); }
     }
 
     @Override
     public void fail(long runId, String error, Instant finishedAt) {
         String safe = error == null ? "UNKNOWN" : error.substring(0, Math.min(error.length(), 500));
+        try {
+            // A fenced predecessor must never change the successor's run.
+            Connection owner = owners.get(runId);
+            if (owner == null || !owner.isValid(2)) return;
+            owned(runId, () -> {
         jdbc.sql("""
                 UPDATE reconciliation_runs SET status='FAILED',error_message=:error,finished_at=:finished
                  WHERE id=:id AND status='RUNNING'
                 """).param("error", safe).param("finished", timestamp(finishedAt))
                 .param("id", runId).update();
+            return null;
+            });
+        } catch (SQLException | IllegalStateException lost) {
+            // The next lock holder records OWNER_SESSION_LOST for an abandoned run.
+        } finally { release(owners.remove(runId)); }
     }
 
     private static Timestamp timestamp(Instant value) { return Timestamp.from(value); }

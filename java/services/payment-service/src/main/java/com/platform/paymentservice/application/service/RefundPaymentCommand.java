@@ -28,7 +28,7 @@ public record RefundPaymentCommand(
             throw new IllegalArgumentException("refund reason does not match inventory evidence");
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 255)
             throw new IllegalArgumentException("invalid idempotencyKey");
-        if (correlationId == null || correlationId.isBlank() || correlationId.length() > 255)
+        if (correlationId == null || correlationId.isBlank() || correlationId.length() > 128)
             throw new IllegalArgumentException("invalid correlationId");
     }
 }

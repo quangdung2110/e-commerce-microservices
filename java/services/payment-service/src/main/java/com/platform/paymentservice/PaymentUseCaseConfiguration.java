@@ -315,9 +315,9 @@ class PaymentUseCaseConfiguration {
             IdGeneratorPort ids,
             ObjectMapper json,
             ProviderCurrentFactPort currentFacts,
-            DeclinePaymentService declines) {
+            DeclinePaymentService declines, ClockPort clock) {
         return new StripeWebhookEventHandler(
-                parser, payments, inbox, commits, stateMachine, ids, json, currentFacts, declines);
+                parser, payments, inbox, commits, stateMachine, ids, json, currentFacts, declines, clock);
     }
 
     @Bean

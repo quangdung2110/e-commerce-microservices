@@ -75,9 +75,9 @@ services:
 
   - id: payment-service
     bounded_context: payment
-    runtime: java-planned
-    status: documented
-    contract_adoption: not_started
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
     docs: docs/payment/README.md
 
   - id: promotion-service

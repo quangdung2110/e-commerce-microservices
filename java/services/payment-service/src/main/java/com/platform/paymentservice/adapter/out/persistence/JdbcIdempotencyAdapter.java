@@ -89,6 +89,7 @@ public final class JdbcIdempotencyAdapter implements IdempotencyPort {
                        lease_expires_at = NULL, last_heartbeat_at = :completed_at
                  WHERE idempotency_key = :key AND action = :action
                    AND status = 'IN_PROGRESS' AND lease_owner = :owner AND lease_token = :lease_token
+                   AND lease_expires_at > :completed_at
                 """)
                 .param("resource_id", response.resourceId()).param("response_code", response.statusCode())
                 .param("response_body", response.bodyJson()).param("completed_at", Timestamp.from(completedAt))

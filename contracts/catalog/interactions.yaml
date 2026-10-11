@@ -275,7 +275,7 @@ interactions:
     provider: payment-service
     consumers: [api-gateway]
     contract: http/payment/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: External Stripe delivery enters at the Gateway public path; Gateway preserves exact bytes. Payment verifies signature and the 300-second window before encrypted inbox persistence or internal Kafka publication.
 
   - id: finance-ops-operates-payment
@@ -283,7 +283,7 @@ interactions:
     provider: payment-service
     consumers: [finance-ops, accounting-ops]
     contract: http/payment/internal/v1/openapi.yaml
-    status: proposed
+    status: implemented
     notes: Internal-only RBAC and maker-checker surface for review cases, verified-inbox replay, reconciliation/freeze, immutable ledger lookup and dispute lookup; never exposed by the public Gateway.
 
   - id: payment-publishes-payment-events
@@ -291,7 +291,7 @@ interactions:
     provider: payment-service
     consumers: [order-service, analytics-service]
     contract: events/payment/v2/asyncapi.yaml
-    status: proposed
+    status: implemented
     notes: Fifteen full CloudEvents structured facts with exact types, per-event schemas, VND money and per-transaction financial version. Five dispute facts are orthogonal and do not rewrite Payment state. No client_secret/provider identifiers. Terminal non-capture facts require provider cancellation; retryable declines emit nothing.
 
   - id: checkout-previews-inventory-allocation

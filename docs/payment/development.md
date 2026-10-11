@@ -17,6 +17,10 @@ verified_against_commit: null
 
 # Payment Service — Hướng dẫn phát triển
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Checklist để bắt đầu implementation `java/services/payment-service` theo đúng
 > quy ước của các Java service đã có trong repo (`promotion-service`,
 > `review-service`, …) và theo thiết kế trong bộ tài liệu này. Gate 3 đã hiện thực
@@ -33,7 +37,7 @@ verified_against_commit: null
 | Java / build | JDK 21, Maven 3.9, Spring Boot 3.3.x (parent như `promotion-service/pom.xml`) | Máy dev không cần JDK: build bằng container `maven:3.9-eclipse-temurin-21` (§2) |
 | Container runtime | Docker Engine + Compose v2 | `docker-compose.yml` ở gốc repo cung cấp PostgreSQL, Redis, Kafka, Kafka Connect (Debezium 3.0) |
 | Stripe | Tài khoản Stripe test mode, một **Sandbox riêng** cho mỗi dev; Stripe CLI ≥ 1.19 | `stripe login` với sandbox; không dùng chung `whsec_` giữa các máy |
-| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một dev KMS key cố định | Root `.env.local` đã gitignore; Compose cần `--env-file .env.local`; mẫu `.env.checkout.example` |
+| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một local AES-256 key cố định (chưa có KMS adapter) | Root `.env.local` đã gitignore; Compose cần `--env-file .env.local`; mẫu `.env.checkout.example` |
 | Công cụ test | JUnit 5, Testcontainers PostgreSQL và các fake port có trạng thái trong JVM | Chi tiết §6; WireMock/stripe-mock/Toxiproxy chưa được cấu hình trong module |
 | Contract tooling | Node.js ≥ 24.11, npm, Redocly CLI 2.53.3, AsyncAPI CLI 6.1.0 | Pin trong `contracts/tools/package-lock.json`; §7 |
 
@@ -156,7 +160,7 @@ env var (`payment.stripe.secret-key` ↔ `PAYMENT_STRIPE_SECRET_KEY`).
 | `PAYMENT_CRYPTO_LOCAL_KEY` | `payment.crypto.local-key` (chỉ profile `dev`/`test`) | Có | base64 32 byte |
 | `PAYMENT_SESSION_TTL` | `payment.session.ttl` | Không | `PT15M`; test nhanh: `PT2M` |
 | `PAYMENT_STRIPE_DECLINE_MAX_PER_ATTEMPT` | `payment.stripe.decline.max-per-attempt` | Không | `5` |
-| `PAYMENT_SCHEDULER_*` | `payment.scheduler.*` | Không | Interval rút ngắn cho dev (`expiration.interval=PT10S`) |
+| `PAYMENT_SCHEDULER_*` | Chưa có env alias tổng quát | Không | Override bằng Spring property, ví dụ `PAYMENT_SCHEDULER_EXPIRATION_INTERVAL=PT10S` |
 | `PAYMENT_DATABASE_URL` | `spring.datasource.url` | Có | `jdbc:postgresql://localhost:15432/payment_service` |
 | `PAYMENT_KAFKA_BROKERS` | `spring.kafka.bootstrap-servers` | Có | `localhost:29092` |
 | `PAYMENT_REDIS_HOST` | `spring.data.redis.host` | Không | `localhost` (hạ tầng dự trù) |
@@ -229,7 +233,7 @@ lại khi Stripe đổi).
 | `4000 0000 0000 0002` | `card_declined` (`generic_decline`, retryable) | `payment_intent.payment_failed` | `T3a`: vẫn `PENDING`, `decline_count=1`; thanh toán lại bằng `4242…` → `SUCCESS` |
 | `4000 0000 0000 9995` | `insufficient_funds` (retryable) | `payment_intent.payment_failed` | `T3a`: vẫn `PENDING` |
 | `4000 0000 0000 9979` | `stolen_card` (non-retryable) | `payment_failed` → Payment `PaymentIntent.cancel` → `payment_intent.canceled` | `T3` `FAILED`, `PAYMENT_FAILED error_code=STOLEN_CARD` |
-| `4000 0000 0000 0002` × 6 lần | Quá `max_declines_per_attempt` | như trên | `T3` `FAILED`, `error_code=DECLINE_LIMIT_EXCEEDED` |
+| `4000 0000 0000 0002` × 6 lần | Quá `max_declines_per_attempt` | như trên | `T3` `FAILED`, `error_code=DECLINE_LIMIT` |
 | `4000 0000 0000 0259` | Thành công rồi bị dispute | dispute lifecycle/funds events | Payment giữ `SUCCESS`; dispute FSM + journal + facts |
 | `4000 0000 0000 5126` | Thanh toán thành công, refund thất bại async | `refund.updated`/`refund.failed` | `R3`/`T8` hoặc `R5`/`T9` + review case |
 | Không thanh toán trong `payment_session_ttl` | — | Scanner `PaymentIntent.cancel` → `payment_intent.canceled` | `T4` `EXPIRED` (chỉ sau khi intent canceled) |
@@ -464,7 +468,7 @@ này phải báo `NOT RUN`, tuyệt đối không đổi sang live key hoặc gi
   lease/fencing; stale completion và provider duplicate vẫn bị PostgreSQL chặn.
 - Nhân `amount_minor` với 100 trước khi gửi Stripe: VND là zero-decimal,
   `amount_minor` truyền nguyên (100000 = 100.000 ₫); nhân 100 sẽ sai 100 lần.
-- Dev KMS key khác nhau giữa hai lần chạy → `client-data` trả `usable=false` dù attempt
+- Local AES key khác nhau giữa hai lần chạy → `client-data` trả `usable=false` dù attempt
   còn `PENDING`.
 - Coi `payment_intent.payment_failed` là terminal trong test → sai với ADR-014.
 - Gọi Stripe bên trong `@Transactional` → ArchUnit A3 fail; nếu lọt, pool cạn dưới tải.
@@ -474,8 +478,10 @@ này phải báo `NOT RUN`, tuyệt đối không đổi sang live key hoặc gi
 
 Một thay đổi chỉ hoàn tất khi:
 
-1. `mvn verify` pass (unit + integration + ArchUnit + migration lint + contract
-   codegen không drift + secret scan).
+1. `mvn verify` pass (unit, PostgreSQL integration/Flyway và ArchUnit); chạy
+   riêng contract/docs validators và runtime payload script. Maven hiện không có
+   contract codegen hoặc secret-scan plugin. Secret scan và các gate môi trường
+   là yêu cầu kiểm chứng riêng, không suy ra từ Maven pass.
 2. Mọi transition mới/sửa có test ở tầng unit và, nếu chạm DB/Stripe, tầng integration;
    FSM coverage test vẫn pass.
 3. Transition + history + balanced journal + outbox + inbox terminal/review atomic;
@@ -489,3 +495,10 @@ Một thay đổi chỉ hoàn tất khi:
    `docs/gateway/runtime-contract.md`, `contracts/catalog/interactions.yaml` được rà.
 7. Frontmatter `evidence`/`verified_against_commit` chỉ cập nhật khi có code thật;
    trạng thái chỉ rời `proposed` sau gate ở `README.md §1`.
+
+### Kiểm chứng audit runtime payload
+
+Sau `mvn verify`, chạy `node java/services/payment-service/scripts/validate-payment-runtime-events.cjs`
+từ gốc repo (cần `npm ci` tại `contracts/tools`). Script dùng canonical JSON Schema,
+kiểm 15 example và ba event thực sự phát bởi ManualCorrectionIT, cùng conditional
+request schema FAILED/CANCELED. V3 giữ 12 bảng nhưng cho phép net refund/fee totals âm.

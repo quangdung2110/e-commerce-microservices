@@ -42,7 +42,16 @@ public final class ManualCorrectionService {
                           String providerStatus, String providerObjectId,
                           String providerBalanceTransactionId, String providerResponseJson,
                           String actor, String approver, String correlationId,
-                          String idempotencyKey) {}
+                          String idempotencyKey, String errorCode, String reasonCode) {
+        public Command(String caseId, String aggregateType, String aggregateId, String trigger,
+                       long amountMinor, String currency, String providerStatus, String providerObjectId,
+                       String providerBalanceTransactionId, String providerResponseJson, String actor,
+                       String approver, String correlationId, String idempotencyKey) {
+            this(caseId, aggregateType, aggregateId, trigger, amountMinor, currency, providerStatus,
+                    providerObjectId, providerBalanceTransactionId, providerResponseJson, actor,
+                    approver, correlationId, idempotencyKey, null, null);
+        }
+    }
 
     private final ReviewCasePort cases;
     private final WebhookPaymentQueryPort queries;
@@ -117,6 +126,7 @@ public final class ManualCorrectionService {
         requireCasePayment(c.caseId(), p.id());
         requireAmount(c, p.amountMinor(), p.currency());
         PaymentTransition transition = paymentFsm.transition(p.status(), PaymentTrigger.valueOf(c.trigger()));
+        requirePaymentEvidence(c, p, transition.to());
         Instant now = clock.now();
         long version = p.financialStateVersion() + (transition.fact().isPresent() ? 1 : 0);
         String providerIntent = c.providerObjectId() != null && c.providerObjectId().startsWith("pi_")
@@ -131,7 +141,7 @@ public final class ManualCorrectionService {
         var history = history(p.id(), null, null, "PAYMENT", p.status().name(),
                 transition.to().name(), version, c, now);
         List<CommitBatch.OutboxRecord> outbox = transition.fact().isPresent()
-                ? List.of(paymentOutbox(p, transition.to(), version, now)) : List.of();
+                ? List.of(paymentOutbox(p, transition.to(), version, c, now)) : List.of();
         List<CommitBatch.JournalRecord> journals = transition.to() == PaymentStatus.SUCCESS
                 ? List.of(journal(p.id(), null, null, "CAPTURE", c,
                 "CHARGE", c.providerObjectId(), p.amountMinor(), p.currency(),
@@ -151,9 +161,8 @@ public final class ManualCorrectionService {
         PaymentTransition pt = pairedPayment(r.paymentStatus(), trigger);
         Instant now = clock.now();
         long version = r.financialStateVersion() + 1;
-        CommitBatch.PaymentChange payment = pt == null ? null
-                : new CommitBatch.PaymentChange(r.paymentId(), r.paymentVersion(), r.paymentStatus(),
-                pt.to(), version, null, null, null, null, null, null, false, false);
+        CommitBatch.PaymentChange payment = new CommitBatch.PaymentChange(r.paymentId(), r.paymentVersion(), r.paymentStatus(),
+                pt == null ? r.paymentStatus() : pt.to(), version, null, null, null, null, null, null, false, false);
         var refund = new CommitBatch.RefundChange(r.id(), r.version(), r.status(), rt.to(),
                 null, null, c.providerObjectId(),
                 rt.to() == RefundStatus.FAILED ? c.providerStatus() : null,
@@ -208,7 +217,7 @@ public final class ManualCorrectionService {
                     "DISPUTE_WITHDRAWAL", d.id(), d.amountMinor(), d.currency(),
                     "DISPUTE_HOLD_OR_LOSS", "PROVIDER_RECEIVABLE", now));
             case "D4" -> List.of(journal(d.paymentId(), null, d.id(), "DISPUTE_REINSTATEMENT", c,
-                    "DISPUTE_REINSTATEMENT", d.id() + ":reinstatement", d.amountMinor(), d.currency(),
+                    "DISPUTE_REINSTATEMENT", d.id(), d.amountMinor(), d.currency(),
                     "PROVIDER_RECEIVABLE", "DISPUTE_HOLD_OR_LOSS", now));
             default -> List.of();
         };
@@ -235,13 +244,15 @@ public final class ManualCorrectionService {
     }
 
     private CommitBatch.OutboxRecord paymentOutbox(WebhookPaymentQueryPort.PaymentSnapshot p,
-                                                     PaymentStatus target, long version, Instant now) {
+                                                     PaymentStatus target, long version, Command c, Instant now) {
         String suffix = switch (target) {
             case SUCCESS -> "succeeded"; case FAILED -> "failed"; case EXPIRED -> "expired";
             case CANCELED -> "canceled"; default -> throw new IllegalArgumentException("no payment event");
         };
         Map<String, Object> data = common(p.orderId(), p.id(), p.attemptNumber(), version, now);
         data.put("amount", Map.of("amount_minor", p.amountMinor(), "currency", p.currency()));
+        if (target == PaymentStatus.FAILED) data.put("error_code", c.errorCode());
+        if (target == PaymentStatus.CANCELED) data.put("reason_code", c.reasonCode());
         return outbox(p.id(), p.orderId(), "com.ecommerce.payment.transaction." + suffix + ".v2",
                 "payment-" + suffix + ".schema.json", data, now);
     }
@@ -333,7 +344,7 @@ public final class ManualCorrectionService {
         catch (JsonProcessingException impossible) { throw new IllegalStateException(impossible); }
     }
 
-    private static Map<String, Object> body(Command c) {
+    private Map<String, Object> body(Command c) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("aggregate_type", c.aggregateType()); value.put("aggregate_id", c.aggregateId());
         value.put("trigger", c.trigger()); value.put("amount_minor", c.amountMinor());
@@ -341,6 +352,8 @@ public final class ManualCorrectionService {
         value.put("provider_object_id", c.providerObjectId());
         value.put("provider_balance_transaction_id", c.providerBalanceTransactionId());
         value.put("actor", c.actor()); value.put("approver", c.approver());
+        value.put("provider_response_json", evidence(c));
+        value.put("error_code", c.errorCode()); value.put("reason_code", c.reasonCode());
         return value;
     }
 
@@ -350,9 +363,58 @@ public final class ManualCorrectionService {
                 || c.amountMinor() <= 0 || !"VND".equals(c.currency()) || blank(c.providerStatus())
                 || blank(c.providerResponseJson()) || blank(c.actor()) || blank(c.approver())
                 || c.actor().equals(c.approver()) || blank(c.correlationId())
+                || c.aggregateId().length() > 64 || c.providerStatus().length() > 64
+                || c.providerObjectId() != null && c.providerObjectId().length() > 100
+                || c.providerBalanceTransactionId() != null && c.providerBalanceTransactionId().length() > 120
+                || c.providerResponseJson().length() > 10000 || c.actor().length() > 128
+                || c.approver().length() > 128 || c.correlationId().length() > 128
                 || c.idempotencyKey() == null || c.idempotencyKey().length() < 16
                 || c.idempotencyKey().length() > 255)
             throw new IllegalArgumentException("invalid manual correction");
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode evidence(Command c) {
+        try {
+            var node = json.readTree(c.providerResponseJson());
+            if (node == null || !node.isObject()) throw new IllegalArgumentException("evidence must be an object");
+            rejectSensitive(node);
+            return node;
+        } catch (JsonProcessingException invalid) { throw new IllegalArgumentException("invalid evidence", invalid); }
+    }
+
+    private static void rejectSensitive(com.fasterxml.jackson.databind.JsonNode node) {
+        if (node.isObject()) node.fields().forEachRemaining(field -> {
+            if (java.util.Set.of("client_secret", "card", "billing_details", "shipping", "email",
+                    "phone", "address", "receipt_email").contains(field.getKey().toLowerCase(java.util.Locale.ROOT)))
+                throw new IllegalArgumentException("sensitive provider evidence");
+            rejectSensitive(field.getValue());
+        });
+        else if (node.isArray()) node.forEach(ManualCorrectionService::rejectSensitive);
+    }
+
+    private void requirePaymentEvidence(Command c, WebhookPaymentQueryPort.PaymentSnapshot p,
+                                         PaymentStatus target) {
+        var proof = evidence(c);
+        if (nonCaptureTerminal(target)) {
+            if (!"canceled".equals(c.providerStatus()) || !"canceled".equals(proof.path("status").asText())
+                    || p.providerTransactionId() == null || !p.providerTransactionId().equals(c.providerObjectId())
+                    || !p.providerTransactionId().equals(proof.path("id").asText()))
+                throw new IllegalArgumentException("canceled intent evidence is required");
+        } else if (target == PaymentStatus.SUCCESS) {
+            if (!"succeeded".equals(c.providerStatus()) || !"succeeded".equals(proof.path("status").asText())
+                    || p.providerTransactionId() == null || !p.providerTransactionId().equals(proof.path("id").asText())
+                    || c.providerObjectId() == null || !c.providerObjectId().matches("ch_[A-Za-z0-9_]+")
+                    || !c.providerObjectId().equals(proof.path("latest_charge").asText())
+                    || p.providerChargeId() != null && !p.providerChargeId().equals(c.providerObjectId()))
+                throw new IllegalArgumentException("succeeded intent and matching charge evidence are required");
+        } else throw new IllegalArgumentException("manual payment target is unsupported");
+        if (target == PaymentStatus.FAILED && (c.errorCode() == null
+                || !c.errorCode().matches("[A-Z][A-Z0-9_]{0,63}")))
+            throw new IllegalArgumentException("error_code is required");
+        if (target == PaymentStatus.CANCELED && (c.reasonCode() == null
+                || !java.util.Set.of("PAYMENT_TIMEOUT", "BUYER_CANCELLED", "ORDER_CANCELLED_PRE_CAPTURE", "PROVIDER_CANCELED")
+                        .contains(c.reasonCode())))
+            throw new IllegalArgumentException("reason_code is required");
     }
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }

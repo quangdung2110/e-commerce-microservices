@@ -181,12 +181,37 @@ class WebhookProcessorIT extends AbstractPaymentIT {
     }
 
     private WebhookProcessorService service(int maxAttempts, ProviderCurrentFactPort currentFacts) {
+        return service(maxAttempts, currentFacts, () -> NOW);
+    }
+
+    @Test
+    void provider_retrieve_that_outlives_inbox_lease_cannot_commit_even_without_takeover() {
+        jdbc.update("UPDATE payment_transactions SET last_provider_event_created_at=?::timestamptz, last_provider_event_id='evt_previous' WHERE id=?",
+                EVENT_CREATED.toString(), PAYMENT_ID);
+        byte[] body = succeededBody();
+        save(body, sha256(body));
+        var currentTime = new java.util.concurrent.atomic.AtomicReference<>(NOW);
+        ProviderCurrentFactPort facts = org.mockito.Mockito.mock(ProviderCurrentFactPort.class);
+        org.mockito.Mockito.when(facts.retrievePaymentIntent(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.anyString())).thenAnswer(invocation -> {
+                    currentTime.set(NOW.plusSeconds(61));
+                    return new ProviderCurrentFactPort.CurrentFact(invocation.getArgument(0));
+                });
+        assertThat(service(8, facts, currentTime::get).process(notification(body), "worker-a"))
+                .isEqualTo(WebhookProcessResult.FENCED);
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id=?", String.class, PAYMENT_ID))
+                .isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM financial_journals", Integer.class)).isZero();
+    }
+
+    private WebhookProcessorService service(int maxAttempts, ProviderCurrentFactPort currentFacts, ClockPort clock) {
         var json = JsonMapper.builder().findAndAddModules().build();
         var handler = new StripeWebhookEventHandler(new StripeWebhookEventParser(json),
                 webhookPayments, webhookProcessing, commits, new PaymentStateMachine(), ids, json,
-                currentFacts, null);
+                currentFacts, null, clock);
         return new WebhookProcessorService(webhookProcessing, handler, cipher, ids,
-                (ClockPort) () -> NOW, Duration.ofMinutes(1), Duration.ofSeconds(30), maxAttempts);
+                clock, Duration.ofMinutes(1), Duration.ofSeconds(30), maxAttempts);
     }
 
     private void save(byte[] body, String hash) {

@@ -16,6 +16,10 @@ verified_against_commit: null
 
 # Payment Service — Kiến trúc
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Kiến trúc mục tiêu của Payment Service: PostgreSQL-first, Stripe SDK direct,
 > webhook async qua Kafka, outbox CDC, side effect provider durable. File này trả
 > lời "thành phần nào, ranh giới nào, pattern nào, vì sao"; hành vi chi tiết ở
@@ -59,7 +63,6 @@ flowchart LR
       OUT[Persistence adapter]
     end
     PG[(PostgreSQL)]
-    RD[(Redis)]
     KR[(Kafka<br/>t.payment.webhooks.raw)]
     KP[(Kafka<br/>t.payment.events.v2)]
     DBZ[Debezium / Kafka Connect]
@@ -76,7 +79,6 @@ flowchart LR
   SCH --> APP
   APP --> DOM
   APP --> OUT --> PG
-  APP --> RD
   APP -->|PaymentProviderPort| SA -->|ServiceEntry egress| ST
   PG -->|WAL| DBZ --> KP
   KP --> O
@@ -119,31 +121,26 @@ provider event checkpoint, Payment-owned subledger/dispute và retention/privacy
 
 ```
 com.platform.paymentservice
-├── domain            # PaymentTransaction, RefundTransaction, ProviderOperation, ReviewCase,
-│                     # FSM thuần Java, guard, policy decline, error
-├── application       # use case: InitiatePayment, CancelPayment, InitiateRefund,
-│                     # ApplyStripeEvent, ExpireSession, RecoverOperation, Reconcile,
-│                     # PollRefund, ResolveReviewCase; port: PaymentProviderPort,
-│                     # PaymentRepository, OutboxPort, IdempotencyPort, LockPort, ClockPort
+├── domain                 # 3 FSM, state/trigger/transition, Money, decline/guard policies
+├── application
+│   ├── service            # command/query, webhook processor/handler, recovery, reconciliation/review
+│   └── port.out           # persistence/provider/clock/cipher/financial commit ports
 ├── adapter
-│   ├── in.http       # HTTP v1 controllers, problem+json mapping, idempotency filter
-│   ├── in.webhook    # verify exact bytes → durable inbox → Kafka
-│   ├── in.kafka      # Webhook Processor consumer
-│   ├── in.scheduler  # @Scheduled entry points → use case
-│   ├── out.persistence  # JPA/JDBC repositories, outbox insert, history insert
-│   ├── out.redis     # reserved package; Gate 3 runtime chưa cần Redis adapter
-│   └── out.crypto    # envelope encryption client_secret (KMS/Vault)
-└── stripe            # StripeAdapter (PaymentProviderPort), PaymentIntentClient,
-                      # RefundClient, WebhookVerifier, StripeErrorMapper; duy nhất nơi
-                      # import com.stripe.*
+│   ├── in.http            # controllers, strict JSON, Problem mapping, Ops header validation
+│   ├── in.webhook         # exact bytes → verified durable inbox → Kafka
+│   ├── in.kafka           # verified webhook listener
+│   ├── in.scheduler       # @Scheduled workers
+│   ├── out.persistence    # JdbcClient/TransactionTemplate adapters
+│   ├── out.kafka          # verified delivery publisher
+│   └── out.crypto         # LocalAesGcmSecretCipher; KMS chưa có adapter
+└── stripe                 # narrow StripeGateway, provider/retrieve/balance/verifier adapters
 ```
 
 Package gốc theo quy ước repo (`com.platform.<service>`, như `promotion-service`); ADR-003
 gọi package Stripe là `com.payment.stripe` — cùng một thứ, tên hiện hành là
 `com.platform.paymentservice.stripe`.
 
-Quy tắc phụ thuộc: `domain` không import gì ngoài JDK; `application` chỉ import
-`domain`; `adapter.*` và `stripe` import `application`/`domain`, không import nhau.
+Quy tắc phụ thuộc: `domain` không import gì ngoài JDK; `application` phụ thuộc `domain` và các port, có Jackson để serialize durable JSON; `adapter.*` và `stripe` import `application`/`domain`, không import nhau.
 Kiểm tra bằng ArchUnit trong CI (§7).
 
 ### 2.2. Thành phần runtime

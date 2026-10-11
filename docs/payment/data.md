@@ -7,10 +7,15 @@ owners:
   - Payment Service team
 evidence:
   - java/services/payment-service/src/main/resources/db/migration/V1__payment_baseline.sql
+  - java/services/payment-service/src/main/resources/db/migration/V3__signed_reconciliation_net_totals.sql
 verified_against_commit: null
 ---
 
 # Payment Service — Thiết kế dữ liệu
+
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
 
 > Logical/physical design mục tiêu cho Payment Service. DDL dưới đây là nguồn chuẩn
 > của Gate 2 baseline migration; migration và constraint đã được chạy bằng Flyway
@@ -653,9 +658,13 @@ CREATE TABLE reconciliation_runs (
 ```
 
 Mỗi lần Reconciliation Worker chạy ghi một row. Lane `OBJECT_STATE` đối chiếu FSM;
-lane `BALANCE_LEDGER` dùng cursor provider có overlap, ingest balance transaction
-idempotent và đối chiếu tổng capture/refund/dispute/fee/payout. Cursor chỉ advance
-khi run `COMPLETED`. Khi freeze, drift chỉ mở review case. Correction transition ghi
+lane `BALANCE_LEDGER` đọc hết trang của cửa sổ cố định, cursor null ở đầu mỗi
+cửa sổ; metadata cursor của run trước chỉ dùng audit. Tổng capture/dispute/payout
+là gross movement đã đọc, gồm duplicate đã xác minh; refund/fee là net sau
+reversal/credit (có thể âm theo V3). Chỉ COMPLETED advance watermark; scheduler
+đọc bù cửa sổ chưa hoàn tất. Freeze cho object lane quan sát/mở case, nhưng balance
+FAILED/AUTO_CORRECTION_FROZEN và không ghi ledger. Chưa đối chiếu closing balance
+với bank statement. Correction transition ghi
 history `CORR` với `cause_ref = reconciliation_runs.id`; ledger không sửa bằng update.
 Lane nội bộ `CONTROL` là audit row đã `COMPLETED` của thay đổi freeze qua Finance Ops
 API; `requested_by` và `cause_ref` bắt buộc ở workflow này. Scheduler đọc row
@@ -946,3 +955,11 @@ tách quyền. Financial amount, order reference, journal và audit trail đư�
   `actor`; không xóa.
 - Thao tác `MANUAL` (replay webhook, correction, đóng review case) yêu cầu quyền
   quản trị, ghi `actor` và `cause_ref`.
+
+## Đồng bộ retention và ownership sau audit 2026-10-11
+
+Giữ 12 bảng và V1/V2 đã áp dụng. V3 bỏ CHECK không âm trên refunded/fee reconciliation totals để lưu net reversal/credit; journal amount vẫn dương. Reconciliation dùng session advisory lock +
+run-row fencing ngoài partial unique RUNNING; xem ADR-023. Retention giữ latest
+CONTROL, latest completed BALANCE_LEDGER watermark và idempotency có active
+REQUESTED/UNKNOWN provider operation. Thời điểm kiểm legal hold là clock của run.
+Query payment/refund/disputes dùng cùng REPEATABLE READ snapshot trên primary.

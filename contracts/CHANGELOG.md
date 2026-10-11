@@ -3,6 +3,23 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-11 (Payment audit)
+
+- Payment HTTP: refund PAYMENT_NOT_SUCCESS/REFUND_AMOUNT_EXCEEDED are HTTP 400;
+  malformed/unknown/coerced JSON is 400 VALIDATION_FAILED; DB errors are retryable
+  503 DEPENDENCY_UNAVAILABLE, with Problem JSON, correlation and no-store.
+  X-Correlation-Id is limited to 128 characters to match the financial event schema.
+- Payment Ops correction: PAYMENT_FAILED_CONFIRMED requires error_code;
+  PAYMENT_CANCELED requires reason_code; terminal non-capture requires canceled
+  evidence identifying the stored PaymentIntent. Evidence participates in canonical
+  idempotency. SUCCESS requires Charge ch_ and matching PaymentIntent id/status/latest_charge
+  evidence. Validation tightening is approved for the pilot; adoption remains unverified.
+  Internal query limit, error statuses and no-store headers are explicit.
+- Ops reconciliation executes synchronously (202 COMPLETED); freeze blocks automatic
+  balance posting, returns a failed run without advancing the completion watermark.
+- Payment catalog is java/implemented/pilot; provider interactions are implemented.
+  Business metrics, KMS and automatic heartbeat remain unimplemented.
+
 ## 2026-10-11 (Order O3 — delivery confirmation)
 
 - Order HTTP v1 is `1.1.0` (additive): new `POST /api/v1/admin/orders/{order_id}/delivery-confirmations`

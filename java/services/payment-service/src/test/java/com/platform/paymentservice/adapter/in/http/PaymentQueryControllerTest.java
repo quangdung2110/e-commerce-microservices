@@ -19,6 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@org.springframework.context.annotation.Import(PaymentHttpConfiguration.class)
 @WebMvcTest(PaymentQueryController.class)
 class PaymentQueryControllerTest {
     private static final String TXN = "TXN_01K5V7M4R8Q2K7V6W5X1Y0ZABE";

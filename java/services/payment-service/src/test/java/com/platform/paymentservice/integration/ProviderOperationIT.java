@@ -83,6 +83,17 @@ class ProviderOperationIT extends AbstractPaymentIT {
         assertThat(provider.searchCalls).isEqualTo(1);
     }
 
+    @Test
+    void expired_lease_cannot_finish_even_before_any_other_worker_takes_over() {
+        var operation = operation();
+        var first = (ProviderOperationClaim.Acquired) providerOperations.createOrClaim(
+                operation, "worker-a", START, Duration.ofSeconds(45));
+        assertThat(providerOperations.finish(operation.id(), "worker-a", first.leaseToken(),
+                new ProviderOperationResult.Confirmed("pi_late", null, "{}"), START.plusSeconds(45), null)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT status FROM provider_operations WHERE id='POP_PROVIDER'", String.class))
+                .isEqualTo("REQUESTED");
+    }
+
     private ProviderOperationExecutor executor(ClockPort clock, PaymentProviderPort provider) {
         return new ProviderOperationExecutor(providerOperations, provider, clock,
                 Duration.ofSeconds(45), Duration.ofHours(23), Duration.ofSeconds(30), 20);

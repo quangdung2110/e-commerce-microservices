@@ -21,6 +21,10 @@ verified_against_commit: null
 
 # Payment Service — Tổng quan dịch vụ
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Điểm bắt đầu để hiểu thiết kế mục tiêu của Payment Service. Bộ tài liệu được
 > viết lại 2026-09-19 theo ADR-011 → ADR-014, đồng bộ wire contract bằng ADR-015
 > và khóa Gate 1 bằng ADR-016 → ADR-020, và không còn giữ
@@ -62,7 +66,7 @@ quyết; (4) độ trễ.
 
 - Sở hữu 12 bảng PostgreSQL (`data.md`) trong một OLTP schema, không partition/cold
   archive ([ADR-013](./decisions/ADR-013-single-oltp-retention-no-partition.md)).
-- Mọi side effect Stripe (`PaymentIntent.create/cancel/retrieve`, `Refund.create/retrieve`)
+- Mọi side effect Stripe (`PaymentIntent.create/cancel`, `Refund.create`)
   chỉ sau khi đã commit một `ProviderOperation` với key bất biến; timeout được
   recover bằng replay cùng key, không bao giờ suy luận non-capture
   ([ADR-012](./decisions/ADR-012-recoverable-initiation-and-cancel.md)).
@@ -151,7 +155,7 @@ Service khác không ghi DB Payment; Payment không đọc DB service khác.
 | Dispute/subledger | Dispute FSM + 5 facts; balanced immutable journals | `WF-PAYMENT-013`, `-014` |
 | Review case | Case durable với `reason_code`, `evidence`, `resolution_type` bắt buộc | `WF-PAYMENT-010` |
 | Tra cứu | Payment + refund duy nhất cho Order verify; read-your-writes | `interfaces.md §2.8` |
-| Lưu trữ/DR | Financial 7 năm, raw webhook 90 ngày, metadata 12 tháng; PITR RPO 0/RTO≤60m | `data.md §7`, ADR-020 |
+| Lưu trữ/DR | Financial 7 năm, raw webhook 90 ngày, metadata 12 tháng; PITR RPO 0/RTO≤60m là target chưa kiểm chứng | `data.md §7`, ADR-020 |
 
 ## 7. Phụ thuộc
 
@@ -166,7 +170,7 @@ Service khác không ghi DB Payment; Payment không đọc DB service khác.
 | Internal ops | HTTP/mTLS | Finance/Accounting Ops | Review/replay/reconcile/freeze/ledger/dispute | [internal OpenAPI](../../contracts/http/payment/internal/v1/openapi.yaml) |
 | Internal (dự trù, ngoài Gate 3) | Redis | Chưa có adapter | Có thể thêm replay pointer/lock tối ưu contention; không được tham gia correctness | `data.md §6` |
 | Internal | Debezium/Kafka Connect | WAL CDC | Outbox → Kafka | [ADR-005](./decisions/ADR-005-transactional-outbox-cdc.md) |
-| Internal | Vault/Secret Manager + KMS | — | `sk_`, `whsec_` (2 secret khi rotation), key mã hóa `client_secret` | `operations.md §2`, §7.3 |
+| Dự trù, chưa triển khai | Vault/Secret Manager + KMS | — | `sk_`, `whsec_` (2 secret khi rotation), key mã hóa `client_secret` | `operations.md §2`, §7.3 |
 
 ## 8. Bất biến quan trọng
 
@@ -194,15 +198,16 @@ Thứ tự đọc gợi ý cho người mới: README → `implementation-gates.
 
 | Tài liệu | Nội dung | Khi cần đọc |
 |---|---|---|
+| [Runtime status](./runtime-status.md) | Hành vi đã kiểm chứng và năng lực còn thiếu | Khi audit hoặc chuẩn bị release |
 | [Implementation gates](./implementation-gates.md) | Điều kiện và bằng chứng Gate 1–3 | Trước khi bắt đầu một giai đoạn |
-| [Miền nghiệp vụ](./domain.md) | 3 FSM, 22 rule, 15 invariant, leases/checkpoints/ledger/dispute | Khi thay đổi business logic |
+| [Miền nghiệp vụ](./domain.md) | 3 FSM, 25 rule, 15 invariant, leases/checkpoints/ledger/dispute | Khi thay đổi business logic |
 | [Luồng nghiệp vụ](./workflows.md) | 14 workflow với TX boundary, race, retry, dispute/subledger | Khi sửa use case |
 | [Dữ liệu](./data.md) | DDL 12 bảng, constraints/index, inbox/ledger/retention | Khi sửa persistence |
 | [Giao diện](./interfaces.md) | Public/internal HTTP, verified webhook, 15 events, Stripe outbound | Khi tích hợp |
 | [Kiến trúc](./architecture.md) | Trust boundaries, pipelines, leases/checkpoints và 18 constraints | Khi thay đổi cấu trúc/dependency |
 | [Vận hành](./operations.md) | SLI/SLO, property `payment.*`, metric `payment_*`, alert, failure mode, deploy/rotation/rollback, 13 runbook | Khi deploy hoặc xử lý sự cố |
 | [Phát triển](./development.md) | Build/run/test local, chiến lược test theo tầng Stripe, migration Flyway, fixture, DoD | Khi bắt đầu implementation |
-| [Quyết định](./decisions/README.md) | 22 ADR; ADR-016…020 khóa Gate 1, ADR-021 pin Stripe contract, ADR-022 củng cố vòng đời refund | Khi đánh giá trade-off |
+| [Quyết định](./decisions/README.md) | 23 ADR; ADR-016…020 khóa Gate 1, ADR-021 pin Stripe contract, ADR-022 củng cố vòng đời refund | Khi đánh giá trade-off |
 
 Tài liệu liên quan ngoài thư mục: `docs/order/data.md §3.5` (attempt mapping, không
 lưu client data), `docs/order/interfaces.md §6.1` (consumer event), `docs/mesh/runtime-contract.md`
@@ -217,4 +222,5 @@ lưu client data), `docs/order/interfaces.md §6.1` (consumer event), `docs/mesh
 | 2 | Kafka broker/Debezium restart và provider-network chaos là kiểm thử môi trường, không nằm trong offline Maven suite | Chạy staging drill trước production; không dùng kết quả giả lập để tuyên bố sandbox pass |
 | 3 | SLO/capacity/retention/DR là target chưa được load-test/restore-drill | Đo trước production |
 | 4 | Stripe live không hỗ trợ merchant VN | Go-live cần pháp nhân ở nước Stripe hỗ trợ |
-| 5 | Validator và semantic lint/bundle đã có nhưng repository chưa gắn chúng vào hosted CI | Gắn `validate_docs.ps1`, `validate-payment-gate2.ps1`, `npm run verify:payment` và `mvn verify` vào CI |
+| 5 | KMS adapter, metrics `payment_*`, heartbeat tự động và các tooling vận hành chưa triển khai | Để đợt riêng theo quyết định chủ dự án; xem [runtime-status.md](./runtime-status.md) |
+| 6 | Validator và semantic lint/bundle đã có nhưng repository chưa gắn chúng vào hosted CI | Gắn `validate_docs.ps1`, `validate-payment-gate2.ps1`, `npm run verify:payment` và `mvn verify` vào CI |

@@ -26,7 +26,7 @@ public record InitiatePaymentCommand(
         if (returnUrl != null && returnUrl.length() > 2048) {
             throw new IllegalArgumentException("returnUrl is too long");
         }
-        if (correlationId == null || correlationId.isBlank() || correlationId.length() > 255) {
+        if (correlationId == null || correlationId.isBlank() || correlationId.length() > 128) {
             throw new IllegalArgumentException("invalid correlationId");
         }
     }

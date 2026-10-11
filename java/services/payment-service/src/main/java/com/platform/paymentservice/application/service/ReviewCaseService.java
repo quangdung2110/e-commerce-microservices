@@ -68,7 +68,7 @@ public final class ReviewCaseService {
         requireKey(key); requireIdentifier(note, "resolutionNote", 2000);
         requireIdentifier(causeRef, "causeRef", 255);
         if (actor.equals(approver)) throw new IllegalArgumentException("maker and checker must differ");
-        if (!RESOLUTIONS.contains(resolution)) throw new IllegalArgumentException("invalid resolution");
+        if ((resolution == null || !RESOLUTIONS.contains(resolution))) throw new IllegalArgumentException("invalid resolution");
         CanonicalCommand command = new CanonicalCommand(IdempotencyAction.REVIEW_RESOLVE,
                 Map.of("caseId", caseId), Map.of("actor", actor, "approver", approver,
                 "resolution_type", resolution, "resolution_note", note, "cause_ref", causeRef));

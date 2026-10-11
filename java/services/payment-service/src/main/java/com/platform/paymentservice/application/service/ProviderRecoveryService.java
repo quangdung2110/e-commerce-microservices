@@ -73,9 +73,14 @@ public final class ProviderRecoveryService {
     public int recover(String owner, int batchSize) {
         if (owner == null || owner.isBlank()) throw new IllegalArgumentException("owner is required");
         if (batchSize < 1 || batchSize > 1000) throw new IllegalArgumentException("batchSize must be 1..1000");
-        var claimed = recovery.claimDue(owner, clock.now(), leaseTtl, batchSize);
-        for (ProviderRecoveryPort.Claimed item : claimed) recoverOne(owner, item);
-        return claimed.size();
+        int claimed = 0;
+        while (claimed < batchSize) {
+            var items = recovery.claimDue(owner, clock.now(), leaseTtl, 1);
+            if (items.isEmpty()) break;
+            recoverOne(owner, items.getFirst());
+            claimed++;
+        }
+        return claimed;
     }
 
     private void recoverOne(String owner, ProviderRecoveryPort.Claimed item) {

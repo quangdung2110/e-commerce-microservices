@@ -26,7 +26,7 @@ class RefundReconciliationIT extends AbstractPaymentIT {
         RecordingProvider provider = new RecordingProvider(fact("failed", "expired_or_canceled_card",
                 "txn_refund_failed"));
 
-        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 100))
+        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(provider.retrieved).containsExactly("re_recon_1");
@@ -51,7 +51,7 @@ class RefundReconciliationIT extends AbstractPaymentIT {
         seedRefund(1, "SUCCESS", NOW.minus(Duration.ofDays(40)), null);
         RecordingProvider provider = new RecordingProvider(fact("failed", "declined", null));
 
-        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 100))
+        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(provider.retrieved).isEmpty();
@@ -64,7 +64,7 @@ class RefundReconciliationIT extends AbstractPaymentIT {
         seedRefund(1, "SUCCESS", NOW.minus(Duration.ofDays(3)), null);
         RecordingProvider provider = new RecordingProvider(fact("requires_action", null, null));
 
-        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 100))
+        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(jdbc.queryForObject("SELECT status FROM refund_transactions", String.class))
@@ -76,7 +76,7 @@ class RefundReconciliationIT extends AbstractPaymentIT {
         seedRefund(1, "PROCESSING", null, null);
         RecordingProvider provider = new RecordingProvider(fact("requires_action", null, null));
 
-        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 100))
+        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(jdbc.queryForObject("SELECT status FROM refund_transactions", String.class))
@@ -91,7 +91,7 @@ class RefundReconciliationIT extends AbstractPaymentIT {
         RecordingProvider provider = new RecordingProvider(
                 new ProviderCurrentFactPort.NoTransition("CURRENT_REFUND_NON_TERMINAL", "pending", "[]"));
 
-        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 100))
+        assertThat(service(provider).runObjectState(WINDOW_FROM, NOW, false, 1))
                 .isEqualTo(ReconciliationService.Outcome.COMPLETED);
 
         assertThat(jdbc.queryForObject("SELECT reason_code FROM payment_review_cases", String.class))

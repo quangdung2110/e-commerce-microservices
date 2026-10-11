@@ -14,14 +14,19 @@ import java.util.Optional;
 @Component
 public final class JdbcPaymentQueryAdapter implements PaymentQueryPort {
     private final JdbcClient jdbc;
+    private final org.springframework.transaction.support.TransactionTemplate snapshots;
 
-    public JdbcPaymentQueryAdapter(JdbcClient jdbc) {
+    public JdbcPaymentQueryAdapter(JdbcClient jdbc, org.springframework.transaction.support.TransactionTemplate transactions) {
         this.jdbc = jdbc;
+        this.snapshots = new org.springframework.transaction.support.TransactionTemplate(transactions.getTransactionManager());
+        snapshots.setReadOnly(true);
+        snapshots.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        snapshots.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Override
     public Optional<PaymentView> findPayment(String transactionId) {
-        return jdbc.sql("""
+        return snapshots.execute(tx -> jdbc.sql("""
                 SELECT id, order_id, payment_attempt_number, amount_minor, currency, status,
                        financial_state_version, requires_manual_review, succeeded_at, terminal_at
                   FROM payment_transactions WHERE id = :id
@@ -30,7 +35,7 @@ public final class JdbcPaymentQueryAdapter implements PaymentQueryPort {
                         rs.getLong("amount_minor"), rs.getString("currency").trim(), rs.getString("status"),
                         rs.getLong("financial_state_version"), rs.getBoolean("requires_manual_review"),
                         instant(rs.getTimestamp("succeeded_at")), instant(rs.getTimestamp("terminal_at")),
-                        refundOf(transactionId), disputesOf(transactionId))).optional();
+                        refundOf(transactionId), disputesOf(transactionId))).optional());
     }
 
     @Override
