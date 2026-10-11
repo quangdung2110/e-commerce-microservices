@@ -93,9 +93,17 @@ báo `ORDER_COMPLETED`, Buyer không trả hàng/hoàn tiền được (audit O3
 
 - `V2__admin_delivery_confirmation.sql`: `order_item_lines.delivery_proof_id` đổi tên
   `delivery_reference` (bỏ UNIQUE), bỏ `delivery_proof_sha256` và `delivery_event_id`, thêm
-  `delivery_confirmed_by`, CHECK `DELIVERED` ⇔ có `delivered_at` + `delivery_reference`, index
+  `delivery_confirmed_by` và `delivery_confirmation_legacy`, CHECK bản ghi giao hàng, index
   một phần cho line `DISPATCHED`; inbox bỏ trạng thái `PENDING_PREREQUISITE` (hàng cũ chuyển
-  `REJECTED/DELIVERY_SOURCE_REMOVED`). Chưa có đơn nào từng `DELIVERED` nên không cần backfill.
+  `REJECTED/DELIVERY_SOURCE_REMOVED`). Dữ liệu V1 có thể đã `DELIVERED` nhưng thiếu proof/reference
+  (đã gặp trên local, đơn `770003`). Migration đánh dấu mọi line `DELIVERED` có sẵn bằng
+  `delivery_confirmation_legacy=true`, giữ nguyên timestamp/reference và trạng thái; không tạo
+  mã vận đơn hoặc danh tính Admin giả. Line lịch sử vẫn phải có `delivered_at`, có thể thiếu reference,
+  và không được nhận `delivery_confirmed_by`. Trigger cấm insert line legacy mới hoặc đổi cờ sau
+  migration. Mọi delivery mới phải có `delivered_at`, `delivery_reference` và `delivery_confirmed_by`.
+  Ngoại lệ lịch sử không phát lại fact/notification hoặc ghi nhận là một xác nhận Admin mới.
+  V2 được sửa trước khi áp dụng thành công trên stack local (history chỉ có V1); database đã áp dụng
+  một bản V2 khác cần kế hoạch nâng cấp riêng, không dùng Flyway repair để bỏ qua checksum.
 - Contract: Order HTTP `1.1.0` (additive), Order Events `1.1.0` (bỏ channel/operation Delivery); xoá
   `contracts/events/delivery/v1`. Không có consumer hay provider thật nên không áp dụng chính sách
   breaking-change.
@@ -108,4 +116,6 @@ báo `ORDER_COMPLETED`, Buyer không trả hàng/hoàn tiền được (audit O3
   dispatch, dispatch không tự giao, 403/400/422/404, all-or-nothing, replay/conflict, chỉ line cuối
   mới `COMPLETED` và phát đúng một `order.completed.v1` + `ORDER_COMPLETED`, response khớp schema.
 - `CheckoutFlowIT.dispatchedButUnconfirmedLinesAreCountedAsOverdue`: gauge cảnh báo.
+- `DeliveryMigrationIT`: nâng V1 có delivery lịch sử thiếu reference lên V2, giữ dữ liệu, validate
+  CHECK và cờ legacy bất biến; delivery mới vẫn bắt buộc có đầy đủ bản ghi Admin.
 - `RefundFlowIT`: Buyer return chỉ sau khi mọi line đã được xác nhận.

@@ -96,6 +96,7 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Refund | `RefundFlowIT`: return một lần + refund đúng một lần + close `REFUNDED`, scope sai/chưa giao, refund fail + external settlement, reversal sau success, timeout 30 ngày + no-payout close-incomplete, Admin pre-dispatch reject/accept, finalization `RECOVERY_REQUIRED` rồi hoàn tất |
 | Read/search | `QueryIT`: owner/404/admin/403/401, card/keyset/`q` không dấu |
 | Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
+| Migration | `DeliveryMigrationIT`: V1 có delivery lịch sử thiếu reference → V2 thành công, giữ nguyên dữ liệu/không phát outbox, cờ legacy không thể tạo mới hoặc đổi; delivery mới cần đầy đủ bản ghi Admin |
 
 Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
 E2E tự động, load test.

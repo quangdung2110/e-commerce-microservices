@@ -299,7 +299,8 @@ viết lại lịch sử đơn.
 | `net_amount_minor` | `BIGINT` | `quantity * unit_price_minor - discount_share_minor`, không âm; Buyer selected-line refund cộng field này |
 | `fulfillment_status` | `VARCHAR(50)` | Authoritative line FSM `PROCESSING/DISPATCHED/DELIVERED` |
 | `dispatch_event_id`, `dispatch_reservation_revision`, `dispatched_at` | `UUID/BIGINT/TIMESTAMPTZ` nullable | Identity, revision và `handed_over_at` của Inventory dispatch fact đã áp (I1); duplicate là no-op |
-| `delivery_reference`, `delivery_confirmed_by`, `delivered_at` | `VARCHAR(128)/UUID/TIMESTAMPTZ` nullable | Bản ghi Admin xác nhận giao (I2, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)): mã vận đơn/biên nhận (không unique, nhiều line cùng kiện có thể dùng chung), UUID Admin (`X-User-Id`) và thời điểm khách nhận. CHECK: `fulfillment_status='DELIVERED'` khi và chỉ khi có `delivered_at` + `delivery_reference`. Không lưu proof/PII ngoài tham chiếu này |
+| `delivery_reference`, `delivery_confirmed_by`, `delivered_at` | `VARCHAR(128)/UUID/TIMESTAMPTZ` nullable | Bản ghi Admin xác nhận giao (I2, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)): mã vận đơn/biên nhận (không unique), UUID Admin và thời điểm khách nhận. Delivery mới bắt buộc đủ ba trường; line chưa giao có cả ba NULL. Delivery lịch sử giữ timestamp/reference cũ, có thể thiếu reference và không có Admin |
+| `delivery_confirmation_legacy` | `BOOLEAN NOT NULL DEFAULT FALSE` | Chỉ V2 đánh dấu các line đã DELIVERED trước migration. Trigger cấm insert legacy mới hoặc đổi cờ; CHECK vẫn yêu cầu timestamp lịch sử. Không dùng cờ này trong API xác nhận mới |
 | `snapshot_name` | `VARCHAR(255)` | Tên sản phẩm lúc mua và trường text search duy nhất; cũng là nguồn của `product_name` trong `order.completed.v1` |
 | `snapshot_variant_name` | `VARCHAR(255)` nullable | Nhãn biến thể từ Checkout `items[].variant_name`; nguồn duy nhất của `variant_name` trong `order.completed.v1` và notification |
 | `snapshot_image_url` | `VARCHAR(2048)` nullable | Ảnh lúc mua; khớp public/internal OpenAPI URI limit; cũng là nguồn của `product_image_url` trong `order.completed.v1` |
@@ -735,8 +736,8 @@ vận hành/idempotency và không đổi hợp đồng nghiệp vụ.
 - Index `(inventory_scope_finalization_status, updated_at)` finds unresolved scope work
   independently of case financial status; generation-specific checkpoint identity must
   be unique and retain previous rejected attempts.
-- `order_item_lines` có CHECK `ck_order_item_lines_delivery_record` (line `DELIVERED` khi và chỉ khi có
-  `delivered_at` và `delivery_reference`) và partial index `idx_oil_dispatched_unconfirmed(dispatched_at)
+- `order_item_lines` có CHECK `ck_order_item_lines_delivery_record` (delivery mới có đầy đủ timestamp,
+  reference và Admin; delivery lịch sử có cờ legacy bất biến và timestamp) và partial index `idx_oil_dispatched_unconfirmed(dispatched_at)
   WHERE fulfillment_status='DISPATCHED'` cho gauge quá hạn xác nhận giao (V2, ADR-021).
 - Unique `order_item_lines(order_id, allocation_plan_line_reference)`; không đặt unique
   toàn cục hay theo plan lên line reference (ADR-020 §18).
