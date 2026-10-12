@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { InventoryOperations } from "@/components/admin/inventory/inventory-operations";
 import { ReturnLookup } from "@/components/admin/inventory/return-lookup";
@@ -76,6 +76,15 @@ describe("Inventory admin lists load without any filter", () => {
         expect.anything(),
       ),
     );
+  });
+
+  it("switches tab through history.replaceState so a URL opened with ?view= still changes", async () => {
+    search = "view=warehouses";
+    const replace = vi.spyOn(window.history, "replaceState");
+    mount(<InventoryOperations />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tồn kho" }));
+    expect(replace).toHaveBeenCalledWith(null, "", "/admin/inventory/operations?view=positions");
+    replace.mockRestore();
   });
 
   it("lists every return request until an order or state narrows it", async () => {

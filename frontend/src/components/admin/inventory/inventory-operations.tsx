@@ -2,11 +2,14 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/admin/data-table";
 import { DateTimeInput, localInputToVietnamIso } from "@/components/admin/date-time-input";
-import { FieldBlock } from "@/components/admin/inventory/inventory-shared";
+import {
+  FieldBlock,
+  replaceQuery,
+} from "@/components/admin/inventory/inventory-shared";
 import {
   ReturnCommandForm,
   type ReturnAction,
@@ -83,7 +86,6 @@ type InventoryRow =
     >["items"][number];
 
 export function InventoryOperations() {
-  const router = useRouter();
   const params = useSearchParams();
   const rawView = params.get("view") ?? "warehouses";
   const view: View = Object.hasOwn(VIEWS, rawView)
@@ -167,7 +169,7 @@ export function InventoryOperations() {
       if (value) next.set(key, value);
       else next.delete(key);
     }
-    router.replace(`/admin/inventory/operations?${next}`);
+    replaceQuery("/admin/inventory/operations", next);
   }
   function details(row: InventoryRow) {
     if ("name" in row)

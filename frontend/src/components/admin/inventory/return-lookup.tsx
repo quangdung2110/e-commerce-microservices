@@ -1,11 +1,14 @@
 "use client";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/admin/data-table";
 import { IdChip } from "@/components/admin/id-chip";
-import { FieldBlock } from "@/components/admin/inventory/inventory-shared";
+import {
+  FieldBlock,
+  replaceQuery,
+} from "@/components/admin/inventory/inventory-shared";
 import { PageHeader } from "@/components/admin/page-header";
 import { StatusBadge } from "@/components/admin/status-badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +30,6 @@ const STATES = Object.keys(REFUND_SCOPE_LABELS).filter(
 ) as AdminRefundScopeSummary["state"][];
 
 export function ReturnLookup() {
-  const router = useRouter();
   const params = useSearchParams();
   const orderId = params.get("order_id") ?? "";
   const rawState = params.get("state") ?? "";
@@ -49,7 +51,7 @@ export function ReturnLookup() {
           const status = String(form.get("state") ?? "");
           if (order) next.set("order_id", order);
           if (status) next.set("state", status);
-          router.replace(`/admin/inventory/returns?${next}`);
+          replaceQuery("/admin/inventory/returns", next);
         }}
       >
         <FieldBlock id="return-order" label="Mã đơn hàng">
@@ -81,7 +83,7 @@ export function ReturnLookup() {
           <Button
             variant="ghost"
             type="button"
-            onClick={() => router.replace("/admin/inventory/returns")}
+            onClick={() => replaceQuery("/admin/inventory/returns", new URLSearchParams())}
           >
             Xoá lọc
           </Button>

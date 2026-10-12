@@ -10,6 +10,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type { StockMutationResponse } from "@/lib/api/inventory-admin";
 import { formatDateTime } from "@/lib/format";
 
+/**
+ * Đổi query của trang hiện tại mà không qua `router.replace`.
+ *
+ * Với trang được prerender tĩnh, `router.replace` tới cùng pathname nhưng khác query bị Next
+ * kéo ngược về query của lần tải đầu khi người dùng mở thẳng URL có `?view=…`, nên bấm tab
+ * không đổi gì. `history.replaceState` được Next đồng bộ với `useSearchParams`.
+ */
+export function replaceQuery(path: string, query: URLSearchParams) {
+  const search = query.toString();
+  window.history.replaceState(null, "", search ? `${path}?${search}` : path);
+}
+
 export function FieldBlock({
   id,
   label,
