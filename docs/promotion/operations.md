@@ -81,7 +81,7 @@ Hiện thực (Actuator, `management.endpoint.health.probes.enabled=true`; `heal
 | `promotion.kafka.retry-attempts` / `retry-backoff` / `consumer-enabled` | 4 / 500ms (exponential ×2, hết lượt → DLQ) / true (`KAFKA_CONSUMER_ENABLED`) |
 | `promotion.workers.enabled` | true (`WORKERS_ENABLED`) |
 | `promotion.markdown.dataschema` | `/contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json` |
-| Debezium connector | `src/main/resources/kafka/debezium-connector-promotion-outbox.json` (route `t.promotion.markdown.events`) |
+| Debezium connector | `src/main/resources/kafka/debezium-connector-promotion-outbox.json` (route `t.promotion.markdown.events`); root compose đăng ký tự động qua `kafka-connect-init` (`infra/kafka-connect/register-connectors.sh`). Connector vắng mặt ⇒ markdown không tới Product/Search (`snapshot.mode=no_data` không phát lại event cũ) |
 
 Mọi timestamp dùng UTC. Redis/DB money dùng integer VND.
 `POST /api/v1/promotion-discovery` không có property rate-limit ở Promotion: Gateway

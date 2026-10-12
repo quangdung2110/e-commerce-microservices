@@ -1,7 +1,11 @@
 # Debezium connector của Product outbox
 
 `debezium-connector-product-outbox.json` là artifact vận hành, không phải file
-được application đọc. Đăng ký bằng Kafka Connect REST API:
+được application đọc. Với root docker-compose, service one-shot `kafka-connect-init`
+(`infra/kafka-connect/register-connectors.sh`) tự đăng ký connector này cùng các outbox connector
+khác mỗi lần `docker compose up`; chạy lại tay bằng `docker compose up kafka-connect-init`
+(idempotent: bỏ qua connector đang RUNNING, tạo lại connector FAILED). Đăng ký thủ công bằng
+Kafka Connect REST API:
 
 ```bash
 curl -sS -X PUT http://localhost:8084/connectors/product-outbox-connector/config \

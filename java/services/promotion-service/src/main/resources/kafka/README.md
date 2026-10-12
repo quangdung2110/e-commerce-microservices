@@ -2,7 +2,9 @@
 
 `debezium-connector-promotion-outbox.json` là artifact vận hành, không phải file
 được application đọc. Đăng ký bằng Kafka Connect REST API (worker ở `kafka-connect`
-của docker-compose, cổng 8084):
+của docker-compose, cổng 8084). Với root docker-compose, service one-shot `kafka-connect-init`
+(`infra/kafka-connect/register-connectors.sh`) tự đăng ký connector này mỗi lần `docker compose up`;
+chạy lại tay bằng `docker compose up kafka-connect-init` (idempotent). Đăng ký thủ công:
 
 ```bash
 curl -sS -X PUT http://localhost:8084/connectors/promotion-outbox-connector/config \

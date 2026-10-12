@@ -105,6 +105,32 @@ services:
     networks:
       - ecommerce-network
 
+  # Đăng ký các Debezium outbox connector (one-shot, idempotent). Connect không tự nhớ connector
+  # nếu volume/topic cấu hình bị xoá, và event outbox tạo lúc connector vắng mặt không được
+  # phát lại (snapshot.mode=no_data), nên bước này chạy mỗi lần `docker compose up`.
+  # Chạy lại tay: `docker compose up kafka-connect-init`.
+  kafka-connect-init:
+    image: debezium/connect:3.0.0.Final
+    container_name: kafka-connect-init
+    entrypoint: ["/bin/sh", "/scripts/register-connectors.sh"]
+    restart: "no"
+    environment:
+      CONNECT_URL: http://kafka-connect:8083
+      CONNECTOR_DIR: /connectors
+      TIMEOUT_SECONDS: "600"
+    volumes:
+      - ./infra/kafka-connect/register-connectors.sh:/scripts/register-connectors.sh:ro
+      - ./java/services/product-service/src/main/resources/kafka/debezium-connector-product-outbox.json:/connectors/product-outbox.json:ro
+      - ./java/services/promotion-service/src/main/resources/kafka/debezium-connector-promotion-outbox.json:/connectors/promotion-outbox.json:ro
+      - ./java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json:/connectors/order-outbox.json:ro
+      - ./java/services/inventory-service/src/main/resources/kafka/debezium-connector-inventory-outbox.json:/connectors/inventory-outbox.json:ro
+      - ./java/services/payment-service/src/main/resources/kafka/debezium-connector-payment-outbox.json:/connectors/payment-outbox.json:ro
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+
   # ── PostgreSQL ─────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
