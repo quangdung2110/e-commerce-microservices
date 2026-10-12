@@ -29,13 +29,15 @@ export const DISPOSITION_REASON_LABELS = {
   SUPPLIER_RETURN_AUTHORIZED: "Đã được phép trả nhà cung cấp",
 } as const;
 
+/** Giá trị `source_operation_type` mà Inventory thực sự ghi vào sổ biến động. */
 export const MOVEMENT_OPERATION_LABELS: Record<string, string> = {
-  SELLABLE_STOCK_RECEIPT: "Nhập hàng bán được",
-  STOCK_RECEIPT: "Nhập hàng",
+  SELLABLE_RECEIPT: "Nhập hàng",
   STOCK_ADJUSTMENT: "Điều chỉnh tồn",
-  SELLABLE_STOCK_ADJUSTMENT: "Điều chỉnh tồn bán được",
-  MOVEMENT_REVERSAL: "Đảo biến động",
-  SELLABLE_STOCK_REVERSAL: "Đảo biến động tồn bán được",
+  SELLABLE_REVERSAL: "Đảo biến động tồn bán được",
+  RESERVE: "Giữ hàng cho đơn",
+  COMMIT_PAYMENT: "Cam kết sau thanh toán",
+  RELEASE_RESERVATION: "Nhả hàng giữ",
+  RELEASE_COMMITTED_BEFORE_DISPATCH: "Nhả hàng đã cam kết trước khi xuất",
   PHYSICAL_DISPATCH: "Xuất kho thực tế",
   RETURN_RECEIPT: "Nhận hàng trả",
   INSPECTION_PASS: "Kiểm định đạt",
@@ -43,7 +45,8 @@ export const MOVEMENT_OPERATION_LABELS: Record<string, string> = {
   QUARANTINE_HOLD: "Giữ hàng cách ly",
   QUARANTINE_DISPOSITION: "Xử lý hàng cách ly",
   DISPOSITION_REVERSAL: "Đảo xử lý cách ly",
-  RESERVATION: "Giữ hàng",
-  RESERVATION_RELEASE: "Giải phóng giữ hàng",
-  RESERVATION_COMMIT: "Cam kết phân bổ",
 };
+
+/** `source_operation_type` cho các màn "Hàng nhập" và "Hàng trả về kho". */
+export const RECEIPT_OPERATION = "SELLABLE_RECEIPT";
+export const RETURN_OPERATION = "RETURN_RECEIPT";

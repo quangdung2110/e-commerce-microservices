@@ -66,6 +66,24 @@ public class RefundStore {
                 refundScopeId).stream().findFirst();
     }
 
+    /** Admin list: refund scopes newest registration first, optionally by state, keyset-paged. */
+    public List<Scope> listScopes(String state, Instant afterRegisteredAt, String afterScopeId, int limit) {
+        StringBuilder sql = new StringBuilder("SELECT " + SCOPE_COLUMNS + " FROM refund_scope WHERE true");
+        List<Object> args = new ArrayList<>();
+        if (state != null) {
+            sql.append(" AND state = ?");
+            args.add(state);
+        }
+        if (afterRegisteredAt != null) {
+            sql.append(" AND (registered_at, refund_scope_id) < (?, ?)");
+            args.add(Timestamp.from(afterRegisteredAt));
+            args.add(afterScopeId);
+        }
+        sql.append(" ORDER BY registered_at DESC, refund_scope_id DESC LIMIT ?");
+        args.add(limit);
+        return jdbc.query(sql.toString(), SCOPE, args.toArray());
+    }
+
     public Optional<Scope> findByOrder(String orderId) {
         return jdbc.query("SELECT " + SCOPE_COLUMNS + " FROM refund_scope WHERE order_id = ?", SCOPE, orderId)
                 .stream().findFirst();
@@ -161,8 +179,12 @@ public class RefundStore {
                        r.sku_id, r.warehouse_id, r.quantity, r.quantity - r.inspected_quantity AS uninspected,
                        r.received_at
                 FROM return_receipt_line r JOIN refund_scope s ON s.refund_scope_id = r.refund_scope_id
-                WHERE r.warehouse_id = ? AND r.inspected_quantity < r.quantity""");
-        List<Object> args = new ArrayList<>(List.of(warehouseId));
+                WHERE r.inspected_quantity < r.quantity""");
+        List<Object> args = new ArrayList<>();
+        if (warehouseId != null) {
+            sql.append(" AND r.warehouse_id = ?");
+            args.add(warehouseId);
+        }
         if (afterReceivedAt != null) {
             sql.append(" AND (r.received_at, r.return_receipt_id, r.return_receipt_line_id) > (?, ?, ?)");
             args.add(Timestamp.from(afterReceivedAt));
@@ -236,8 +258,12 @@ public class RefundStore {
     public List<Inspection> quarantineItems(String warehouseId, Instant afterInspectedAt, String afterInspectionId,
                                             int limit) {
         StringBuilder sql = new StringBuilder("SELECT " + INSPECTION_COLUMNS + " FROM inspection_result "
-                + "WHERE warehouse_id = ? AND result = 'FAIL' AND disposed_quantity < quantity");
-        List<Object> args = new ArrayList<>(List.of(warehouseId));
+                + "WHERE result = 'FAIL' AND disposed_quantity < quantity");
+        List<Object> args = new ArrayList<>();
+        if (warehouseId != null) {
+            sql.append(" AND warehouse_id = ?");
+            args.add(warehouseId);
+        }
         if (afterInspectedAt != null) {
             sql.append(" AND (inspected_at, inspection_id) > (?, ?)");
             args.add(Timestamp.from(afterInspectedAt));

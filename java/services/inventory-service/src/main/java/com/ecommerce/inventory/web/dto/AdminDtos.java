@@ -234,6 +234,10 @@ public final class AdminDtos {
                                        long passedQuantity, long failedQuantity) {
     }
 
+    public record AdminRefundScopeSummary(String refundScopeId, String refundRequestId, String orderId, String state,
+                                          long revision, Instant registeredAt) {
+    }
+
     public record AdminRefundScope(String refundScopeId, String refundRequestId, String orderId, String state,
                                    long revision, List<AdminRefundScopeLine> lines) {
     }

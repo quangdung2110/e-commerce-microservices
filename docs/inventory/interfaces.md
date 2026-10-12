@@ -196,14 +196,15 @@ its identifier:
 |---|---|
 | `GET /api/v1/admin/inventory/warehouses` | List warehouses; optional `is_active`. |
 | `GET /api/v1/admin/inventory/warehouses/{warehouse_id}` | One warehouse with its current `revision` (the value `expected_revision` must match). |
-| `GET /api/v1/admin/inventory/stock-positions` | Positions filtered by `warehouse_id` and/or `sku_id` (at least one). |
+| `GET /api/v1/admin/inventory/stock-positions` | Every position; `warehouse_id` and/or `sku_id` are optional filters (ADR-029). |
 | `GET /api/v1/admin/inventory/stock-positions/{warehouse_id}/{sku_id}` | All five authoritative buckets of one position. |
-| `GET /api/v1/admin/inventory/dispatch-queue?warehouse_id=` | `COMMITTED`, undispatched lines allocated to the warehouse, oldest commit first. |
-| `GET /api/v1/admin/inventory/inspection-queue?warehouse_id=` | Return receipt lines with uninspected quantity at the warehouse. |
-| `GET /api/v1/admin/inventory/quarantine-items?warehouse_id=` | Failed-inspection quantity not yet disposed out, with the latest `HOLD` reason. |
+| `GET /api/v1/admin/inventory/dispatch-queue` | `COMMITTED`, undispatched lines in every warehouse, oldest commit first; optional `warehouse_id` narrows to one (ADR-029). |
+| `GET /api/v1/admin/inventory/inspection-queue` | Return receipt lines with uninspected quantity in every warehouse; optional `warehouse_id`. |
+| `GET /api/v1/admin/inventory/quarantine-items` | Failed-inspection quantity not yet disposed out, with the latest `HOLD` reason, in every warehouse; optional `warehouse_id`. |
+| `GET /api/v1/admin/inventory/refund-scope-summaries` | Every Refund Scope (return request), newest registration first; optional `state`. Per-line quantities come from `refund-scopes/{refund_scope_id}`. |
 | `GET /api/v1/admin/inventory/refund-scopes?order_id=` | Resolve the order's lifetime scope. |
 | `GET /api/v1/admin/inventory/refund-scopes/{refund_scope_id}` | Expected, received, passed and failed quantity per selected line, with scope state and revision. |
-| `GET /api/v1/admin/inventory/stock-movements` | Movement evidence by `warehouse_id`, `sku_id` and `recorded_from`/`recorded_to`. |
+| `GET /api/v1/admin/inventory/stock-movements` | Every movement, newest first; optional filters `warehouse_id`, `sku_id`, `source_operation_type` (for example `SELLABLE_RECEIPT` for stock receipts, `RETURN_RECEIPT` for returned goods) and `recorded_from`/`recorded_to` (ADR-029). |
 | `GET /api/v1/admin/inventory/stock-movements/{movement_id}` | One immutable movement (the target of a sellable reversal). |
 | `GET /api/v1/admin/inventory/reservations/{order_id}` | Allocation facts (root state, lines, warehouses) needed to dispatch; no payment or customer data. |
 | `GET /api/v1/admin/inventory/commands/{command_id}` | The durable outcome of an ADMIN command, read in the shared `admin` namespace (`result: ACCEPTED`/`REJECTED`, `http_status`, `error_code`). |

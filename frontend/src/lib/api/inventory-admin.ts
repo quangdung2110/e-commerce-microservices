@@ -23,6 +23,7 @@ export type PhysicalDispatchRequest = Schemas["PhysicalDispatchRequest"];
 export type AdminReservation = Schemas["AdminReservation"];
 export type AdminReservationLine = Schemas["AdminReservationLine"];
 export type AdminRefundScope = Schemas["AdminRefundScope"];
+export type AdminRefundScopeSummary = Schemas["AdminRefundScopeSummary"];
 export type AdminRefundScopeLine = Schemas["AdminRefundScopeLine"];
 export type InspectionQueueItem = Schemas["InspectionQueueItem"];
 export type QuarantineItem = Schemas["QuarantineItem"];
@@ -103,6 +104,16 @@ export const inventoryAdminApi = {
     (
       await api.get<Schemas["QuarantineItemPage"]>(
         `${PREFIX}/quarantine-items`,
+        { params, signal },
+      )
+    ).data,
+  listRefundScopes: async (
+    params: Query<"listAdminRefundScopes">,
+    signal?: AbortSignal,
+  ) =>
+    (
+      await api.get<Schemas["AdminRefundScopeSummaryPage"]>(
+        `${PREFIX}/refund-scope-summaries`,
         { params, signal },
       )
     ).data,

@@ -161,7 +161,7 @@ public class StockStore {
                 POSITION, warehouseId, skuId).stream().findFirst();
     }
 
-    /** Admin query: positions by warehouse and/or SKU, keyset-paged on (warehouse_id, sku_id). */
+    /** Admin query: positions, optionally narrowed by warehouse and/or SKU, keyset-paged on (warehouse_id, sku_id). */
     public List<Position> listPositions(String warehouseId, String skuId, PositionKey after, int limit) {
         StringBuilder sql = new StringBuilder("SELECT " + POSITION_COLUMNS + " FROM stock_position WHERE true");
         List<Object> args = new java.util.ArrayList<>();
@@ -183,9 +183,10 @@ public class StockStore {
         return jdbc.query(sql.toString(), POSITION, args.toArray());
     }
 
-    /** Admin query: movements newest first, keyset-paged on (recorded_at, movement_id). */
-    public List<Movement> listMovements(String warehouseId, String skuId, Instant from, Instant to,
-                                        Instant afterRecordedAt, String afterMovementId, int limit) {
+    /** Admin query: movements newest first, optionally filtered, keyset-paged on (recorded_at, movement_id). */
+    public List<Movement> listMovements(String warehouseId, String skuId, String sourceOperationType,
+                                        Instant from, Instant to, Instant afterRecordedAt,
+                                        String afterMovementId, int limit) {
         StringBuilder sql = new StringBuilder("SELECT " + MOVEMENT_COLUMNS + " FROM stock_movement WHERE true");
         List<Object> args = new java.util.ArrayList<>();
         if (warehouseId != null) {
@@ -195,6 +196,10 @@ public class StockStore {
         if (skuId != null) {
             sql.append(" AND sku_id = ?");
             args.add(skuId);
+        }
+        if (sourceOperationType != null) {
+            sql.append(" AND source_operation_type = ?");
+            args.add(sourceOperationType);
         }
         if (from != null) {
             sql.append(" AND recorded_at >= ?");

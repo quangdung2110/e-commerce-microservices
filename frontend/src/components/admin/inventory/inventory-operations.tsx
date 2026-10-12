@@ -13,7 +13,6 @@ import {
 } from "@/components/admin/inventory/return-command-form";
 import { PageHeader } from "@/components/admin/page-header";
 import { IdChip } from "@/components/admin/id-chip";
-import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,17 +30,38 @@ import {
   FAIL_REASON_LABELS,
   DISPOSITION_REASON_LABELS,
   MOVEMENT_OPERATION_LABELS,
+  RECEIPT_OPERATION,
+  RETURN_OPERATION,
 } from "@/lib/labels/inventory";
 
 const VIEWS = {
   warehouses: "Danh sách kho",
   positions: "Tồn kho",
+  receipts: "Hàng nhập",
+  returned: "Hàng trả về kho",
   movements: "Lịch sử biến động",
   dispatch: "Chờ xuất kho",
   inspection: "Chờ kiểm định",
   quarantine: "Hàng cách ly",
 } as const;
 type View = keyof typeof VIEWS;
+/** Các màn đọc sổ biến động; "Hàng nhập" và "Hàng trả" chỉ cố định loại thao tác. */
+const MOVEMENT_VIEWS: Partial<Record<View, string | undefined>> = {
+  movements: undefined,
+  receipts: RECEIPT_OPERATION,
+  returned: RETURN_OPERATION,
+};
+const QUEUE_VIEWS: View[] = ["dispatch", "inspection", "quarantine"];
+const EMPTY_DESCRIPTIONS: Record<View, string> = {
+  warehouses: "Chưa có kho nào. Tạo kho để bắt đầu nhận hàng.",
+  positions: "Chưa có vị trí tồn nào.",
+  receipts: "Chưa có phiếu nhập hàng nào.",
+  returned: "Chưa có hàng trả nào được nhận về kho.",
+  movements: "Chưa có biến động tồn kho nào.",
+  dispatch: "Không có dòng hàng nào đang chờ xuất kho.",
+  inspection: "Không có hàng trả nào đang chờ kiểm định.",
+  quarantine: "Không có hàng nào đang bị cách ly.",
+};
 type InventoryRow =
   | Awaited<
       ReturnType<typeof inventoryAdminApi.listWarehouses>
@@ -76,11 +96,8 @@ export function InventoryOperations() {
   const to = params.get("recorded_to") ?? undefined;
   const [busy, setBusy] = useState(false);
   const [action, setAction] = useState<ReturnAction | null>(null);
-  const requiresWarehouse =
-    view === "dispatch" || view === "inspection" || view === "quarantine";
-  const enabled =
-    view === "warehouses" ||
-    (requiresWarehouse ? !!warehouse : !!warehouse || !!sku);
+  const isQueue = QUEUE_VIEWS.includes(view);
+  const isMovement = Object.hasOwn(MOVEMENT_VIEWS, view);
   const list = useCursorPager<{
     items: InventoryRow[];
     next_cursor: string | null;
@@ -95,7 +112,6 @@ export function InventoryOperations() {
       from,
       to,
     ],
-    enabled,
     fetchPage: (cursor, signal) => {
       const common = {
         warehouse_id: warehouse || undefined,
@@ -116,23 +132,30 @@ export function InventoryOperations() {
         case "positions":
           return inventoryAdminApi.listStockPositions(common, signal);
         case "movements":
+        case "receipts":
+        case "returned":
           return inventoryAdminApi.listStockMovements(
-            { ...common, recorded_from: from, recorded_to: to },
+            {
+              ...common,
+              source_operation_type: MOVEMENT_VIEWS[view],
+              recorded_from: from,
+              recorded_to: to,
+            },
             signal,
           );
         case "dispatch":
           return inventoryAdminApi.listDispatchQueue(
-            { warehouse_id: warehouse, cursor, limit: 25 },
+            { warehouse_id: warehouse || undefined, cursor, limit: 25 },
             signal,
           );
         case "inspection":
           return inventoryAdminApi.listInspectionQueue(
-            { warehouse_id: warehouse, cursor, limit: 25 },
+            { warehouse_id: warehouse || undefined, cursor, limit: 25 },
             signal,
           );
         case "quarantine":
           return inventoryAdminApi.listQuarantineItems(
-            { warehouse_id: warehouse, cursor, limit: 25 },
+            { warehouse_id: warehouse || undefined, cursor, limit: 25 },
             signal,
           );
       }
@@ -178,6 +201,10 @@ export function InventoryOperations() {
           <p>
             {MOVEMENT_OPERATION_LABELS[row.source_operation_type] ??
               "Biến động tồn kho"}
+          </p>
+          <p className="text-caption">
+            Tồn thực tế {signed(row.deltas.on_hand)} · Bán được{" "}
+            {signed(row.deltas.available_to_sell)}
           </p>
           <p className="text-caption">{formatDateTime(row.recorded_at)}</p>
         </>
@@ -315,7 +342,7 @@ export function InventoryOperations() {
     <div className="space-y-8">
       <PageHeader
         title="Vận hành kho"
-        description="Danh sách và hàng đợi theo dữ liệu Inventory. Chọn kho để kiểm định và xử lý cách ly."
+        description="Toàn bộ kho, tồn, hàng nhập, hàng trả và các hàng đợi xuất kho, kiểm định, cách ly. Bộ lọc chỉ để thu hẹp kết quả."
         action={
           <Button
             variant="outline"
@@ -347,7 +374,7 @@ export function InventoryOperations() {
             warehouse_id: String(data.get("warehouse_id") ?? "").trim(),
             sku_id: String(data.get("sku_id") ?? "").trim(),
             is_active: String(data.get("is_active") ?? ""),
-            ...(view === "movements" ? {
+            ...(isMovement ? {
               recorded_from: localInputToVietnamIso(String(data.get("recorded_from") ?? "")),
               recorded_to: localInputToVietnamIso(String(data.get("recorded_to") ?? "")),
             } : {}),
@@ -366,29 +393,30 @@ export function InventoryOperations() {
           <>
             <FieldBlock
               id="warehouse_id"
-              label={requiresWarehouse ? "Mã kho *" : "Mã kho"}
+              label="Mã kho"
             >
               <Input
                 id="warehouse_id"
                 name="warehouse_id"
                 defaultValue={warehouse}
                 maxLength={128}
-                required={requiresWarehouse}
+                placeholder="Để trống để xem tất cả kho"
               />
             </FieldBlock>
-            {!requiresWarehouse ? (
+            {!isQueue ? (
               <FieldBlock id="sku_id" label="Mã SKU">
                 <Input
                   id="sku_id"
                   name="sku_id"
                   defaultValue={sku}
                   maxLength={128}
+                  placeholder="Để trống để xem tất cả SKU"
                 />
               </FieldBlock>
             ) : null}
           </>
         )}
-        {view === "movements" ? (
+        {isMovement ? (
           <MovementDateFields from={from} to={to} />
         ) : null}
         <div className="flex items-end gap-2">
@@ -410,63 +438,55 @@ export function InventoryOperations() {
           </Button>
         </div>
       </form>
-      {!enabled ? (
-        <Alert variant="info" title="Chọn phạm vi tra cứu">
-          {requiresWarehouse
-            ? "Nhập mã kho để tải hàng đợi."
-            : "Nhập ít nhất mã kho hoặc mã SKU để tra cứu."}
-        </Alert>
-      ) : (
-        <DataTable
-          columns={columns}
-          data={list.data?.items ?? []}
-          getRowId={(row) =>
-            "movement_id" in row
-              ? row.movement_id
-              : "inspection_id" in row
-                ? row.inspection_id
-                : "return_receipt_id" in row
-                  ? JSON.stringify([
-                      row.return_receipt_id,
-                      row.return_receipt_line_id,
+      <DataTable
+        columns={columns}
+        data={list.data?.items ?? []}
+        getRowId={(row) =>
+          "movement_id" in row
+            ? row.movement_id
+            : "inspection_id" in row
+              ? row.inspection_id
+              : "return_receipt_id" in row
+                ? JSON.stringify([
+                    row.return_receipt_id,
+                    row.return_receipt_line_id,
+                  ])
+                : "order_line_id" in row
+                  ? JSON.stringify([row.order_id, row.order_line_id])
+                  : JSON.stringify([
+                      row.warehouse_id,
+                      "sku_id" in row ? row.sku_id : "",
                     ])
-                  : "order_line_id" in row
-                    ? JSON.stringify([row.order_id, row.order_line_id])
-                    : JSON.stringify([
-                        row.warehouse_id,
-                        "sku_id" in row ? row.sku_id : "",
-                      ])
-          }
-          caption={VIEWS[view]}
-          renderMobileCard={(row) => (
-            <div className="space-y-4">
-              {identity(row)}
-              {details(row)}
-              {rowAction(row)}
-            </div>
-          )}
-          isLoading={list.isPending}
-          isFetching={list.isFetching}
-          error={!list.data ? list.error : undefined}
-          partialError={list.data ? list.error : undefined}
-          onRetry={() => {
-            list.reset();
-            void list.refetch();
-          }}
-          emptyTitle="Không có dữ liệu phù hợp"
-          emptyDescription="Hãy chọn kho hoặc bộ lọc khác, hoặc tải lại danh sách."
-          emptyAction={
-            <Button variant="outline" onClick={() => void list.refetch()}>
-              Tải lại
-            </Button>
-          }
-          page={list.page}
-          hasNext={!list.isPlaceholderData && list.hasNext}
-          hasPrevious={list.hasPrevious}
-          onNext={list.goNext}
-          onPrevious={list.goPrevious}
-        />
-      )}
+        }
+        caption={VIEWS[view]}
+        renderMobileCard={(row) => (
+          <div className="space-y-4">
+            {identity(row)}
+            {details(row)}
+            {rowAction(row)}
+          </div>
+        )}
+        isLoading={list.isPending}
+        isFetching={list.isFetching}
+        error={!list.data ? list.error : undefined}
+        partialError={list.data ? list.error : undefined}
+        onRetry={() => {
+          list.reset();
+          void list.refetch();
+        }}
+        emptyTitle="Không có dữ liệu phù hợp"
+        emptyDescription={EMPTY_DESCRIPTIONS[view]}
+        emptyAction={
+          <Button variant="outline" onClick={() => void list.refetch()}>
+            Tải lại
+          </Button>
+        }
+        page={list.page}
+        hasNext={!list.isPlaceholderData && list.hasNext}
+        hasPrevious={list.hasPrevious}
+        onNext={list.goNext}
+        onPrevious={list.goPrevious}
+      />
       <Dialog
         open={action !== null}
         onOpenChange={(open) => {
@@ -496,6 +516,10 @@ export function InventoryOperations() {
       </Dialog>
     </div>
   );
+}
+
+function signed(value: number): string {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function MovementDateFields({ from, to }: { from?: string; to?: string }) {

@@ -143,13 +143,17 @@ public class ReservationStore {
                 dispatch.actorId(), Timestamp.from(now));
     }
 
-    /** Admin dispatch queue: committed, undispatched lines at a warehouse, oldest commit first. */
+    /** Admin dispatch queue: committed, undispatched lines (one warehouse or all), oldest commit first. */
     public List<Line> dispatchQueue(String warehouseId, Instant afterCommittedAt, String afterOrderId,
                                     String afterOrderLineId, int limit) {
         StringBuilder sql = new StringBuilder("SELECT " + LINE_COLUMNS + " FROM reservation_line l "
                 + "LEFT JOIN physical_dispatch d ON d.order_id = l.order_id AND d.order_line_id = l.order_line_id "
-                + "WHERE l.warehouse_id = ? AND l.state = 'COMMITTED'");
-        List<Object> args = new ArrayList<>(List.of(warehouseId));
+                + "WHERE l.state = 'COMMITTED'");
+        List<Object> args = new ArrayList<>();
+        if (warehouseId != null) {
+            sql.append(" AND l.warehouse_id = ?");
+            args.add(warehouseId);
+        }
         if (afterCommittedAt != null) {
             sql.append(" AND (l.committed_at, l.order_id, l.order_line_id) > (?, ?, ?)");
             args.add(Timestamp.from(afterCommittedAt));

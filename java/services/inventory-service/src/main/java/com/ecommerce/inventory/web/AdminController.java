@@ -1,7 +1,6 @@
 package com.ecommerce.inventory.web;
 
 import com.ecommerce.inventory.command.CommandExecutor;
-import com.ecommerce.inventory.common.ApiException;
 import com.ecommerce.inventory.service.DispatchService;
 import com.ecommerce.inventory.service.QueryService;
 import com.ecommerce.inventory.service.ReturnService;
@@ -120,7 +119,6 @@ public class AdminController {
             @RequestParam(value = "sku_id", required = false) String skuId,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit) {
-        requireOneOf(warehouseId, skuId);
         return queries.positions(warehouseId, skuId, cursor, RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
     }
 
@@ -138,10 +136,10 @@ public class AdminController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(value = "recorded_to", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(value = "source_operation_type", required = false) String sourceOperationType,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit) {
-        requireOneOf(warehouseId, skuId);
-        return queries.movements(warehouseId, skuId, instant(from), instant(to), cursor,
+        return queries.movements(warehouseId, skuId, sourceOperationType, instant(from), instant(to), cursor,
                 RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
     }
 
@@ -161,7 +159,7 @@ public class AdminController {
 
     @GetMapping("/dispatch-queue")
     public AdminDtos.Page<AdminDtos.DispatchQueueItem> dispatchQueue(
-            @RequestParam("warehouse_id") String warehouseId,
+            @RequestParam(value = "warehouse_id", required = false) String warehouseId,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit) {
         return queries.dispatchQueue(warehouseId, cursor, RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
@@ -208,7 +206,7 @@ public class AdminController {
 
     @GetMapping("/inspection-queue")
     public AdminDtos.Page<AdminDtos.InspectionQueueItem> inspectionQueue(
-            @RequestParam("warehouse_id") String warehouseId,
+            @RequestParam(value = "warehouse_id", required = false) String warehouseId,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit) {
         return queries.inspectionQueue(warehouseId, cursor, RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
@@ -216,7 +214,7 @@ public class AdminController {
 
     @GetMapping("/quarantine-items")
     public AdminDtos.Page<AdminDtos.QuarantineItem> quarantineItems(
-            @RequestParam("warehouse_id") String warehouseId,
+            @RequestParam(value = "warehouse_id", required = false) String warehouseId,
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit) {
         return queries.quarantineItems(warehouseId, cursor, RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
@@ -227,6 +225,14 @@ public class AdminController {
         return queries.adminRefundScopeByOrder(orderId);
     }
 
+    @GetMapping("/refund-scope-summaries")
+    public AdminDtos.Page<AdminDtos.AdminRefundScopeSummary> refundScopeSummaries(
+            @RequestParam(value = "state", required = false) String state,
+            @RequestParam(value = "cursor", required = false) String cursor,
+            @RequestParam(value = "limit", required = false) Integer limit) {
+        return queries.adminRefundScopeSummaries(state, cursor, RequestRules.limit(limit, DEFAULT_LIMIT, MAX_LIMIT));
+    }
+
     @GetMapping("/refund-scopes/{refund_scope_id}")
     public AdminDtos.AdminRefundScope refundScope(@PathVariable("refund_scope_id") String refundScopeId) {
         return queries.adminRefundScope(refundScopeId);
@@ -235,12 +241,6 @@ public class AdminController {
     @GetMapping("/commands/{command_id}")
     public AdminDtos.AdminCommandOutcome command(@PathVariable("command_id") String commandId) {
         return queries.adminCommand(RequestContext.ADMIN_NAMESPACE, commandId);
-    }
-
-    private static void requireOneOf(String warehouseId, String skuId) {
-        if (warehouseId == null && skuId == null) {
-            throw ApiException.invalid("warehouse_id", "warehouse_id or sku_id is required");
-        }
     }
 
     private static Instant instant(OffsetDateTime value) {

@@ -99,6 +99,40 @@ class AdminOperationsIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void listsAndQueuesAreCompleteWithoutAnyFilter() throws Exception {
+        String main = createWarehouse("Main", 0);
+        String annex = createWarehouse("Annex", 1);
+        receive(main, "sku-a", 5);
+        receive(annex, "sku-b", 4);
+        adjust(main, "sku-a", "INCREASE", 1, "COUNT_GAIN");
+        reserve("order-1", "l1", main, "sku-a", "2");
+        workflow(HttpMethod.POST, "/internal/inventory/v1/reservations/order-1/commit",
+                Map.of("payment_reference", "p"), key());
+
+        JsonNode positions = admin(HttpMethod.GET, ADMIN + "/stock-positions", null, null).body();
+        assertThat(positions.path("items")).hasSize(2);
+        assertThat(admin(HttpMethod.GET, ADMIN + "/stock-positions?warehouse_id=" + annex, null, null).body()
+                .path("items")).hasSize(1);
+
+        JsonNode movements = admin(HttpMethod.GET, ADMIN + "/stock-movements", null, null).body();
+        int total = movements.path("items").size();
+        assertThat(total).isGreaterThanOrEqualTo(4);
+        JsonNode receipts = admin(HttpMethod.GET, ADMIN + "/stock-movements?source_operation_type=SELLABLE_RECEIPT",
+                null, null).body();
+        assertThat(receipts.path("items")).hasSize(2);
+        receipts.path("items").forEach(m -> assertThat(m.path("source_operation_type").asText())
+                .isEqualTo("SELLABLE_RECEIPT"));
+        assertThat(admin(HttpMethod.GET, ADMIN + "/stock-movements?warehouse_id=" + annex, null, null).body()
+                .path("items")).hasSize(1);
+
+        JsonNode queue = admin(HttpMethod.GET, ADMIN + "/dispatch-queue", null, null).body();
+        assertThat(queue.path("items")).hasSize(1);
+        assertThat(admin(HttpMethod.GET, ADMIN + "/dispatch-queue?warehouse_id=" + annex, null, null).body()
+                .path("items")).isEmpty();
+        assertThat(admin(HttpMethod.GET, ADMIN + "/quarantine-items", null, null).body().path("items")).isEmpty();
+    }
+
+    @Test
     void operationIdentityIsClaimedOnlyBySuccess() throws Exception {
         String wh = createWarehouse("Main", 0);
         Map<String, Object> adjustment = adjustment(wh, "sku-a", "DECREASE", 1, "COUNT_LOSS");

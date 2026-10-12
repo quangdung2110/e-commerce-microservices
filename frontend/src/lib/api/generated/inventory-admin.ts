@@ -208,8 +208,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List stock positions by warehouse and/or SKU
-         * @description At least one of warehouse_id or sku_id is required.
+         * List stock positions
+         * @description Every position, ordered by (warehouse_id, sku_id). warehouse_id and sku_id are optional filters that only narrow the result; omitting both is valid.
          */
         get: operations["listStockPositions"];
         put?: never;
@@ -229,7 +229,7 @@ export interface paths {
         };
         /**
          * Search immutable movement evidence
-         * @description At least one of warehouse_id or sku_id is required; newest first.
+         * @description Every movement, newest first. warehouse_id, sku_id, source_operation_type and the recorded_from/recorded_to window are optional filters that only narrow the result; omitting all of them is valid.
          */
         get: operations["listStockMovements"];
         put?: never;
@@ -248,8 +248,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List committed, undispatched lines allocated to a warehouse
-         * @description Oldest commit first.
+         * List committed, undispatched lines
+         * @description Oldest commit first. Covers every warehouse; warehouse_id optionally narrows to one.
          */
         get: operations["listDispatchQueue"];
         put?: never;
@@ -267,7 +267,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List return receipt lines with uninspected quantity at a warehouse */
+        /**
+         * List return receipt lines with uninspected quantity
+         * @description Oldest receipt first. Covers every warehouse; warehouse_id optionally narrows to one.
+         */
         get: operations["listInspectionQueue"];
         put?: never;
         post?: never;
@@ -284,8 +287,31 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List failed-inspection quantity not yet disposed out */
+        /**
+         * List failed-inspection quantity not yet disposed out
+         * @description Oldest inspection first. Covers every warehouse; warehouse_id optionally narrows to one.
+         */
         get: operations["listQuarantineItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/inventory/refund-scope-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Refund Scopes (return requests)
+         * @description Every registered Refund Scope, newest registration first. state optionally narrows the result. Use the scope identifier with getAdminRefundScope for per-line quantities.
+         */
+        get: operations["listAdminRefundScopes"];
         put?: never;
         post?: never;
         delete?: never;
@@ -743,6 +769,20 @@ export interface components {
             revision: number;
             lines: components["schemas"]["AdminRefundScopeLine"][];
         };
+        AdminRefundScopeSummary: {
+            refund_scope_id: components["schemas"]["OpaqueId"];
+            refund_request_id: components["schemas"]["OpaqueId"];
+            order_id: components["schemas"]["OpaqueId"];
+            /** @enum {unknown} */
+            state: "REGISTERED" | "IN_PROGRESS" | "INSPECTION_COMPLETED" | "CANCELLED" | "CLOSED" | "CLOSED_INCOMPLETE";
+            revision: number;
+            /** Format: date-time */
+            registered_at: string;
+        };
+        AdminRefundScopeSummaryPage: {
+            items: components["schemas"]["AdminRefundScopeSummary"][];
+            next_cursor: components["schemas"]["PageCursor"];
+        };
         StockMutationResponse: {
             command_id: components["schemas"]["OpaqueId"];
             correlation_id: components["schemas"]["OpaqueId"];
@@ -920,6 +960,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     createWarehouse: {
@@ -972,6 +1013,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     updateWarehouse: {
@@ -1253,6 +1295,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listStockMovements: {
@@ -1260,6 +1303,8 @@ export interface operations {
             query?: {
                 warehouse_id?: components["schemas"]["OpaqueId"];
                 sku_id?: components["schemas"]["OpaqueId"];
+                /** @description Exact movement source, for example SELLABLE_RECEIPT for stock receipts or RETURN_RECEIPT for returned goods. */
+                source_operation_type?: string;
                 recorded_from?: string;
                 recorded_to?: string;
                 /** @description Opaque cursor from the previous page. */
@@ -1284,12 +1329,13 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listDispatchQueue: {
         parameters: {
-            query: {
-                warehouse_id: components["schemas"]["OpaqueId"];
+            query?: {
+                warehouse_id?: components["schemas"]["OpaqueId"];
                 /** @description Opaque cursor from the previous page. */
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
@@ -1312,12 +1358,13 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listInspectionQueue: {
         parameters: {
-            query: {
-                warehouse_id: components["schemas"]["OpaqueId"];
+            query?: {
+                warehouse_id?: components["schemas"]["OpaqueId"];
                 /** @description Opaque cursor from the previous page. */
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
@@ -1340,12 +1387,13 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     listQuarantineItems: {
         parameters: {
-            query: {
-                warehouse_id: components["schemas"]["OpaqueId"];
+            query?: {
+                warehouse_id?: components["schemas"]["OpaqueId"];
                 /** @description Opaque cursor from the previous page. */
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
@@ -1368,6 +1416,36 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listAdminRefundScopes: {
+        parameters: {
+            query?: {
+                state?: "REGISTERED" | "IN_PROGRESS" | "INSPECTION_COMPLETED" | "CANCELLED" | "CLOSED" | "CLOSED_INCOMPLETE";
+                /** @description Opaque cursor from the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Refund Scope summary page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminRefundScopeSummaryPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            503: components["responses"]["Unavailable"];
         };
     };
     findAdminRefundScopeByOrder: {
@@ -1394,6 +1472,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getStockPosition: {
@@ -1420,6 +1499,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getStockMovement: {
@@ -1445,6 +1525,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getAdminCommandOutcome: {
@@ -1470,6 +1551,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getAdminReservationFact: {
@@ -1495,6 +1577,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     getAdminRefundScopeFact: {
@@ -1520,6 +1603,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
 }

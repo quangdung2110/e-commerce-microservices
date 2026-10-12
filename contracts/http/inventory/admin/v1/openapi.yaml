@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Inventory Warehouse Administration API
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Target ADMIN contract for warehouse master data, physical stock operations and
     read-only operational queues. Every accepted mutation atomically persists state,
@@ -168,8 +168,10 @@ paths:
     get:
       tags: [Sellable stock]
       operationId: listStockPositions
-      summary: List stock positions by warehouse and/or SKU
-      description: At least one of warehouse_id or sku_id is required.
+      summary: List stock positions
+      description: >-
+        Every position, ordered by (warehouse_id, sku_id). warehouse_id and sku_id are optional
+        filters that only narrow the result; omitting both is valid.
       parameters:
         - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
@@ -182,10 +184,14 @@ paths:
       tags: [Sellable stock]
       operationId: listStockMovements
       summary: Search immutable movement evidence
-      description: At least one of warehouse_id or sku_id is required; newest first.
+      description: >-
+        Every movement, newest first. warehouse_id, sku_id, source_operation_type and the
+        recorded_from/recorded_to window are optional filters that only narrow the result;
+        omitting all of them is valid.
       parameters:
         - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - { name: sku_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: source_operation_type, in: query, required: false, description: 'Exact movement source, for example SELLABLE_RECEIPT for stock receipts or RETURN_RECEIPT for returned goods.', schema: { type: string, minLength: 1, maxLength: 64 } }
         - { name: recorded_from, in: query, required: false, schema: { type: string, format: date-time } }
         - { name: recorded_to, in: query, required: false, schema: { type: string, format: date-time } }
         - $ref: '#/components/parameters/Cursor'
@@ -196,10 +202,10 @@ paths:
     get:
       tags: [Dispatch]
       operationId: listDispatchQueue
-      summary: List committed, undispatched lines allocated to a warehouse
-      description: Oldest commit first.
+      summary: List committed, undispatched lines
+      description: Oldest commit first. Covers every warehouse; warehouse_id optionally narrows to one.
       parameters:
-        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses: { '200': { description: Dispatch queue page., content: { application/json: { schema: { $ref: '#/components/schemas/DispatchQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -208,9 +214,10 @@ paths:
     get:
       tags: [Returns]
       operationId: listInspectionQueue
-      summary: List return receipt lines with uninspected quantity at a warehouse
+      summary: List return receipt lines with uninspected quantity
+      description: Oldest receipt first. Covers every warehouse; warehouse_id optionally narrows to one.
       parameters:
-        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses: { '200': { description: Inspection queue page., content: { application/json: { schema: { $ref: '#/components/schemas/InspectionQueuePage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
@@ -220,11 +227,26 @@ paths:
       tags: [Quarantine]
       operationId: listQuarantineItems
       summary: List failed-inspection quantity not yet disposed out
+      description: Oldest inspection first. Covers every warehouse; warehouse_id optionally narrows to one.
       parameters:
-        - { name: warehouse_id, in: query, required: true, schema: { $ref: '#/components/schemas/OpaqueId' } }
+        - { name: warehouse_id, in: query, required: false, schema: { $ref: '#/components/schemas/OpaqueId' } }
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
       responses: { '200': { description: Quarantine item page., content: { application/json: { schema: { $ref: '#/components/schemas/QuarantineItemPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
+
+  /api/v1/admin/inventory/refund-scope-summaries:
+    get:
+      tags: [Returns]
+      operationId: listAdminRefundScopes
+      summary: List Refund Scopes (return requests)
+      description: >-
+        Every registered Refund Scope, newest registration first. state optionally narrows the
+        result. Use the scope identifier with getAdminRefundScope for per-line quantities.
+      parameters:
+        - { name: state, in: query, required: false, schema: { enum: [REGISTERED, IN_PROGRESS, INSPECTION_COMPLETED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses: { '200': { description: Refund Scope summary page., content: { application/json: { schema: { $ref: '#/components/schemas/AdminRefundScopeSummaryPage' } } } }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /api/v1/admin/inventory/refund-scopes:
     get:
@@ -704,6 +726,24 @@ components:
         state: { enum: [UNKNOWN, REGISTERED, IN_PROGRESS, INSPECTION_COMPLETED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] }
         revision: { type: integer, minimum: 1 }
         lines: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/AdminRefundScopeLine' } }
+    AdminRefundScopeSummary:
+      type: object
+      additionalProperties: false
+      required: [refund_scope_id, refund_request_id, order_id, state, revision, registered_at]
+      properties:
+        refund_scope_id: { $ref: '#/components/schemas/OpaqueId' }
+        refund_request_id: { $ref: '#/components/schemas/OpaqueId' }
+        order_id: { $ref: '#/components/schemas/OpaqueId' }
+        state: { enum: [REGISTERED, IN_PROGRESS, INSPECTION_COMPLETED, CANCELLED, CLOSED, CLOSED_INCOMPLETE] }
+        revision: { type: integer, minimum: 1 }
+        registered_at: { type: string, format: date-time }
+    AdminRefundScopeSummaryPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/AdminRefundScopeSummary' } }
+        next_cursor: { $ref: '#/components/schemas/PageCursor' }
     StockMutationResponse:
       type: object
       additionalProperties: false

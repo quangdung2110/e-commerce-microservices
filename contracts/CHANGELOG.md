@@ -3,6 +3,18 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-12 (Inventory ADMIN — unfiltered lists)
+
+- Inventory ADMIN HTTP v1 is `1.1.0` (additive, [Inventory ADR-029](../docs/inventory/decisions/ADR-029-unfiltered-admin-lists.md)).
+  `warehouse_id` is no longer required on `GET /dispatch-queue`, `/inspection-queue` and `/quarantine-items`, and
+  `GET /stock-positions` and `/stock-movements` no longer require "`warehouse_id` or `sku_id`": every list returns all
+  rows when called without parameters and the parameters only narrow it. A request that used to be `400` is now `200`.
+- New query parameter `source_operation_type` (exact match) on `GET /stock-movements` (`SELLABLE_RECEIPT` = stock
+  receipts, `RETURN_RECEIPT` = returned goods).
+- New operation `GET /api/v1/admin/inventory/refund-scope-summaries` (`listAdminRefundScopes`, optional `state`, cursor
+  pagination, newest registration first). `GET /refund-scopes?order_id=` is unchanged.
+- Frontend `generated/inventory-admin.ts` updated.
+
 ## 2026-10-11 (Payment audit)
 
 - Payment HTTP: refund PAYMENT_NOT_SUCCESS/REFUND_AMOUNT_EXCEEDED are HTTP 400;

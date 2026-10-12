@@ -40,12 +40,13 @@ and its ADMIN UI:
 | Query | Purpose |
 |---|---|
 | `GET /warehouses` | List warehouses, optional `is_active` filter. |
-| `GET /stock-positions?warehouse_id=&sku_id=` | Positions filtered by warehouse and/or SKU (at least one). |
-| `GET /dispatch-queue?warehouse_id=` | `COMMITTED`, undispatched lines allocated to the warehouse, oldest commit first. |
-| `GET /inspection-queue?warehouse_id=` | Return receipt lines with uninspected quantity at the warehouse. |
-| `GET /quarantine-items?warehouse_id=` | Failed-inspection quantity not yet disposed out, with latest HOLD reason. |
+| `GET /stock-positions?warehouse_id=&sku_id=` | Positions; both filters optional (ADR-029 removed the original "at least one"). |
+| `GET /dispatch-queue?warehouse_id=` | `COMMITTED`, undispatched lines, oldest commit first; `warehouse_id` optional (ADR-029). |
+| `GET /inspection-queue?warehouse_id=` | Return receipt lines with uninspected quantity; `warehouse_id` optional (ADR-029). |
+| `GET /quarantine-items?warehouse_id=` | Failed-inspection quantity not yet disposed out, with latest HOLD reason; `warehouse_id` optional (ADR-029). |
 | `GET /refund-scopes?order_id=` | Resolve the order's lifetime scope. |
-| `GET /stock-movements?warehouse_id=&sku_id=&recorded_from=&recorded_to=` | Movement evidence search. |
+| `GET /refund-scope-summaries?state=` | List Refund Scopes, newest first (added by ADR-029). |
+| `GET /stock-movements?warehouse_id=&sku_id=&source_operation_type=&recorded_from=&recorded_to=` | Movement evidence search; every filter optional (ADR-029). |
 
 Queries never mutate state and return no customer PII.
 
