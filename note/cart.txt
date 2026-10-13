@@ -39,6 +39,7 @@ Nhược điểm:
 + Write Amplification: Mỗi khi có sự kiện cập nhật sản phẩm, chúng ta sẽ phải thực hiện nhiều lần ghi vào Redis để cập nhật lại thông tin về các giỏ hàng chứa sản phẩm đó, điều này có thể
 gây ra hiện tượng write amplification, làm giảm hiệu năng của hệ thống
 
+
 - Phương án 2: Bỏ Reserve Index, đồng bộ dữ liệu qua gRPC khi truy cập 
 (nghĩa là mỗi khi khách hàng truy cập vào giỏ hàng aka Cart Service hoặc thực hiện Đặt hàng aka Checkout Service, 
 chúng ta sẽ thực hiện một lần gọi gRPC đến Product Service để lấy thông tin cập nhật mới nhất về sản phẩm đó)
@@ -59,11 +60,18 @@ khách hàng khi truy cập vào giỏ hàng hoặc thực hiện đặt hàng (
 
 
 4. Sử dụng 2 đường RPC chính
+
 Luồng đọc:
-RPC sử dụng: GetBatchProductSKUs (lấy tất cả thông tin của SKU trong 1 lần gọi RPC duy nhất, tránh N + 1 network call)
-Mục đích: cập nhật thông tin mới nhất của giỏ hàng để hiển thị cho khách hàng. Sử dụng Circuit Breaker để tránh phụ thuộc của Cart Service vào Product Service
+Khi gọi: GET /api/v1/carts/mine
+RPC sử dụng: GetBatchProductSKUs
+Cách gọi: một lời gọi multi-get cho tất cả SKU trong giỏ. Không gọi từng SKU một
+Mục đích: lấy current_price và trạng thái còn bán (is_available) để phủ lên snapshot trong Redis. Sử dụng Circuit Breaker để tránh phụ thuộc của Cart Service vào Product Service
+Khi Product lỗi, timeout hoặc breaker mở: suy giảm mềm. Cart vẫn trả 200 với catalog_freshness = DEGRADED và current_price có thể null
+
+
 
 Luồng ghi: 
+Khi gọi: POST /api/v1/carts/mine/items, nhưng chỉ khi cần. Cần gọi khi SKU mới, hoặc delta dương mà snapshot validation đã hết hạn (ProductValidationTTL)
 RPC sử dụng: GetProductSKU
 Mục đích: xác định tính hợp lệ của SKU trước khi thêm vào giỏ
 
@@ -89,16 +97,59 @@ Singleflight nhóm các Goroutine đang thực thi theo một key (chính là sk
 Goroutine đầu tiên gọi group.Do(skuID, ...) sẽ thực sự gửi lời gọi gRPC rpc.GetSku(...) sang Product Service
 49 Goroutine đến sau sẽ không gọi mạng, mà chuyển sang trạng thái chờ (block/wait) kết quả của Goroutine đầu tiên
 Khi Goroutine đầu tiên nhận được response từ Product Service, kết quả sẽ được nhân bản và trả về cho toàn bộ 49 Goroutine còn lại cùng lúc
+
+Nói rõ hơn: 
+Với cùng một key (skuID) đang có lời gọi bay trên đường:
++ Goroutine đầu tiên là leader. Nó chạy hàm trong Do, tức là thực sự gọi gRPC.
++ Các goroutine đến sau với cùng key không chạy hàm. Chúng chờ leader xong rồi nhận lại cùng kết quả, gồm cả err.
++ Khi leader xong, key bị xoá khỏi group. Lần gọi sau sẽ là một flight mới.
+Kết quả: 200 request đồng thời cho cùng SKU chỉ tạo 1 RPC sang Product. Các SKU khác nhau vẫn chạy song song vì key khác nhau.
+
 Bạn có thể băn khoăn: Nếu request thứ 51 đến trễ hơn 1 mili-giây (khi Singleflight vừa kết thúc và xóa key khỏi map), liệu nó có phải gọi lại gRPC không?
 👉 Không, vì lúc này In-memory LRU Cache đã tiếp quản!
 Sự kết hợp giữa Singleflight + LRU Cache tạo nên một chu trình bảo vệ khép kín:
 Trong lúc chưa có cache (20ms – 50ms đầu tiên): Singleflight đứng ra chắn, gom 50 request lại làm 1 cuộc gọi gRPC.
 Ngay khi gRPC xong: Kết quả được lưu vào LRU Cache với TTL 30–60 giây.
 Từ thời điểm này trở đi (trong suốt 30–60s): Request thứ 51, 52,... hay 10.000 đến sau sẽ không tạo Singleflight mới, mà đọc thẳng từ RAM của LRU Cache
-
 Để tránh trường hợp Product Service bị treo khiến toàn bộ các Goroutine đang gom nhóm bị "treo vĩnh viễn", Cart Service luôn áp đặt Deadline cứng (ví dụ 200ms)
 
 
+
+Một số điểm cần lưu ý:
++ Chia sẻ lỗi. Nếu leader timeout thì mọi follower nhận cùng lỗi đó
+
+
+Chính vì thế chúng ta phải hiểu điều sau:
+
+Quy tắc truyền ctx giả định một việc phục vụ một người, còn singleflight cố tình để một việc phục vụ nhiều người
+Bước 1: ctx là gì và nó “thuộc về” ai
+Mỗi HTTP request có một ctx riêng. Nó giống một công tắc huỷ gắn với đúng request đó. Khi người dùng đóng tab, server bật công tắc, và mọi việc đang chạy dưới ctx đó (gồm cả lời gọi gRPC) sẽ bị dừng
+Hai người dùng thì có hai ctx khác nhau, và công tắc của người này không liên quan gì đến người kia
+
+Bước 2: singleflight “mượn” việc của người đến đầu tiên
+Giả sử Alice và Bob cùng bấm thêm SKU “iPhone” gần như cùng lúc.
+Alice đến trước. Singleflight nói: “Chưa ai gọi Product cho iPhone, chị Alice gọi đi.” Alice thành leader.
+Bob đến sau. Singleflight nói: “Chị Alice đang gọi rồi, bạn đứng chờ, lát nhận kết quả của chị ấy.” Bob thành follower. Bob không tự gọi gì.
+Điểm mấu chốt: cuộc gọi sang Product chỉ có một, và nó chạy dưới ctx của Alice vì Alice là người bấm nút.
+
+Bước 3: chuyện gì xảy ra khi Alice bỏ đi
+
+Dòng thời gian:
+Thời điểm	  Sự kiện
+0 ms	      Alice bấm, thành leader, bắt đầu gọi Product (mất khoảng 100ms)
+20 ms	      Bob bấm, thành follower, đứng chờ
+50 ms	      Alice đóng tab, công tắc huỷ của Alice bật
+50 ms	      Cuộc gọi sang Product đang chạy dưới ctx của Alice nên bị dừng, trả lỗi context canceled
+50 ms	      Singleflight đưa kết quả cho tất cả người đang chờ, kết quả đó là lỗi
+50 ms	      Bob nhận 503 PRODUCT_UNAVAILABLE
+Bob không làm gì sai. Công tắc của Bob chưa bật, và Product hoàn toàn khoẻ. Nhưng việc Bob đang chờ là việc chạy dưới công tắc của Alice, nên Alice bỏ đi thì Bob thất bại theo.
+
+
+1. Leader không còn là một vai trò đặc biệt.
+Leader chỉ là người đến đầu tiên và kích hoạt flight. Sau bản sửa, flight không phụ thuộc vào leader nữa. Cho nên không chỉ leader, mà bất kỳ ai rút đi (leader hay follower) cũng chỉ làm chính người đó trả về sớm. Flight vẫn chạy và những người còn lại vẫn nhận kết quả.
+
+2. Flight không chạy vô hạn.
+Nó vẫn bị giới hạn bởi GetSkuTimeout (mặc định 200ms). Nếu Product thực sự chậm hơn mức đó thì flight timeout, và mọi người còn chờ nhận lỗi PRODUCT_UNAVAILABLE
 
 
 
