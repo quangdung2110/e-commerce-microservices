@@ -72,7 +72,8 @@ trả cart rỗng. Kafka delivery là at-least-once; Notification phải dedupe 
   `ACTIVE -> ABANDONED` và `XADD` không vi phạm Redis Cluster `CROSSSLOT`.
 - Mỗi stream có một active relay reader. Ở tải hiện tại một relay loop round-robin
   64 stream; không dùng `XREADGROUP` multi-stream khác slot.
-- Relay xử lý pending bằng `XAUTOCLAIM` trước, rồi entry mới theo thứ tự stream.
+- Relay xử lý pending bằng `XAUTOCLAIM` trước, rồi chỉ đọc entry mới khi bucket không còn pending
+  (`XPENDING`), để giữ thứ tự stream.
 - Một trimmer loop cũng round-robin 64 stream. Marker loop round-robin 64 ZSET.
 - Khi scale, deployment chia ownership dải bucket; không có hai relay active cho
   cùng stream.

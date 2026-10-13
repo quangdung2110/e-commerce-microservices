@@ -149,8 +149,9 @@ Không phát `CART_ITEM_*`, `CART_CLEARED` hay `CART_CHECKED_OUT` khi chưa có 
 
 **Retry và DLQ.** Retry là của relay: mỗi lượt thử một entry tối đa 3 lần
 (`worker.outbox_relay.max_publish_attempts`) với exponential backoff có jitter. Hết 3 lần entry vẫn
-pending và được thử lại ở lượt sau qua `XAUTOCLAIM`; relay dừng bucket tại entry lỗi đầu tiên để giữ
-thứ tự. Nghĩa là Kafka outage làm chậm event chứ không làm mất event. `t.cart.events.dlq` chỉ nhận
+pending và được thử lại ở lượt sau qua `XAUTOCLAIM` (sau `claim_min_idle`). Relay dừng bucket tại
+entry lỗi đầu tiên, và **không đọc entry mới khi bucket còn pending** (`XPENDING`), nên entry mới không
+thể được publish trước entry đã lỗi dù Kafka hồi phục trong lúc chờ `claim_min_idle`. Nghĩa là Kafka outage làm chậm event chứ không làm mất event. `t.cart.events.dlq` chỉ nhận
 entry outbox không bao giờ thành công (thiếu `cart_id` hoặc event type lạ); message DLQ là JSON chẩn
 đoán `{reason, outbox_key, stream_id, outbox_bucket, event_type}`, không phải CloudEvent.
 

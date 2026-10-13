@@ -131,6 +131,11 @@ type OutboxStore interface {
 	// Read fetches undelivered entries for the relay consumer group.
 	Read(ctx context.Context, bucket, count int) ([]domain.OutboxRecord, error)
 
+	// PendingCount reports how many entries the relay group has read but not
+	// acked. The relay does not read new entries while any remain, so a newer
+	// entry can never be published ahead of one that failed earlier.
+	PendingCount(ctx context.Context, bucket int) (int64, error)
+
 	// Ack marks an entry delivered. It is only called after Kafka has
 	// acknowledged the produce.
 	Ack(ctx context.Context, bucket int, streamID string) error

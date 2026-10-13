@@ -78,7 +78,7 @@ Race user write/marker được Redis tuần tự hóa: write trước làm dead
 
 ## WF-CART-006 — Relay `CART_ABANDONED` sang Kafka
 
-Một relay loop xử lý 64 stream theo round-robin. Với từng stream, nó `XAUTOCLAIM` pending entry cũ nhất trước, sau đó `XREADGROUP ... >` entry mới. Mỗi entry được produce Kafka với key `cart_id` và CloudEvent ID xác định từ `outbox_key + stream_id`. Chỉ `XACK` sau Kafka acknowledgement.
+Một relay loop xử lý 64 stream theo round-robin. Với từng stream, nó `XAUTOCLAIM` pending entry cũ nhất trước, rồi kiểm `XPENDING`: chỉ khi bucket không còn entry pending (đã đọc nhưng chưa ack) mới `XREADGROUP ... >` entry mới. `XAUTOCLAIM` chỉ trả entry idle quá `claim_min_idle`, nên nếu không có bước kiểm này thì entry vừa lỗi sẽ bị entry mới hơn vượt mặt khi Kafka hồi phục sớm. Mỗi entry được produce Kafka với key `cart_id` và CloudEvent ID xác định từ `outbox_key + stream_id`. Chỉ `XACK` sau Kafka acknowledgement.
 
 Không dùng một `XREADGROUP` multi-stream vì streams thuộc Cluster slot khác nhau. Khi scale, bucket ownership được chia giữa deployment; mỗi stream chỉ có một active reader. Notification dedupe CloudEvent ID vì Kafka delivery at-least-once.
 

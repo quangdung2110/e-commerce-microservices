@@ -22,13 +22,27 @@ type fakeOutbox struct {
 	fresh    map[int][]domain.OutboxRecord
 	acked    []string
 	fetchLog []string
+	inflight map[string]bool
 }
 
 func newFakeOutbox() *fakeOutbox {
 	return &fakeOutbox{
-		pending: make(map[int][]domain.OutboxRecord),
-		fresh:   make(map[int][]domain.OutboxRecord),
+		pending:  make(map[int][]domain.OutboxRecord),
+		fresh:    make(map[int][]domain.OutboxRecord),
+		inflight: make(map[string]bool),
 	}
+}
+
+func (f *fakeOutbox) track(records []domain.OutboxRecord) {
+	for _, record := range records {
+		f.inflight[record.StreamID] = true
+	}
+}
+
+func (f *fakeOutbox) PendingCount(context.Context, int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return int64(len(f.inflight)), nil
 }
 
 func (f *fakeOutbox) StreamExists(_ context.Context, bucket int) (bool, error) {
@@ -46,6 +60,7 @@ func (f *fakeOutbox) Claim(_ context.Context, bucket, _ int, _ time.Duration) ([
 	f.fetchLog = append(f.fetchLog, "claim")
 	records := f.pending[bucket]
 	f.pending[bucket] = nil
+	f.track(records)
 	return records, nil
 }
 
@@ -56,6 +71,7 @@ func (f *fakeOutbox) Read(_ context.Context, bucket, _ int) ([]domain.OutboxReco
 	f.fetchLog = append(f.fetchLog, "read")
 	records := f.fresh[bucket]
 	f.fresh[bucket] = nil
+	f.track(records)
 	return records, nil
 }
 
@@ -64,6 +80,7 @@ func (f *fakeOutbox) Ack(_ context.Context, _ int, streamID string) error {
 	defer f.mu.Unlock()
 
 	f.acked = append(f.acked, streamID)
+	delete(f.inflight, streamID)
 	return nil
 }
 
@@ -377,4 +394,152 @@ func TestRelayVisitsEveryBucket(t *testing.T) {
 	if relayed != domain.BucketCount {
 		t.Fatalf("relayed %d entries, want one per bucket (%d)", relayed, domain.BucketCount)
 	}
+}
+
+// streamOutbox models the parts of a Redis Stream consumer group that decide
+// ordering: entries are delivered once through Read and then sit in the pending
+// list, where Claim only returns them after they have been idle for minIdle.
+// The simpler fakeOutbox above hands pending entries back unconditionally, so
+// it cannot express that gap.
+type streamOutbox struct {
+	now     time.Time
+	entries []*streamEntry
+}
+
+type streamEntry struct {
+	record      domain.OutboxRecord
+	delivered   bool
+	deliveredAt time.Time
+	acked       bool
+}
+
+func (s *streamOutbox) add(record domain.OutboxRecord) {
+	s.entries = append(s.entries, &streamEntry{record: record})
+}
+
+func (s *streamOutbox) StreamExists(context.Context, int) (bool, error) {
+	return len(s.entries) > 0, nil
+}
+
+func (s *streamOutbox) EnsureGroup(context.Context, int) error { return nil }
+
+func (s *streamOutbox) Claim(_ context.Context, _, count int, minIdle time.Duration) ([]domain.OutboxRecord, error) {
+	var records []domain.OutboxRecord
+	for _, entry := range s.entries {
+		if len(records) == count {
+			break
+		}
+		if entry.delivered && !entry.acked && s.now.Sub(entry.deliveredAt) >= minIdle {
+			entry.deliveredAt = s.now
+			records = append(records, entry.record)
+		}
+	}
+	return records, nil
+}
+
+func (s *streamOutbox) Read(_ context.Context, _, count int) ([]domain.OutboxRecord, error) {
+	var records []domain.OutboxRecord
+	for _, entry := range s.entries {
+		if len(records) == count {
+			break
+		}
+		if !entry.delivered {
+			entry.delivered = true
+			entry.deliveredAt = s.now
+			records = append(records, entry.record)
+		}
+	}
+	return records, nil
+}
+
+func (s *streamOutbox) Ack(_ context.Context, _ int, streamID string) error {
+	for _, entry := range s.entries {
+		if entry.record.StreamID == streamID {
+			entry.acked = true
+		}
+	}
+	return nil
+}
+
+func (s *streamOutbox) TrimWatermark(context.Context, int) (string, bool, error) {
+	return "", false, nil
+}
+func (s *streamOutbox) Trim(context.Context, int, string) (int64, error) { return 0, nil }
+func (s *streamOutbox) OutboxKey(bucket int) string {
+	return "cart:v2:" + domain.BucketTag(bucket) + ":outbox"
+}
+
+// switchPublisher fails while down is set and records the stream ids it
+// accepted, in order.
+type switchPublisher struct {
+	down     bool
+	accepted []string
+}
+
+func (p *switchPublisher) Publish(_ context.Context, event domain.CloudEvent, _ map[string]string) error {
+	if p.down {
+		return errors.New("kafka is unreachable")
+	}
+	p.accepted = append(p.accepted, event.ID[strings.LastIndex(event.ID, ":")+1:])
+	return nil
+}
+
+func (p *switchPublisher) PublishDeadLetter(context.Context, string, []byte, map[string]string) error {
+	return nil
+}
+func (p *switchPublisher) Ready(context.Context) error { return nil }
+func (p *switchPublisher) Close() error                { return nil }
+
+// An entry that failed to publish stays pending, and Claim will not hand it
+// back until it has been idle for ClaimMinIdle. Read, meanwhile, keeps
+// returning newer entries. Once Kafka recovers inside that window, a newer
+// entry must still not be published ahead of the one that failed.
+func TestRelayDoesNotLetNewEntriesOvertakeAFailedOne(t *testing.T) {
+	const bucket = 5
+	start := time.Unix(1780000000, 0)
+	outbox := &streamOutbox{now: start}
+	outbox.add(abandonedRecord(bucket, "1-0"))
+	outbox.add(abandonedRecord(bucket, "2-0"))
+	publisher := &switchPublisher{down: true}
+
+	worker := New(outbox, publisher, Config{
+		MaxPublishAttempts: 1,
+		PublishBackoff:     time.Millisecond,
+		OperationTimeout:   time.Second,
+		ClaimMinIdle:       30 * time.Second,
+		DataSchema:         "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json",
+	}, observability.NewMetrics(), zap.NewNop())
+
+	// Kafka is down: 1-0 is read, fails and stays pending.
+	worker.pass(context.Background())
+
+	// Kafka recovers well inside ClaimMinIdle, and a newer entry arrives.
+	publisher.down = false
+	outbox.now = start.Add(time.Second)
+	outbox.add(abandonedRecord(bucket, "3-0"))
+	worker.pass(context.Background())
+
+	// Later passes, once the pending entries have aged past ClaimMinIdle.
+	outbox.now = start.Add(time.Minute)
+	worker.pass(context.Background())
+
+	want := []string{"1-0", "2-0", "3-0"}
+	if len(publisher.accepted) != len(want) {
+		t.Fatalf("published %v, want %v", publisher.accepted, want)
+	}
+	for i := range want {
+		if publisher.accepted[i] != want[i] {
+			t.Fatalf("published %v, want %v: a newer entry overtook one that failed earlier", publisher.accepted, want)
+		}
+	}
+}
+
+func (s *streamOutbox) PendingCount(context.Context, int) (int64, error) {
+	var pending int64
+	for _, entry := range s.entries {
+		if entry.delivered && !entry.acked {
+			pending++
+		}
+	}
+	return pending, nil
 }

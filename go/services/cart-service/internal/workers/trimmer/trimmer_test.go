@@ -47,6 +47,8 @@ func (f *fakeOutbox) Read(context.Context, int, int) ([]domain.OutboxRecord, err
 	return nil, nil
 }
 
+func (f *fakeOutbox) PendingCount(context.Context, int) (int64, error) { return 0, nil }
+
 func (f *fakeOutbox) Ack(context.Context, int, string) error { return nil }
 
 func (f *fakeOutbox) TrimWatermark(_ context.Context, bucket int) (string, bool, error) {

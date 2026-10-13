@@ -105,7 +105,7 @@ Một loop quét tuần tự 64 ZSET; batch nhỏ và gọi `mark_abandoned.lua`
 
 ### Relay loop
 
-Một loop round-robin 64 stream và chỉ dùng Redis call một stream mỗi lượt. Stream rỗng được bỏ qua; stream được tạo lazy. Relay `XAUTOCLAIM` trước rồi đọc mới, produce xong mới ACK. Khi scale, chia bucket ownership tĩnh hoặc qua scheduler.
+Một loop round-robin 64 stream và chỉ dùng Redis call một stream mỗi lượt. Stream rỗng được bỏ qua; stream được tạo lazy. Relay `XAUTOCLAIM` trước rồi đọc mới (chỉ khi bucket hết pending, kiểm bằng `XPENDING`; lỗi kiểm được đếm ở `cart_relay_outcomes_total{outcome="error_pending_count"}`), produce xong mới ACK. Bucket có entry pending sẽ không có entry mới được relay cho đến khi entry đó được claim lại sau `claim_min_idle` và gửi xong. Khi scale, chia bucket ownership tĩnh hoặc qua scheduler.
 
 ### Stream trimmer loop
 
