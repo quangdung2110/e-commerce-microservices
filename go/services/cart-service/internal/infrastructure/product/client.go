@@ -104,8 +104,14 @@ func (c *Client) GetSku(ctx context.Context, skuID string) (domain.ProductSnapsh
 		return domain.ProductSnapshot{}, unavailable(ErrBreakerOpen)
 	}
 
-	result, err, _ := c.group.Do(skuID, func() (any, error) {
-		callCtx, cancel := context.WithTimeout(ctx, c.cfg.GetSkuTimeout)
+	// The flight is shared by every caller waiting on this SKU, so it must not
+	// be tied to the cancellation of whichever caller happened to start it:
+	// one client hanging up would fail all the others and be counted against
+	// the breaker. It keeps its own deadline; each caller still leaves early
+	// when its own ctx is done.
+	flightCtx := context.WithoutCancel(ctx)
+	flight := c.group.DoChan(skuID, func() (any, error) {
+		callCtx, cancel := context.WithTimeout(flightCtx, c.cfg.GetSkuTimeout)
 		defer cancel()
 
 		response, err := c.rpc.GetSku(callCtx, &productv1.GetSkuRequest{SkuId: skuID})
@@ -123,10 +129,16 @@ func (c *Client) GetSku(ctx context.Context, skuID string) (domain.ProductSnapsh
 		c.cache.put(skuID, snapshot)
 		return snapshot, nil
 	})
-	if err != nil {
-		return domain.ProductSnapshot{}, err
+
+	select {
+	case result := <-flight:
+		if result.Err != nil {
+			return domain.ProductSnapshot{}, result.Err
+		}
+		return result.Val.(domain.ProductSnapshot), nil
+	case <-ctx.Done():
+		return domain.ProductSnapshot{}, unavailable(ctx.Err())
 	}
-	return result.(domain.ProductSnapshot), nil
 }
 
 // GetBatchSkus enriches a cart read with live prices and availability.
@@ -152,6 +164,11 @@ func (c *Client) GetBatchSkus(ctx context.Context, skuIDs []string) (map[string]
 	response, err := c.rpc.GetBatchSkus(callCtx, &productv1.GetBatchSkusRequest{SkuIds: skuIDs})
 	c.observeCall("GetBatchSkus", err)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The caller gave up; Product did not misbehave.
+			c.breaker.release()
+			return nil, unavailable(err)
+		}
 		c.breaker.failure()
 		return nil, unavailable(err)
 	}

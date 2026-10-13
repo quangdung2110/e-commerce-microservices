@@ -115,6 +115,17 @@ pod; policy chính thức nằm ở Gateway (`rate-limit-api@file`).
 Deadline 200ms và circuit breaker là bắt buộc. Cart không gọi Product khi xóa item,
 xử lý `ORDER_PAID`, xử lý `USER_DELETED`, relay hay marker.
 
+**Client hủy request không phải lỗi của Product.** Breaker chỉ đếm lỗi do Product gây ra
+(lỗi transport, deadline riêng của Cart). Khi client đóng kết nối giữa chừng:
+
+- `GetBatchSkus`: không ghi failure vào breaker. Nếu lời gọi đó là probe half-open thì slot
+  được trả lại (`release`), breaker không mở lại và không kẹt half-open.
+- `GetSku`: các request đồng thời cho cùng SKU dùng chung một lời gọi (singleflight) chạy trên
+  context tách khỏi request đầu tiên, với deadline `GetSkuTimeout` riêng. Một client hủy chỉ làm
+  chính request đó trả về sớm (`PRODUCT_UNAVAILABLE`); các request còn lại vẫn nhận kết quả.
+
+Deadline của chính Cart vẫn tính là failure, vì đó là tín hiệu Product chậm.
+
 ## 4. Event phát ra: `CART_ABANDONED`
 
 | Thuộc tính | Giá trị |

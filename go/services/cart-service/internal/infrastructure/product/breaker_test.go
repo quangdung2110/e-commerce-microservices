@@ -68,6 +68,26 @@ func TestBreakerProbesAfterTheOpenTimeout(t *testing.T) {
 	}
 }
 
+// A probe abandoned by its caller must free its slot, or the breaker would sit
+// half-open rejecting every call forever.
+func TestBreakerReleaseFreesAHalfOpenProbeSlot(t *testing.T) {
+	now := time.Unix(1780000000, 0)
+	b := newBreaker(BreakerConfig{FailureThreshold: 1, HalfOpenMaxCalls: 1, OpenTimeout: 30 * time.Second})
+	b.now = func() time.Time { return now }
+
+	b.allow()
+	b.failure()
+	now = now.Add(31 * time.Second)
+
+	if !b.allow() {
+		t.Fatal("the breaker never moved to half-open")
+	}
+	b.release()
+	if !b.allow() {
+		t.Fatal("a released probe slot was not reusable")
+	}
+}
+
 // A failed probe must reopen immediately rather than admitting another wave.
 func TestBreakerReopensOnAFailedProbe(t *testing.T) {
 	now := time.Unix(1780000000, 0)
