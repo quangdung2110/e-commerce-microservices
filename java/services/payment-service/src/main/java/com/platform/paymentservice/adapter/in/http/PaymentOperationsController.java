@@ -259,7 +259,9 @@ final class PaymentOperationsController {
                 ? "missing-correlation-id" : correlationId;
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
-                .header("X-Correlation-Id", safe).body(new Problem(code, retryable, safe));
+                .header("X-Correlation-Id", safe)
+                .headers(headers -> RetryAfterHeader.apply(headers, status.value(), retryable))
+                .body(new Problem(code, retryable, safe));
     }
 
     private static ResponseEntity<?> reviewResult(ReviewCaseService.Result result,

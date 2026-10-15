@@ -59,6 +59,14 @@ grpc:
     # Reflection lộ toàn bộ schema cho bất kỳ ai tới được cổng gRPC; chỉ bật ở profile dev
     # hoặc bằng PRODUCT_GRPC_REFLECTION=true khi cần grpcurl (Product ADR-022).
     reflection-service-enabled: ${PRODUCT_GRPC_REFLECTION:false}
+    # Kết nối của Cart/Checkout là HTTP/2 dài hạn: không có giới hạn tuổi thì pod Product mới không bao giờ
+    # nhận RPC từ client đã kết nối, và không có keepalive thì kết nối chết im lặng không bị phát hiện.
+    # max-connection-age cộng ngẫu nhiên +-10%; client kết nối lại và phân giải DNS lại sau GOAWAY.
+    # permit-keep-alive-time phải nhỏ hơn chu kỳ ping 30 giây của client (contracts ADR-007).
+    max-connection-age: ${GRPC_SERVER_MAX_CONNECTION_AGE:5m}
+    max-connection-age-grace: ${GRPC_SERVER_MAX_CONNECTION_AGE_GRACE:30s}
+    permit-keep-alive-time: ${GRPC_SERVER_PERMIT_KEEP_ALIVE_TIME:20s}
+    permit-keep-alive-without-calls: false
 
 # Cấu hình riêng của service. Không có mục cache/inventory/scheduler:
 # thiết kế hiện hành không có các workload đó.

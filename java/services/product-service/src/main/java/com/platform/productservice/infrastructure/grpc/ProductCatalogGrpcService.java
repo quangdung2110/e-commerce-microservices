@@ -22,7 +22,6 @@ import com.platform.productservice.infrastructure.persistence.ProductMediaReposi
 import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
 import com.platform.productservice.service.support.CategoryTreeService;
-import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
 import net.devh.boot.grpc.server.service.GrpcService;
@@ -72,9 +71,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
         try {
             skuId = UUID.fromString(request.getSkuId());
         } catch (IllegalArgumentException e) {
-            responseObserver.onError(Status.INVALID_ARGUMENT
-                    .withDescription("sku_id must be a UUID")
-                    .asRuntimeException());
+            responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.SKU_ID_INVALID,
+                    "sku_id must be a UUID", Map.of(), "sku_id"));
             return;
         }
 
@@ -117,9 +115,9 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                              StreamObserver<GetBatchSkusResponse> responseObserver) {
         Set<String> requestedIds = new LinkedHashSet<>(request.getSkuIdsList());
         if (requestedIds.size() > MAX_BATCH_SIZE) {
-            responseObserver.onError(Status.INVALID_ARGUMENT
-                    .withDescription("at most " + MAX_BATCH_SIZE + " sku_ids per request")
-                    .asRuntimeException());
+            responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.BATCH_TOO_LARGE,
+                    "at most " + MAX_BATCH_SIZE + " sku_ids per request",
+                    Map.of("max_batch_size", String.valueOf(MAX_BATCH_SIZE)), "sku_ids"));
             return;
         }
 
@@ -129,9 +127,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
             try {
                 skuIds.add(UUID.fromString(raw));
             } catch (IllegalArgumentException e) {
-                responseObserver.onError(Status.INVALID_ARGUMENT
-                        .withDescription("sku_id must be a UUID: " + raw)
-                        .asRuntimeException());
+                responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.SKU_ID_INVALID,
+                        "sku_id must be a UUID: " + raw, Map.of(), "sku_ids"));
                 return;
             }
         }

@@ -21,7 +21,7 @@ dụng đều là defense-in-depth; `AuthorizationPolicy` mục 5 là nơi thự
 
 | Hạng mục | Quy ước |
 |---|---|
-| Mesh | Istio `<pinned-version>` ambient mode, pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest` |
+| Mesh | Istio `1.24.2` ambient mode ([`deploy/mesh/versions.yaml`](../../deploy/mesh/versions.yaml)); pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest`. Digest chưa điền: chưa có cluster để xác minh |
 | Kubernetes | Phiên bản trong ma trận tương thích của bản Istio đã pin; CNI của cluster phải được `istio-cni` hỗ trợ ở ambient |
 | Cài đặt | Helm chart chính thức (`base`, `istiod`, `cni`, `ztunnel`), values được version hóa; không `istioctl install` thủ công trên production |
 | Profile | `ambient`; sidecar injection tắt mặc định (`istio-injection` không gắn cho namespace nào) |
@@ -116,8 +116,10 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `checkout-service` | `/api/v1/checkout/preview`, `/api/v1/checkout/submit` | POST | `edge/traefik` | `gateway-routes-checkout` |
 | `checkout-service` | `/api/v1/checkout/submissions/*`, `/api/v1/checkout/previews/*/voucher-options` | GET | `edge/traefik` | `gateway-routes-checkout` |
 | `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
-| `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
-| `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
+| `order-service` | `/internal/v1/checkout-order-submissions` | POST | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/checkout-order-submissions/*` | GET | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-case` | GET | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-decisions` | POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/v1/payments/webhook/stripe` | POST | `edge/traefik` | gateway public `/api/payments/webhook/stripe` rewrite sang service path này; route public duy nhất của Payment |
 | `payment-service` | `/v1/payments/initiate`, `/v1/payments/{transactionId}/cancel`, `/v1/payments/{transactionId}/refund` | POST | `ecommerce/order-service` | `order-initiates-payment`; policy triển khai phải dùng match tương đương nhưng không được bao trùm webhook |
 | `auth-service` | `/internal/v1/auth/users/*/notification-contact` | GET | `ecommerce/notification-service` | `notification-resolves-auth-contact` |
@@ -180,12 +182,14 @@ của Istio.
 | `GET /internal/inventory/v1/commands/*`, `GET .../reservations/*`, `GET .../refund-scopes/*` | 0 | 10 giây | Order query sau kết quả UNKNOWN; không có retry mesh vì Order sở hữu replay. Order cắt ở 8 giây (Order ADR-023) |
 | `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | 0 | 15 giây | Order đọc `client-data` ngay trong request của Checkout và query sau UNKNOWN; Order cắt ở 10 giây và còn bị kẹp bởi `X-Request-Timeout-Ms` của Checkout (Order ADR-023) |
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout cắt Order POST ở 13 giây (Order chờ `PAYMENT_READY` tối đa 12 giây), GET recovery ở 2 giây, và query Order status sau timeout thay vì nhân ba deadline ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Webhook không nằm trong policy này |
-| `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
+| `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/internal/v1/categories/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
 | `GET /internal/v1/auth/users/*/notification-contact` | 2 lần, `connect-failure,refused-stream` | 2 giây | Pure read; Notification cache 15 phút và có bulkhead theo lane |
 | `GET /internal/v1/notifications/requests/*`, `GET /internal/v1/notifications/deliveries` | 2 lần, `connect-failure,refused-stream` | 3 giây | Pure read cho support tooling |
 | `/internal/v1/notifications/ops/**` | 0 | 10 giây | Caller sở hữu retry bằng `Idempotency-Key`; mesh không retry |
+| `GET /internal/v1/checkout-order-submissions/*` | 0 | 15 giây | Checkout đọc lại submission bằng cùng token khi recovery; Checkout cắt ở 2 giây ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Caller sở hữu recovery nên mesh không retry. Thêm 2026-10-16 ([mesh ADR-001](decisions/ADR-001-manifests-generated-from-runtime-contract.md)): route đã có ở mục 5.2 nhưng chưa có dòng ở đây |
+| `GET/POST /internal/v1/orders/*/financial-reconciliation-case`, `.../financial-reconciliation-decisions` | 0 | 10 giây | Finance Ops và Accounting Ops thao tác bằng `Idempotency-Key`; caller sở hữu retry. Thêm 2026-10-16 như dòng trên |
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
 
 Mọi route trong bảng trên MUST có dòng ở đây trước khi caller được gọi nó, và timeout hiệu dụng của caller
@@ -252,9 +256,16 @@ Loki; và load test ghi nhận p95/p99 thêm do waypoint, CPU/RAM ztunnel và wa
 
 ## 11. Khoảng cách với trạng thái hiện tại
 
-Repository chưa có manifest Kubernetes cho bất kỳ service nào, chưa có ServiceAccount riêng,
-chưa có Helm values Istio; `<pinned-version>` chưa chốt vì chưa có cluster để xác minh ma trận
-tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
+Cân bằng gRPC không còn phụ thuộc hoàn toàn vào waypoint: client round-robin theo DNS và Product đóng kết nối quá tuổi
+([contracts ADR-007](../../contracts/decisions/ADR-007-grpc-channel-balancing-and-keepalive.md)). Cổng gRPC của Product vẫn cần
+`appProtocol: grpc` (mục 3); ở cụm không có waypoint nó phải là Service headless.
+
+Repository có manifest mesh sinh từ tài liệu này ([`deploy/mesh/`](../../deploy/mesh/README.md), [mesh ADR-001](decisions/ADR-001-manifests-generated-from-runtime-contract.md)):
+Namespace, ServiceAccount, `PeerAuthentication`, waypoint, `AuthorizationPolicy` (L4 và L7), `VirtualService`, `DestinationRule`,
+`ServiceEntry`, `Telemetry`, `NetworkPolicy` và Helm values Istio 1.24.2. Chúng đã qua kiểm tra schema (`kubeconform`),
+`istioctl analyze` và test đối chiếu với các bảng ở mục 5 và 7, nhưng **chưa được áp dụng lên cluster nào**: các tiêu chí ở mục 10
+(HBONE, test dương/âm `403 RBAC`, retry, phân bố gRPC, trace) vẫn chưa đạt. Repository chưa có manifest Kubernetes của chính các service
+(Deployment, Service), nên Service và `appProtocol` ở mục 3 vẫn là yêu cầu chưa thực hiện, và digest image chưa được pin. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
 Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI

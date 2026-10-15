@@ -51,3 +51,4 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-022](./ADR-022-post-implementation-audit-corrections.md) | Sửa sau kiểm chứng audit: redelivery bằng `nack`, lỗi HTTP, vòng đời reindex (lease, resume, hủy, rollback, kiểm tra cutover, tail replay, dọn index, tự chạy theo control event), cửa sổ tombstone 45 ngày | Accepted | 2026-10-10 | Thay con số của ADR-021; làm rõ ADR-005/ADR-019; mở rộng ADR-006/013/017 |
 | [ADR-023](./ADR-023-request-correlation-and-caller-deadline.md) | Request ID, trace ID, deadline của caller và timeout export 25 giây (nhỏ hơn mesh 30 giây) | Accepted | 2026-10-15 | Làm rõ ADR-022 |
 | [ADR-024](./ADR-024-drop-review-bearer-and-outbound-metrics.md) | Bỏ bearer token Review; timer `search.outbound.http` theo dependency và outcome | Accepted | 2026-10-15 | Bổ sung ADR-023 |
+| [ADR-025](./ADR-025-retry-after-on-elasticsearch-unavailable.md) | `Retry-After: 2` trên `ELASTICSEARCH_UNAVAILABLE` | Accepted | 2026-10-15 | — |

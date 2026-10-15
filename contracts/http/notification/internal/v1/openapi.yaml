@@ -344,6 +344,12 @@ components:
       schema: { type: string, minLength: 8, maxLength: 128 }
       description: Do caller sinh; giữ 24 h; cùng key + cùng body trả lại kết quả cũ; cùng key khác body → 409.
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     NoStore:
       description: Không cache.
       required: true
@@ -482,6 +488,8 @@ components:
       description: >-
         Kho idempotency hoặc dependency (Auth khi resolve contact của suppression thủ công)
         tạm thời không dùng được; retryable, gọi lại cùng Idempotency-Key.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

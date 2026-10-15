@@ -71,8 +71,9 @@ class DependencyIsolationTest extends AbstractPdpTest {
         stubProduct(status(500));
 
         for (int i = 0; i < 4; i++) {
+            // Before the circuit opens a 503 has no estimate of its own: the default wait of contracts ADR-005.
             getPdp("smart-watch").expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
-                    .expectHeader().doesNotExist("Retry-After");
+                    .expectHeader().valueEquals("Retry-After", "2");
         }
         assertThat(guard.breaker(Dependency.PRODUCT).getState()).isEqualTo(CircuitBreaker.State.OPEN);
 

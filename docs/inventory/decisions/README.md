@@ -24,6 +24,7 @@
 | [ADR-028](ADR-028-post-implementation-audit-corrections.md) | Accepted | Post-implementation audit corrections: identity checks on the decoded path, export watermark never below the retention floor, per-order Reserve serialization (`RESERVATION_ALREADY_EXISTS` wins a race), replayed scope registration reports the current revision, continuous availability audit, 30-day bounded topic retention, snapshot-session `410`/`404`, and documentation/contract alignment. |
 | [ADR-029](ADR-029-unfiltered-admin-lists.md) | Accepted | Admin lists and queues are complete without a filter: `warehouse_id`/`sku_id` become optional narrowing filters, movements gain `source_operation_type`, new `GET /refund-scope-summaries`, and Flyway `V2` adds the unscoped ordering indexes. |
 | [ADR-030](ADR-030-request-correlation-and-caller-deadline.md) | Accepted | Request ID, trace ID and caller deadline in Inventory logs; `X-Correlation-ID` stays the business flow ID stored with commands |
+| [ADR-031](ADR-031-retry-after-default-on-503.md) | Accepted | `Retry-After` default of 2 seconds for a retryable `503` (1 for `429`) when the code that raised it gave no estimate |
 
 The target documents in the parent directory are the normative detailed specifications. An ADR records the durable trade-off and links to those specifications; it does not duplicate every field or endpoint.
 

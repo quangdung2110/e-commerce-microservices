@@ -29,6 +29,20 @@ class PaymentQueryControllerTest {
     @MockBean PaymentQueryService queries;
 
     @Test
+    void a_database_failure_is_a_retryable_503_with_retry_after() throws Exception {
+        when(queries.payment(TXN)).thenThrow(new org.springframework.dao.DataAccessResourceFailureException("down"));
+
+        mvc.perform(get("/v1/payments/{id}", TXN)
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Correlation-Id", "corr-503"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "2"))
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.code").value("DEPENDENCY_UNAVAILABLE"))
+                .andExpect(jsonPath("$.retryable").value(true));
+    }
+
+    @Test
     void payment_is_contract_shaped_with_explicit_null_refund_and_empty_disputes() throws Exception {
         when(queries.payment(TXN)).thenReturn(Optional.of(new PaymentQueryPort.PaymentView(
                 TXN, 770004L, 2, 250_000L, "VND", "SUCCESS", 7L, false,

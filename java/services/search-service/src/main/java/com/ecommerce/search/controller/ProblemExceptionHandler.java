@@ -44,6 +44,9 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ProblemExceptionHandler.class);
 
+    /** Wait advertised on a retryable 503; Search has no better estimate of when Elasticsearch recovers (contracts ADR-005). */
+    static final int RETRY_AFTER_SECONDS = 2;
+
     @ExceptionHandler(SearchException.class)
     public ResponseEntity<Object> onSearchException(SearchException e, HttpServletRequest request) {
         if (e.code().status().is5xxServerError()) {
@@ -172,6 +175,9 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
         HttpHeaders headers = new HttpHeaders();
         headers.putAll(extraHeaders);
         headers.remove(HttpHeaders.CONTENT_TYPE);
+        if (status == HttpStatus.SERVICE_UNAVAILABLE && code.retryable() && !headers.containsKey(HttpHeaders.RETRY_AFTER)) {
+            headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(RETRY_AFTER_SECONDS));
+        }
         return ResponseEntity.status(status).headers(headers).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(body);
     }
 

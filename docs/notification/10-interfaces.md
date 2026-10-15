@@ -146,6 +146,8 @@ Mọi lỗi là `application/problem+json` theo [`problem.schema.json`](../../co
 | `DEPENDENCY_UNAVAILABLE` | 503 | có | Kho idempotency lỗi; Auth lỗi khi resolve contact cho suppression thủ công |
 | `INTERNAL_ERROR` | 500 | không | Lỗi không lường trước (kể cả panic đã được `recovery` bắt) |
 
+`DEPENDENCY_UNAVAILABLE` (503, `retryable=true`) kèm `Retry-After: 2` (giây) theo [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md); caller `notification-ops` vẫn gọi lại bằng cùng `Idempotency-Key`.
+
 `RATE_LIMITED` (429) có trong từ vựng lỗi nhưng Notification không phát ra: nó không có rate limit trên hai listener HTTP.
 
 ## 9. DLQ của consumer: topic dùng chung và cách phân biệt

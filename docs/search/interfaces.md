@@ -382,5 +382,7 @@ Mọi lỗi là `application/problem+json` với `type`, `title`, `status`, `det
 | `SEARCH_TIMEOUT` | 504 | Có | Ngân sách truy vấn hết (5s search/category/facet, 2s suggest), `timed_out`, hoặc shard lỗi | Thử lại; không dùng kết quả một phần |
 | `INTERNAL_ERROR` | 500 | Không | Lỗi không lường trước hoặc Elasticsearch từ chối một truy vấn do chính Search sinh | Báo lỗi với `trace_id` |
 
+`ELASTICSEARCH_UNAVAILABLE` (`503`) kèm `Retry-After: 2` (giây) theo [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md); `SEARCH_TIMEOUT` (`504`) không có header.
+
 `401` dùng `UNAUTHORIZED`, khác `UNAUTHENTICATED` của Cart/Product/Promotion/Inventory/Checkout; tên chung chưa được chốt
 (mục X3 của báo cáo audit).

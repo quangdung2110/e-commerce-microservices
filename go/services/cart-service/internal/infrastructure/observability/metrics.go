@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"cart-service/internal/infrastructure/product"
 )
 
 // Metrics holds every collector the service exports.
@@ -51,8 +53,8 @@ func NewMetrics() *Metrics {
 		}, []string{"outcome"}),
 		productCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cart_product_calls_total",
-			Help: "Product Service gRPC calls, by rpc and outcome.",
-		}, []string{"rpc", "outcome"}),
+			Help: "Product Service gRPC calls, by rpc, outcome (success, rejected, error) and ErrorInfo reason.",
+		}, []string{"rpc", "outcome", "reason"}),
 		breakerRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cart_product_breaker_rejections_total",
 			Help: "Calls rejected because the Product circuit breaker was open.",
@@ -127,12 +129,19 @@ func (m *Metrics) ObserveValidationCache(hit bool) {
 }
 
 // ObserveProductCall records a Product gRPC call outcome.
+//
+// "rejected" is Product refusing the request itself (identity, invalid argument), which says nothing about
+// Product's health; "error" is Product or the path to it failing. reason is Product's ErrorInfo.reason
+// (contracts ADR-006), empty when the status carried none.
 func (m *Metrics) ObserveProductCall(rpc string, err error) {
 	outcome := "success"
 	if err != nil {
 		outcome = "error"
+		if product.CallerFault(err) {
+			outcome = "rejected"
+		}
 	}
-	m.productCalls.WithLabelValues(rpc, outcome).Inc()
+	m.productCalls.WithLabelValues(rpc, outcome, product.Reason(err)).Inc()
 }
 
 // ObserveBreakerRejection records a call the breaker refused.

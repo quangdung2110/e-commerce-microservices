@@ -1,0 +1,90 @@
+name: Service tests
+
+# Runs the tests of every service whose files changed. A change to contracts/ or to the CI definitions runs all of them,
+# because contracts are copied into services (proto drift tests) and consumers validate fixtures against providers
+# (contracts ADR-008). The selection logic is scripts/ci/changed-services.sh.
+
+on:
+  pull_request:
+    paths:
+      - 'java/services/**'
+      - 'go/services/**'
+      - 'contracts/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/services.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'java/services/**'
+      - 'go/services/**'
+      - 'contracts/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/services.yml'
+
+concurrency:
+  group: services-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Select services
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      any: ${{ steps.select.outputs.any }}
+    steps:
+      - name: Checkout repository with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test the selection script
+        run: ./scripts/ci/tests/test_changed_services.sh
+      - name: Select changed services
+        id: select
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          matrix="$(./scripts/ci/changed-services.sh "$base")"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" = '{"include":[]}' ]; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
+          echo "$matrix"
+
+  test:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        if: matrix.kind == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      # verify runs unit tests and the *IT classes; integration tests start PostgreSQL, Kafka and the like with
+      # Testcontainers, which the hosted runner's Docker supports.
+      - name: Test (Maven)
+        if: matrix.kind == 'java'
+        working-directory: ${{ matrix.dir }}
+        run: mvn -B -ntp verify
+
+      - name: Set up Go
+        if: matrix.kind == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.dir }}/go.mod
+          cache-dependency-path: ${{ matrix.dir }}/go.sum
+      - name: Test (Go)
+        if: matrix.kind == 'go'
+        working-directory: ${{ matrix.dir }}
+        run: go test ./...

@@ -1,0 +1,4 @@
+# Values for the `base` chart (CRDs and cluster roles), Istio 1.24.2.
+# Install: helm install istio-base istio/base -n istio-system --create-namespace -f deploy/mesh/helm/base.values.yaml --version 1.24.2
+# Gateway API CRDs (versions.yaml: gateway_api) must be installed first; the waypoint is a Gateway API `Gateway`.
+defaultRevision: default

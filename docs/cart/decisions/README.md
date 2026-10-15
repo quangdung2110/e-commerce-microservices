@@ -49,3 +49,6 @@ Tạo ADR khi quyết định:
 | [ADR-013](./ADR-013-checkout-preview-order-reserve-boundary.md) | Cart catalog-only; Checkout Preview, Order Reserve | Accepted | 2026-09-20 | ADR-012 | — |
 | [ADR-014](./ADR-014-purge-cart-on-user-deleted.md) | Xóa giỏ hàng khi account bị xóa (`USER_DELETED`) | Accepted | 2026-10-09 | — | — |
 | [ADR-015](./ADR-015-proto-stub-drift-detection.md) | Phát hiện stub Product lệch proto chuẩn bằng hash; regenerate stub cũ | Accepted | 2026-10-15 | — | — |
+| [ADR-016](./ADR-016-retry-after-on-retryable-503.md) | `Retry-After: 2` trên `503` retryable (`AbortWithProblem`); contract khai báo header | Accepted | 2026-10-15 | — | — |
+| [ADR-017](./ADR-017-classify-product-errors-by-error-info.md) | Phân loại lỗi Product theo `ErrorInfo`; lỗi do caller không retry và không mở breaker | Accepted | 2026-10-15 | — | — |
+| [ADR-018](./ADR-018-grpc-channel-round-robin-and-keepalive.md) | Kênh Product dùng `dns:///` + `round_robin` + keepalive 30s/10s | Accepted | 2026-10-15 | — | — |

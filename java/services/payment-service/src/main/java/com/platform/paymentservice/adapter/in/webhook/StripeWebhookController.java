@@ -64,7 +64,12 @@ final class StripeWebhookController {
     }
 
     private static ResponseEntity<Void> response(HttpStatus status) {
-        return ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store").build();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status).header(HttpHeaders.CACHE_CONTROL, "no-store");
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) {
+            // Stripe schedules its own retries; the header is informational (contracts ADR-005).
+            builder.header(HttpHeaders.RETRY_AFTER, "2");
+        }
+        return builder.build();
     }
 
     private static final class BodyTooLarge extends Exception {}

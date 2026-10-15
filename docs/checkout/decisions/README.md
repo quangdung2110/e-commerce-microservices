@@ -37,3 +37,5 @@ hành và được loại khỏi guard scan cho thuật ngữ cũ.
 | [ADR-016](./ADR-016-fresh-preview-and-in-flight-submission-guard.md) | Fresh preview thay báo giá cũ; chặn Preview khi submission đang chạy | Accepted | 2026-10-07 | — |
 | [ADR-017](./ADR-017-voucher-options-read-composition.md) | Khay voucher là read composition của Checkout; save/claim ở Promotion | Accepted | 2026-10-07 | — |
 | [ADR-018](./ADR-018-implementation-decisions.md) | Quyết định khi triển khai: DTO theo contract, Redis riêng, parse nghiêm ngặt, owner của attempt | Accepted | 2026-10-07 | — |
+| [ADR-019](./ADR-019-log-product-error-reason.md) | Ghi `ErrorInfo.reason` của lỗi Product; ánh xạ status không đổi | Accepted | 2026-10-15 | — |
+| [ADR-020](./ADR-020-grpc-channel-round-robin-and-keepalive.md) | Kênh Product dùng `round_robin` + keepalive 30s/10s | Accepted | 2026-10-15 | — |

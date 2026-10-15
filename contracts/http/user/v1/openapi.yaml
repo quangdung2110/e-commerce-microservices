@@ -6,6 +6,11 @@ info:
     Contract đích cho User Service. User sở hữu profile, address book và
     preferences; không sở hữu email, credential, role hay trạng thái account.
 x-adoption-status: proposed
+servers:
+  - url: http://user-service:8082
+    description: Public listener, reached only through the API Gateway
+  - url: http://user-service:8083
+    description: Internal listener (checkout-snapshot), never routed through the gateway
 tags:
   - name: Profile
   - name: Addresses
@@ -283,6 +288,12 @@ components:
       schema: { $ref: '#/components/schemas/Uuid' }
 
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     PrivateNoStore:
       required: true
       description: Response chứa PII không được browser hoặc proxy cache.
@@ -337,6 +348,8 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     RateLimited:
       description: Gateway hoặc service tạm giới hạn request.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     InternalError:
       description: Lỗi hạ tầng hoặc lỗi không mong muốn.

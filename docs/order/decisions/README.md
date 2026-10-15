@@ -46,3 +46,5 @@ event is required and historical Order ADR bodies are unchanged.
 | [ADR-021](./ADR-021-admin-delivery-confirmation.md) | Không có Delivery service: Admin xác nhận giao hàng qua Order API là nguồn duy nhất đưa line `DISPATCHED` sang `DELIVERED` | Accepted | 2026-10-11 | Refines ADR-010, ADR-011, ADR-015, ADR-020 |
 | [ADR-023](./ADR-023-per-dependency-timeouts-and-inbound-deadline.md) | Timeout đọc riêng cho Inventory/Promotion/Payment nhỏ hơn timeout mesh; request thread không vượt deadline còn lại của caller; `submit-wait` bị kẹp | Accepted | 2026-10-15 | Làm rõ ADR-020 |
 | [ADR-024](./ADR-024-remote-call-metrics-and-bulkhead.md) | Timer `order.remote.http` theo dependency; bulkhead theo dependency (`BULKHEAD_FULL` là UNKNOWN); ghi `Retry-After` | Accepted | 2026-10-15 | Bổ sung ADR-023 |
+| [ADR-025](./ADR-025-unreadable-success-body-is-unknown.md) | 2xx có body không đọc được là `UNKNOWN` `BODY_UNREADABLE`, không phải `ACCEPTED` với body null | Accepted | 2026-10-16 | — |
+| [ADR-026](./ADR-026-retry-after-default-on-503.md) | `Retry-After` mặc định `2` giây cho `503` retryable, `1` cho `429` | Accepted | 2026-10-16 | — |

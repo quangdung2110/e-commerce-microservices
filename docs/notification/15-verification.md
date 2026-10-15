@@ -180,7 +180,7 @@ Kết quả ghi vào README §5 với ngày đo và commit; giả định nào l
 
 ## 5. Tiêu chí hoàn thành kiểm chứng
 
-- Mọi test §2 pass, trừ các dòng ghi "chưa" ở §2.8 (nợ test đã biết). CI duy nhất của repo (`.github/workflows/contracts.yml`) chỉ chạy `validate-contracts.ps1`; bộ test Go này hiện chạy tay bằng `scripts/go.sh` (unit và `-tags integration`).
+- Mọi test §2 pass, trừ các dòng ghi "chưa" ở §2.8 (nợ test đã biết). CI chạy bộ test Go này qua `.github/workflows/services.yml` (`go test ./...`, [contracts ADR-008](../../contracts/decisions/ADR-008-contract-ci-gates.md)); bộ `-tags integration` vẫn chạy tay bằng `scripts/go.sh`.
 - §3 có số đo cho từng dòng, ghi vào README §5.
 - §4 chạy được bằng một lệnh và có báo cáo.
 - Contract test cho SES thật (sandbox, credential riêng) pass ít nhất một lần trước khi nâng `contract_adoption` lên `complete`.

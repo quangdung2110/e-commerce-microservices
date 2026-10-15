@@ -390,6 +390,13 @@ components:
       in: path
       required: true
       schema: { $ref: '#/components/schemas/Uuid' }
+  headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
     Uuid:
       type: string
@@ -661,6 +668,8 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ElasticsearchUnavailable:
       description: ELASTICSEARCH_UNAVAILABLE; retryable infrastructure failure.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     SearchTimeout:
       description: SEARCH_TIMEOUT; Search did not retry internally.

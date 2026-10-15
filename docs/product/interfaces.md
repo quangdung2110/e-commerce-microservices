@@ -126,6 +126,14 @@ caller đầu tiên trong danh sách.
 `INVALID_ARGUMENT`. SKU không tồn tại hoặc không catalog-active là kết quả nghiệp vụ trong response
 (`not_found`/`unavailable`), không phải lỗi transport.
 
+Mọi status lỗi Product tự trả mang `google.rpc.ErrorInfo` (`domain=ecommerce.product.v1`, `reason`, metadata
+`retryable`), kèm `BadRequest` cho `INVALID_ARGUMENT` và `RetryInfo` cho `UNAVAILABLE`
+([contracts ADR-006](../../contracts/decisions/ADR-006-grpc-error-details.md), [ADR-023](decisions/ADR-023-grpc-error-details.md)).
+Sáu `reason` (`SERVICE_IDENTITY_MISSING`, `SERVICE_IDENTITY_NOT_ALLOWED`, `SKU_ID_INVALID`, `BATCH_TOO_LARGE`,
+`CATALOG_STORE_UNAVAILABLE`, `INTERNAL_ERROR`) nằm ở
+[`errors.yaml`](../../contracts/grpc/ecommerce/product/v1/errors.yaml); `ProductGrpcErrorCatalogTest` fail khi enum lệch file.
+Lỗi database là `UNAVAILABLE` `CATALOG_STORE_UNAVAILABLE`, không còn `UNKNOWN`.
+
 Proto nguồn chuẩn tại
 [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../contracts/grpc/ecommerce/product/v1/product_service.proto)
 đã diễn đạt `price` (selling price), `base_price`, `catalog_revision`, `category_ids`

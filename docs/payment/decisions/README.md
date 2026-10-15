@@ -44,3 +44,4 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-023](./ADR-023-reconciliation-ownership-and-audit-corrections.md) | Session ownership/fencing, pagination, freeze và manual correction sau audit | Accepted | 2026-10-11 | Refines ADR-017/019/020 |
 | [ADR-025](./ADR-025-request-correlation-and-caller-deadline.md) | Request ID, trace ID and caller deadline in Payment logs; `X-Correlation-Id` unchanged | Accepted | 2026-10-15 | — |
 | [ADR-026](./ADR-026-service-identity-allowlist-and-401-403.md) | Configurable caller allowlist on the Order-facing routes; 401/403 instead of 400 | Accepted | 2026-10-15 | — |
+| [ADR-027](./ADR-027-retry-after-on-retryable-503.md) | `Retry-After` trên `503` retryable và webhook; tách response `Unavailable` khỏi `Problem` trong contract | Accepted | 2026-10-15 | — |

@@ -96,8 +96,14 @@ nguyên request.
 | `DELTA_INVALID` | 400 | không | Delta bằng 0 ở script; handler đã chặn bằng `VALIDATION_FAILED` nên client không thấy mã này |
 | `RATE_LIMITED` | 429 | có (`Retry-After`) | Vượt rate limit cục bộ theo user (§2.2) |
 | `CART_STORE_UNAVAILABLE` | 503 | có | Redis lỗi hoặc timeout (GET, DELETE, snapshot nội bộ, và POST) |
-| `PRODUCT_UNAVAILABLE` | 503 | có | Product gRPC lỗi, timeout hoặc breaker mở khi POST cần xác thực SKU |
+| `PRODUCT_UNAVAILABLE` | 503 | có, trừ khi Product từ chối request (xem dưới) | Product gRPC lỗi, timeout hoặc breaker mở khi POST cần xác thực SKU |
 | `INTERNAL_ERROR` | 500 | không | Lỗi không dự kiến (đã log đầy đủ, không lộ chi tiết) |
+
+`PRODUCT_UNAVAILABLE` đọc `google.rpc.ErrorInfo` của Product ([ADR-017](decisions/ADR-017-classify-product-errors-by-error-info.md)): khi
+Product từ chối vì lỗi của Cart (`INVALID_ARGUMENT`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, `NOT_FOUND`) mã vẫn là `503
+PRODUCT_UNAVAILABLE` nhưng `retryable = false`, không có `Retry-After` và không làm breaker mở; `reason` nằm trong log.
+
+Mọi `503` (`retryable = true`) kèm `Retry-After: 2` (giây) và mọi `429` kèm `Retry-After` theo [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md); caller chờ không quá deadline còn lại của nó.
 
 ### 2.2 Rate limit
 

@@ -3,6 +3,62 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-16 (Bằng chứng resilience, mesh)
+
+- [ADR-010](decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md): fault injection ở mức socket cho client HTTP của Order và Search, load test k6 chỉ đọc
+  (`loadtest/k6`, kết quả ở [docs/performance/load-test.md](../docs/performance/load-test.md)).
+- Cái quan sát được, từ các lỗi test tìm ra: Order không còn coi `2xx` có body cụt hoặc hỏng là `ACCEPTED` (nay `UNKNOWN` `BODY_UNREADABLE`); Product Detail BFF, Order và Inventory gửi
+  `Retry-After: 2` trên mọi `503` retryable (trước đây chỉ khi nơi ném lỗi có ước lượng), theo [ADR-005](decisions/ADR-005-retry-after-on-throttling-and-unavailable.md). Không đổi schema.
+- Mesh: [`deploy/mesh/`](../deploy/mesh/README.md) có manifest Istio 1.24.2 sinh từ `docs/mesh/runtime-contract.md`; runtime contract §5.2 tách hai hàng cấp quyền chéo (Order submissions, Finance Ops)
+  và §7 thêm hai route còn thiếu.
+
+## 2026-10-15 (Provider thật theo contract)
+
+- [ADR-009](decisions/ADR-009-provider-verification-against-running-stack.md): `contracts/tools/verify_providers.py` và
+  `provider-probes.yaml` kiểm 39 probe chỉ đọc trên provider đang chạy với OpenAPI của interaction.
+- Sửa contract theo những gì provider thật trả (không đổi hành vi runtime): `payment/v1` thêm `UNAUTHENTICATED` và `FORBIDDEN` vào
+  enum `code` (Payment trả hai mã này từ [ADR-004](decisions/ADR-004-service-identity-allowlist.md)); `auth/internal/v1` khai báo body
+  `application/problem+json` cho cả tám response lỗi (trước đó khai báo không có body).
+
+## 2026-10-15 (Cổng CI)
+
+- [ADR-008](decisions/ADR-008-contract-ci-gates.md): CI chạy `validate-contracts.ps1 -StrictTools` (buf, redocly, asyncapi bắt buộc, lint mọi spec),
+  cổng breaking change (`buf breaking` cho proto, `oasdiff` cho OpenAPI; `contracts/tools/check-breaking.sh`) và test của service bị ảnh hưởng
+  (`.github/workflows/services.yml`). Spec sai phát hiện khi bật: `user/v1` thêm `servers`, `product-detail-bff/v1` thêm `security: []`
+  cho `getProductDetail` (endpoint ẩn danh). Không đổi hành vi runtime.
+
+## 2026-10-15 (Kênh gRPC)
+
+- [ADR-007](decisions/ADR-007-grpc-channel-balancing-and-keepalive.md): client gRPC dial `dns:///` với `round_robin` và
+  keepalive 30 giây/10 giây; provider đóng kết nối quá tuổi và cho phép ping từ 20 giây. Quy tắc ở
+  [conventions/grpc.md](conventions/grpc.md#kênh-client). Không đổi proto hay status.
+- Cái quan sát được: Cart và Checkout chia RPC tới Product giữa mọi địa chỉ DNS trả về; Product (`application.yml`) đặt
+  `grpc.server.max-connection-age` 5 phút, `max-connection-age-grace` 30 giây, `permit-keep-alive-time` 20 giây. Kết nối
+  tái lập khoảng mỗi 5 phút (RPC đang chạy hoàn tất). Cụm Kubernetes không có waypoint cần Service headless cho cổng gRPC.
+
+## 2026-10-15 (Chi tiết lỗi gRPC)
+
+- [ADR-006](decisions/ADR-006-grpc-error-details.md): mọi status lỗi do mã ứng dụng của provider gRPC trả phải mang
+  `google.rpc.ErrorInfo` (`domain`, `reason` ổn định, metadata `retryable`), kèm `BadRequest` cho `INVALID_ARGUMENT` và `RetryInfo`
+  cho `UNAVAILABLE`/`RESOURCE_EXHAUSTED`; catalog của từng service ở `errors.yaml`. Quy tắc ở
+  [conventions/grpc.md](conventions/grpc.md#lỗi).
+- Product gRPC v1: thêm [`errors.yaml`](grpc/ecommerce/product/v1/errors.yaml) với sáu `reason`. Không đổi proto hay stub. Lỗi
+  database trước đây là `UNKNOWN`, nay là `UNAVAILABLE` `CATALOG_STORE_UNAVAILABLE`; `INVALID_ARGUMENT`, `UNAUTHENTICATED`,
+  `PERMISSION_DENIED` giữ nguyên mã status và có thêm chi tiết, nên client cũ không bị ảnh hưởng.
+- Cái quan sát được: Cart trả `503 PRODUCT_UNAVAILABLE` với `retryable=false` (không `Retry-After`) khi Product từ chối request
+  vì lỗi của caller, và không còn đếm các lỗi đó vào circuit breaker; Checkout ghi `reason` trong log.
+
+## 2026-10-15 (Retry-After)
+
+- [ADR-005](decisions/ADR-005-retry-after-on-throttling-and-unavailable.md): mọi `429` và mọi `503` có `retryable: true`
+  phải có `Retry-After` (số nguyên giây `1`–`3600`); `503` không retry được không có. 46 response trên 7 OpenAPI trước đó
+  không khai báo header: Auth internal, User (`429`), Cart, Notification internal, Payment v1 và internal, Search v2 (`503`).
+  Chỉ thêm header response nên tương thích ngược; Payment v1 và internal tách response `Unavailable` khỏi `Problem` để chỉ
+  `503` mang header.
+- Cái quan sát được: Cart, Notification, Payment (kể cả webhook Stripe) và Search gửi `Retry-After: 2` trên `503` retryable;
+  User, Auth, Notification làm tròn lên thời gian còn lại của cửa sổ rate limit thay vì làm tròn xuống.
+- `contracts/tools/check_http_contracts.py` kiểm quy tắc này trong CI.
+
 ## 2026-10-15 (Danh tính service nội bộ)
 
 - [ADR-004](decisions/ADR-004-service-identity-allowlist.md) chuẩn hoá cách kiểm caller nội bộ: allowlist

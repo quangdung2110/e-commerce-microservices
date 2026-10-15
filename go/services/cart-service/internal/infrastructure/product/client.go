@@ -10,6 +10,7 @@ package product
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 
 	"cart-service/internal/domain"
@@ -41,10 +43,59 @@ type Config struct {
 	// ServiceIdentity is sent as x-service-identity on every call (mesh runtime contract section 6).
 	// Empty means DefaultServiceIdentity.
 	ServiceIdentity string
+	// KeepAliveTime is how long an active connection may be silent before Cart pings it, and
+	// KeepAliveTimeout how long it waits for the reply before closing it (contracts ADR-007).
+	// Zero means DefaultKeepAliveTime and DefaultKeepAliveTimeout.
+	KeepAliveTime    time.Duration
+	KeepAliveTimeout time.Duration
+	// DialOptions are appended to the standard options. Tests use it to inject a resolver.
+	DialOptions []grpc.DialOption
 }
 
 // DefaultServiceIdentity is Cart's ServiceAccount name in contracts/catalog/services.yaml.
 const DefaultServiceIdentity = "cart-service"
+
+// Channel defaults (contracts ADR-007). Product allows pings no more often than every 20 seconds
+// (product.internal grpc.server.permit-keep-alive-time), so KeepAliveTime must stay above that.
+const (
+	DefaultKeepAliveTime    = 30 * time.Second
+	DefaultKeepAliveTimeout = 10 * time.Second
+
+	// serviceConfig spreads calls over every address the DNS name resolves to. Behind a waypoint the name
+	// resolves to one virtual address, so this changes nothing there.
+	serviceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+)
+
+// target gives a bare host:port the dns scheme. grpc-go defaults to passthrough, which hands the
+// balancer a single address and makes round_robin pointless.
+func target(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "dns:///" + address
+}
+
+// dialOptions is the standard channel configuration: plaintext inside the mesh, round-robin over
+// resolved addresses, keepalive pings, and identity plus correlation on every call.
+func dialOptions(cfg Config) []grpc.DialOption {
+	if cfg.KeepAliveTime <= 0 {
+		cfg.KeepAliveTime = DefaultKeepAliveTime
+	}
+	if cfg.KeepAliveTimeout <= 0 {
+		cfg.KeepAliveTimeout = DefaultKeepAliveTimeout
+	}
+	options := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(serviceConfig),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                cfg.KeepAliveTime,
+			Timeout:             cfg.KeepAliveTimeout,
+			PermitWithoutStream: false,
+		}),
+		grpc.WithChainUnaryInterceptor(propagate(cfg.ServiceIdentity)),
+	}
+	return append(options, cfg.DialOptions...)
+}
 
 // Client is the Product Service adapter.
 type Client struct {
@@ -77,10 +128,7 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.ServiceIdentity == "" {
 		cfg.ServiceIdentity = DefaultServiceIdentity
 	}
-	conn, err := grpc.DialContext(dialCtx, cfg.Address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithChainUnaryInterceptor(propagate(cfg.ServiceIdentity)),
-	)
+	conn, err := grpc.DialContext(dialCtx, target(cfg.Address), dialOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("dial product service at %s: %w", cfg.Address, err)
 	}
@@ -157,8 +205,7 @@ func (c *Client) GetSku(ctx context.Context, skuID string) (domain.ProductSnapsh
 		response, err := c.rpc.GetSku(callCtx, &productv1.GetSkuRequest{SkuId: skuID})
 		c.observeCall("GetSku", err)
 		if err != nil {
-			c.breaker.failure()
-			return nil, unavailable(err)
+			return nil, c.failed(err)
 		}
 		c.breaker.success()
 
@@ -209,8 +256,7 @@ func (c *Client) GetBatchSkus(ctx context.Context, skuIDs []string) (map[string]
 			c.breaker.release()
 			return nil, unavailable(err)
 		}
-		c.breaker.failure()
-		return nil, unavailable(err)
+		return nil, c.failed(err)
 	}
 	c.breaker.success()
 

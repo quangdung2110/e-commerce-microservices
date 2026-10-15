@@ -39,6 +39,18 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 | Payment Events v2 | `implemented` | 15 CloudEvents/schema/example và Debezium outbox binding được Gate 2 đối chiếu; runtime payload script kiểm canonical schema cho 15 example và ba correction event thực tế. Order có 13 relevant type nhưng chưa contract test với Payment producer/CDC thật; không đánh dấu verified. |
 | Payment Internal Events v1 | `implemented` | Verified exact Stripe bytes được encrypted inbox lưu trước publication, worker kiểm hash/metadata, DB lease/fencing và retry; ingress/processor/Kafka publisher có test. Chưa có smoke test Kafka delivery thật, Stripe Sandbox hoặc provider-network chaos. |
 
+## Provider thật theo contract
+
+`contracts/tools/verify_providers.py` ([ADR-009](decisions/ADR-009-provider-verification-against-running-stack.md)) gọi provider
+đang chạy như consumer gọi và kiểm câu trả lời với OpenAPI. Các interaction HTTP đã có probe (39 probe, chỉ đọc):
+`search-reindexes-product-catalog`, `promotion-validates-product-snapshot`, `product-detail-bff-queries-product-catalog`,
+`product-detail-bff-queries-review-summary`, `product-detail-bff-queries-inventory-availability`, `checkout-previews-inventory-allocation`,
+`checkout-lists-voucher-options`, `checkout-calculates-promotions`, `checkout-reads-cart-snapshot`,
+`checkout-reads-user-address-snapshot`, `checkout-creates-order` (đọc), `order-initiates-payment` (đọc),
+`support-queries-notification-status` và `notification-resolves-auth-contact`; cùng với đó là `401`/`403` của từng provider. Đây là bằng chứng
+cho điều kiện "provider thật vượt qua contract test", chưa đủ để chuyển `verified`: còn thiếu test retry/duplicate của consumer, và lệnh có side
+effect (reserve, thanh toán, tạo order) chưa được probe.
+
 ## Quy tắc chuyển trạng thái
 
 ### `proposed` → `implemented`
@@ -51,7 +63,8 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 
 - Consumer deserialize được example/fixture.
 - Có test cho retry, duplicate và unknown optional field.
-- CI đã có breaking-change check so với `main`.
+- CI đã có breaking-change check so với `main` (`contracts/tools/check-breaking.sh`, [ADR-008](decisions/ADR-008-contract-ci-gates.md)):
+  Protobuf bằng `buf breaking`, OpenAPI bằng `oasdiff`. Event (AsyncAPI, JSON Schema) chưa có công cụ so sánh nên vẫn cần review.
 
 ## Những file legacy chưa được xóa
 

@@ -52,3 +52,5 @@ Cột **Supersedes** là các ADR mà ADR này thay thế; cột **Superseded by
 | [ADR-020](./ADR-020-media-fan-out-follows-snapshot-content.md) | Fan-out media theo nội dung snapshot, không theo thumbnail đổi | Accepted | 2026-10-09 | — (amends ADR-013) | — |
 | [ADR-021](./ADR-021-request-correlation-and-caller-deadline.md) | Request ID, trace ID và deadline của caller trong log HTTP và gRPC; gRPC nhận ID có `.` và `:` | Accepted | 2026-10-15 | — | — |
 | [ADR-022](./ADR-022-grpc-caller-allowlist-and-reflection-off.md) | Allowlist caller cho gRPC `ProductService` (`x-service-identity`); warm-up gửi identity; reflection tắt mặc định | Accepted | 2026-10-15 | — | — |
+| [ADR-023](./ADR-023-grpc-error-details.md) | Lỗi gRPC mang `google.rpc.ErrorInfo` (reason, `retryable`), `BadRequest`, `RetryInfo`; lỗi DB là `UNAVAILABLE` thay vì `UNKNOWN` | Accepted | 2026-10-15 | — | — |
+| [ADR-024](./ADR-024-grpc-connection-age-and-keepalive-policy.md) | `max-connection-age` 5m / grace 30s và `permit-keep-alive-time` 20s cho server gRPC | Accepted | 2026-10-15 | — | — |

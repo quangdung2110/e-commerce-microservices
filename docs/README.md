@@ -280,8 +280,15 @@ attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đ�
 | [mesh/design.md](./mesh/design.md) | Namespace/ztunnel/waypoint, identity SPIFFE, ranh giới tin cậy `X-User-*`/`X-Service-Identity`, traffic policy, gRPC, Traefik trong mesh, chế độ lỗi. |
 | [mesh/runtime-contract.md](./mesh/runtime-contract.md) | Quy ước bắt buộc: runtime, nhãn namespace, mTLS, ma trận `AuthorizationPolicy` dẫn xuất từ `contracts/catalog/interactions.yaml`, identity header, retry/timeout, egress, telemetry, tiêu chí xác minh, gaps. |
 | [mesh/implementation_plan.md](./mesh/implementation_plan.md) | Giai đoạn 0–7 từ baseline Kubernetes tới vận hành, kiểm thử bắt buộc, migration/rollback. |
+| [mesh/decisions/](./mesh/decisions/README.md) | ADR-001: manifest Istio sinh từ runtime contract (`deploy/mesh/`), Istio 1.24.2, dịch đường dẫn, kiểm tra không cần cluster. |
 
 ---
+
+## 11b. Hiệu năng và độ bền (`docs/performance/`)
+
+| Tài liệu | Nội dung |
+|---|---|
+| [performance/load-test.md](./performance/load-test.md) | Load test k6 chỉ đọc cho route storefront (qua gateway và thẳng service), kết quả đo, giới hạn của số đo, và fault injection ở mức socket cho Order và Search ([contracts ADR-010](../contracts/decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md)). |
 
 ## 12. Frontend (`docs/frontend/`)
 

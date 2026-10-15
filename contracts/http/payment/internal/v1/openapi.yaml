@@ -53,7 +53,7 @@ paths:
         "400":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/review-cases/{caseId}/claim:
     post:
       summary: Claim a payment review case
@@ -81,7 +81,7 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/review-cases/{caseId}/resolve:
     post:
       summary: Resolve or escalate a payment review case
@@ -112,7 +112,7 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
         "404":
           $ref: "#/components/responses/Problem"
   /internal/v1/payment/review-cases/{caseId}/corrections:
@@ -150,7 +150,7 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/webhooks/{stripeEventId}/replay:
     post:
       summary: Replay a retained verified Stripe webhook
@@ -190,7 +190,7 @@ paths:
           $ref: "#/components/responses/Problem"
         '422': { $ref: '#/components/responses/Problem' }
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/reconciliation-runs:
     post:
       summary: Start a payment reconciliation run
@@ -241,7 +241,7 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/reconciliation/freeze:
     put:
       summary: Change the reconciliation correction freeze
@@ -293,7 +293,7 @@ paths:
         "422":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/ledger/journals/{journalId}:
     get:
       summary: Read an immutable financial journal
@@ -317,7 +317,7 @@ paths:
         "400":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
   /internal/v1/payment/disputes/{disputeTransactionId}:
     get:
       summary: Read a payment dispute
@@ -344,7 +344,7 @@ paths:
         "400":
           $ref: "#/components/responses/Problem"
         "503":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/Unavailable"
 components:
   securitySchemes:
     workloadIdentity: { type: mutualTLS }
@@ -406,6 +406,13 @@ components:
         required: true,
         schema: { type: string, pattern: '^DSP_[0-9A-HJKMNP-TV-Z]{26}$' }
       }
+  headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
     ReviewCase:
       type: object
@@ -617,6 +624,18 @@ components:
       description: Operation failed.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
       headers:
+        Cache-Control:
+          schema:
+            type: string
+            const: private, no-store
+        X-Correlation-Id:
+          schema:
+            type: string
+    Unavailable:
+      description: Dependency unavailable or provider outcome unknown (retryable=true carries Retry-After; retryable=false does not).
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
         Cache-Control:
           schema:
             type: string

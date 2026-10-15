@@ -1,0 +1,294 @@
+# East-west traffic policy of the waypoint, one entry per route (docs/mesh/runtime-contract.md section 7, mesh ADR-001).
+#
+# The numbers (attempts, timeout) are NOT a second source of truth: tests/test_mesh.py reads the section 7 table and fails when an
+# entry disagrees with the row named by `doc_row` (a substring that identifies exactly one row). Paths live here because the table
+# writes them informally (`...`, `**`); Istio needs a regular expression for a VirtualService match.
+#
+# Fields
+#   service     destination Service in `ecommerce`
+#   port        a name from topology.yaml (default http)
+#   methods     list of HTTP methods, or omitted for any
+#   regex       full-match regular expression of the request path (or `prefix` / `exact`)
+#   attempts    retry attempts; 0 disables retries for the route (never rely on Istio defaults)
+#   retry_on    Envoy retry conditions, only when attempts > 0
+#   timeout_s   whole-request timeout in seconds
+#   doc_row     substring(s) of the section 7 row(s) this entry implements
+#   doc_value   which number to read when a row holds two ("2 lần / 0"); default 0
+#   examples    concrete requests the tests use to check the match and who may send them
+version: 1
+
+routes:
+  # ---- Product
+  - id: product-reads
+    service: product-service
+    methods: [GET]
+    regex: /internal/v1/(products/[^/]+/snapshot|product-details/[^/]+)
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 3
+    doc_row: "GET /internal/v1/products/*/snapshot"
+    examples:
+      - {method: GET, path: /internal/v1/products/abc/snapshot}
+      - {method: GET, path: /internal/v1/product-details/some-slug}
+
+  - id: product-grpc
+    service: product-service
+    port: grpc
+    methods: [POST]
+    prefix: /ecommerce.product.v1.ProductService/
+    attempts: 2
+    retry_on: connect-failure,refused-stream,unavailable
+    timeout_s: 2
+    doc_row: "ProductService/GetSku"
+    examples:
+      - {method: POST, path: /ecommerce.product.v1.ProductService/GetSku}
+      - {method: POST, path: /ecommerce.product.v1.ProductService/GetBatchSkus}
+
+  - id: product-export
+    service: product-service
+    methods: [GET]
+    regex: /internal/v1/(products|categories)/export
+    attempts: 0
+    timeout_s: 30
+    doc_row: "/internal/v1/products/export"
+    examples:
+      - {method: GET, path: /internal/v1/products/export}
+      - {method: GET, path: /internal/v1/categories/export}
+
+  # ---- User, Cart
+  - id: user-checkout-snapshot
+    service: user-service
+    port: internal
+    methods: [GET]
+    regex: /internal/v1/users/[^/]+/addresses/[^/]+/checkout-snapshot
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 2
+    doc_row: "checkout-snapshot` (User)"
+    examples:
+      - {method: GET, path: /internal/v1/users/u1/addresses/a1/checkout-snapshot}
+
+  - id: cart-checkout-snapshot
+    service: cart-service
+    methods: [GET]
+    regex: /internal/v1/carts/[^/]+/checkout-snapshot
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 1
+    doc_row: "GET /internal/v1/carts/*/checkout-snapshot"
+    examples:
+      - {method: GET, path: /internal/v1/carts/u1/checkout-snapshot}
+
+  # ---- Inventory
+  - id: inventory-allocation-preview
+    service: inventory-service
+    methods: [POST]
+    exact: /internal/inventory/v1/allocation-previews
+    attempts: 0
+    timeout_s: 4
+    doc_row: "POST /internal/inventory/v1/allocation-previews"
+    examples:
+      - {method: POST, path: /internal/inventory/v1/allocation-previews}
+
+  - id: inventory-order-workflow
+    service: inventory-service
+    regex: /internal/inventory/v1/((reservations|refund-scopes)(/.*)?|commands/[^/]+)
+    attempts: 0
+    timeout_s: 10
+    doc_row: ["POST /internal/inventory/v1/reservations/**", "GET /internal/inventory/v1/commands/*"]
+    examples:
+      - {method: POST, path: /internal/inventory/v1/reservations}
+      - {method: GET, path: /internal/inventory/v1/reservations/r1}
+      - {method: POST, path: /internal/inventory/v1/refund-scopes/s1/register}
+      - {method: GET, path: /internal/inventory/v1/commands/c1}
+
+  - id: inventory-availability-batch
+    service: inventory-service
+    methods: [POST]
+    exact: /internal/inventory/v1/sku-availabilities:batch-get
+    attempts: 0
+    timeout_s: 2
+    doc_row: "POST .../sku-availabilities:batch-get"
+    doc_value: 1
+    examples:
+      - {method: POST, path: "/internal/inventory/v1/sku-availabilities:batch-get"}
+
+  - id: inventory-exports
+    service: inventory-service
+    regex: /exports/inventory/v1/.*
+    attempts: 0
+    timeout_s: 30
+    doc_row: "/exports/inventory/v1/**"
+    examples:
+      - {method: GET, path: /exports/inventory/v1/changes}
+      - {method: POST, path: /exports/inventory/v1/snapshot-sessions}
+
+  # ---- Promotion
+  - id: promotion-discount-calculation
+    service: promotion-service
+    methods: [POST]
+    exact: /internal/v1/promotion-discount-calculations
+    attempts: 0
+    timeout_s: 3
+    doc_row: "POST /internal/v1/promotion-discount-calculations"
+    examples:
+      - {method: POST, path: /internal/v1/promotion-discount-calculations}
+
+  - id: promotion-voucher-options
+    service: promotion-service
+    methods: [POST]
+    exact: /internal/v1/promotion-voucher-options
+    attempts: 0
+    timeout_s: 2
+    doc_row: "POST /internal/v1/promotion-voucher-options"
+    examples:
+      - {method: POST, path: /internal/v1/promotion-voucher-options}
+
+  - id: promotion-allocation
+    service: promotion-service
+    methods: [POST]
+    regex: /internal/v1/promotion-allocation/(reservations|cancellations|confirmations)
+    attempts: 0
+    timeout_s: 10
+    doc_row: "{reservations,cancellations,confirmations}"
+    examples:
+      - {method: POST, path: /internal/v1/promotion-allocation/reservations}
+      - {method: POST, path: /internal/v1/promotion-allocation/confirmations}
+
+  - id: promotion-technical-cancellations
+    service: promotion-service
+    methods: [POST]
+    exact: /internal/v1/promotion-allocation/technical-cancellations
+    attempts: 0
+    timeout_s: 10
+    doc_row: "technical-cancellations"
+    examples:
+      - {method: POST, path: /internal/v1/promotion-allocation/technical-cancellations}
+
+  # ---- Payment (the Stripe webhook is public and owned by Traefik, so it has no route here)
+  - id: payment-reads
+    service: payment-service
+    methods: [GET]
+    regex: /v1/(payments/[^/]+(/client-data)?|refunds/[^/]+)
+    attempts: 0
+    timeout_s: 15
+    doc_row: "GET /v1/refunds/{refundTransactionId}"
+    examples:
+      - {method: GET, path: /v1/payments/TXN_1}
+      - {method: GET, path: /v1/payments/TXN_1/client-data}
+      - {method: GET, path: /v1/refunds/RFD_1}
+
+  - id: payment-commands
+    service: payment-service
+    methods: [POST]
+    regex: /v1/payments/(initiate|[^/]+/(cancel|refund))
+    attempts: 0
+    timeout_s: 15
+    doc_row: "POST /v1/payments/initiate"
+    examples:
+      - {method: POST, path: /v1/payments/initiate}
+      - {method: POST, path: /v1/payments/TXN_1/cancel}
+      - {method: POST, path: /v1/payments/TXN_1/refund}
+
+  # ---- Order
+  - id: order-submission-create
+    service: order-service
+    methods: [POST]
+    exact: /internal/v1/checkout-order-submissions
+    attempts: 0
+    timeout_s: 15
+    doc_row: "POST /internal/v1/checkout-order-submissions"
+    examples:
+      - {method: POST, path: /internal/v1/checkout-order-submissions}
+
+  - id: order-submission-read
+    service: order-service
+    methods: [GET]
+    regex: /internal/v1/checkout-order-submissions/[^/]+
+    attempts: 0
+    timeout_s: 15
+    doc_row: "GET /internal/v1/checkout-order-submissions/*"
+    examples:
+      - {method: GET, path: /internal/v1/checkout-order-submissions/token-1}
+
+  - id: order-financial-reconciliation
+    service: order-service
+    regex: /internal/v1/orders/[^/]+/financial-reconciliation-(case|decisions)
+    attempts: 0
+    timeout_s: 10
+    doc_row: "financial-reconciliation-case"
+    examples:
+      - {method: GET, path: /internal/v1/orders/1/financial-reconciliation-case}
+      - {method: POST, path: /internal/v1/orders/1/financial-reconciliation-decisions}
+
+  # ---- Review
+  - id: review-pdp-summary
+    service: review-service
+    methods: [GET]
+    regex: /internal/v1/reviews/products/[^/]+/pdp-summary
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 2
+    doc_row: "GET /internal/v1/reviews/products/*/pdp-summary"
+    examples:
+      - {method: GET, path: /internal/v1/reviews/products/p1/pdp-summary}
+
+  - id: review-rating-export
+    service: review-service
+    regex: /internal/v1/reviews/rating-aggregate-exports(/.*)?
+    attempts: 0
+    timeout_s: 30
+    doc_row: "rating-aggregate-exports**"
+    examples:
+      - {method: POST, path: /internal/v1/reviews/rating-aggregate-exports}
+      - {method: GET, path: /internal/v1/reviews/rating-aggregate-exports/s1}
+
+  # ---- Auth (internal listener)
+  - id: auth-delivery-content
+    service: auth-service
+    port: internal
+    methods: [POST]
+    regex: /internal/v1/auth/notification-deliveries/[^/]+/content
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 2
+    doc_row: "POST /internal/v1/auth/notification-deliveries/*/content"
+    examples:
+      - {method: POST, path: /internal/v1/auth/notification-deliveries/d1/content}
+
+  - id: auth-notification-contact
+    service: auth-service
+    port: internal
+    methods: [GET]
+    regex: /internal/v1/auth/users/[^/]+/notification-contact
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 2
+    doc_row: "GET /internal/v1/auth/users/*/notification-contact"
+    examples:
+      - {method: GET, path: /internal/v1/auth/users/u1/notification-contact}
+
+  # ---- Notification (internal listener)
+  - id: notification-status
+    service: notification-service
+    port: internal
+    methods: [GET]
+    regex: /internal/v1/notifications/(requests/[^/]+|deliveries)
+    attempts: 2
+    retry_on: connect-failure,refused-stream
+    timeout_s: 3
+    doc_row: "GET /internal/v1/notifications/requests/*"
+    examples:
+      - {method: GET, path: /internal/v1/notifications/requests/r1}
+      - {method: GET, path: /internal/v1/notifications/deliveries}
+
+  - id: notification-ops
+    service: notification-service
+    port: internal
+    regex: /internal/v1/notifications/ops/.*
+    attempts: 0
+    timeout_s: 10
+    doc_row: "/internal/v1/notifications/ops/**"
+    examples:
+      - {method: POST, path: /internal/v1/notifications/ops/dlq/redrive}
+      - {method: PUT, path: /internal/v1/notifications/ops/replay-mode}

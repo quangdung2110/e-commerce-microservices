@@ -14,14 +14,14 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Bulkhead Product đầy là 503 không {@code Retry-After} và không tính vào circuit
+ * Bulkhead Product đầy là 503 kèm {@code Retry-After} mặc định (contracts ADR-005, PDP ADR-010) và không tính vào circuit
  * (operations.md §Health và degradation).
  */
 @TestPropertySource(properties = "pdp.product.bulkhead=1")
 class ProductBulkheadTest extends AbstractPdpTest {
 
     @Test
-    @DisplayName("Bulkhead Product đầy: request vượt giới hạn nhận 503 no-store, không Retry-After, không tính circuit")
+    @DisplayName("Bulkhead Product đầy: request vượt giới hạn nhận 503 no-store, Retry-After mặc định, không tính circuit")
     void fullProductBulkheadIsUnavailableWithoutTouchingTheBreaker() {
         stubProduct(json(Fixtures.product()).withFixedDelay(200));
         stubInventory(Fixtures.inventory(List.of(Fixtures.availability(Fixtures.SKU_BLACK_42, "IN_STOCK"))));
@@ -33,7 +33,7 @@ class ProductBulkheadTest extends AbstractPdpTest {
                     var result = getPdp("smart-watch").expectBody().returnResult();
                     if (result.getStatus().value() == 503) {
                         assertThat(result.getResponseHeaders().getCacheControl()).isEqualTo("no-store");
-                        assertThat(result.getResponseHeaders().containsKey("Retry-After")).isFalse();
+                        assertThat(result.getResponseHeaders().getFirst("Retry-After")).isEqualTo("2");
                     }
                     return result.getStatus().value();
                 }).subscribeOn(Schedulers.boundedElastic()))

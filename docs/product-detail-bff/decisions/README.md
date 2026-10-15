@@ -11,3 +11,4 @@
 | [ADR-007](./ADR-007-hot-path-clarifications.md) | Budget Product, request ID chuẩn hóa, `404` no-store, item Inventory thiếu/thừa, cờ tắt dependency, Review token | Accepted | 2026-09-25 | Amends ADR-004 |
 | [ADR-008](./ADR-008-post-implementation-audit-corrections.md) | Hiệu chỉnh sau audit: status ngoài contract, `storage_key` và giới hạn chuỗi, readiness mặc định, route lạ, request ID trong log | Accepted | 2026-10-09 | Amends ADR-004, ADR-005 |
 | [ADR-009](./ADR-009-service-identity-replaces-review-bearer-token.md) | Bỏ `PDP_REVIEW_SERVICE_TOKEN`; `X-Service-Identity` là identity duy nhất tới Review | Accepted | 2026-10-15 | Sửa mục 6 của ADR-007 |
+| [ADR-010](./ADR-010-retry-after-on-every-503.md) | `503` luôn kèm `Retry-After` (giá trị circuit khi mở, mặc định 2 giây khác) | Accepted | 2026-10-16 | — |

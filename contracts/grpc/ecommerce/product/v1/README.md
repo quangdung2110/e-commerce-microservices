@@ -47,6 +47,20 @@ retry. gRPC reflection tắt mặc định (chỉ profile `dev` hoặc `PRODUCT_
 - Provider quá tải dùng `RESOURCE_EXHAUSTED` hoặc `UNAVAILABLE` và không để
   consumer retry vô hạn.
 
+Mọi lỗi do Product trả mang `google.rpc.ErrorInfo` ([ADR-006](../../../../decisions/ADR-006-grpc-error-details.md)); danh sách
+đầy đủ và máy đọc được ở [`errors.yaml`](errors.yaml):
+
+| Status | `reason` | Retry | Khi nào |
+|---|---|---|---|
+| `UNAUTHENTICATED` | `SERVICE_IDENTITY_MISSING` | Không | Thiếu `x-service-identity` |
+| `PERMISSION_DENIED` | `SERVICE_IDENTITY_NOT_ALLOWED` | Không | Caller ngoài `product.internal.grpc-clients` |
+| `INVALID_ARGUMENT` | `SKU_ID_INVALID` | Không | `sku_id` không phải UUID (`BadRequest` nêu field) |
+| `INVALID_ARGUMENT` | `BATCH_TOO_LARGE` | Không | Quá 100 `sku_ids` (`max_batch_size` trong metadata) |
+| `UNAVAILABLE` | `CATALOG_STORE_UNAVAILABLE` | Có | Product không đọc được database (`RetryInfo` 2 giây) |
+| `INTERNAL` | `INTERNAL_ERROR` | Không | Lỗi không dự kiến; nguyên nhân chỉ có trong log |
+
+`DEADLINE_EXCEEDED` và lỗi kết nối do gRPC runtime hoặc mesh sinh nên không có chi tiết.
+
 ## Bản copy trong service
 
 `product-service/proto/` và `checkout-service/proto/` chứa bản copy của file này và của

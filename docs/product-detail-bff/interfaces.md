@@ -50,9 +50,10 @@ trả thành công nhưng chưa có dữ liệu là `AVAILABLE` với aggregate 
 `404` và `503` dùng `application/problem+json` theo
 [HTTP convention](../../contracts/conventions/http.md#error): `404` có
 `code = PRODUCT_DETAIL_NOT_FOUND`, `retryable = false`; `503` có
-`code = PRODUCT_DETAIL_UNAVAILABLE`, `retryable = true` và `trace_id`. `503` kèm
-`Retry-After` khi circuit breaker của Product đang mở (thời gian mở còn lại, làm tròn lên
-giây). `200` có ít nhất một SKU `UNKNOWN` hoặc `review_section.status = UNAVAILABLE`, mọi
+`code = PRODUCT_DETAIL_UNAVAILABLE`, `retryable = true` và `trace_id`. `503` luôn kèm
+`Retry-After`: thời gian mở còn lại (làm tròn lên giây) khi circuit breaker của Product đang mở, ngược lại `2` giây
+khi nguyên nhân là timeout, lỗi kết nối, bulkhead đầy hoặc hết budget
+([contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md), [ADR-010](decisions/ADR-010-retry-after-on-every-503.md)). `200` có ít nhất một SKU `UNKNOWN` hoặc `review_section.status = UNAVAILABLE`, mọi
 `404` và mọi `503` mang `Cache-Control: no-store`; `200` đầy đủ theo cache policy của
 storefront, mặc định `no-store` ([data.md](./data.md#cache-boundary)).
 

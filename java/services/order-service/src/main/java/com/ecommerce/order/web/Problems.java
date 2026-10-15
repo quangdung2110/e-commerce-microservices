@@ -55,10 +55,22 @@ public class Problems {
                                            String instance, Integer retryAfter, Map<String, Object> extensions) {
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(code.status())
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON);
-        if (retryAfter != null) {
-            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfter));
+        Integer wait = retryAfter != null ? retryAfter : defaultRetryAfter(code);
+        if (wait != null) {
+            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(wait));
         }
         return builder.body(body(code, detail, errors, instance, extensions));
+    }
+
+    /**
+     * contracts ADR-005: every {@code 429} and every retryable {@code 503} carries {@code Retry-After}, also when the code
+     * that raised it had no estimate. A {@code 503} that is not retryable never does.
+     */
+    static Integer defaultRetryAfter(ErrorCode code) {
+        if (code.status() == 429) {
+            return 1;
+        }
+        return code.status() == 503 && code.retryable() ? 2 : null;
     }
 
     private static String truncate(String value, int max) {

@@ -19,6 +19,7 @@ paths:
     get:
       tags: [Storefront product detail]
       operationId: getProductDetail
+      security: []
       summary: Lấy Product Detail cho buyer
       parameters:
         - name: slug

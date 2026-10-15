@@ -1,0 +1,3 @@
+# Values for the `ztunnel` chart, Istio 1.24.2 ambient.
+# Install: helm install ztunnel istio/ztunnel -n istio-system -f deploy/mesh/helm/ztunnel.values.yaml --version 1.24.2
+tag: 1.24.2

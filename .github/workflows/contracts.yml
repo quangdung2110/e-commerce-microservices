@@ -4,20 +4,72 @@ on:
   pull_request:
     paths:
       - 'contracts/**'
+      - 'scripts/ci/**'
       - '.github/workflows/contracts.yml'
   push:
     branches: [main]
     paths:
       - 'contracts/**'
+      - 'scripts/ci/**'
       - '.github/workflows/contracts.yml'
 
 jobs:
-  smoke-validation:
+  validation:
+    name: Validate contracts (strict tools)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Validate contract structure and examples
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: contracts/tools/package-lock.json
+      - name: Install redocly and asyncapi
+        working-directory: contracts/tools
+        run: |
+          npm ci
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: '1.47.2'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      # -StrictTools turns a missing buf, redocly or asyncapi into an error instead of a warning, so the
+      # semantic linters can no longer be skipped silently (contracts ADR-008).
+      - name: Validate structure, examples and run every linter
         shell: pwsh
-        run: ./contracts/tools/validate-contracts.ps1
+        run: ./contracts/tools/validate-contracts.ps1 -StrictTools
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python tooling
+        run: python -m pip install pyyaml==6.0.2 "jsonschema>=4.18"
+      - name: Check HTTP contract rules and test the contract tools
+        run: |
+          python -m unittest discover -s contracts/tools/tests -v
+          python contracts/tools/check_http_contracts.py
 
+  breaking-changes:
+    name: No breaking contract changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the commit to compare with
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+      # buf breaking for protobuf and oasdiff for OpenAPI, from pinned images (contracts ADR-008).
+      - name: Compare contracts with the base
+        run: ./contracts/tools/check-breaking.sh "${{ steps.base.outputs.ref }}"
+      - name: Prove the gate still catches breaking changes
+        run: ./contracts/tools/tests/test_check_breaking.sh "${{ steps.base.outputs.ref }}"

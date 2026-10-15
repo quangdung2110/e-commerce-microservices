@@ -18,14 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProductBudgetTest extends AbstractPdpTest {
 
     @Test
-    @DisplayName("Không đủ budget cho Product: 503 no-store, không Retry-After, không tính circuit")
+    @DisplayName("Không đủ budget cho Product: 503 no-store, Retry-After mặc định (ADR-005), không tính circuit")
     void exhaustedBudgetBeforeProductIsUnavailable() {
         stubHealthyUpstreams();
         long skipped = calls(Dependency.PRODUCT, "budget_skipped");
 
         getPdp("smart-watch").expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
                 .expectHeader().valueEquals("Cache-Control", "no-store")
-                .expectHeader().doesNotExist("Retry-After");
+                .expectHeader().valueEquals("Retry-After", "2");
 
         UPSTREAMS.verify(0, anyRequestedFor(anyUrl()));
         assertThat(calls(Dependency.PRODUCT, "budget_skipped") - skipped).isEqualTo(1);

@@ -1,0 +1,8 @@
+# Service Mesh — Architecture Decision Records
+
+Quyết định công nghệ ban đầu nằm ở [technology_choice.md](../technology_choice.md); thư mục này ghi các quyết định về cách triển khai.
+Hành vi vận hành bắt buộc vẫn nằm ở [runtime-contract.md](../runtime-contract.md).
+
+| ADR | Decision | Status | Date |
+|---|---|---|---|
+| [ADR-001](./ADR-001-manifests-generated-from-runtime-contract.md) | Manifest mesh sinh từ runtime contract bằng `deploy/mesh/generate.py`; chốt Istio 1.24.2; dịch đường dẫn sang Istio; kiểm tra không cần cluster | Accepted | 2026-10-16 |

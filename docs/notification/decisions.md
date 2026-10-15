@@ -1,6 +1,6 @@
 # Quyết định kiến trúc
 
-**Trạng thái:** `implemented` (phase 1) — các quyết định D-01…D-20 chốt trong thảo luận thiết kế và implement; D-21…D-24 chốt khi đồng bộ docs ↔ contract ↔ code ngày 2026-10-10. Mỗi mục ghi bối cảnh, quyết định, phương án bị loại và hệ quả, để người đọc sau hiểu *tại sao* chứ không chỉ *là gì*. Dự án chưa dùng file ADR riêng cho Notification: `decisions.md` là nơi ghi.
+**Trạng thái:** `implemented` (phase 1) — các quyết định D-01…D-20 chốt trong thảo luận thiết kế và implement; D-21…D-24 chốt khi đồng bộ docs ↔ contract ↔ code ngày 2026-10-10; D-25 ngày 2026-10-15. Mỗi mục ghi bối cảnh, quyết định, phương án bị loại và hệ quả, để người đọc sau hiểu *tại sao* chứ không chỉ *là gì*. Dự án chưa dùng file ADR riêng cho Notification: `decisions.md` là nơi ghi.
 
 ## D-01 · Ba lane ưu tiên, tách ở topic + consumer group + quota
 
@@ -356,6 +356,19 @@ Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14
 **Bị loại.** *Giữ và ghi docs là pseudonymous*: chủ dự án chọn xoá, cho nhất quán với đường tombstone. *Xoá cả dòng `delivery_dedup`*: không tra được theo user và sẽ mở lại cửa gửi trùng.
 
 **Hệ quả.** Timeline support của user đã xoá mất `dedup_key`; không ảnh hưởng quyết định nào đã ghi. Test `TestE2E_UserDeleted` kiểm cả hai cột.
+
+## D-25 · `Retry-After` mặc định cho `503` retryable và làm tròn lên cửa sổ rate limit
+
+**Bối cảnh.** [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md) yêu cầu mọi `429` và mọi `503` có `retryable: true` mang `Retry-After`. Notification trả `503 DEPENDENCY_UNAVAILABLE` (kho idempotency lỗi, Auth lỗi khi resolve contact của suppression thủ công) nhưng contract internal không khai báo header và code không gửi. Helper cũ cắt phần thập phân của `RetryAfter`, nên cửa sổ 1,5 giây thành 1.
+
+**Quyết định.** `httpx.retryAfterSeconds(status, retryable, wait)`: `wait > 0` thì làm tròn lên (tối thiểu 1, tối đa 3600); không có `wait` thì `429` → 1 và `503` retryable → 2; `503` không retry được không có header. `WriteProblem` dùng nó. Contract `notification/internal/v1` khai báo header trên response `ServiceUnavailable`.
+
+**Bị loại.**
+- *Đặt `AsRetryable(2s)` ở từng chỗ dựng lỗi*: ba nơi hiện tại đều gọi `AsRetryable(0)`; một chỗ mặc định ở lớp ghi problem đáng tin hơn.
+
+**Hệ quả.** Không đổi mã lỗi hay body. `notification-ops` vẫn gọi lại bằng cùng `Idempotency-Key`. `store.go` trả `DEPENDENCY_UNAVAILABLE` không retryable khi `postgres call cancelled` nên response đó không có header — đúng với quy tắc.
+
+Kiểm chứng: `internal/api/httpx/retry_after_test.go` (bảng giá trị và ba test `WriteProblem`).
 
 ## Quyết định chưa chốt
 

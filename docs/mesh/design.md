@@ -1,6 +1,6 @@
 # Thiết kế kiến trúc Service Mesh
 
-> **Trạng thái:** `target/proposed`. Tài liệu này giải thích kiến trúc; hành vi vận hành bắt buộc
+> **Trạng thái:** `target/proposed` (manifest sinh từ runtime contract có ở [`deploy/mesh`](../../deploy/mesh/README.md), chưa áp dụng lên cluster). Tài liệu này giải thích kiến trúc; hành vi vận hành bắt buộc
 > nằm trong [runtime-contract.md](runtime-contract.md), lý do lựa chọn nằm trong
 > [technology_choice.md](technology_choice.md).
 
@@ -146,6 +146,12 @@ báo port với `name: grpc` và `appProtocol: grpc` để waypoint xử lý HTT
 theo request; `cart-service` (và Checkout khi có runtime) gọi qua tên Service, không qua
 headless Service hay IP pod. `AuthorizationPolicy` cho gRPC dùng `paths` dạng
 `/ecommerce.product.v1.ProductService/*`.
+
+Client không dựa hoàn toàn vào waypoint ([contracts ADR-007](../../contracts/decisions/ADR-007-grpc-channel-balancing-and-keepalive.md)):
+Cart và Checkout dial `dns:///` với `round_robin` và keepalive 30 giây, còn Product đóng kết nối sau 5 phút (grace 30 giây,
+`permit-keep-alive-time` 20 giây) để client phân giải lại. Với Service ClusterIP sau waypoint, DNS chỉ trả một địa chỉ ảo nên
+`round_robin` không đổi gì và waypoint vẫn cân bằng theo request. Ở cụm **chưa** có waypoint, cổng gRPC của Product phải là
+Service headless (`clusterIP: None`) để DNS liệt kê từng pod; nếu không, mọi RPC của một pod client vào một pod Product.
 
 ## Traefik trong mesh
 

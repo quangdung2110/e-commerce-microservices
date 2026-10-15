@@ -118,11 +118,19 @@ components:
       required: false
       schema: { type: string, minLength: 8, maxLength: 128 }
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     NoStore:
       description: Response có PII/secret không được cache hoặc ghi vào proxy log.
       required: true
       schema: { type: string, const: no-store }
   schemas:
+    Problem:
+      $ref: '../../../../shared/json-schema/v1/problem.schema.json'
     NotificationDeliveryContent:
       type: object
       additionalProperties: false
@@ -234,17 +242,35 @@ components:
   responses:
     BadRequest:
       description: delivery_id hoặc user_id không phải UUID.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     UnauthorizedService:
       description: Thiếu header X-Service-Identity.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     ForbiddenService:
       description: X-Service-Identity không nằm trong allowlist (không phải notification-service).
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     DeliveryNotFound:
       description: delivery_id không tồn tại hoặc không được phép truy cập.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     UserNotFound:
       description: user_id không tồn tại hoặc tài khoản đã xoá; Notification đánh delivery FAILED (no_recipient), không retry.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     DeliveryExpired:
       description: Delivery state đã hết TTL; không thể gửi lại secret cũ.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     RateLimited:
       description: Vượt rate limit nội bộ (120/phút theo cặp service gọi và delivery_id hoặc user_id).
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
     InternalError:
       description: Lỗi không mong đợi; caller có thể retry theo policy.
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }

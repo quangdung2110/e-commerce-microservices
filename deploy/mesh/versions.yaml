@@ -1,0 +1,29 @@
+# Pinned versions of the mesh (docs/mesh/runtime-contract.md section 2, mesh ADR-001).
+#
+# Chosen, not yet verified on a cluster: the repository has none (runtime-contract section 11). Digests stay null until the
+# first install; the install procedure must fill them and fail on `latest`.
+version: 1
+
+istio:
+  version: "1.24.2"        # first release line where ambient mode is generally available
+  helm_repository: https://istio-release.storage.googleapis.com/charts
+  charts: [base, istiod, cni, ztunnel]
+  # Image digests (istiod, ztunnel, install-cni, waypoint proxyv2). Fill from `istioctl version` / the registry on first install.
+  image_digests:
+    pilot: null
+    ztunnel: null
+    install-cni: null
+    proxyv2: null
+
+kubernetes:
+  # Range supported by Istio 1.24; the cluster CNI must also be supported by istio-cni in ambient mode.
+  supported: ["1.28", "1.29", "1.30", "1.31"]
+
+gateway_api:
+  version: "v1.2.0"        # CRDs required for the waypoint `Gateway` (gatewayClassName: istio-waypoint)
+
+traefik:
+  version: "v3.7.1"        # edge workload (runtime-contract section 2)
+
+observability:
+  tracing_sampling_percent: 100   # 100 in development; production value is decided with the gateway team

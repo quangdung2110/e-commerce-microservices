@@ -33,7 +33,8 @@ Không trả exception message, SQL, hostname hoặc secret cho client.
 - `X-Correlation-Id`, `X-Causation-Id`: business flow và command gây ra; chỉ bắt buộc khi contract
   provider ghi. Chi tiết và định dạng: [tracing.md](tracing.md).
 - `X-Request-Timeout-Ms`: caller chờ bao lâu, tính bằng mili giây; quy tắc ở [deadlines.md](deadlines.md).
-- `Retry-After`: nên trả với `429` và `503` khi biết thời gian chờ.
+- `Retry-After`: MUST có trên mọi `429` và mọi `503` có `retryable: true`; MUST NOT có trên `503` không retry được.
+  Số nguyên giây `1`–`3600`. Quy tắc và giá trị mặc định: [ADR-005](../decisions/ADR-005-retry-after-on-throttling-and-unavailable.md).
 
 Trusted identity header như `X-User-Id` chỉ được nhận từ API Gateway trên mạng
 nội bộ. Service không được tin header này nếu endpoint có thể truy cập trực tiếp.

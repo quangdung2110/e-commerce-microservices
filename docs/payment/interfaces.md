@@ -121,6 +121,11 @@ không đổi kết quả.
 | `PROVIDER_UNAVAILABLE` | 503 | true | Stripe lỗi trước khi gọi (5xx, network) |
 | `DEPENDENCY_UNAVAILABLE` | 503 | true | PostgreSQL/KMS không sẵn sàng |
 
+`503` có `retryable=true` kèm `Retry-After: 2` (giây); `PROVIDER_REQUEST_REJECTED` (`retryable=false`) không có header
+([contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md)). Webhook Stripe `503`
+cũng kèm `Retry-After: 2`, chỉ mang tính thông tin vì Stripe tự lên lịch retry. Order đọc header qua `HttpRemote` (ghi log)
+và không đổi hành vi retry: retry vẫn do saga sở hữu.
+
 `PAYMENT_NOT_CANCELABLE` không là kết luận theo local status: Payment vẫn gọi
 provider; chỉ actual response chưa cancel được/không rõ mới trả `CANCEL_PENDING`.
 

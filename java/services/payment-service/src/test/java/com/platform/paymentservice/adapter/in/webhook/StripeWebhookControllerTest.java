@@ -62,6 +62,7 @@ class StripeWebhookControllerTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(post("/v1/payments/webhook/stripe")
                         .header("Stripe-Signature", "t=1,v1=sig").content("{}"))
-                .andExpect(status().isServiceUnavailable());
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Retry-After", "2"));
     }
 }

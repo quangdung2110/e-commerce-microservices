@@ -182,8 +182,8 @@ public class DependencyGuard {
                 return CallResult.failure(Outcome.CLIENT_ERROR, status.code());
             }
             if (!status.isServerError()) {
-                log.warn("{} answered {}: identity, authorization or request configuration is wrong",
-                        dependency.tag(), status.status());
+                log.warn("{} answered {}{}: identity, authorization or request configuration is wrong",
+                        dependency.tag(), status.status(), status.code() == null ? "" : " " + status.code());
                 return CallResult.failure(Outcome.CLIENT_ERROR, status.code());
             }
             return CallResult.failure(Outcome.SERVER_ERROR, status.code());

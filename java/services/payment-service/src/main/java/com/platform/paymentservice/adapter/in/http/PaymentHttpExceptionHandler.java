@@ -32,6 +32,7 @@ public final class PaymentHttpExceptionHandler {
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .header("X-Correlation-Id", correlation)
+                .headers(headers -> RetryAfterHeader.apply(headers, status, retryable))
                 .body(new PaymentController.Problem(code, retryable, correlation));
     }
 }

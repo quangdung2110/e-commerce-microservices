@@ -285,14 +285,14 @@ class ProductDetailApiTest extends AbstractPdpTest {
     }
 
     @Test
-    @DisplayName("Product 5xx trả 503 problem có trace_id, không Retry-After khi circuit chưa mở")
+    @DisplayName("Product 5xx trả 503 problem có trace_id và Retry-After mặc định khi circuit chưa mở")
     void productServerErrorIsUnavailable() {
         stubProduct(status(500));
 
         EntityExchangeResult<byte[]> result = getPdp("smart-watch")
                 .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
                 .expectHeader().valueEquals("Cache-Control", "no-store")
-                .expectHeader().doesNotExist("Retry-After")
+                .expectHeader().valueEquals("Retry-After", "2")
                 .expectBody().returnResult();
         JsonNode problem = body(result);
 

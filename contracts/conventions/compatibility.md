@@ -25,6 +25,7 @@ thay thế major version trên wire.
 - Đổi Kafka key hoặc ordering scope.
 - Đổi Protobuf field number/type hoặc tái sử dụng number cũ.
 
-Breaking change MUST tạo major version mới và có migration note. Internal service
+Breaking change MUST tạo major version mới và có migration note. CI chặn nó cho Protobuf và OpenAPI
+([ADR-008](../decisions/ADR-008-contract-ci-gates.md)); ngoại lệ phải ghi trong `contracts/tools/breaking-waivers.txt` kèm ADR phê duyệt. Internal service
 nên hỗ trợ version cũ cho tới khi tất cả consumer trong catalog chuyển xong;
 không đặt một thời gian cứng giống nhau cho mọi service.

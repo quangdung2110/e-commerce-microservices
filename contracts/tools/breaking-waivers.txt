@@ -1,0 +1,7 @@
+# Approved exceptions to contracts/tools/check-breaking.sh (contracts ADR-008).
+#
+# One line per waived contract file: the path under contracts/, whitespace, then the ADR that approves the break.
+# Example:
+#   http/review/internal/v1/openapi.yaml    ADR-004
+# A waiver applies to every pull request while the line exists, so remove it in the next change.
+# Prefer a new major version directory over a waiver (conventions/compatibility.md).

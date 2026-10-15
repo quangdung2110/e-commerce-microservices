@@ -6,7 +6,6 @@ import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
-import io.grpc.Status;
 import io.micrometer.core.instrument.MeterRegistry;
 import net.devh.boot.grpc.server.interceptor.GrpcGlobalServerInterceptor;
 import org.slf4j.Logger;
@@ -60,23 +59,25 @@ public final class GrpcServiceIdentityInterceptor implements ServerInterceptor {
         String caller = headers.get(IDENTITY);
         caller = caller == null ? null : caller.trim();
         if (caller == null || caller.isEmpty()) {
-            return reject(call, "missing", Status.UNAUTHENTICATED.withDescription("Missing x-service-identity"));
+            return reject(call, "missing", ProductGrpcErrors.close(ProductGrpcError.SERVICE_IDENTITY_MISSING,
+                    "Missing x-service-identity"));
         }
         if (!properties.getInternal().getGrpcClients().contains(caller)) {
-            return reject(call, "forbidden",
-                    Status.PERMISSION_DENIED.withDescription("Service identity is not allowed on ProductService"));
+            return reject(call, "forbidden", ProductGrpcErrors.close(ProductGrpcError.SERVICE_IDENTITY_NOT_ALLOWED,
+                    "Service identity is not allowed on ProductService"));
         }
         return next.startCall(call, headers);
     }
 
-    private <ReqT, RespT> ServerCall.Listener<ReqT> reject(ServerCall<ReqT, RespT> call, String reason, Status status) {
+    private <ReqT, RespT> ServerCall.Listener<ReqT> reject(ServerCall<ReqT, RespT> call, String reason,
+                                                          ProductGrpcErrors.Result error) {
         MeterRegistry registry = meters.get();
         if (registry != null) {
             registry.counter(REJECTED_COUNTER, "reason", reason).increment();
         }
         log.warn("ProductService call rejected reason={} method={}", reason,
                 call.getMethodDescriptor().getBareMethodName());
-        call.close(status, new Metadata());
+        call.close(error.status(), error.trailers());
         return new ServerCall.Listener<>() {
         };
     }

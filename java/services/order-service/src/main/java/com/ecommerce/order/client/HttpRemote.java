@@ -141,7 +141,21 @@ public class HttpRemote {
                     // only recorded so an operator can see why a provider asked to be left alone.
                     log.warn("{} {} {} answered {} with Retry-After {}", dependency, method, path, status, retryAfter);
                 }
-                return classify(status, readBody(response.getBody()));
+                JsonNode answer;
+                try {
+                    answer = readBody(response.getBody());
+                } catch (UnreadableBody unreadable) {
+                    if (status >= 200 && status < 300) {
+                        // The status line says the provider accepted the command, but nothing usable came with it. The saga reads
+                        // fields from the body of every accepted answer, so "accepted without a body" would be a NullPointerException
+                        // there; UNKNOWN sends it to query or replay the same command identity instead (Order ADR-025).
+                        log.warn("{} {} {} answered {} with a body that could not be read: {}", dependency, method, path, status,
+                                unreadable.getMessage());
+                        return new RemoteResult(RemoteResult.Kind.UNKNOWN, status, "BODY_UNREADABLE", null);
+                    }
+                    answer = null;
+                }
+                return classify(status, answer);
             }, true);
         } catch (Exception e) {
             log.warn("{} {} transport failure: {}", method, path, e.toString());
@@ -174,12 +188,20 @@ public class HttpRemote {
         return headers.keySet().stream().anyMatch(name::equalsIgnoreCase);
     }
 
+    /** Raised when a response body that should be JSON cannot be read or parsed (cut short, too slow, not JSON). */
+    private static final class UnreadableBody extends RuntimeException {
+        UnreadableBody(Throwable cause) {
+            super(cause.toString(), cause);
+        }
+    }
+
+    /** {@code null} for an empty body; throws {@link UnreadableBody} when the bytes are missing or are not JSON. */
     private JsonNode readBody(InputStream stream) {
         try (stream) {
             byte[] bytes = stream.readAllBytes();
             return bytes.length == 0 ? null : mapper.readTree(bytes);
         } catch (IOException e) {
-            return null;
+            throw new UnreadableBody(e);
         }
     }
 

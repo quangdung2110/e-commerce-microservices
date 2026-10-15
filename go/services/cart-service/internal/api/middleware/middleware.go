@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -169,9 +170,17 @@ func Recovery(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-// AbortWithProblem writes a problem document and stops the chain.
+// defaultRetryAfterSeconds is the wait advertised on a retryable 503 when Cart has no better estimate
+// (contracts ADR-005). A 429 sets its own value from the rate limiter's window.
+const defaultRetryAfterSeconds = 2
+
+// AbortWithProblem writes a problem document and stops the chain. Every retryable 503 carries
+// Retry-After (contracts ADR-005); a 503 that is not retryable does not.
 func AbortWithProblem(c *gin.Context, problem response.Problem) {
 	c.Header("Content-Type", response.ProblemContentType)
+	if problem.Status == http.StatusServiceUnavailable && problem.Retryable && c.Writer.Header().Get("Retry-After") == "" {
+		c.Header("Retry-After", strconv.Itoa(defaultRetryAfterSeconds))
+	}
 	c.AbortWithStatusJSON(problem.Status, problem)
 }
 

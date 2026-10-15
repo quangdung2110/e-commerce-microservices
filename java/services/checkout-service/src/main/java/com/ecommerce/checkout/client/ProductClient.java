@@ -14,11 +14,15 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.protobuf.Any;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.rpc.ErrorInfo;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.MetadataUtils;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +51,8 @@ import java.util.concurrent.TimeoutException;
 @Component
 public class ProductClient implements DisposableBean {
 
+    /** {@code ErrorInfo.domain} of the errors Product itself returns (contracts ADR-006). */
+    private static final String PRODUCT_ERROR_DOMAIN = "ecommerce.product.v1";
     private static final Metadata.Key<String> SERVICE_IDENTITY =
             Metadata.Key.of("x-service-identity", Metadata.ASCII_STRING_MARSHALLER);
     private static final Metadata.Key<String> REQUEST_ID =
@@ -60,8 +66,28 @@ public class ProductClient implements DisposableBean {
 
     @Autowired
     public ProductClient(CheckoutProperties properties) {
-        this(ManagedChannelBuilder.forTarget(properties.endpoints().productGrpcTarget()).usePlaintext().build(),
-                properties.timeouts().product());
+        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product());
+    }
+
+    /** Pings an active connection after this long without traffic (contracts ADR-007). Product permits one every 20 s. */
+    static final Duration KEEP_ALIVE_TIME = Duration.ofSeconds(30);
+    static final Duration KEEP_ALIVE_TIMEOUT = Duration.ofSeconds(10);
+    static final String LOAD_BALANCING_POLICY = "round_robin";
+
+    /**
+     * The channel to Product (contracts ADR-007): calls are spread over every address the name resolves to, which only
+     * matters without a waypoint (a headless Service lists every pod, a ClusterIP Service lists one); a silent dead
+     * connection is noticed by keepalive instead of by the next RPC's deadline; and Product's own
+     * {@code max-connection-age} makes the channel reconnect and resolve the name again, so new pods receive calls.
+     */
+    static ManagedChannel channelFor(String target) {
+        return ManagedChannelBuilder.forTarget(target)
+                .usePlaintext()
+                .defaultLoadBalancingPolicy(LOAD_BALANCING_POLICY)
+                .keepAliveTime(KEEP_ALIVE_TIME.toSeconds(), TimeUnit.SECONDS)
+                .keepAliveTimeout(KEEP_ALIVE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)
+                .keepAliveWithoutCalls(false)
+                .build();
     }
 
     ProductClient(ManagedChannel channel, Duration ceiling) {
@@ -131,14 +157,38 @@ public class ProductClient implements DisposableBean {
             return error;
         }
         Status.Code code = grpc.getStatus().getCode();
+        String reason = reasonOf(grpc);
         return switch (code) {
             case DEADLINE_EXCEEDED -> new TimeoutException("Product GetBatchSkus deadline exceeded");
-            case UNAVAILABLE -> new IOException("Product unavailable");
-            case INVALID_ARGUMENT -> new UpstreamStatusException(400);
-            case UNAUTHENTICATED -> new UpstreamStatusException(401);
-            case PERMISSION_DENIED -> new UpstreamStatusException(403);
-            default -> new UpstreamStatusException(503);
+            case UNAVAILABLE -> new IOException("Product unavailable" + (reason == null ? "" : " (" + reason + ")"));
+            case INVALID_ARGUMENT -> new UpstreamStatusException(400, reason);
+            case UNAUTHENTICATED -> new UpstreamStatusException(401, reason);
+            case PERMISSION_DENIED -> new UpstreamStatusException(403, reason);
+            default -> new UpstreamStatusException(503, reason);
         };
+    }
+
+    /**
+     * The stable {@code ErrorInfo.reason} Product attached to a failed call (contracts ADR-006), or null when the
+     * status carries none: the gRPC runtime and the mesh send statuses without details. Callers log it so that
+     * "identity not allowed" is told apart from "batch too large" without parsing the free-text description.
+     */
+    static String reasonOf(StatusRuntimeException error) {
+        com.google.rpc.Status details = StatusProto.fromThrowable(error);
+        if (details == null) {
+            return null;
+        }
+        for (Any detail : details.getDetailsList()) {
+            if (detail.is(ErrorInfo.class)) {
+                try {
+                    ErrorInfo info = detail.unpack(ErrorInfo.class);
+                    return PRODUCT_ERROR_DOMAIN.equals(info.getDomain()) ? info.getReason() : null;
+                } catch (InvalidProtocolBufferException malformed) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     static Batch toBatch(GetBatchSkusResponse response, List<String> requested) {
