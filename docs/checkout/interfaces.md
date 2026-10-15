@@ -190,7 +190,7 @@ kể cả khi `Content-Type` khác `application/json` (Checkout đọc byte rồ
 |---|---|---|---|---|---|---|
 | `X-Service-Identity: checkout-service` | Có | Có | Có (metadata `x-service-identity`) | Có (bắt buộc) | Có | Có |
 | `traceparent`/`tracestate` | Có | Có | Chỉ `traceparent` (metadata) | Có | Có | Có |
-| `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | — | Có | Có |
+| `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | Có | Có | Có |
 | `X-Correlation-ID` (= request ID đã chuẩn hoá) | — | — | — | Có (bắt buộc) | — | — |
 | `X-Causation-ID` (= `Idempotency-Key` của Preview) | — | — | — | Có (bắt buộc) | — | — |
 | `Idempotency-Key` (= `checkout_token`) | — | — | — | — | — | Chỉ POST |

@@ -22,7 +22,7 @@ There is no public customer Inventory write API. Every mutation requires authent
 | Header / context | Rule |
 |---|---|
 | `Idempotency-Key` | Required command ID; same caller namespace + key must carry the exact same fingerprint. |
-| `X-Correlation-ID` | Required for end-to-end trace. |
+| `X-Correlation-ID` | Required for end-to-end trace. Callers also send `X-Request-Id` on every call ([contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md)); Checkout and the Product Detail BFF use the same value for both, Order sends its Workflow ID as the correlation ID and a new request ID per attempt. |
 | `X-Causation-ID` | Required where a prior workflow/event caused this command; otherwise a newly created root cause ID. |
 | `traceparent` | Propagated when present according to W3C Trace Context; it does not replace the business correlation/causation IDs. |
 | Actor context | Service identity for Saga, interactive ADMIN identity/role for physical commands. It is written to audit. |

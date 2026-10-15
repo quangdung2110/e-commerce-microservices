@@ -148,7 +148,7 @@ không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới 
 |---|---|---|---|
 | `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` | `gateway-auth` qua Traefik, theo [gateway/runtime-contract.md §6.1](../gateway/runtime-contract.md#61-ánh-xạ-identity-header) | Chỉ `edge/traefik` chạm được route public | Tin trên route public; bỏ qua trên `/internal/**`, `/exports/**` |
 | `X-Service-Identity` | Service caller, giá trị = ServiceAccount name của chính nó | **Không** xác minh giá trị; chỉ bảo đảm principal caller được phép chạm path | Log, audit, problem detail, allowlist defense-in-depth; không dùng làm bằng chứng authorization duy nhất |
-| `X-Request-Id`, `traceparent`, `tracestate` | Caller/gateway | Waypoint giữ nguyên và tạo span con | Propagate tiếp |
+| `X-Request-Id`, `traceparent`, `tracestate` (gRPC: `x-request-id`, `traceparent`, `tracestate`) | Caller/gateway | Waypoint giữ nguyên và tạo span con | Propagate tiếp; định dạng và quy tắc khi không có request gốc theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) |
 
 Traefik xoá `X-Service-Identity` do client gửi cùng nhóm `X-User-*`
 ([gateway/runtime-contract.md §4](../gateway/runtime-contract.md#4-luồng-xử-lý-request)). Service

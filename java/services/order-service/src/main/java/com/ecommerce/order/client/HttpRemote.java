@@ -1,5 +1,6 @@
 package com.ecommerce.order.client;
 
+import com.ecommerce.order.common.RequestCorrelation;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -51,6 +52,7 @@ public class HttpRemote {
                     .header("X-Service-Identity", serviceName)
                     .accept(MediaType.APPLICATION_JSON, MediaType.APPLICATION_PROBLEM_JSON);
             headers.forEach(spec::header);
+            propagate(spec, headers);
             if (body != null) {
                 spec.contentType(MediaType.APPLICATION_JSON).body(mapper.writeValueAsBytes(body));
             }
@@ -60,6 +62,31 @@ public class HttpRemote {
             log.warn("{} {} transport failure: {}", method, path, e.toString());
             return RemoteResult.unknown("TRANSPORT_" + e.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * contracts ADR-002. On the request thread the inbound context is passed through; Temporal
+     * activities and other work without a request get a new {@code X-Request-Id} per call and no
+     * {@code traceparent}, because Order has no tracer and must not invent a trace ID. A header the
+     * caller already set is never duplicated.
+     */
+    private static void propagate(RestClient.RequestBodySpec spec, Map<String, String> explicit) {
+        RequestCorrelation current = RequestCorrelation.current();
+        if (!hasHeader(explicit, RequestCorrelation.REQUEST_ID_HEADER)) {
+            spec.header(RequestCorrelation.REQUEST_ID_HEADER,
+                    current != null ? current.requestId() : RequestCorrelation.newRequestId());
+        }
+        if (current != null && current.traceparent() != null
+                && !hasHeader(explicit, RequestCorrelation.TRACEPARENT_HEADER)) {
+            spec.header(RequestCorrelation.TRACEPARENT_HEADER, current.traceparent());
+            if (current.tracestate() != null && !hasHeader(explicit, RequestCorrelation.TRACESTATE_HEADER)) {
+                spec.header(RequestCorrelation.TRACESTATE_HEADER, current.tracestate());
+            }
+        }
+    }
+
+    private static boolean hasHeader(Map<String, String> headers, String name) {
+        return headers.keySet().stream().anyMatch(name::equalsIgnoreCase);
     }
 
     private JsonNode readBody(InputStream stream) {

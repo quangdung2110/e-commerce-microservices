@@ -80,7 +80,7 @@ catalog.
 | `X-Service-Identity: product-detail-bff` | Có (Product trả `401` nếu thiếu) | Có | Có |
 | `Authorization: Bearer <PDP_REVIEW_SERVICE_TOKEN>` | — | — | Có; Review trả `401` nếu thiếu, `403` nếu token không thuộc `REVIEW_INTERNAL_PDP_TOKENS` |
 | `traceparent`/`tracestate` | Có | Có | Có |
-| `X-Request-Id` (request ID đã chuẩn hóa) | Có | — | Có |
+| `X-Request-Id` (request ID đã chuẩn hóa) | Có | Có | Có |
 | `X-Correlation-ID` (cùng giá trị request ID) | — | Có (bắt buộc) | — |
 
 **Request ID đã chuẩn hóa.** BFF chỉ dùng `X-Request-Id` từ gateway/client khi giá trị

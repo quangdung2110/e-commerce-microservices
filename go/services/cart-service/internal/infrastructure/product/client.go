@@ -12,13 +12,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
+	"cart-service/internal/reqctx"
 	productv1 "cart-service/internal/infrastructure/product/pb/productv1"
 )
 
@@ -35,7 +38,13 @@ type Config struct {
 	CacheSize int
 	CacheTTL  time.Duration
 	Breaker   BreakerConfig
+	// ServiceIdentity is sent as x-service-identity on every call (mesh runtime contract section 6).
+	// Empty means DefaultServiceIdentity.
+	ServiceIdentity string
 }
+
+// DefaultServiceIdentity is Cart's ServiceAccount name in contracts/catalog/services.yaml.
+const DefaultServiceIdentity = "cart-service"
 
 // Client is the Product Service adapter.
 type Client struct {
@@ -65,8 +74,12 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
 	defer cancel()
 
+	if cfg.ServiceIdentity == "" {
+		cfg.ServiceIdentity = DefaultServiceIdentity
+	}
 	conn, err := grpc.DialContext(dialCtx, cfg.Address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(propagate(cfg.ServiceIdentity)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial product service at %s: %w", cfg.Address, err)
@@ -82,6 +95,33 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 }
 
 var _ port.ProductCatalog = (*Client)(nil)
+
+// propagate attaches the caller identity and the request correlation of the context to every RPC
+// (contracts ADR-002). The request ID and the inbound traceparent/tracestate come from the request
+// that triggered the call; without a request ID (not expected on this path) a new one is minted so
+// Product's log line is never anonymous. A traceparent is only forwarded, never invented.
+//
+// A call shared through singleflight carries the ID of the caller that started it.
+func propagate(identity string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		requestID := reqctx.RequestID(ctx)
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+		pairs := []string{
+			"x-service-identity", identity,
+			"x-request-id", requestID,
+		}
+		if traceparent := reqctx.Traceparent(ctx); traceparent != "" {
+			pairs = append(pairs, "traceparent", traceparent)
+			if tracestate := reqctx.Tracestate(ctx); tracestate != "" {
+				pairs = append(pairs, "tracestate", tracestate)
+			}
+		}
+		return invoker(metadata.AppendToOutgoingContext(ctx, pairs...), method, req, reply, cc, opts...)
+	}
+}
 
 // Close releases the gRPC connection.
 func (c *Client) Close() error {

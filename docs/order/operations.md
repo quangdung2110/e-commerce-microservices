@@ -80,7 +80,9 @@ Metrics tối thiểu:
   deleted/skipped-without-receipt.
 
 Structured log/traces cần correlation/request/event/workflow/order reference và
-transition old/new. Hash/redact user reference; không log delivery address, phone,
+transition old/new. Dòng log trong phạm vi một request có `request_id` và `trace_id` (pattern
+`logging.pattern.level`, MDC do `RequestCorrelationFilter` đặt; [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md));
+dòng log của Temporal activity không có hai trường này và được tra bằng Workflow ID. Hash/redact user reference; không log delivery address, phone,
 client secret, raw reason detail hay provider secrets. Trace bao phủ HTTP -> workflow,
 activity remote call, Kafka consume -> workflow message -> dispatcher signal, DB transaction
 và CDC publish.

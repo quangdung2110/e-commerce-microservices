@@ -258,6 +258,23 @@ receipt `CloudEvents.id` và unique business key. Consumer group có retry/DLQ r
 Event Payment/Inventory/Delivery mà Order nhận phải qua durable inbox `event_id`,
 semantic identity và provider revision/version guard trước khi enqueue durable workflow
 message; chỉ dispatcher gọi Temporal.
+### 3.1 Header correlation khi gọi remote
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md).
+Order không có tracer (mức 1, pass-through), nên chỉ truyền tiếp, không bao giờ bịa `traceparent`.
+
+| Header | Gọi trong phạm vi một request đến (ví dụ đọc Payment client data khi Checkout gọi `POST`/`GET` submission) | Gọi từ Temporal activity (không có request) |
+|---|---|---|
+| `X-Request-Id` | `X-Request-Id` đã chuẩn hoá của request đó (`^[A-Za-z0-9._:-]{8,128}$`; thiếu hoặc sai thì lấy trace ID của `traceparent`, rồi UUID mới) | UUID mới cho mỗi lần gửi, kể cả replay cùng command |
+| `traceparent`, `tracestate` | Gửi tiếp nếu `traceparent` đến hợp lệ; `tracestate` chỉ đi cùng | Không gửi |
+| `X-Correlation-Id` | Workflow ID (Payment, Inventory bắt buộc) | Workflow ID |
+| `X-Causation-Id`, `Idempotency-Key` | Theo từng contract provider | Giữ nguyên khi replay (command ID đã đóng băng) |
+
+Inbound, Order đọc `X-Request-Id`/`traceparent` của Checkout và Gateway, đưa `request_id`/`trace_id` vào
+MDC của mọi dòng log trong request và trả `X-Request-Id` trong response. Chuỗi từ activity về request
+gốc nối bằng Workflow ID (chứa `checkout_token`), không bằng `X-Request-Id`; lưu context request gốc để
+nối thẳng là việc của mức 2 (tracing đầy đủ).
+
 
 ## 5. Event phát ra
 

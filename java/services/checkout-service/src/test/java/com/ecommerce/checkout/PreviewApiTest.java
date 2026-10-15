@@ -78,6 +78,10 @@ class PreviewApiTest extends AbstractCheckoutTest {
         LoggedRequest inventory = posted(INVENTORY_PATH).get(0);
         assertThat(inventory.getHeader("X-Service-Identity")).isEqualTo("checkout-service");
         assertThat(inventory.getHeader("X-Correlation-ID")).matches("^[A-Za-z0-9._:-]{8,128}$");
+        // contracts ADR-002: every hop carries X-Request-Id; Inventory's required correlation header
+        // holds the same value for a chain that is synchronous end to end.
+        assertThat(inventory.getHeader("X-Request-Id")).isEqualTo(inventory.getHeader("X-Correlation-ID"));
+        assertThat(inventory.getHeader("traceparent")).isNotBlank();
         assertThat(inventory.getHeader("X-Causation-ID")).isEqualTo(idempotencyKey);
         assertThat(inventory.containsHeader("Idempotency-Key")).isFalse();
         assertThat(inventory.containsHeader("Authorization")).isFalse();

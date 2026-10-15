@@ -26,6 +26,13 @@ Nguồn chuẩn: [`product_service.proto`](product_service.proto).
 - `GetBatchSkus` deadline đề xuất: 1 giây, tối đa 100 SKU
 - Cả hai RPC là read-only và có thể retry trong retry budget
 
+## Metadata
+
+Caller gửi `x-service-identity`, `x-request-id` và, khi có trace đến, `traceparent` (kèm `tracestate`) theo
+[gRPC Convention](../../../../conventions/grpc.md#metadata) và
+[ADR-002](../../../../decisions/ADR-002-correlation-and-trace-propagation.md). Cart và Checkout đều gửi đủ.
+Provider không được từ chối vì `x-request-id` sai định dạng.
+
 ## Failure
 
 - SKU không tồn tại/không khả dụng là business result trong `oneof`, không phải

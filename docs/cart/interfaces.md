@@ -75,7 +75,9 @@ script xóa cả items/meta và member scheduler ZSET. Không phát Kafka event.
 
 ### 2.1 Error catalog
 
-Mọi lỗi là `application/problem+json` với `code` ổn định, `trace_id` (= `X-Request-Id`) và, với lỗi
+Mọi lỗi là `application/problem+json` với `code` ổn định, `trace_id` (= `X-Request-Id` đã chuẩn hoá: giá trị
+đến nếu khớp `^[A-Za-z0-9._:-]{8,128}$`, nếu không thì trace ID của `traceparent` hợp lệ, rồi UUID mới; giá trị
+sai không làm request lỗi) và, với lỗi
 validate, `errors[]` theo field. `retryable` chỉ có (và bằng `true`) khi client được phép gửi lại
 nguyên request.
 
@@ -114,6 +116,13 @@ pod; policy chính thức nằm ở Gateway (`rate-limit-api@file`).
 
 Deadline 200ms và circuit breaker là bắt buộc. Cart không gọi Product khi xóa item,
 xử lý `ORDER_PAID`, xử lý `USER_DELETED`, relay hay marker.
+
+**Metadata gửi cho Product** ([contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md)):
+`x-service-identity: cart-service`, `x-request-id` (request ID đã chuẩn hoá của request đang phục vụ), và nếu
+request đến có `traceparent` hợp lệ thì `traceparent` kèm `tracestate` (chỉ khi là ASCII in được, tối đa 512 ký
+tự). Cart không có tracer nên không bao giờ bịa `traceparent`. Request ID và trace context đi trong
+`context.Context` của request (middleware `RequestID`), nên lời gọi dùng chung qua singleflight mang ID của
+request khởi tạo.
 
 **Client hủy request không phải lỗi của Product.** Breaker chỉ đếm lỗi do Product gây ra
 (lỗi transport, deadline riêng của Cart). Khi client đóng kết nối giữa chừng:

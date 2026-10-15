@@ -3,6 +3,18 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-15 (Trace và correlation giữa các service)
+
+- [ADR-002](decisions/ADR-002-correlation-and-trace-propagation.md) chuẩn hoá bốn định danh
+  (`traceparent`/`tracestate`, `X-Request-Id`, `X-Correlation-Id`, `X-Causation-Id`), định dạng
+  `^[A-Za-z0-9._:-]{8,128}$` và quy tắc cho bên gọi/bên nhận; bảng chuẩn ở
+  [conventions/tracing.md](conventions/tracing.md), metadata gRPC ở [conventions/grpc.md](conventions/grpc.md).
+  Không đổi schema hay mã lỗi; không contract nào bị breaking.
+- Cái quan sát được: Cart gửi `x-service-identity`, `x-request-id` và (khi có) `traceparent`/`tracestate`
+  tới Product gRPC; Order gửi `X-Request-Id` (và pass-through `traceparent`/`tracestate` khi đang phục vụ
+  một request) tới Inventory, Promotion, Payment; Checkout và Product Detail BFF gửi thêm `X-Request-Id`
+  cho Inventory; Order và Cart trả `X-Request-Id` trong response. Header sai định dạng bị thay, không bị `400`.
+
 ## 2026-10-12 (Inventory ADMIN — unfiltered lists)
 
 - Inventory ADMIN HTTP v1 is `1.1.0` (additive, [Inventory ADR-029](../docs/inventory/decisions/ADR-029-unfiltered-admin-lists.md)).

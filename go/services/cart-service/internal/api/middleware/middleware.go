@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/dto/response"
 	"cart-service/internal/domain"
+	"cart-service/internal/reqctx"
 )
 
 // Header and context keys.
@@ -31,13 +31,20 @@ const (
 	maxIdempotencyKeyLength = 128
 )
 
-// RequestID propagates or mints a correlation id for every request.
+// RequestID normalizes the request id and publishes it, with the inbound W3C trace context, on the
+// request's context.Context so the Product client can pass them on (contracts ADR-002). A missing
+// or malformed X-Request-Id is replaced, never rejected; Cart has no tracer, so it never invents a
+// traceparent.
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader(HeaderRequestID)
-		if len(requestID) < 8 || len(requestID) > 128 {
-			requestID = uuid.NewString()
-		}
+		traceparent := reqctx.ValidTraceparent(c.GetHeader(reqctx.HeaderTraceparent))
+		tracestate := reqctx.ValidTracestate(c.GetHeader(reqctx.HeaderTracestate), traceparent)
+		requestID := reqctx.NormalizeRequestID(c.GetHeader(HeaderRequestID), traceparent)
+
+		ctx := reqctx.WithRequestID(c.Request.Context(), requestID)
+		ctx = reqctx.WithTrace(ctx, traceparent, tracestate)
+		c.Request = c.Request.WithContext(ctx)
+
 		c.Set(ctxRequestID, requestID)
 		c.Header(HeaderRequestID, requestID)
 		c.Next()
@@ -121,6 +128,9 @@ func Logging(logger *zap.Logger) gin.HandlerFunc {
 			zap.Int("status", c.Writer.Status()),
 			zap.Duration("latency", time.Since(start)),
 			zap.String("request_id", GetRequestID(c)),
+		}
+		if traceID := reqctx.TraceID(reqctx.Traceparent(c.Request.Context())); traceID != "" {
+			fields = append(fields, zap.String("trace_id", traceID))
 		}
 		if identity := GetIdentity(c); identity.CartID != "" {
 			fields = append(fields, zap.String("cart_id", identity.CartID), zap.Int("bucket", identity.Bucket))

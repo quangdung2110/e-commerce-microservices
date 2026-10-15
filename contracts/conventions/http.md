@@ -28,8 +28,10 @@ Không trả exception message, SQL, hostname hoặc secret cho client.
 ## Header
 
 - `Idempotency-Key`: command có side effect và có thể retry.
-- `traceparent`: trace xuyên service theo W3C Trace Context.
-- `X-Request-Id`: correlation fallback ở edge; không thay thế `traceparent`.
+- `traceparent`, `tracestate`: trace xuyên service theo W3C Trace Context.
+- `X-Request-Id`: ID của yêu cầu gốc, MUST có trên mọi lời gọi nội bộ; không thay thế `traceparent`.
+- `X-Correlation-Id`, `X-Causation-Id`: business flow và command gây ra; chỉ bắt buộc khi contract
+  provider ghi. Chi tiết và định dạng: [tracing.md](tracing.md).
 - `Retry-After`: nên trả với `429` và `503` khi biết thời gian chờ.
 
 Trusted identity header như `X-User-Id` chỉ được nhận từ API Gateway trên mạng

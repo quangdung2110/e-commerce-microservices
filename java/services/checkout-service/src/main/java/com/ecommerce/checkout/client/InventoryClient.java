@@ -66,6 +66,7 @@ public class InventoryClient {
                 .uri("/internal/inventory/v1/allocation-previews")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
+                .header(UpstreamHttp.REQUEST_ID_HEADER, context.requestId())
                 .header("X-Correlation-ID", context.requestId())
                 .header("X-Causation-ID", context.causationId() == null ? context.requestId() : context.causationId())
                 .bodyValue(body)

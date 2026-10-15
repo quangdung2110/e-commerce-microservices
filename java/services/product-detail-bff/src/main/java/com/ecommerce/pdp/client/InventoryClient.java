@@ -31,6 +31,7 @@ public class InventoryClient {
                 .uri("/internal/inventory/v1/sku-availabilities:batch-get")
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
+                .header("X-Request-Id", context.requestId())
                 .header("X-Correlation-ID", context.requestId())
                 .bodyValue(Map.of("sku_ids", skuIds))
                 .exchangeToMono(response -> response.statusCode().is2xxSuccessful()

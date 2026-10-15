@@ -94,6 +94,7 @@ class ProductDetailApiTest extends AbstractPdpTest {
         UPSTREAMS.verify(1, postRequestedFor(urlEqualTo(INVENTORY_PATH))
                 .withHeader("X-Service-Identity", equalTo("product-detail-bff"))
                 .withHeader("X-Correlation-ID", equalTo("req-12345678"))
+                .withHeader("X-Request-Id", equalTo("req-12345678"))
                 .withRequestBody(equalToJson(Fixtures.json(Map.of("sku_ids", List.of(
                         Fixtures.SKU_BLACK_42, Fixtures.SKU_WHITE_42, Fixtures.SKU_BLACK_46))))));
         UPSTREAMS.verify(1, getRequestedFor(urlPathEqualTo(REVIEW_PATH))
