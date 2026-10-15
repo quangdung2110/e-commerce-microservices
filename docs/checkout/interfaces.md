@@ -201,6 +201,7 @@ thể làm Inventory hay Order trả `400` bằng header sai độ dài. Request
 log để tra chéo với provider. Không gửi `Authorization`, cookie hay header client nào khác.
 
 ### Mapping Cart + Product → báo giá
+| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Không dùng header: deadline gRPC bằng đúng giá trị đó | Có | Có | Có |
 
 1. Cart rỗng → `422 CART_EMPTY`. Lấy danh sách `sku_id` unique.
 2. `GetBatchSkus`: SKU nằm trong `not_found_sku_ids`/`unavailable_sku_ids`, `status` khác

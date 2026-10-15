@@ -88,6 +88,35 @@ class HttpRemotePropagationTest {
     }
 
     @Test
+    void tellsTheProviderTheTimeoutItActuallyUses() {
+        remote.get("/internal/x", Map.of());
+
+        assertThat(received.get().getFirst("X-Request-Timeout-Ms")).isEqualTo("2000");
+    }
+
+    @Test
+    void keepsTheCallUnderTheCallersRemainingBudgetAndSaysSo() {
+        RequestCorrelation.set(RequestCorrelation.fromHeaders("checkout-request-1", null, null, "1500"));
+
+        remote.get("/internal/x", Map.of());
+
+        long sent = Long.parseLong(received.get().getFirst("X-Request-Timeout-Ms"));
+        assertThat(sent).isBetween(1L, 1000L);
+    }
+
+    @Test
+    void doesNotSendACallWhenTheCallersBudgetIsSpent() {
+        RequestCorrelation.set(RequestCorrelation.fromHeaders("checkout-request-1", null, null, "400"));
+        received.set(null);
+
+        RemoteResult result = remote.get("/internal/x", Map.of());
+
+        assertThat(result.isUnknown()).isTrue();
+        assertThat(result.errorCode()).isEqualTo("DEADLINE_EXHAUSTED");
+        assertThat(received.get()).as("nothing reached the provider").isNull();
+    }
+
+    @Test
     void doesNotForwardTracestateWithoutATraceparent() {
         RequestCorrelation.set(RequestCorrelation.fromHeaders("checkout-request-1", "garbage", "vendor=a"));
 

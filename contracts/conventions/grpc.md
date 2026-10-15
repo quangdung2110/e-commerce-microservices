@@ -37,3 +37,5 @@ Caller gửi metadata chữ thường, giá trị ASCII in được:
 | `x-request-id` | Có | Định dạng và quy tắc ở [tracing.md](tracing.md) |
 | `traceparent`, `tracestate` | Khi có trace đến | Gửi tiếp, không bịa; `tracestate` ngoài ASCII in được làm RPC lỗi nên MUST bị bỏ |
 | `x-correlation-id`, `x-causation-id` | Theo contract RPC | Chỉ khi RPC ghi header này là bắt buộc |
+
+Deadline dùng cơ chế gốc của gRPC, đặt bằng timeout hiệu dụng của lời gọi ([deadlines.md](deadlines.md)).

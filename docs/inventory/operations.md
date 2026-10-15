@@ -111,3 +111,15 @@ failed quarantine. See [Order runbook](../order/operations.md) and
 [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
 Backup restore integrity is tested monthly. Full failover/restore, outbox/consumer replay, access/audit review, and discrepancy exercises run quarterly. Any failed drill blocks claiming the corresponding RPO/RTO target until remediated.
+
+## Request ID, trace ID and caller deadline
+
+Per [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) and [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), plus [ADR-030](./decisions/ADR-030-request-correlation-and-caller-deadline.md). Log lines written
+while a request is served carry `request_id` and `trace_id` (put in the MDC by `RequestCorrelationFilter` and shown by
+`logging.pattern.level`); background work has neither. A missing or malformed `X-Request-Id` is replaced, never a `400`,
+and the effective one is returned in the response.
+
+The counter `http.server.caller_deadline_exceeded{route}` counts requests that finished after the caller
+stopped waiting (`X-Request-Timeout-Ms`), with a WARN line `request outlived the caller deadline`. A steady
+rise means Inventory answers slower than its callers' timeouts: look at the route's p99 first, then at the
+caller's timeout. The alert threshold is set from load-test p99, not in advance. `X-Correlation-ID` is unchanged: it is the business flow ID stored with commands, separate from the request ID.

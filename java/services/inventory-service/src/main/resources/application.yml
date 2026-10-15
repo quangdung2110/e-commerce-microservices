@@ -110,6 +110,9 @@ management:
       application: inventory-service
 
 logging:
+  pattern:
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    level: "%5p [%X{request_id:-},%X{trace_id:-}]"
   level:
     root: INFO
     com.ecommerce.inventory: INFO

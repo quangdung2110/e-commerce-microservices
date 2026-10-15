@@ -224,3 +224,15 @@ existing object is invalid; retry only a transient signer/metadata-read failure.
 | 5 minutes | Expire eligibility/export sessions; enqueue expired unattached `ISSUED`/`VERIFIED` assets as `DELETE_PENDING(UNATTACHED_EXPIRED)`; refresh the gauges (privacy overdue, pending media, active sessions, missing partition); ensure the current and next outbox partition |
 | Daily (02:15) | Process every `DELETE_PENDING` asset (object-not-found is success), privacy purge (`FAILED` requests are retried), aggregate reconciliation, and deletion of event receipts older than `REVIEW_EVENT_RECEIPT_RETENTION_DAYS`. Each sweep pages through its whole backlog; none of them drops an outbox partition |
 | Continuous | Debezium, order consumer, privacy consumer, idempotent rating aggregator; Notification consumes Review request types independently |
+
+## Request ID, trace ID and caller deadline
+
+Per [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) and [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), plus [ADR-014](./decisions/ADR-014-request-correlation-and-caller-deadline.md). Log lines written
+while a request is served carry `request_id` and `trace_id` (put in the MDC by `RequestCorrelationFilter` and shown by
+`logging.pattern.level` (dev/test) and `logback-spring.xml` (prod JSON)); background work has neither. A missing or malformed `X-Request-Id` is replaced, never a `400`,
+and the effective one is returned in the response.
+
+The counter `http.server.caller_deadline_exceeded{route}` counts requests that finished after the caller
+stopped waiting (`X-Request-Timeout-Ms`), with a WARN line `request outlived the caller deadline`. A steady
+rise means Review answers slower than its callers' timeouts: look at the route's p99 first, then at the
+caller's timeout. The alert threshold is set from load-test p99, not in advance. The outbox `correlationid` and the Problem `trace_id` still come from `RequestContext` and are unchanged.

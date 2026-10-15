@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -81,5 +82,24 @@ func TestContextRoundTrip(t *testing.T) {
 	empty := WithTrace(context.Background(), "", "vendor=a")
 	if Traceparent(empty) != "" || Tracestate(empty) != "" {
 		t.Fatal("without a traceparent nothing is stored")
+	}
+}
+
+func TestTimeoutFromHeader(t *testing.T) {
+	good := map[string]time.Duration{
+		"1":      time.Millisecond,
+		"350":    350 * time.Millisecond,
+		" 2000 ": 2 * time.Second,
+		"600000": 10 * time.Minute,
+	}
+	for value, want := range good {
+		if got, ok := TimeoutFromHeader(value); !ok || got != want {
+			t.Errorf("TimeoutFromHeader(%q) = %v, %v; want %v, true", value, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "0", "-5", "abc", "1.5", "600001", "9999999", "1e3", "0x10"} {
+		if got, ok := TimeoutFromHeader(bad); ok {
+			t.Errorf("TimeoutFromHeader(%q) = %v, true; want no deadline", bad, got)
+		}
 	}
 }

@@ -2,6 +2,8 @@ package com.ecommerce.order.common;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RequestCorrelationTest {
@@ -50,6 +52,47 @@ class RequestCorrelationTest {
             RequestCorrelation c = RequestCorrelation.fromHeaders("request-id-1", value, "vendor=a");
             assertThat(c.traceparent()).as(value).isNull();
             assertThat(c.tracestate()).as("tracestate without traceparent").isNull();
+        }
+    }
+
+    @Test
+    void effectiveTimeoutIsTheConfiguredOneWhenNoRequestOrNoDeadline() {
+        RequestCorrelation.clear();
+        assertThat(RequestCorrelation.effectiveTimeout(Duration.ofSeconds(8), Duration.ofMillis(500)))
+                .isEqualTo(Duration.ofSeconds(8));
+
+        RequestCorrelation.set(RequestCorrelation.fromHeaders("request-id-1", null, null));
+        try {
+            assertThat(RequestCorrelation.effectiveTimeout(Duration.ofSeconds(8), Duration.ofMillis(500)))
+                    .isEqualTo(Duration.ofSeconds(8));
+        } finally {
+            RequestCorrelation.clear();
+        }
+    }
+
+    @Test
+    void effectiveTimeoutIsKeptUnderTheCallerBudgetLeftMinusTheReserve() {
+        RequestCorrelation.set(RequestCorrelation.fromHeaders("request-id-1", null, null, "3000"));
+        try {
+            Duration effective = RequestCorrelation.effectiveTimeout(Duration.ofSeconds(8), Duration.ofMillis(500));
+
+            assertThat(effective).isLessThanOrEqualTo(Duration.ofMillis(2500)).isGreaterThan(Duration.ofMillis(2000));
+            // A configured value already under the budget is not raised.
+            assertThat(RequestCorrelation.effectiveTimeout(Duration.ofMillis(100), Duration.ofMillis(500)))
+                    .isEqualTo(Duration.ofMillis(100));
+        } finally {
+            RequestCorrelation.clear();
+        }
+    }
+
+    @Test
+    void effectiveTimeoutGoesNonPositiveOnceTheBudgetIsSpent() {
+        RequestCorrelation.set(RequestCorrelation.fromHeaders("request-id-1", null, null, "300"));
+        try {
+            assertThat(RequestCorrelation.effectiveTimeout(Duration.ofSeconds(8), Duration.ofMillis(500)).isNegative())
+                    .isTrue();
+        } finally {
+            RequestCorrelation.clear();
         }
     }
 

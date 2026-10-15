@@ -4,6 +4,7 @@ import com.ecommerce.order.common.ApiException;
 import com.ecommerce.order.common.ErrorCode;
 import com.ecommerce.order.common.Ids;
 import com.ecommerce.order.common.Json;
+import com.ecommerce.order.common.RequestCorrelation;
 import com.ecommerce.order.config.OrderProperties;
 import com.ecommerce.order.domain.CheckoutRules;
 import com.ecommerce.order.store.OrderStore;
@@ -20,6 +21,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -113,7 +115,9 @@ public class CheckoutSubmissionService {
     }
 
     private SubmissionRow awaitCheckpoint(UUID token) {
-        long deadline = System.nanoTime() + config.submitWait().toNanos();
+        // contracts ADR-003: never wait past what Checkout said it would wait, less a second to answer.
+        Duration wait = RequestCorrelation.effectiveTimeout(config.submitWait(), Duration.ofSeconds(1));
+        long deadline = System.nanoTime() + Math.max(0, wait.toNanos());
         while (true) {
             SubmissionRow submission = submissions.find(token).orElseThrow();
             if (!"PREPARING".equals(submission.state()) || System.nanoTime() >= deadline) {

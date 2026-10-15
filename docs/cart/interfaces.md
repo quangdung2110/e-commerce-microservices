@@ -124,6 +124,12 @@ tự). Cart không có tracer nên không bao giờ bịa `traceparent`. Request
 `context.Context` của request (middleware `RequestID`), nên lời gọi dùng chung qua singleflight mang ID của
 request khởi tạo.
 
+**Deadline của caller.** `GET /internal/v1/carts/{user_id}/checkout-snapshot` đọc `X-Request-Timeout-Ms`
+([contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) và bọc `context.WithTimeout` quanh
+request (middleware `CallerDeadline`), nên lời gọi Redis dừng khi Checkout đã thôi chờ. Header sai hoặc thiếu
+bị bỏ qua. Middleware chỉ gắn vào route đọc nội bộ; route ghi của Gateway không dùng nó và Gateway xoá header này.
+Lời gọi Product tới `GetSku`/`GetBatchSkus` đã có deadline gRPC riêng (200 ms).
+
 **Client hủy request không phải lỗi của Product.** Breaker chỉ đếm lỗi do Product gây ra
 (lỗi transport, deadline riêng của Cart). Khi client đóng kết nối giữa chừng:
 

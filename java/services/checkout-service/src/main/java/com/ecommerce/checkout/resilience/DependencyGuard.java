@@ -41,6 +41,9 @@ import java.util.function.Supplier;
 @Component
 public class DependencyGuard {
 
+    /** Reactor context key holding the {@link Duration} a dependency call runs under (contracts ADR-003). */
+    public static final String EFFECTIVE_TIMEOUT_KEY = "checkout.effective-timeout";
+
     private static final Logger log = LoggerFactory.getLogger(DependencyGuard.class);
 
     private final CheckoutProperties properties;
@@ -152,6 +155,9 @@ public class DependencyGuard {
                             ? new CallResult<>(Outcome.BUSINESS_REJECT, value, null, null)
                             : CallResult.success(value))
                     .onErrorResume(error -> Mono.just(classify(dependency, guarded, error)))
+                    // contracts ADR-003: the clients read the timeout this call actually runs under, to send it to
+                    // the provider (X-Request-Timeout-Ms for HTTP, the deadline for gRPC).
+                    .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
                     .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
         });
         // A call that is not sent (budget, above) has no span; the metric records it with zero duration.

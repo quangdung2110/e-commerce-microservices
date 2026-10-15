@@ -119,7 +119,13 @@ order:
     promotion-base-url: ${PROMOTION_BASE_URL:http://localhost:8085}
     payment-base-url: ${PAYMENT_BASE_URL:http://localhost:8089}
     connect-timeout: 2s
+    # Default; the per-provider values below override it. Each stays at least 1 s under the mesh
+    # timeout of the routes Order calls (docs/mesh/runtime-contract.md section 7, Order ADR-023):
+    # Inventory and Promotion 10 s, Payment 15 s.
     read-timeout: 10s
+    inventory-read-timeout: 8s
+    promotion-read-timeout: 8s
+    payment-read-timeout: 10s
   kafka:
     consumers-enabled: ${ORDER_CONSUMERS_ENABLED:true}
     payment-topic: t.payment.events.v2

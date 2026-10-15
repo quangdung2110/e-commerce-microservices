@@ -175,7 +175,9 @@ search:
     # Bearer service identity for Review's /internal/v1/** rating export.
     review-token: ${REVIEW_INTERNAL_TOKEN:}
     review-enabled: ${REVIEW_EXPORT_ENABLED:true}
-    timeout: 30s
+    # 25 s: the mesh allows 30 s on the export routes and the caller must stay at least 1 s under it
+    # (contracts ADR-003, Search ADR-023). It is also sent to the provider as X-Request-Timeout-Ms.
+    timeout: 25s
     # A snapshot session lives 24h and a re-created one must be paged from the start,
     # so repeatedly outliving one is a capacity problem, not a blip (WF-SEARCH-007).
     availability-snapshot-max-sessions: 2

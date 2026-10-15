@@ -20,7 +20,7 @@ public class HttpGateways {
     @ConditionalOnMissingBean(Gateways.Inventory.class)
     public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.inventoryBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
+        HttpRemote http = new HttpRemote(c.inventoryBaseUrl(), c.connectTimeout(), c.inventoryRead(), mapper,
                 c.serviceName());
         String base = "/internal/inventory/v1";
         return new Gateways.Inventory() {
@@ -86,7 +86,7 @@ public class HttpGateways {
     @ConditionalOnMissingBean(Gateways.Promotion.class)
     public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.promotionBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
+        HttpRemote http = new HttpRemote(c.promotionBaseUrl(), c.connectTimeout(), c.promotionRead(), mapper,
                 c.serviceName());
         String base = "/internal/v1/promotion-allocation";
         return new Gateways.Promotion() {
@@ -111,7 +111,7 @@ public class HttpGateways {
     @ConditionalOnMissingBean(Gateways.Payment.class)
     public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.paymentBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
+        HttpRemote http = new HttpRemote(c.paymentBaseUrl(), c.connectTimeout(), c.paymentRead(), mapper,
                 c.serviceName());
         return new Gateways.Payment() {
             @Override

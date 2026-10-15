@@ -24,18 +24,33 @@ public class HttpRemote {
 
     private static final Logger log = LoggerFactory.getLogger(HttpRemote.class);
 
+    /** Budget kept back for Order's own work when a call runs on a request thread (ADR-003 rule 3.2). */
+    static final Duration RESERVE = Duration.ofMillis(500);
+    /** Below this a call is not started: there is no time for a connect and a response. */
+    static final Duration FLOOR = Duration.ofMillis(200);
+
+    private final String baseUrl;
+    private final Duration connectTimeout;
+    private final Duration readTimeout;
     private final RestClient client;
     private final ObjectMapper mapper;
     private final String serviceName;
 
     public HttpRemote(String baseUrl, Duration connectTimeout, Duration readTimeout, ObjectMapper mapper,
                       String serviceName) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout((int) connectTimeout.toMillis());
-        factory.setReadTimeout((int) readTimeout.toMillis());
-        this.client = RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+        this.baseUrl = baseUrl;
+        this.connectTimeout = connectTimeout;
+        this.readTimeout = readTimeout;
+        this.client = clientWith(readTimeout);
         this.mapper = mapper;
         this.serviceName = serviceName;
+    }
+
+    private RestClient clientWith(Duration read) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout((int) connectTimeout.toMillis());
+        factory.setReadTimeout((int) read.toMillis());
+        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
     }
 
     public RemoteResult post(String path, Map<String, String> headers, JsonNode body) {
@@ -47,9 +62,18 @@ public class HttpRemote {
     }
 
     private RemoteResult execute(HttpMethod method, String path, Map<String, String> headers, JsonNode body) {
+        // contracts ADR-003: the timeout is the configured one, kept under the caller's remaining
+        // budget when a request is being served. The same value is sent so the provider knows it.
+        Duration effective = RequestCorrelation.effectiveTimeout(readTimeout, RESERVE);
+        if (effective.compareTo(FLOOR) < 0) {
+            log.warn("{} {} not sent: the caller's deadline leaves {} ms", method, path, effective.toMillis());
+            return RemoteResult.unknown("DEADLINE_EXHAUSTED");
+        }
         try {
-            RestClient.RequestBodySpec spec = client.method(method).uri(path)
+            RestClient.RequestBodySpec spec = (effective.equals(readTimeout) ? client : clientWith(effective))
+                    .method(method).uri(path)
                     .header("X-Service-Identity", serviceName)
+                    .header(RequestCorrelation.TIMEOUT_HEADER, Long.toString(effective.toMillis()))
                     .accept(MediaType.APPLICATION_JSON, MediaType.APPLICATION_PROBLEM_JSON);
             headers.forEach(spec::header);
             propagate(spec, headers);

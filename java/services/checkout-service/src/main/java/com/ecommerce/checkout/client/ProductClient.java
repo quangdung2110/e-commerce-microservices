@@ -2,6 +2,7 @@ package com.ecommerce.checkout.client;
 
 import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.resilience.ContractViolationException;
+import com.ecommerce.checkout.resilience.DependencyGuard;
 import com.ecommerce.checkout.resilience.UpstreamStatusException;
 import com.ecommerce.contracts.common.v1.Money;
 import com.ecommerce.contracts.product.v1.GetBatchSkusRequest;
@@ -101,9 +102,13 @@ public class ProductClient implements DisposableBean {
             if (context.traceparent() != null) {
                 headers.put(TRACEPARENT, context.traceparent());
             }
+            // contracts ADR-003: the gRPC deadline is the timeout the guard runs this call under, never more
+            // than the ceiling; Product then sees the real deadline instead of a fixed one.
+            Duration effective = sink.contextView().getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, ceiling);
+            Duration deadline = effective.compareTo(ceiling) < 0 ? effective : ceiling;
             ListenableFuture<GetBatchSkusResponse> future = stub
                     .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
-                    .withDeadlineAfter(ceiling.toMillis(), TimeUnit.MILLISECONDS)
+                    .withDeadlineAfter(Math.max(1, deadline.toMillis()), TimeUnit.MILLISECONDS)
                     .getBatchSkus(request);
             sink.onCancel(() -> future.cancel(true));
             Futures.addCallback(future, new FutureCallback<>() {

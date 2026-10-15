@@ -138,8 +138,8 @@ có thể trùng nhau; Inventory đang nhận giá trị đó qua `X-Correlation
 | Order | Filter đọc `X-Request-Id`/`traceparent`, đưa vào MDC, trả `X-Request-Id`; `HttpRemote` gửi `X-Request-Id` (và pass-through `traceparent`, `tracestate` khi có) | Có |
 | Cart | `reqctx` + middleware đưa request ID, `traceparent`, `tracestate` vào `context.Context`; interceptor gRPC gắn metadata; siết định dạng `X-Request-Id` | Có |
 | Checkout, Product Detail BFF | `InventoryClient` gửi thêm `X-Request-Id` | Có |
-| Product (gRPC) | Regex log nhận `.` và `:`, độ dài 8–128 | Sau |
-| Inventory, Payment, Promotion, Review, Search | Ghi `request_id`/`trace_id` vào log, trả `X-Request-Id`; Search (export, batch) áp quy tắc 2.4 | Sau |
+| Product (gRPC) | Regex log nhận `.` và `:`, độ dài 8–128 ([Product ADR-021](../../docs/product/decisions/ADR-021-request-correlation-and-caller-deadline.md)) | Có (2026-10-15) |
+| Inventory, Payment, Promotion, Review, Search | Ghi `request_id`/`trace_id` vào log, trả `X-Request-Id` ([Inventory ADR-030](../../docs/inventory/decisions/ADR-030-request-correlation-and-caller-deadline.md), [Payment ADR-025](../../docs/payment/decisions/ADR-025-request-correlation-and-caller-deadline.md), [Promotion ADR-022](../../docs/promotion/decisions/ADR-022-request-correlation-and-caller-deadline.md), [Review ADR-014](../../docs/review/decisions/ADR-014-request-correlation-and-caller-deadline.md), [Search ADR-023](../../docs/search/decisions/ADR-023-request-correlation-and-caller-deadline.md)); Search (export, batch) áp quy tắc 2.4; client Product của Promotion gửi request ID, trace context và timeout | Có (2026-10-15) |
 | Order | Trả `trace_id` trong problem; lưu context request gốc cho activity (mức 2) | Sau |
 
 ## Verification

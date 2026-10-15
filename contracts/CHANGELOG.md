@@ -3,6 +3,20 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-15 (Deadline giữa các service)
+
+- [ADR-003](decisions/ADR-003-deadline-propagation.md) thêm header HTTP `X-Request-Timeout-Ms` (số nguyên
+  `1`–`600000`, mili giây caller chờ) và quy tắc deadline gRPC; bảng chuẩn ở
+  [conventions/deadlines.md](conventions/deadlines.md). Header tuỳ chọn, bị bỏ qua khi sai hoặc thiếu; không
+  contract nào bị breaking. Gateway xoá bản do client gửi.
+- Cái quan sát được: Checkout, Product Detail BFF, Order, Search và client Product của Promotion gửi header
+  tới provider; deadline gRPC của Checkout → Product bằng timeout hiệu dụng thay vì trần cố định; Cart đọc
+  header trên `/internal/v1/carts/{user_id}/checkout-snapshot`; Order không chờ `PAYMENT_READY` quá phần
+  ngân sách còn lại; provider đếm request vượt deadline bằng `http.server.caller_deadline_exceeded{route}`.
+- Timeout Order tới Inventory và Promotion giảm từ 10 giây xuống 8 giây, timeout export của Search từ 30
+  giây xuống 25 giây, để nhỏ hơn timeout mesh ít nhất 1 giây. Mesh §7 thêm dòng cho `GET`
+  `/internal/inventory/v1/commands/*` và `GET` Payment.
+
 ## 2026-10-15 (Trace và correlation giữa các service)
 
 - [ADR-002](decisions/ADR-002-correlation-and-trace-propagation.md) chuẩn hoá bốn định danh

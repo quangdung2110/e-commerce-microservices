@@ -10,6 +10,7 @@
 | Kafka/event | [events.md](events.md) |
 | Idempotency | [idempotency.md](idempotency.md) |
 | Trace và correlation | [tracing.md](tracing.md) |
+| Deadline | [deadlines.md](deadlines.md) |
 | Security và PII | [security-and-pii.md](security-and-pii.md) |
 | Versioning | [compatibility.md](compatibility.md) |
 | Viết Markdown | [documentation-style.md](documentation-style.md) |

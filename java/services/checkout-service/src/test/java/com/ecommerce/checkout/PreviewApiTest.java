@@ -96,6 +96,22 @@ class PreviewApiTest extends AbstractCheckoutTest {
     }
 
     @Test
+    @DisplayName("Every provider is told how long Checkout waits: X-Request-Timeout-Ms over HTTP, the deadline over gRPC")
+    void dependencyDeadlines() {
+        preview(newUser(), UUID.randomUUID().toString(), previewBody(null, null)).expectStatus().isOk();
+
+        // contracts ADR-003: the value is the timeout the call actually runs under, so it is positive and
+        // never above the 5 s Preview deadline (Inventory has the largest budget, 3 s).
+        LoggedRequest cart = UPSTREAMS.findAll(getRequestedFor(urlPathMatching(CART_PATH))).get(0);
+        LoggedRequest inventory = posted(INVENTORY_PATH).get(0);
+        for (LoggedRequest request : List.of(cart, inventory)) {
+            assertThat(request.getHeader("X-Request-Timeout-Ms")).matches("^[0-9]{1,4}$");
+            assertThat(Long.parseLong(request.getHeader("X-Request-Timeout-Ms"))).isBetween(1L, 3_000L);
+        }
+        assertThat(PRODUCT.deadlineMillis()).as("gRPC deadline reached Product").isBetween(1L, 1_000L);
+    }
+
+    @Test
     @DisplayName("An invalid X-Request-Id never reaches Inventory or Order; it is replaced by the trace id")
     void invalidRequestIdIsReplaced() {
         String user = newUser();

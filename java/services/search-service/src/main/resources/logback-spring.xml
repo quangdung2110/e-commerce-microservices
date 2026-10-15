@@ -4,7 +4,7 @@
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [request_id=%X{request_id}, user_id=%X{user_id}, topic=%X{topic}] - %msg%n</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [request_id=%X{request_id}, trace_id=%X{trace_id}, user_id=%X{user_id}, topic=%X{topic}] - %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -12,6 +12,7 @@
         <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="net.logstash.logback.encoder.LogstashEncoder">
                 <includeMdcKeyName>request_id</includeMdcKeyName>
+                <includeMdcKeyName>trace_id</includeMdcKeyName>
                 <includeMdcKeyName>user_id</includeMdcKeyName>
                 <includeMdcKeyName>topic</includeMdcKeyName>
                 <includeMdcKeyName>partition</includeMdcKeyName>

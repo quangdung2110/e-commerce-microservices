@@ -38,6 +38,7 @@ public final class FakeProduct {
     private final AtomicInteger calls = new AtomicInteger();
     private final List<List<String>> requests = new CopyOnWriteArrayList<>();
     private volatile Metadata lastHeaders = new Metadata();
+    private volatile long lastDeadlineMillis = -1;
     private volatile Status failure;
     private volatile long delayMillis;
     private final Server server;
@@ -49,6 +50,8 @@ public final class FakeProduct {
                                                                           Metadata headers,
                                                                           ServerCallHandler<ReqT, RespT> next) {
                 lastHeaders = headers;
+                io.grpc.Deadline deadline = io.grpc.Context.current().getDeadline();
+                lastDeadlineMillis = deadline == null ? -1 : deadline.timeRemaining(java.util.concurrent.TimeUnit.MILLISECONDS);
                 return next.startCall(call, headers);
             }
         };
@@ -79,6 +82,7 @@ public final class FakeProduct {
         failure = null;
         delayMillis = 0;
         lastHeaders = new Metadata();
+        lastDeadlineMillis = -1;
     }
 
     public synchronized void put(Sku sku) {
@@ -107,6 +111,11 @@ public final class FakeProduct {
 
     public List<List<String>> requests() {
         return new ArrayList<>(requests);
+    }
+
+    /** Milliseconds left of the gRPC deadline when the last call reached the server, or -1 if it had none. */
+    public long deadlineMillis() {
+        return lastDeadlineMillis;
     }
 
     public String header(String name) {

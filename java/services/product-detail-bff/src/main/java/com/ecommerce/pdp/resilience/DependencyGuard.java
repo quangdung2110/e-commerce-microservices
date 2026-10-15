@@ -44,6 +44,8 @@ public class DependencyGuard {
 
     /** Khóa Reactor context mang request ID đã chuẩn hóa, để dòng log gắn được vào request. */
     public static final String REQUEST_ID_KEY = "pdp.request-id";
+    /** Reactor context key holding the {@link Duration} a dependency call runs under (contracts ADR-003). */
+    public static final String EFFECTIVE_TIMEOUT_KEY = "pdp.effective-timeout";
     public static final String TRACE_ID_KEY = "pdp.trace-id";
 
     private static final Logger log = LoggerFactory.getLogger(DependencyGuard.class);
@@ -133,6 +135,8 @@ public class DependencyGuard {
                     .transformDeferred(BulkheadOperator.of(guarded.bulkhead()))
                     .map(CallResult::success)
                     .onErrorResume(error -> Mono.just(classify(dependency, guarded, error, correlation)))
+                    // contracts ADR-003: clients read the timeout this call runs under and send it to the provider.
+                    .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
                     .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
         });
     }

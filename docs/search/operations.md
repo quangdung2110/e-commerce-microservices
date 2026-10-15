@@ -255,3 +255,15 @@ Mỗi request scan toàn tập Product khớp; mặc định product-scan-batch-
 Cursor PIT keep-alive=2m, renew theo request; trang cuối/lỗi đóng context, bỏ dở tự expire. Theo dõi heap, open PIT, es_query_duration_seconds query_type=product_groups và latency/throughput. Benchmark trước khi tăng cap hoặc rollout catalog lớn. Không có result cache ứng dụng.
 
 Cấu hình SEARCH_CURSOR_SECRET tối thiểu 32 ký tự bằng secret deployment, giống nhau trên mọi replica. Giá trị mặc định chỉ dành cho dev; đổi secret làm cursor cũ invalid. Rollout backend/frontend/contracts pilot cùng đợt vì total_skus thành total_products và cursor generation 2. Rollback phải rollback cả consumer và reset pagination; không cần đổi index/alias.
+
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-023](./decisions/ADR-023-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestIdFilter` đặt, hiển thị bằng `logback-spring.xml`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Search trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. Lời gọi export và handshake gửi `X-Request-Id` mới cho mỗi lời gọi và `X-Request-Timeout-Ms: 25000` (`search.export.timeout`, nhỏ hơn timeout mesh 30 giây).

@@ -1,14 +1,19 @@
 package com.ecommerce.search.config;
 
+import com.ecommerce.search.common.RequestCorrelation;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -36,12 +41,18 @@ public class RequestIdFilter extends OncePerRequestFilter {
     public static final String REQUEST_ID_ATTRIBUTE = RequestIdFilter.class.getName() + ".REQUEST_ID";
 
     private static final String MDC_KEY = "request_id";
+    private static final String MDC_TRACE_ID = "trace_id";
+    static final String DEADLINE_COUNTER = "http.server.caller_deadline_exceeded";
     private static final Pattern TRACE_ID = Pattern.compile("[A-Za-z0-9._:-]{16,64}");
 
-    private final SearchProperties properties;
+    private static final Logger log = LoggerFactory.getLogger(RequestIdFilter.class);
 
-    public RequestIdFilter(SearchProperties properties) {
+    private final SearchProperties properties;
+    private final MeterRegistry meters;
+
+    public RequestIdFilter(SearchProperties properties, MeterRegistry meters) {
         this.properties = properties;
+        this.meters = meters;
     }
 
     @Override
@@ -51,13 +62,33 @@ public class RequestIdFilter extends OncePerRequestFilter {
         String requestId = supplied != null && TRACE_ID.matcher(supplied).matches()
                 ? supplied
                 : UUID.randomUUID().toString();
+        // contracts ADR-002/003: the trace context and the caller deadline ride along with the id Search
+        // already normalizes; the request id rule above stays Search's own because the Problem schema
+        // limits trace_id to 16..64 characters.
+        RequestCorrelation correlation = RequestCorrelation.fromHeaders(requestId,
+                request.getHeader(RequestCorrelation.TRACEPARENT_HEADER),
+                request.getHeader(RequestCorrelation.TRACESTATE_HEADER),
+                request.getHeader(RequestCorrelation.TIMEOUT_HEADER));
+        RequestCorrelation.set(correlation);
         request.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
         MDC.put(MDC_KEY, requestId);
+        if (correlation.traceId() != null) {
+            MDC.put(MDC_TRACE_ID, correlation.traceId());
+        }
         response.setHeader(properties.gateway().requestIdHeader(), requestId);
         try {
             chain.doFilter(request, response);
         } finally {
+            if (correlation.deadlineExceeded()) {
+                Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+                String route = pattern == null ? "UNMATCHED" : pattern.toString();
+                meters.counter(DEADLINE_COUNTER, "route", route).increment();
+                log.warn("request outlived the caller deadline route={} elapsed_ms={} budget_ms={}", route,
+                        correlation.elapsed().toMillis(), correlation.timeoutMs());
+            }
+            RequestCorrelation.clear();
             MDC.remove(MDC_KEY);
+            MDC.remove(MDC_TRACE_ID);
         }
     }
 }

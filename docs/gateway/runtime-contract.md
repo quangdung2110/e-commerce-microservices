@@ -45,7 +45,7 @@ client → TLS/trusted proxy → size & IP policy → route → rate/concurrency
        → logs, metrics, trace export
 ```
 
-Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` và `X-Service-Identity` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header `X-User-*` do `gateway-auth` trả về trong allowlist mới được forward tới service. `X-Service-Identity` không bao giờ được Traefik đặt: nó là header attribution giữa các service bên trong mesh ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)). Ánh xạ claim sang header được chốt tại mục 6.1.
+Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti`, `X-Service-Identity` và `X-Request-Timeout-Ms` (deadline giữa các service, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header `X-User-*` do `gateway-auth` trả về trong allowlist mới được forward tới service. `X-Service-Identity` không bao giờ được Traefik đặt: nó là header attribution giữa các service bên trong mesh ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)). Ánh xạ claim sang header được chốt tại mục 6.1.
 
 Gateway tiếp tục `traceparent`/`tracestate` W3C hợp lệ; nếu không có thì sinh trace context W3C chuẩn. Gateway không tự tạo trace ID riêng.
 

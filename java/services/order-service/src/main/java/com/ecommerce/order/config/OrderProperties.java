@@ -42,8 +42,27 @@ public record OrderProperties(
                            Duration activityTimeout, int activityMaxAttempts) {
     }
 
+    /**
+     * {@code readTimeout} is the default; the three per-provider values override it. Each must stay at
+     * least one second under the mesh timeout of the routes Order calls (mesh runtime contract section 7,
+     * Order ADR-023).
+     */
     public record Clients(String serviceName, String inventoryBaseUrl, String promotionBaseUrl,
-                          String paymentBaseUrl, Duration connectTimeout, Duration readTimeout) {
+                          String paymentBaseUrl, Duration connectTimeout, Duration readTimeout,
+                          Duration inventoryReadTimeout, Duration promotionReadTimeout,
+                          Duration paymentReadTimeout) {
+
+        public Duration inventoryRead() {
+            return inventoryReadTimeout != null ? inventoryReadTimeout : readTimeout;
+        }
+
+        public Duration promotionRead() {
+            return promotionReadTimeout != null ? promotionReadTimeout : readTimeout;
+        }
+
+        public Duration paymentRead() {
+            return paymentReadTimeout != null ? paymentReadTimeout : readTimeout;
+        }
     }
 
     public record Fulfillment(Duration deliveryConfirmationOverdue, Duration deliveredAtFutureSkew) {

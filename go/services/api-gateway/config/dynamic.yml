@@ -173,6 +173,9 @@ http:
           X-User-Session-Id: ""
           X-Token-Jti: ""
           X-Service-Identity: ""
+          # contracts ADR-003: a caller deadline is only meaningful between services; a client must not
+          # be able to shorten the budget Order, Cart or Inventory work with.
+          X-Request-Timeout-Ms: ""
 
     # Dev Auth Middleware (injects default X-User-Id for dev testing)
     dev-auth:

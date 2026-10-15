@@ -21,8 +21,8 @@ import (
 
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
-	"cart-service/internal/reqctx"
 	productv1 "cart-service/internal/infrastructure/product/pb/productv1"
+	"cart-service/internal/reqctx"
 )
 
 // Config configures the Product gRPC client.

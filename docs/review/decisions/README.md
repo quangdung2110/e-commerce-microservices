@@ -35,6 +35,7 @@ chứng minh nó ở mục Verification.
 | [ADR-011](./ADR-011-attachment-time-media-verification.md) | Xác minh media lúc attach và cleanup asset chưa gắn | Accepted | 2026-09-09 | — |
 | [ADR-012](./ADR-012-owner-surface-product-snapshot-and-review-list.md) | Product snapshot trên bề mặt owner và danh sách review của tôi | Accepted | 2026-10-06 | Bổ sung ADR-007 |
 | [ADR-013](./ADR-013-privacy-failure-handling.md) | Purge thất bại được thử lại; `USER_DELETED` lỗi tạm thời không bao giờ vào DLQ | Accepted | 2026-10-09 | Làm rõ ADR-007 |
+| [ADR-014](./ADR-014-request-correlation-and-caller-deadline.md) | Request ID, trace ID và deadline của caller trong log; `correlationid` của outbox không đổi | Accepted | 2026-10-15 | Bổ sung ADR-013 |
 
 ## Quyết định của service khác ảnh hưởng tới Review
 

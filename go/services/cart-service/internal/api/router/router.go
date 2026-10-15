@@ -24,8 +24,8 @@ type Config struct {
 	// InternalCallers are the service identities allowed on /internal/v1 (the mesh enforces the
 	// principal; X-Service-Identity is checked as defence in depth).
 	InternalCallers []string
-	Registry  prometheus.Gatherer
-	Logger    *zap.Logger
+	Registry        prometheus.Gatherer
+	Logger          *zap.Logger
 	// Debug switches Gin out of release mode.
 	Debug bool
 }
@@ -68,7 +68,7 @@ func New(cfg Config) *gin.Engine {
 	// Internal read for Checkout. The user comes from the path, never from X-User-Id, so this group
 	// must stay off the public gateway and behind the service identity check.
 	internal := engine.Group("/internal/v1/carts")
-	internal.Use(middleware.ServiceIdentity(cfg.InternalCallers))
+	internal.Use(middleware.ServiceIdentity(cfg.InternalCallers), middleware.CallerDeadline())
 	internal.GET("/:user_id/checkout-snapshot", cfg.Cart.CheckoutSnapshot)
 
 	return engine

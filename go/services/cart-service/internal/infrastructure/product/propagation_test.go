@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"cart-service/internal/reqctx"
 	productv1 "cart-service/internal/infrastructure/product/pb/productv1"
+	"cart-service/internal/reqctx"
 )
 
 const (

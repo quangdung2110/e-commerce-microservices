@@ -3,6 +3,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -177,4 +178,20 @@ func AbortWithProblem(c *gin.Context, problem response.Problem) {
 // AbortWithDomainError writes the problem document for a domain error.
 func AbortWithDomainError(c *gin.Context, err *domain.Error) {
 	AbortWithProblem(c, response.FromDomainError(err, c.Request.URL.Path, GetRequestID(c)))
+}
+
+// CallerDeadline bounds a read-only internal request by the time its caller announced in
+// X-Request-Timeout-Ms (contracts ADR-003): once the caller has stopped waiting, Redis and Product
+// calls made for the request are cancelled instead of finishing for nobody. A missing or malformed
+// header means no deadline. Attach it only to routes that write nothing; an abandoned write could be
+// left half done.
+func CallerDeadline() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if timeout, ok := reqctx.TimeoutFromHeader(c.GetHeader(reqctx.HeaderTimeoutMs)); ok {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+		}
+		c.Next()
+	}
 }

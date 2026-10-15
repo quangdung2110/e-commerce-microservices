@@ -531,3 +531,15 @@ cause_ref, outbox/journal trong transaction aggregate.
 - Chỉ mở writes sau khi không có journal mất cân bằng, không duplicate provider
   movement, cursor không vượt dữ liệu đã restore và các `UNKNOWN` operation đã vào
   recovery an toàn. Ghi kết quả drill/RCA với owner và thời gian thực tế.
+
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-025](./decisions/ADR-025-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.level`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Payment trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. `X-Correlation-Id` (Workflow ID của Order) giữ nguyên là bắt buộc và được echo; nó không phải request ID. Payment không hủy lời gọi Stripe đã bắt đầu vì header này.

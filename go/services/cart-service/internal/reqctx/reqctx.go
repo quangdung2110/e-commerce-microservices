@@ -7,7 +7,9 @@ package reqctx
 import (
 	"context"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -17,6 +19,8 @@ const (
 	HeaderRequestID   = "X-Request-Id"
 	HeaderTraceparent = "traceparent"
 	HeaderTracestate  = "tracestate"
+	// HeaderTimeoutMs carries how long the caller will wait, in milliseconds (contracts ADR-003).
+	HeaderTimeoutMs = "X-Request-Timeout-Ms"
 )
 
 // maxTracestate is the W3C limit for a whole tracestate value.
@@ -115,4 +119,23 @@ func NormalizeRequestID(header, traceparent string) string {
 		return id
 	}
 	return uuid.NewString()
+}
+
+// maxTimeoutMs is the largest caller timeout ADR-003 accepts (ten minutes).
+const maxTimeoutMs = 600_000
+
+var timeoutRe = regexp.MustCompile(`^[0-9]{1,6}$`)
+
+// TimeoutFromHeader parses X-Request-Timeout-Ms. It reports false for a missing, non-numeric or
+// out-of-range (1..600000) value, which means "the caller announced no deadline".
+func TimeoutFromHeader(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if !timeoutRe.MatchString(value) {
+		return 0, false
+	}
+	millis, err := strconv.Atoi(value)
+	if err != nil || millis < 1 || millis > maxTimeoutMs {
+		return 0, false
+	}
+	return time.Duration(millis) * time.Millisecond, true
 }

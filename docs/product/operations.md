@@ -100,3 +100,15 @@ Migration phải additive và tương thích rollback trong ít nhất một chu
 contract theo thứ tự: consumer chấp nhận schema mới → producer phát song song → chuyển
 consumer → gỡ schema cũ sau thời gian quan sát. Không rollback migration destructive;
 kiểm tra Debezium connector và offset trước/sau rollback để tránh replay ngoài ý muốn.
+
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-021](./decisions/ADR-021-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.console`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Product trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. Log gRPC `GetBatchSkus` ghi `request_id` và `trace_id` từ metadata `x-request-id` và `traceparent` (định dạng ADR-002, ID có `.` và `:` hợp lệ).

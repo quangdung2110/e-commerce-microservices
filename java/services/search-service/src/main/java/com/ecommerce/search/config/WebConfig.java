@@ -20,6 +20,7 @@ import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.time.Duration;
+import java.util.UUID;
 
 @Configuration
 @EnableAsync
@@ -105,6 +106,14 @@ public class WebConfig implements WebMvcConfigurer {
         Duration timeout = properties.export().timeout();
         return RestClient.builder()
                 .defaultHeader(SERVICE_IDENTITY_HEADER, SERVICE_IDENTITY)
+                // contracts ADR-002/003: export and handshake calls run on consumer or job threads with no
+                // inbound request, so each call gets its own request id and tells the provider how long
+                // Search will wait (the timeout set below).
+                .requestInterceptor((request, body, execution) -> {
+                    request.getHeaders().set("X-Request-Id", UUID.randomUUID().toString());
+                    request.getHeaders().set("X-Request-Timeout-Ms", Long.toString(timeout.toMillis()));
+                    return execution.execute(request, body);
+                })
                 .requestFactory(ClientHttpRequestFactories.get(ClientHttpRequestFactorySettings.DEFAULTS
                         .withConnectTimeout(timeout)
                         .withReadTimeout(timeout)))

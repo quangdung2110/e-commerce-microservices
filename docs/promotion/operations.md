@@ -256,3 +256,15 @@ Không có Order refund consumer, Auth consumer hay coupon producer. Command rec
 tách khỏi outbox trimmer, không xóa receipt còn nằm trong retry/recovery horizon và không
 xóa receipt còn `redis_finalized_at IS NULL`. Không có budget-exhausted producer/topic;
 exhaustion chỉ được đo từ synchronous response và metrics.
+
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-022](./decisions/ADR-022-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.console`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Promotion trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. Lời gọi Product snapshot gửi `X-Request-Id`, trace context và `X-Request-Timeout-Ms` (= `promotion.product.timeout`, 2 giây).

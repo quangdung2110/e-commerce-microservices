@@ -174,9 +174,11 @@ của Istio.
 | `POST /internal/inventory/v1/allocation-previews` | 0 | 4 giây | Advisory nhưng POST; Checkout budget 3 giây |
 | `POST /internal/v1/promotion-discount-calculations` | 0 | 3 giây | Pure query nhưng POST; Checkout budget 2 giây |
 | `POST /internal/v1/promotion-voucher-options` | 0 | 2 giây | Pure query nhưng POST; Checkout budget 1 giây, lỗi chỉ ảnh hưởng khay voucher ([Checkout ADR-017](../checkout/decisions/ADR-017-voucher-options-read-composition.md)) |
-| `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry; Order cắt ở 8 giây ([Order ADR-023](../order/decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md)) |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | 0 | 10 giây | Legacy migrator only; proof verification before mutation |
-| `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry; Order cắt ở 8 giây (Order ADR-023) |
+| `GET /internal/inventory/v1/commands/*`, `GET .../reservations/*`, `GET .../refund-scopes/*` | 0 | 10 giây | Order query sau kết quả UNKNOWN; không có retry mesh vì Order sở hữu replay. Order cắt ở 8 giây (Order ADR-023) |
+| `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | 0 | 15 giây | Order đọc `client-data` ngay trong request của Checkout và query sau UNKNOWN; Order cắt ở 10 giây và còn bị kẹp bởi `X-Request-Timeout-Ms` của Checkout (Order ADR-023) |
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout cắt Order POST ở 13 giây (Order chờ `PAYMENT_READY` tối đa 12 giây), GET recovery ở 2 giây, và query Order status sau timeout thay vì nhân ba deadline ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Webhook không nằm trong policy này |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
@@ -185,6 +187,10 @@ của Istio.
 | `GET /internal/v1/notifications/requests/*`, `GET /internal/v1/notifications/deliveries` | 2 lần, `connect-failure,refused-stream` | 3 giây | Pure read cho support tooling |
 | `/internal/v1/notifications/ops/**` | 0 | 10 giây | Caller sở hữu retry bằng `Idempotency-Key`; mesh không retry |
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
+
+Mọi route trong bảng trên MUST có dòng ở đây trước khi caller được gọi nó, và timeout hiệu dụng của caller
+(giá trị nó gửi trong `X-Request-Timeout-Ms` hoặc đặt làm deadline gRPC, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md))
+MUST nhỏ hơn timeout mesh của route ít nhất 1 giây. Mesh không đọc header này.
 
 `DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa
 50 % endpoint), `connectionPool` giới hạn theo load test, `loadBalancer: LEAST_REQUEST`. Giá trị

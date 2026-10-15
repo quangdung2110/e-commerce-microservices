@@ -130,7 +130,7 @@ từng tài liệu service.
 |---|---|---|
 | Retry lỗi connect-level (`connect-failure`, `refused-stream`, gRPC `unavailable`) | Chỉ trên route idempotent khai báo tường minh | Không lặp lại cùng điều kiện |
 | Retry business (`409`, `503` có `Retry-After`, `202 CLAIM_PENDING`) | Không | Có, theo idempotency key/natural key của contract |
-| Timeout | Ngân sách ngoài: ≥ deadline ứng dụng + 1 giây | Deadline thực, ngắn hơn mesh |
+| Timeout | Ngân sách ngoài: ≥ deadline ứng dụng + 1 giây | Deadline thực, ngắn hơn mesh; gửi cho provider qua `X-Request-Timeout-Ms` hoặc deadline gRPC ([contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) |
 | Outlier detection / connection pool | Có, per DestinationRule | Circuit breaker business (resilience4j) nếu service đã có |
 | Cân bằng tải | Per-request cho HTTP/1.1, HTTP/2, gRPC | Không |
 

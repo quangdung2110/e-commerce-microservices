@@ -119,4 +119,5 @@ logging:
     com.platform.productservice: INFO
     org.springframework.kafka: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{request_id:-},%X{trace_id:-}] - %msg%n"

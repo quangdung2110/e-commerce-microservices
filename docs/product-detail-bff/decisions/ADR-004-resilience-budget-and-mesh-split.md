@@ -152,3 +152,11 @@ dõi như chỉ số sức khỏe của Inventory.
 - Load test xác nhận latency kỳ vọng của provider, giới hạn bulkhead và SLO PDP trước khi
   public availability.
 - Kiểm tra `Cache-Control: no-store` trên mọi response degrade và `503`.
+
+### Bổ sung 2026-10-15: deadline gửi cho dependency
+
+Theo [contracts ADR-003](../../../contracts/decisions/ADR-003-deadline-propagation.md). Các con số của ADR này
+không đổi; provider nay biết chúng. `DependencyGuard` ghi timeout hiệu dụng
+`min(trần, deadline còn lại − dự phòng)` vào Reactor context và `UpstreamHttp` gửi nó làm
+`X-Request-Timeout-Ms` tới Product, Inventory và Review. Review dùng nó để đếm các lần trả lời sau khi BFF
+đã cắt ở 300 ms. Test: `ProductDetailApiTest.dependenciesReceiveOneBatchAndTheRightHeaders`.

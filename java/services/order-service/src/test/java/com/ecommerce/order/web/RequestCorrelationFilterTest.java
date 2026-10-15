@@ -1,6 +1,7 @@
 package com.ecommerce.order.web;
 
 import com.ecommerce.order.common.RequestCorrelation;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
@@ -15,7 +16,8 @@ class RequestCorrelationFilterTest {
 
     private static final String TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
-    private final RequestCorrelationFilter filter = new RequestCorrelationFilter();
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    private final RequestCorrelationFilter filter = new RequestCorrelationFilter(meters);
 
     @AfterEach
     void cleanUp() {
@@ -64,6 +66,51 @@ class RequestCorrelationFilterTest {
         assertThat(RequestCorrelation.current()).isNull();
         assertThat(MDC.get("request_id")).isNull();
         assertThat(MDC.get("trace_id")).isNull();
+    }
+
+    @Test
+    void countsARequestThatOutlivesTheCallerDeadlineButStillCompletesIt() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/internal/v1/x");
+        request.addHeader("X-Request-Timeout-Ms", "5");
+        request.setAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE,
+                "/internal/v1/x/{id}");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, (req, res) -> {
+            try {
+                Thread.sleep(40);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(meters.counter("http.server.caller_deadline_exceeded", "route", "/internal/v1/x/{id}").count())
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    void doesNotCountARequestThatFinishesInsideTheCallerDeadline() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+        request.addHeader("X-Request-Timeout-Ms", "60000");
+
+        filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> {
+        });
+
+        assertThat(meters.getMeters()).noneMatch(m -> m.getId().getName().equals("http.server.caller_deadline_exceeded"));
+    }
+
+    @Test
+    void ignoresAMalformedDeadlineHeaderWithoutFailingTheRequest() throws Exception {
+        for (String bad : new String[]{"abc", "-5", "0", "600001", "1.5", "", "99999999999"}) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+            request.addHeader("X-Request-Timeout-Ms", bad);
+            AtomicReference<RequestCorrelation> seen = new AtomicReference<>();
+
+            filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> seen.set(RequestCorrelation.current()));
+
+            assertThat(seen.get().timeoutMs()).as(bad).isNull();
+        }
     }
 
     @Test

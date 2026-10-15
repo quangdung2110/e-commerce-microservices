@@ -42,3 +42,4 @@ Phase 16/18/20 và các "tại sao" rải trong workflow/DB design/workers/event
 | [ADR-021](./ADR-021-pin-stripe-java-and-api-version.md) | Pin `stripe-java 33.4.2` và Stripe API `2026-08-26.dahlia` | Accepted | 2026-09-22 | Refines ADR-003/018 |
 | [ADR-022](./ADR-022-refund-lifecycle-hardening.md) | Refund theo `Refund.status` của Stripe, reconcile refund `SUCCESS` 35 ngày, phạm vi thẻ, ledger dùng đúng balance transaction | Accepted | 2026-09-30 | Refines ADR-003/011/018/019 |
 | [ADR-023](./ADR-023-reconciliation-ownership-and-audit-corrections.md) | Session ownership/fencing, pagination, freeze và manual correction sau audit | Accepted | 2026-10-11 | Refines ADR-017/019/020 |
+| [ADR-025](./ADR-025-request-correlation-and-caller-deadline.md) | Request ID, trace ID and caller deadline in Payment logs; `X-Correlation-Id` unchanged | Accepted | 2026-10-15 | — |

@@ -268,6 +268,7 @@ Order không có tracer (mức 1, pass-through), nên chỉ truyền tiếp, kh�
 | `X-Request-Id` | `X-Request-Id` đã chuẩn hoá của request đó (`^[A-Za-z0-9._:-]{8,128}$`; thiếu hoặc sai thì lấy trace ID của `traceparent`, rồi UUID mới) | UUID mới cho mỗi lần gửi, kể cả replay cùng command |
 | `traceparent`, `tracestate` | Gửi tiếp nếu `traceparent` đến hợp lệ; `tracestate` chỉ đi cùng | Không gửi |
 | `X-Correlation-Id` | Workflow ID (Payment, Inventory bắt buộc) | Workflow ID |
+| `X-Request-Timeout-Ms` | Timeout hiệu dụng = `min(timeout provider, deadline còn lại của request đến − 500 ms)`; không gửi lời gọi nếu còn dưới 200 ms (`DEADLINE_EXHAUSTED`) | Timeout provider: Inventory 8 giây, Promotion 8 giây, Payment 10 giây ([ADR-023](./decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md)) |
 | `X-Causation-Id`, `Idempotency-Key` | Theo từng contract provider | Giữ nguyên khi replay (command ID đã đóng băng) |
 
 Inbound, Order đọc `X-Request-Id`/`traceparent` của Checkout và Gateway, đưa `request_id`/`trace_id` vào

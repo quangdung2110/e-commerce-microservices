@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -95,5 +96,45 @@ func TestRequestIDDropsAnInvalidTraceparentAndItsTracestate(t *testing.T) {
 
 	if got.traceparent != "" || got.tracestate != "" {
 		t.Fatalf("invalid trace context must not be forwarded: %+v", got)
+	}
+}
+
+func serveWithDeadline(t *testing.T, header string) (time.Duration, bool) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(RequestID(), CallerDeadline())
+
+	var remaining time.Duration
+	var bounded bool
+	engine.GET("/x", func(c *gin.Context) {
+		if deadline, ok := c.Request.Context().Deadline(); ok {
+			bounded = true
+			remaining = time.Until(deadline)
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/x", nil)
+	if header != "" {
+		request.Header.Set("X-Request-Timeout-Ms", header)
+	}
+	engine.ServeHTTP(httptest.NewRecorder(), request)
+	return remaining, bounded
+}
+
+func TestCallerDeadlineBoundsTheRequestContextByTheAnnouncedTimeout(t *testing.T) {
+	remaining, bounded := serveWithDeadline(t, "1500")
+
+	if !bounded || remaining <= 0 || remaining > 1500*time.Millisecond {
+		t.Fatalf("deadline = %v (bounded=%v), want within (0, 1500ms]", remaining, bounded)
+	}
+}
+
+func TestCallerDeadlineIgnoresAMissingOrMalformedHeader(t *testing.T) {
+	for _, header := range []string{"", "abc", "0", "-1", "600001"} {
+		if _, bounded := serveWithDeadline(t, header); bounded {
+			t.Errorf("header %q must not bound the request", header)
+		}
 	}
 }

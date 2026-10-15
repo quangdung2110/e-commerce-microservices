@@ -101,3 +101,14 @@ data design.
 
 Test resilience ở [development.md](../development.md#test-bắt-buộc); load test xác nhận SLO; dashboard
 `checkout_dependency_calls_seconds` không có `timeout` do mesh cắt trước Checkout.
+
+### Bổ sung 2026-10-15: deadline gửi cho dependency
+
+Theo [contracts ADR-003](../../../contracts/decisions/ADR-003-deadline-propagation.md). Bảng deadline,
+timeout, circuit, bulkhead và no-retry ở trên không đổi. Điều đổi là provider nay biết con số đó:
+`DependencyGuard` ghi timeout hiệu dụng `min(budget, deadline còn lại − biên)` vào Reactor context, và
+`UpstreamHttp` gửi nó làm `X-Request-Timeout-Ms` tới Cart, User, Inventory, Promotion và Order. `ProductClient`
+đặt deadline gRPC bằng đúng giá trị đó (không vượt `timeouts.product`) thay vì một trần cố định. Order dùng
+header để không chờ `PAYMENT_READY` quá phần ngân sách còn lại của Checkout trừ 1 giây
+([Order ADR-023](../../order/decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md)). Test:
+`PreviewApiTest.dependencyDeadlines`.

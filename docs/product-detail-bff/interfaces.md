@@ -82,6 +82,7 @@ catalog.
 | `traceparent`/`tracestate` | Có | Có | Có |
 | `X-Request-Id` (request ID đã chuẩn hóa) | Có | Có | Có |
 | `X-Correlation-ID` (cùng giá trị request ID) | — | Có (bắt buộc) | — |
+| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Có |
 
 **Request ID đã chuẩn hóa.** BFF chỉ dùng `X-Request-Id` từ gateway/client khi giá trị
 khớp `^[A-Za-z0-9._:-]{8,128}$`; nếu thiếu hoặc không khớp, BFF dùng trace ID (32 ký tự
