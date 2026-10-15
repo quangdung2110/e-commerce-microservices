@@ -9,6 +9,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -16,6 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
+import java.util.function.Supplier;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -48,11 +51,18 @@ public class RequestIdFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(RequestIdFilter.class);
 
     private final SearchProperties properties;
-    private final MeterRegistry meters;
+    private final Supplier<MeterRegistry> meters;
+
+    /** The registry is optional: web slice tests have none, and the counter is then skipped. */
+    @Autowired
+    public RequestIdFilter(SearchProperties properties, ObjectProvider<MeterRegistry> meters) {
+        this.properties = properties;
+        this.meters = meters::getIfAvailable;
+    }
 
     public RequestIdFilter(SearchProperties properties, MeterRegistry meters) {
         this.properties = properties;
-        this.meters = meters;
+        this.meters = () -> meters;
     }
 
     @Override
@@ -82,7 +92,10 @@ public class RequestIdFilter extends OncePerRequestFilter {
             if (correlation.deadlineExceeded()) {
                 Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
                 String route = pattern == null ? "UNMATCHED" : pattern.toString();
-                meters.counter(DEADLINE_COUNTER, "route", route).increment();
+                MeterRegistry registry = meters.get();
+                if (registry != null) {
+                    registry.counter(DEADLINE_COUNTER, "route", route).increment();
+                }
                 log.warn("request outlived the caller deadline route={} elapsed_ms={} budget_ms={}", route,
                         correlation.elapsed().toMillis(), correlation.timeoutMs());
             }

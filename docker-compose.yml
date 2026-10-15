@@ -269,9 +269,6 @@ services:
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
       SPRING_PROFILES_ACTIVE: dev
-      # Bearer service identity for Review's internal rating export. It matches
-      # REVIEW_INTERNAL_EXPORT_TOKENS on review-service and reaches that route only.
-      REVIEW_INTERNAL_TOKEN: dev-search-export-token
       # Same local CDN and placeholder as the Product Detail BFF, so a product card and
       # its detail page show the same file (docs/product-detail-bff ADR-005).
       CDN_BASE_URL: http://localhost:8088/media
@@ -326,11 +323,9 @@ services:
       REVIEW_AUTHOR_ALIAS_HMAC_SECRET: dev-review-author-alias-secret
       REVIEW_PRIVACY_GUARD_HMAC_SECRET: dev-review-privacy-guard-secret
 
-      # Bearer service identity for /internal/v1/**, split per route group so the
-      # Product Detail BFF cannot page the rating export and Search cannot read the
-      # PDP summary.
-      REVIEW_INTERNAL_PDP_TOKENS: dev-product-detail-bff-token
-      REVIEW_INTERNAL_EXPORT_TOKENS: dev-search-export-token
+      # /internal/v1/** callers are checked by X-Service-Identity per route group: the defaults
+      # (product-detail-bff on the PDP summary, search-service on the rating export) apply;
+      # override with REVIEW_INTERNAL_PDP_CALLERS / REVIEW_INTERNAL_EXPORT_CALLERS (contracts ADR-004).
 
       REVIEW_S3_ENDPOINT: http://minio:9000
       # Browser-visible origin for upload/download signatures; internal HEAD stays on minio.
@@ -458,8 +453,6 @@ services:
       PDP_INVENTORY_ENABLED: "false"
       PDP_REVIEW_ENABLED: "true"
       PDP_REVIEW_BASE_URL: http://review-service:8080
-      # Phải nằm trong REVIEW_INTERNAL_PDP_TOKENS của review-service. Development only.
-      PDP_REVIEW_SERVICE_TOKEN: dev-product-detail-bff-token
       # Local CDN = bucket product-media của MinIO phát qua gateway; Search dùng đúng
       # cùng hai giá trị này (CDN_BASE_URL, THUMBNAIL_PLACEHOLDER_URL).
       PDP_MEDIA_CDN_BASE_URL: http://localhost:8088/media

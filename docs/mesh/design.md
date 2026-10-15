@@ -98,7 +98,7 @@ Ba quy tắc:
 2. **`X-Service-Identity`** do caller đặt bằng chính ServiceAccount name của nó. Mesh **không**
    xác minh nội dung header; mesh xác minh principal và chỉ cho principal được phép chạm tới path.
    Ứng dụng dùng header cho log/audit/problem detail và allowlist defense-in-depth
-   (Product `reindex-clients`, Promotion `TrustedIdentityFilter`, Review static bearer token),
+   (Product `reindex-clients` và `grpc-clients`, Promotion `TrustedIdentityFilter`, Review `pdp-callers`/`export-callers`, Payment `allowed-callers`; [contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md)),
    không bao giờ coi nó là bằng chứng authorization duy nhất.
 3. **Từ chối ở mesh** là `403` từ waypoint (`text/plain`, body `RBAC: access denied`), xảy ra
    trước khi request tới ứng dụng. `401`/`403` `application/problem+json` trong các contract

@@ -116,6 +116,12 @@ hiển thị (Cart, Checkout) dựng URL CDN từ key như Search và Product De
 status. Nếu Product/SKU không catalog-active, response là unavailable; Cart có thể giữ
 SKU hết stock; Checkout phải lấy allocation preview và Order mới reserve tại Inventory.
 
+Caller gRPC gửi metadata `x-service-identity`; Product kiểm với `product.internal.grpc-clients` (mặc định
+`cart-service`, `checkout-service`): thiếu là `UNAUTHENTICATED`, ngoài danh sách là `PERMISSION_DENIED`
+([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md),
+[ADR-022](decisions/ADR-022-grpc-caller-allowlist-and-reflection-off.md)). Warm-up loopback gửi identity của
+caller đầu tiên trong danh sách.
+
 `GetBatchSkus` nhận tối đa 100 `sku_id` duy nhất; vượt giới hạn hoặc `sku_id` không phải UUID là
 `INVALID_ARGUMENT`. SKU không tồn tại hoặc không catalog-active là kết quả nghiệp vụ trong response
 (`not_found`/`unavailable`), không phải lỗi transport.

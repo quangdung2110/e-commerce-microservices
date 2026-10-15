@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The service-level integration tests call the services directly, so this is also the
  * only place the controller layer is exercised: parameter validation, the trusted-identity
- * headers, the service bearer tokens and the Problem body of every failure.
+ * headers, the X-Service-Identity allowlists and the Problem body of every failure.
  */
 class HttpContractIT extends AbstractReviewIT {
 
@@ -49,8 +49,8 @@ class HttpContractIT extends AbstractReviewIT {
     private static final OpenApiContract INTERNAL = OpenApiContract.load("http/review/internal/v1/openapi.yaml");
 
     private static final byte[] IMAGE = "http-contract-fixture-bytes".getBytes();
-    private static final String PDP_TOKEN = "Bearer test-pdp-token";
-    private static final String EXPORT_TOKEN = "Bearer test-export-token";
+    private static final String PDP_TOKEN = "product-detail-bff";
+    private static final String EXPORT_TOKEN = "search-service";
 
     @LocalServerPort
     private int port;
@@ -131,8 +131,8 @@ class HttpContractIT extends AbstractReviewIT {
         return new String[] {"X-User-Id", user.toString(), "X-User-Roles", "USER,ADMIN"};
     }
 
-    private static String[] bearer(String token) {
-        return new String[] {"Authorization", token};
+    private static String[] caller(String token) {
+        return new String[] {"X-Service-Identity", token};
     }
 
     // ---------------------------------------------------------------------
@@ -362,33 +362,33 @@ class HttpContractIT extends AbstractReviewIT {
                 """).update();
 
         expect(INTERNAL, "GET", "/internal/v1/reviews/products/{product_id}/pdp-summary",
-                "/internal/v1/reviews/products/p-http/pdp-summary?preview_limit=5", null, 200, bearer(PDP_TOKEN));
+                "/internal/v1/reviews/products/p-http/pdp-summary?preview_limit=5", null, 200, caller(PDP_TOKEN));
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/products/{product_id}/pdp-summary",
-                "/internal/v1/reviews/products/p-http/pdp-summary?preview_limit=9", null, 400, bearer(PDP_TOKEN)),
+                "/internal/v1/reviews/products/p-http/pdp-summary?preview_limit=9", null, 400, caller(PDP_TOKEN)),
                 "INVALID_REQUEST");
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/products/{product_id}/pdp-summary",
                 "/internal/v1/reviews/products/p-http/pdp-summary", null, 401), "UNAUTHENTICATED");
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/products/{product_id}/pdp-summary",
-                "/internal/v1/reviews/products/p-http/pdp-summary", null, 403, bearer(EXPORT_TOKEN)), "FORBIDDEN");
+                "/internal/v1/reviews/products/p-http/pdp-summary", null, 403, caller(EXPORT_TOKEN)), "FORBIDDEN");
 
         Response session = expect(INTERNAL, "POST", "/internal/v1/reviews/rating-aggregate-exports",
-                "/internal/v1/reviews/rating-aggregate-exports", null, 201, bearer(EXPORT_TOKEN));
+                "/internal/v1/reviews/rating-aggregate-exports", null, 201, caller(EXPORT_TOKEN));
         String sessionId = session.body().path("session_id").asText();
         assertCode(expect(INTERNAL, "POST", "/internal/v1/reviews/rating-aggregate-exports",
-                "/internal/v1/reviews/rating-aggregate-exports", null, 403, bearer(PDP_TOKEN)), "FORBIDDEN");
+                "/internal/v1/reviews/rating-aggregate-exports", null, 403, caller(PDP_TOKEN)), "FORBIDDEN");
 
         Response page = expect(INTERNAL, "GET", "/internal/v1/reviews/rating-aggregate-exports/{session_id}",
                 "/internal/v1/reviews/rating-aggregate-exports/" + sessionId + "?limit=1", null, 200,
-                bearer(EXPORT_TOKEN));
+                caller(EXPORT_TOKEN));
         assertThat(page.body().path("items")).hasSize(1);
         assertThat(page.body().path("replay_from_offsets")).isEqualTo(session.body().path("replay_from_offsets"));
 
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/rating-aggregate-exports/{session_id}",
                 "/internal/v1/reviews/rating-aggregate-exports/" + UUID.randomUUID(), null, 404,
-                bearer(EXPORT_TOKEN)), "EXPORT_SESSION_NOT_FOUND");
+                caller(EXPORT_TOKEN)), "EXPORT_SESSION_NOT_FOUND");
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/rating-aggregate-exports/{session_id}",
                 "/internal/v1/reviews/rating-aggregate-exports/" + sessionId + "?limit=1001", null, 400,
-                bearer(EXPORT_TOKEN)), "INVALID_REQUEST");
+                caller(EXPORT_TOKEN)), "INVALID_REQUEST");
 
         jdbc.sql("""
                 UPDATE rating_export_sessions
@@ -396,7 +396,7 @@ class HttpContractIT extends AbstractReviewIT {
                  WHERE id = ?::uuid
                 """).param(sessionId).update();
         assertCode(expect(INTERNAL, "GET", "/internal/v1/reviews/rating-aggregate-exports/{session_id}",
-                "/internal/v1/reviews/rating-aggregate-exports/" + sessionId, null, 410, bearer(EXPORT_TOKEN)),
+                "/internal/v1/reviews/rating-aggregate-exports/" + sessionId, null, 410, caller(EXPORT_TOKEN)),
                 "EXPORT_SESSION_EXPIRED");
     }
 

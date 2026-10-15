@@ -18,3 +18,8 @@ logging:
   level:
     com.platform.productservice: DEBUG
     org.hibernate.SQL: DEBUG
+
+# grpcurl tiện dụng khi chạy local; mặc định tắt ở mọi profile khác (Product ADR-022).
+grpc:
+  server:
+    reflection-service-enabled: true

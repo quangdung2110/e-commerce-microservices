@@ -326,10 +326,11 @@ SNAPSHOT_SESSION_EXPIRED`, còn change feed trả `410 REPLAY_WINDOW_EXPIRED`; h
 trạng thái mà guard `is_deleted` của Search lẽ ra đã loại trừ. Xử lý như lệch trạng thái
 giữa hai service: không purge, không retry, báo động.
 
-Hai endpoint export của Review nằm sau bearer service identity: Search gửi
-`Authorization: Bearer <REVIEW_INTERNAL_TOKEN>`, và Review giữ allowlist token riêng cho
-từng nhóm route nội bộ nên token này chỉ mở đúng rating export, không đọc được PDP
-summary. Thiếu token thì Review trả `401` và rating build dừng lại thay vì import rỗng.
+Hai endpoint export của Review kiểm `X-Service-Identity`: Search gửi `search-service` trên mọi lời gọi export
+(không còn bearer token; [Search ADR-024](./decisions/ADR-024-drop-review-bearer-and-outbound-metrics.md),
+[contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md)), và Review giữ allowlist riêng cho từng nhóm route nội bộ nên identity này chỉ
+mở đúng rating export, không đọc được PDP summary. Thiếu identity thì Review trả `401` và rating build dừng lại
+thay vì import rỗng.
 
 Không có lời gọi đồng bộ nào khác ra ngoài trong hot path.
 

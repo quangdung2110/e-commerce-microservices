@@ -155,9 +155,9 @@ Traefik xoá `X-Service-Identity` do client gửi cùng nhóm `X-User-*`
 gọi internal API bắt buộc gửi `X-Service-Identity`; thiếu header là lỗi contract phía caller dù
 mesh đã cho phép.
 
-Review Service hiện dùng static bearer token (`REVIEW_INTERNAL_*_TOKENS`) thay vì
-`X-Service-Identity`; đó cũng là defense-in-depth với cùng địa vị, và là ứng viên hợp nhất về
-header chung (mục 11).
+Mọi service kiểm `X-Service-Identity` (gRPC: `x-service-identity`) với allowlist cấu hình được theo nhóm route;
+thiếu là `401`/`UNAUTHENTICATED`, không thuộc allowlist là `403`/`PERMISSION_DENIED`
+([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md)). Review không còn dùng bearer token.
 
 ## 7. Traffic policy east-west
 
@@ -260,6 +260,5 @@ Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix l
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
 và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service
-dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
-riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một
+đã chuyển từ static bearer token sang allowlist `X-Service-Identity` ([Review ADR-015](../review/decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)). Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một
 năng lực không được gọi là "hoàn thành" trước khi tiêu chí xác minh của nó đạt.

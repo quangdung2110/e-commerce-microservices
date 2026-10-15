@@ -42,7 +42,6 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 // con ghi đè được: property động luôn thắng property tĩnh.
 @TestPropertySource(properties = {
         "pdp.inventory.enabled=true",
-        "pdp.review.service-token=" + AbstractPdpTest.REVIEW_TOKEN,
         "pdp.media.cdn-base-url=" + AbstractPdpTest.CDN,
         "pdp.media.placeholder-url=" + AbstractPdpTest.PLACEHOLDER,
         "pdp.full-response-cache-control=" + AbstractPdpTest.FULL_CACHE_CONTROL,
@@ -54,7 +53,6 @@ public abstract class AbstractPdpTest {
     protected static final String INVENTORY_PATH = "/internal/inventory/v1/sku-availabilities:batch-get";
     protected static final String REVIEW_PATH =
             "/internal/v1/reviews/products/" + Fixtures.PRODUCT_ID + "/pdp-summary";
-    protected static final String REVIEW_TOKEN = "test-pdp-token";
     protected static final String CDN = "https://cdn.test/media";
     protected static final String PLACEHOLDER = "https://cdn.test/placeholder.png";
     protected static final String FULL_CACHE_CONTROL = "public, max-age=30";

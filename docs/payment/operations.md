@@ -543,3 +543,11 @@ Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc
 (`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
 Payment trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
 cảnh báo đặt theo số đo p99 từ load test, không đặt trước. `X-Correlation-Id` (Workflow ID của Order) giữ nguyên là bắt buộc và được echo; nó không phải request ID. Payment không hủy lời gọi Stripe đã bắt đầu vì header này.
+## Allowlist caller của route Order-facing
+
+`payment.identity.allowed-callers` (env `PAYMENT_ALLOWED_CALLERS`, mặc định `order-service`) là danh sách
+`X-Service-Identity` được gọi `/v1/payments/**` (trừ webhook) và `/v1/refunds/**`; danh sách rỗng từ chối mọi
+caller ([ADR-026](./decisions/ADR-026-service-identity-allowlist-and-401-403.md)). `401`/`403` với body
+`UNAUTHENTICATED`/`FORBIDDEN` ở Order là lỗi cấu hình, không phải lỗi request: kiểm tra Order còn gửi
+`order-service` và danh sách còn chứa nó.
+

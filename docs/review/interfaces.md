@@ -178,11 +178,12 @@ Both internal surfaces are reachable only through the service mesh: an
 and the `search-service` principal on the export routes
 ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
 a wrong principal receives `403 text/plain` from the waypoint before reaching Review.
-The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
-`REVIEW_INTERNAL_EXPORT_TOKENS`) are defense-in-depth, not the authorization boundary. A
-request with no `Authorization: Bearer` header is `401 UNAUTHENTICATED`; a token that is not on
-the allowlist of the route's group is `403 FORBIDDEN`, so the PDP token cannot page the export
-and the export token cannot read the PDP summary. An internal route that belongs to no group
+The `X-Service-Identity` allowlists (`REVIEW_INTERNAL_PDP_CALLERS`, default `product-detail-bff`, and
+`REVIEW_INTERNAL_EXPORT_CALLERS`, default `search-service`) are defense-in-depth, not the authorization
+boundary ([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md), [ADR-015](decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)). A
+request with no `X-Service-Identity` header is `401 UNAUTHENTICATED`; a caller that is not on
+the allowlist of the route's group is `403 FORBIDDEN`, so the BFF cannot page the export
+and Search cannot read the PDP summary. An internal route that belongs to no group
 rejects every caller. The filter matches the decoded path without `;` parameters (the path
 Spring MVC routes on), not the raw URI, so `/%69nternal/v1/...` or `/internal/v1;x=1/...` cannot
 skip the token check (`InternalIdentityFilterPathTest`).
@@ -193,13 +194,12 @@ skip the token check (`InternalIdentityFilterPathTest`).
 endpoint. It returns aggregate and a bounded preview of `APPROVED` reviews. A product
 with no review returns aggregate zero; PostgreSQL failure returns 503, never fake zero.
 BFF propagates `traceparent` and a normalized `X-Request-Id` (8–128 characters, never a raw
-client value), sends the bearer token from its `PDP_REVIEW_SERVICE_TOKEN` and
+client value), sends `X-Service-Identity: product-detail-bff` and
 `preview_limit=3` by default, does not retry in the hot path and maps timeout/5xx to
 `review_section.status = UNAVAILABLE`
 ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md),
-[ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md)). Token
-rotation order: add the new token to `REVIEW_INTERNAL_PDP_TOKENS`, roll BFF, then remove
-the old token.
+[ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md),
+[ADR-009](../product-detail-bff/decisions/ADR-009-service-identity-replaces-review-bearer-token.md)).
 
 ### Rating aggregate export
 
@@ -358,7 +358,7 @@ characters, the bounds of the shared Problem schema. A retryable error carries
 | `code` | HTTP | Retryable | When |
 |---|---:|:---:|---|
 | `INVALID_REQUEST` | 400 | no | A parameter outside its range or of the wrong type, a missing required parameter, an invalid cursor, an unreadable body, a field the contract does not define, or a value the service refuses (content type, size, repeated asset id) |
-| `UNAUTHENTICATED` | 401 | no | No trusted `X-User-Id`, or an internal route without a bearer token |
+| `UNAUTHENTICATED` | 401 | no | No trusted `X-User-Id`, or an internal route without `X-Service-Identity` |
 | `FORBIDDEN` | 403 | no | A non-admin on an admin route; a service token not allowed on the route group; a caller with a deletion guard (deliberately generic) |
 | `NOT_FOUND` | 404 | no | A request for which the service has no operation |
 | `METHOD_NOT_ALLOWED` | 405 | no | A known path with a method it does not accept; `Allow` lists the ones it does |

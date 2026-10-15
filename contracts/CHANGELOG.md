@@ -3,6 +3,21 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-15 (Danh tính service nội bộ)
+
+- [ADR-004](decisions/ADR-004-service-identity-allowlist.md) chuẩn hoá cách kiểm caller nội bộ: allowlist
+  `X-Service-Identity` (gRPC `x-service-identity`) cấu hình được theo nhóm route, thiếu là `401`/`UNAUTHENTICATED`,
+  ngoài danh sách là `403`/`PERMISSION_DENIED`; bảng chuẩn ở [conventions/service-identity.md](conventions/service-identity.md).
+- Review internal HTTP v1: security scheme đổi từ bearer token sang `apiKey` header `X-Service-Identity`; mã lỗi
+  `401 UNAUTHENTICATED` và `403 FORBIDDEN` và body không đổi. Caller (Product Detail BFF, Search) bỏ `Authorization`;
+  `REVIEW_INTERNAL_*_TOKENS`, `PDP_REVIEW_SERVICE_TOKEN`, `REVIEW_INTERNAL_TOKEN` bị bỏ. Breaking cho caller ngoài catalog
+  còn gửi token và không gửi `X-Service-Identity`; trong catalog không có caller nào như vậy.
+- Payment HTTP v1: `401` và `403` được thêm vào sáu operation Order-facing (identity thiếu hoặc ngoài allowlist,
+  trước đây `400 VALIDATION_FAILED`). Order coi cả ba là từ chối bền vững như trước.
+- Product gRPC v1: Product kiểm `x-service-identity` (`UNAUTHENTICATED`/`PERMISSION_DENIED`); Cart đã gửi nó. Reflection
+  tắt mặc định. Stub Go của Cart được sinh lại (thiếu `base_price`, `catalog_revision`, `category_ids`); không đổi
+  hành vi vì Cart không đọc các field đó.
+
 ## 2026-10-15 (Deadline giữa các service)
 
 - [ADR-003](decisions/ADR-003-deadline-propagation.md) thêm header HTTP `X-Request-Timeout-Ms` (số nguyên

@@ -51,3 +51,4 @@ Cột **Supersedes** là các ADR mà ADR này thay thế; cột **Superseded by
 | [ADR-019](./ADR-019-category-facet-definitions.md) | Category snapshot và export mang `facet_definitions`; đổi tên attribute đã map phát lại category | Accepted | 2026-10-09 | — | — |
 | [ADR-020](./ADR-020-media-fan-out-follows-snapshot-content.md) | Fan-out media theo nội dung snapshot, không theo thumbnail đổi | Accepted | 2026-10-09 | — (amends ADR-013) | — |
 | [ADR-021](./ADR-021-request-correlation-and-caller-deadline.md) | Request ID, trace ID và deadline của caller trong log HTTP và gRPC; gRPC nhận ID có `.` và `:` | Accepted | 2026-10-15 | — | — |
+| [ADR-022](./ADR-022-grpc-caller-allowlist-and-reflection-off.md) | Allowlist caller cho gRPC `ProductService` (`x-service-identity`); warm-up gửi identity; reflection tắt mặc định | Accepted | 2026-10-15 | — | — |

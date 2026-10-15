@@ -68,7 +68,7 @@ của balance lane; run đó FAILED và không advance watermark.
 | Khía cạnh | Quy tắc |
 |---|---|
 | Base path | `/v1` nội bộ mesh. Riêng Stripe gọi public `/api/payments/webhook/stripe`; Gateway rewrite path sang `/v1/payments/webhook/stripe` và giữ nguyên raw body/header |
-| Xác thực | Mesh mTLS + `AuthorizationPolicy`; Order bắt buộc gửi `X-Service-Identity: order-service` để attribution/log nhưng header này không phải bằng chứng authentication |
+| Xác thực | Mesh mTLS + `AuthorizationPolicy`; Order bắt buộc gửi `X-Service-Identity: order-service`. Header không phải bằng chứng authentication, nhưng Payment kiểm nó với `payment.identity.allowed-callers` (mặc định `order-service`) làm defense-in-depth: thiếu là `401 UNAUTHENTICATED`, ngoài danh sách là `403 FORBIDDEN` ([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md), [ADR-026](decisions/ADR-026-service-identity-allowlist-and-401-403.md)). Webhook Stripe và route Finance Ops không áp dụng |
 | Correlation | `X-Correlation-Id` 1–128 ký tự (khớp financial event schema), bắt buộc trên 6 operation Order-facing (Order truyền Temporal Workflow ID); Payment echo lại và ghi vào `outbox_events.headers` |
 | Idempotency | Header `Idempotency-Key` (16–255 ký tự) bắt buộc với ba command Order-facing `initiate/cancel/refund`; không áp dụng cho webhook; namespace là `(action, key)` và mỗi cặp chỉ có một fingerprint; xem §2.2 |
 | Money | `{ "amount_minor": <int64>, "currency": "VND" }`; VND zero-decimal, không nhân/chia |

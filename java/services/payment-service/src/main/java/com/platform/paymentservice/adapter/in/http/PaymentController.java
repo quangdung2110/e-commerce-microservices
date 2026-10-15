@@ -256,7 +256,8 @@ final class PaymentController {
     }
 
     private static boolean validCommonHeaders(String identity, String correlationId) {
-        return "order-service".equals(identity)
+        // The caller allowlist is enforced by ServiceIdentityFilter (contracts ADR-004); only presence is left here.
+        return identity != null && !identity.isBlank()
                 && correlationId != null && !correlationId.isBlank()
                 && correlationId.length() <= 128;
     }

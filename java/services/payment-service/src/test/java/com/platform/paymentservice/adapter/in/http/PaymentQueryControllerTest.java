@@ -112,11 +112,11 @@ class PaymentQueryControllerTest {
     }
 
     @Test
-    void wrong_workload_malformed_id_or_missing_correlation_is_a_validation_problem() throws Exception {
+    void wrong_workload_is_forbidden_while_malformed_id_or_missing_correlation_is_a_validation_problem() throws Exception {
         mvc.perform(get("/v1/payments/{id}", TXN)
                         .header("X-Service-Identity", "other-service").header("X-Correlation-Id", "corr-6"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
         mvc.perform(get("/v1/payments/{id}", "not-a-transaction")
                         .header("X-Service-Identity", "order-service").header("X-Correlation-Id", "corr-7"))
                 .andExpect(status().isBadRequest());

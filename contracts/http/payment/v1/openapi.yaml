@@ -42,6 +42,8 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
@@ -76,6 +78,8 @@ paths:
         usable=false, client_secret is null, and publishable_key is null. Responses
         are private, no-store.
       parameters:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         - $ref: '#/components/parameters/TransactionId'
         - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/CorrelationId'
@@ -102,6 +106,8 @@ paths:
       requestBody:
         required: true
         content:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
           application/json: { schema: { $ref: '#/components/schemas/CancelPaymentRequest' } }
       responses:
         '200':
@@ -128,6 +134,8 @@ paths:
         - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         required: true
         content:
           application/json: { schema: { $ref: '#/components/schemas/RefundRequest' } }
@@ -158,6 +166,8 @@ paths:
         - $ref: '#/components/parameters/CorrelationId'
       responses:
         '200':
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
           description: Current Refund state.
           headers:
             X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
@@ -179,6 +189,8 @@ paths:
         Stripe-Signature with a 300-second tolerance before persisting the encrypted
         inbox row or publishing the verified internal message. Business FSM handling
         remains asynchronous.
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
       security: []
       parameters:
         - $ref: '#/components/parameters/StripeSignature'
@@ -229,7 +241,8 @@ components:
       required: true
       description: >-
         Required caller attribution. The value is not authentication evidence;
-        authorization uses the authenticated mesh principal.
+        authorization uses the authenticated mesh principal. Payment also checks the value against a
+        configured allowlist as defense-in-depth: missing is 401, not on the list is 403 (contracts ADR-004).
       schema: { type: string, const: order-service }
     CorrelationId:
       name: X-Correlation-Id

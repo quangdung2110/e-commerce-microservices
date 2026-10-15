@@ -113,10 +113,10 @@ review:
     admin-role: ADMIN
 
   internal:
-    # Bearer service identity for /internal/v1/**. Empty allowlists reject every
-    # caller; the dev profile supplies the local tokens.
-    pdp-tokens: ${REVIEW_INTERNAL_PDP_TOKENS:}
-    export-tokens: ${REVIEW_INTERNAL_EXPORT_TOKENS:}
+    # Callers of /internal/v1/** by X-Service-Identity, one list per route group (contracts ADR-004,
+    # Review ADR-015). An empty list rejects every caller of that group.
+    pdp-callers: ${REVIEW_INTERNAL_PDP_CALLERS:product-detail-bff}
+    export-callers: ${REVIEW_INTERNAL_EXPORT_CALLERS:search-service}
 
   topics:
     review: t.review.events

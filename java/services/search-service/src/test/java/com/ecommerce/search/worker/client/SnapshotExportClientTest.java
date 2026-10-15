@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.headerDoesNotExist;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
@@ -44,7 +45,7 @@ class SnapshotExportClientTest {
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", INVENTORY, "http://review-service:8080",
-                "review-token", true, Duration.ofSeconds(30), 2, 2));
+                true, Duration.ofSeconds(30), 2, 2));
         when(properties.reindex()).thenReturn(mock(SearchProperties.Reindex.class));
 
         // The production builder, not a bare one: the naming strategy this pins lives
@@ -157,10 +158,11 @@ class SnapshotExportClientTest {
         // GET /internal/v1/reviews/rating-aggregates it replaced answers 404 now.
         server.expect(requestTo(REVIEW + "/internal/v1/reviews/rating-aggregate-exports"))
                 .andExpect(method(HttpMethod.POST))
-                // Review requires a bearer service identity on /internal/v1/**, and keeps
-                // a separate token list per route group: without this header the export
-                // answers 401 and the whole rating build stops.
-                .andExpect(header("Authorization", "Bearer review-token"))
+                // Review checks X-Service-Identity against a separate allowlist per route group
+                // (contracts ADR-004): without it the export answers 401 and the whole rating build
+                // stops. There is no bearer token any more.
+                .andExpect(header("X-Service-Identity", "search-service"))
+                .andExpect(headerDoesNotExist("Authorization"))
                 .andRespond(withSuccess("""
                         {
                           "session_id": "b7b1c0de-0000-4000-8000-000000000001",

@@ -59,13 +59,12 @@ thêm vào giỏ theo availability tuân theo `PDP-BR-009` trong [Domain](./doma
 | Inbound | Storefront qua Gateway | HTTP | Đọc Product Detail theo slug |
 | Outbound | Product | HTTP nội bộ mTLS | Buyer-read catalog, category path, thuộc tính, trục biến thể, media giới hạn và giá |
 | Outbound | Inventory | HTTP nội bộ mTLS | Batch-read advisory availability cho các SKU active |
-| Outbound | Review | HTTP nội bộ mTLS + Bearer token | Rating aggregate và review preview cho PDP |
+| Outbound | Review | HTTP nội bộ mTLS + `X-Service-Identity` | Rating aggregate và review preview cho PDP |
 
 mTLS và quyền gọi ba internal API trên do service mesh thực thi theo principal
 `product-detail-bff` ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
-BFF gửi `X-Service-Identity: product-detail-bff` cho attribution. Review còn bắt buộc
-static bearer token làm defense-in-depth, nên BFF gửi `Authorization: Bearer` lấy từ
-`PDP_REVIEW_SERVICE_TOKEN` ([interfaces.md](./interfaces.md#header-gửi-cho-dependency)).
+BFF gửi `X-Service-Identity: product-detail-bff` cho attribution; Review kiểm giá trị này với allowlist của nhóm
+route PDP làm defense-in-depth, không còn bearer token ([interfaces.md](./interfaces.md#header-gửi-cho-dependency)).
 
 Runtime là Java 21 + Spring Boot WebFlux + Resilience4j
 ([ADR-006](./decisions/ADR-006-java-spring-webflux-runtime.md)); cấu hình ở

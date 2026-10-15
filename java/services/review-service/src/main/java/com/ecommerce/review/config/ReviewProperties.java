@@ -71,13 +71,14 @@ public record ReviewProperties(
     }
 
     /**
-     * Bearer tokens accepted on {@code /internal/v1/**}, split by route group so the
-     * Product Detail BFF cannot page the rating export and Search cannot read the PDP
-     * summary. An empty list rejects every caller on that group.
+     * Callers accepted on {@code /internal/v1/**} by {@code X-Service-Identity}, split by route group so
+     * the Product Detail BFF cannot page the rating export and Search cannot read the PDP summary
+     * (contracts ADR-004, Review ADR-015). The mesh is the real boundary; this is the second layer. An
+     * empty list rejects every caller on that group.
      */
     public record Internal(
-            @DefaultValue("") List<String> pdpTokens,
-            @DefaultValue("") List<String> exportTokens) {
+            @DefaultValue("product-detail-bff") List<String> pdpCallers,
+            @DefaultValue("search-service") List<String> exportCallers) {
     }
 
     public record Topics(

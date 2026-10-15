@@ -41,7 +41,6 @@ pdp:
   review:
     enabled: ${PDP_REVIEW_ENABLED:true}
     base-url: ${PDP_REVIEW_BASE_URL:}
-    service-token: ${PDP_REVIEW_SERVICE_TOKEN:}
     preview-limit: ${PDP_REVIEW_PREVIEW_LIMIT:3}
     timeout: 300ms
     bulkhead: 80

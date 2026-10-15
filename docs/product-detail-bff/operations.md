@@ -38,9 +38,7 @@ BFF chỉ ready khi có thể phục vụ request và cấu hình bắt buộc �
 [Cấu hình](#cấu-hình) hợp lệ: Product base URL; CDN base URL (tuyệt đối, `https` trừ local) và URL
 placeholder cho SKU không ảnh
 ([ADR-005](./decisions/ADR-005-pdp-catalog-scope-and-media-url.md)); base URL của
-Inventory/Review khi dependency đó được bật; và `PDP_REVIEW_SERVICE_TOKEN` khi Review được
-bật. Thiếu cấu hình thì BFF không ready thay vì trả URL hỏng hay gọi Review chắc chắn bị
-`401`. Readiness không được phụ thuộc vào kết nối tới Inventory hoặc Review, vì hai
+Inventory/Review khi dependency đó được bật. Thiếu cấu hình thì BFF không ready thay vì trả URL hỏng. Readiness không được phụ thuộc vào kết nối tới Inventory hoặc Review, vì hai
 dependency đó có degradation behavior riêng. Circuit breaker mở cũng không làm BFF mất
 readiness. Readiness và liveness dùng nhóm mặc định của Spring Boot (`readinessState`,
 `livenessState`), không khai báo lại danh sách include: khi nhận SIGTERM, graceful shutdown
@@ -180,7 +178,6 @@ Spring property tương ứng. Secret lấy từ secret manager, không commit v
 | `PDP_INVENTORY_BASE_URL` | none | Khi Inventory bật | Ví dụ `http://inventory-service:8080` |
 | `PDP_REVIEW_ENABLED` | `true` | Không | Khi `false`, review section `UNAVAILABLE` với outcome `disabled` |
 | `PDP_REVIEW_BASE_URL` | none | Khi Review bật | Ví dụ `http://review-service:8080` |
-| `PDP_REVIEW_SERVICE_TOKEN` | none | Khi Review bật | Secret; phải nằm trong `REVIEW_INTERNAL_PDP_TOKENS` của Review. Dev dùng `dev-product-detail-bff-token` như docker-compose |
 | `PDP_REVIEW_PREVIEW_LIMIT` | `3` | Không | 1–5; startup từ chối giá trị ngoài khoảng |
 | `PDP_MEDIA_CDN_BASE_URL` | none | Có | URL tuyệt đối, không có dấu `/` cuối; URL media = base + `/` + storage key percent-encode từng segment. Phải bằng `CDN_BASE_URL` của Search để thẻ sản phẩm và PDP trỏ cùng file |
 | `PDP_MEDIA_PLACEHOLDER_URL` | none | Có | URL tuyệt đối cho `thumbnail_url` khi SKU không có ảnh; bằng `THUMBNAIL_PLACEHOLDER_URL` của Search |
@@ -204,8 +201,8 @@ model/cache. Không khôi phục bằng cách replay topic hoặc sửa database
 projection đó. Không tắt circuit breaker để "ép" gọi Inventory.
 
 **Review incident:** tương tự, với `UNAVAILABLE` thay cho `UNKNOWN`; chuyển Review on-call.
-`401`/`403` từ Review có body `problem+json` là lỗi token: kiểm tra `PDP_REVIEW_SERVICE_TOKEN`
-còn nằm trong `REVIEW_INTERNAL_PDP_TOKENS` (thường do xoay vòng sai thứ tự); `403`
+`401`/`403` từ Review có body `problem+json` là lỗi identity: kiểm tra `product-detail-bff` còn nằm trong
+`REVIEW_INTERNAL_PDP_CALLERS` của Review; `403`
 `text/plain` là waypoint mesh chặn principal.
 
 **Product incident:** PDP trả `503`. Kiểm tra circuit Product và kết quả call; `401`/`403`

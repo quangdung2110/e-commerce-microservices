@@ -46,6 +46,11 @@ Source chuẩn là [`scripts/`](./scripts):
 Service nhúng bản sao trong `internal/infrastructure/cartredis/scripts/`; `make sync-lua` copy từ thư mục
 này sang service và `make check-lua` fail khi hai bên lệch. Chỉnh script ở đây, không chỉnh bản sao.
 
+Stub Go của Product gRPC (`internal/infrastructure/product/pb`) sinh từ proto chuẩn trong `contracts/`: sửa proto
+rồi chạy `scripts/generate-pb.sh` (Docker, protoc 24.4). `pb/PROTO_SHA256` ghi hash của proto nguồn;
+`make check-pb` và `TestGeneratedStubsMatchCanonicalProto` fail khi proto đổi mà stub chưa sinh lại
+([ADR-015](./decisions/ADR-015-proto-stub-drift-detection.md)).
+
 Mọi `KEYS[]` của từng script phải có cùng `{bNN}`. Test bắt buộc gồm Redis Cluster cross-slot, duplicate HTTP idempotency, stale Product validation, marker deadline stale, write/marker race, redelivery `com.ecommerce.order.paid.v1` idempotent và purge `USER_DELETED` idempotent.
 
 ## 5. Build, test và contracts

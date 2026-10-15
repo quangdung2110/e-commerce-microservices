@@ -50,7 +50,12 @@ public record OrderProperties(
     public record Clients(String serviceName, String inventoryBaseUrl, String promotionBaseUrl,
                           String paymentBaseUrl, Duration connectTimeout, Duration readTimeout,
                           Duration inventoryReadTimeout, Duration promotionReadTimeout,
-                          Duration paymentReadTimeout) {
+                          Duration paymentReadTimeout, Integer maxConcurrent) {
+
+        /** Calls in flight to one provider at once; more are not sent (Order ADR-024). */
+        public int maxConcurrentCalls() {
+            return maxConcurrent != null ? maxConcurrent : 64;
+        }
 
         public Duration inventoryRead() {
             return inventoryReadTimeout != null ? inventoryReadTimeout : readTimeout;

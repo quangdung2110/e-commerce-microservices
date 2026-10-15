@@ -119,15 +119,16 @@ paths:
 components:
   securitySchemes:
     serviceIdentity:
-      type: http
-      scheme: bearer
-      bearerFormat: internal-service-identity
+      type: apiKey
+      in: header
+      name: X-Service-Identity
       description: >-
-        Static token allowlist trong Review (REVIEW_INTERNAL_PDP_TOKENS,
-        REVIEW_INTERNAL_EXPORT_TOKENS) là defense-in-depth. Caller được phép chạm từng
-        route do service mesh thực thi theo principal product-detail-bff / search-service
-        (docs/mesh/runtime-contract.md mục 5.2); principal sai bị mesh trả 403 text/plain
-        trước khi tới Review. Hợp nhất sang header X-Service-Identity chung là việc riêng.
+        Tên ServiceAccount của caller. Review kiểm nó với allowlist của từng nhóm route
+        (REVIEW_INTERNAL_PDP_CALLERS, mặc định product-detail-bff; REVIEW_INTERNAL_EXPORT_CALLERS, mặc
+        định search-service) làm defense-in-depth, không phải bằng chứng danh tính (contracts ADR-004,
+        Review ADR-015). Caller được phép chạm từng route do service mesh thực thi theo principal
+        (docs/mesh/runtime-contract.md mục 5.2); principal sai bị mesh trả 403 text/plain trước khi
+        tới Review. Không có bearer token.
   responses:
     InvalidRequest:
       description: >-
@@ -135,12 +136,12 @@ components:
         not valid; errors[].field names it.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     Unauthenticated:
-      description: UNAUTHENTICATED; no Authorization bearer token.
+      description: UNAUTHENTICATED; no X-Service-Identity header.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     ForbiddenRoute:
       description: >-
-        FORBIDDEN; the token is not on the allowlist of this route group (the PDP token cannot
-        reach the export and the export token cannot reach the PDP summary).
+        FORBIDDEN; the caller is not on the allowlist of this route group (the Product Detail BFF cannot
+        reach the export and Search cannot reach the PDP summary).
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
   schemas:
     Problem:

@@ -33,7 +33,7 @@ qua gateway tại `http://localhost:8088/api/v1/storefront/products/{slug}`:
 | Thành phần local | Giá trị |
 |---|---|
 | Inventory | `PDP_INVENTORY_ENABLED=false` dù `inventory-service` đã chạy trong compose, vì cờ chỉ bật sau rollout gate ([README](./README.md#trạng-thái-rollout)): mọi SKU `UNKNOWN` với outcome `disabled`. Đặt `PDP_INVENTORY_ENABLED=true` và `PDP_INVENTORY_BASE_URL=http://inventory-service:8080` để thử availability thật |
-| Review | `PDP_REVIEW_SERVICE_TOKEN=dev-product-detail-bff-token`, khớp `REVIEW_INTERNAL_PDP_TOKENS` của review-service |
+| Review | Không cần secret: BFF gửi `X-Service-Identity: product-detail-bff`, nằm trong `REVIEW_INTERNAL_PDP_CALLERS` mặc định của review-service |
 | Media ("CDN" local) | Bucket MinIO `product-media` (anonymous read) phát qua gateway tại `http://localhost:8088/media/<storage_key>`; `PDP_MEDIA_REQUIRE_HTTPS=false` |
 | Placeholder | `http://localhost:8088/media/placeholder/product.svg`, file nằm ở `infra/minio/product-media/` và được `minio-init` upload |
 
@@ -65,8 +65,7 @@ Inventory trùng `sku_id`); field thừa trong response dependency không làm l
 Test header và cấu hình theo [ADR-007](./decisions/ADR-007-hot-path-clarifications.md):
 `X-Request-Id` hợp lệ được chuyển tiếp; thiếu, ngắn hơn 8, dài hơn 128 hoặc có ký tự lạ thì
 được thay bằng trace ID và không bao giờ tới Inventory/Review; Review nhận
-`Authorization: Bearer` đúng token và `preview_limit` theo cấu hình; thiếu
-`PDP_REVIEW_SERVICE_TOKEN` khi Review bật thì không ready; cờ `PDP_INVENTORY_ENABLED=false`
+`X-Service-Identity: product-detail-bff` (không có `Authorization`) và `preview_limit` theo cấu hình; cờ `PDP_INVENTORY_ENABLED=false`
 / `PDP_REVIEW_ENABLED=false` không phát request nào tới dependency, outcome `disabled`,
 không tính SLO degrade.
 
@@ -96,7 +95,7 @@ call con bị hủy; mọi response degrade, `404` và `503` mang `Cache-Control
 
 Public OpenAPI và cả ba internal dependency contract có contract
 test; BFF gửi đúng một Inventory batch call sau khi Product trả SKU; mTLS/service
-identity, Review bearer token, `traceparent`, request ID đã chuẩn hóa (`X-Request-Id` cho
+identity, `traceparent`, request ID đã chuẩn hóa (`X-Request-Id` cho
 Product/Review, `X-Correlation-ID` cho Inventory) được truyền; Inventory failure map đúng `UNKNOWN`; Review failure map đúng `UNAVAILABLE`;
 `404`/`503` là `application/problem+json`; public response không chứa storage key;
 observability/circuit breaker/resilience test pass; load test (gồm Product 500 SKU, 5 020

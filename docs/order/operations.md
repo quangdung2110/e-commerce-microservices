@@ -61,6 +61,11 @@ Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi h
 Metrics tối thiểu:
 
 - HTTP request/error/latency theo route/status/role scope, không label bằng order ID.
+- Lời gọi remote: timer `order.remote.http{dependency,method,outcome,status}` (outcome là phân loại
+  `ACCEPTED`/`REJECTED`/`UNKNOWN`; `status` là `2xx`/`4xx`/`5xx`/`none`), không label bằng path hay ID
+  ([ADR-024](./decisions/ADR-024-remote-call-metrics-and-bulkhead.md)). `outcome=UNKNOWN,status=none` tăng đều là
+  timeout, lỗi kết nối, `DEADLINE_EXHAUSTED` hoặc `BULKHEAD_FULL`; giới hạn đồng thời là
+  `order.clients.max-concurrent` (mặc định 64 mỗi provider).
 - Operation age/outcome theo command type và payment-attempt create/replay/conflict,
   không label bằng operation/order ID.
 - DB pool usage/timeout, transaction/lock wait/deadlock, search latency/rows và GIN

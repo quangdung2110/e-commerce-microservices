@@ -118,7 +118,7 @@ class ProductQueryBuilderTest {
                 new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),
                 new SearchProperties.Cors(List.of("*")),
                 new SearchProperties.Export("http://product", "http://inventory", "http://review",
-                        "review-token", true, Duration.ofSeconds(30), 2, 2),
+                        true, Duration.ofSeconds(30), 2, 2),
                 new SearchProperties.Consumer(Duration.ofSeconds(5)),
                 new SearchProperties.Lifecycle(Duration.ofMinutes(2), Duration.ofSeconds(30),
                         Duration.ofSeconds(30), 3, Duration.ofMinutes(2), true, true, 1.5,

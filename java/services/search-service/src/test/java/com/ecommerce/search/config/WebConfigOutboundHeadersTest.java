@@ -1,20 +1,24 @@
 package com.ecommerce.search.config;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
@@ -28,8 +32,10 @@ class WebConfigOutboundHeadersTest {
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.export()).thenReturn(new SearchProperties.Export(
                 "http://product-service:8080", "http://inventory-service:8080", "http://review-service:8080",
-                "review-token", true, Duration.ofSeconds(25), 2, 2));
+                true, Duration.ofSeconds(25), 2, 2));
         WebConfig config = new WebConfig(properties);
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        config.setMeters(meters);
         RestClient.Builder builder = config.restClientBuilder(config.objectMapper());
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         RestClient client = builder.build();
@@ -47,5 +53,28 @@ class WebConfigOutboundHeadersTest {
         server.verify();
         assertThat(requestIds).hasSize(2).doesNotContainNull().doesNotHaveDuplicates();
         assertThat(requestIds).allMatch(id -> id.matches("^[A-Za-z0-9._:-]{8,128}$"));
+        // Search ADR-024: every outbound call is timed per provider and outcome.
+        assertThat(meters.get("search.outbound.http").tags("dependency", "product", "outcome", "success")
+                .timer().count()).isEqualTo(2);
+    }
+
+    @Test
+    void aFailingProviderIsCountedAsAServerErrorAndTheCallStillFails() {
+        SearchProperties properties = mock(SearchProperties.class);
+        when(properties.export()).thenReturn(new SearchProperties.Export(
+                "http://product-service:8080", "http://inventory-service:8080", "http://review-service:8080",
+                true, Duration.ofSeconds(25), 2, 2));
+        WebConfig config = new WebConfig(properties);
+        SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        config.setMeters(meters);
+        RestClient.Builder builder = config.restClientBuilder(config.objectMapper());
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("http://inventory-service:8080/exports/inventory/v1/x")).andRespond(withServerError());
+
+        assertThatThrownBy(() -> builder.build().get().uri("http://inventory-service:8080/exports/inventory/v1/x")
+                .retrieve().toBodilessEntity()).isInstanceOf(RestClientResponseException.class);
+
+        assertThat(meters.get("search.outbound.http").tags("dependency", "inventory", "outcome", "server_error")
+                .timer().count()).isEqualTo(1);
     }
 }

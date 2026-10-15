@@ -124,4 +124,22 @@ class RequestCorrelationFilterTest {
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getHeader("X-Request-Id")).hasSize(36).isNotEqualTo("no");
     }
+
+    @Test
+    void anOverrunRequestStillCompletesWhenThereIsNoMeterRegistry() throws Exception {
+        RequestCorrelationFilter withoutRegistry = new RequestCorrelationFilter((io.micrometer.core.instrument.MeterRegistry) null);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/x");
+        request.addHeader("X-Request-Timeout-Ms", "5");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        withoutRegistry.doFilter(request, response, (req, res) -> {
+            try {
+                Thread.sleep(40);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        assertThat(response.getStatus()).isEqualTo(200);
+    }
 }

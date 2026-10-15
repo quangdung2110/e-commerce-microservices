@@ -55,18 +55,11 @@ public record PdpProperties(
             @NotNull Duration timeout,
             @Min(1) int bulkhead,
             @NotNull Duration slowCallThreshold,
-            String serviceToken,
             @Min(1) @Max(5) int previewLimit) {
 
         @AssertTrue(message = "base-url must be an absolute http(s) URL when Review is enabled")
         public boolean isBaseUrlConfigured() {
             return !enabled || isAbsoluteUrl(baseUrl, false);
-        }
-
-        /** Review từ chối mọi request thiếu Bearer token nằm trong REVIEW_INTERNAL_PDP_TOKENS. */
-        @AssertTrue(message = "PDP_REVIEW_SERVICE_TOKEN is required when Review is enabled")
-        public boolean isServiceTokenConfigured() {
-            return !enabled || (serviceToken != null && !serviceToken.isBlank());
         }
 
         public Upstream asUpstream() {

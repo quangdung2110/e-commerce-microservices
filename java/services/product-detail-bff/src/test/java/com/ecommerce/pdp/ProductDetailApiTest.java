@@ -102,7 +102,8 @@ class ProductDetailApiTest extends AbstractPdpTest {
                         Fixtures.SKU_BLACK_42, Fixtures.SKU_WHITE_42, Fixtures.SKU_BLACK_46))))));
         UPSTREAMS.verify(1, getRequestedFor(urlPathEqualTo(REVIEW_PATH))
                 .withQueryParam("preview_limit", equalTo("3"))
-                .withHeader("Authorization", equalTo("Bearer " + REVIEW_TOKEN))
+                .withHeader("X-Service-Identity", equalTo("product-detail-bff"))
+                .withoutHeader("Authorization")
                 .withHeader("X-Request-Id", equalTo("req-12345678"))
                 .withHeader("X-Request-Timeout-Ms", matching("[0-9]{1,4}")));
     }

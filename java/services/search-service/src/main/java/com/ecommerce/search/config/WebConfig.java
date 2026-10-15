@@ -8,9 +8,12 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.boot.web.client.ClientHttpRequestFactories;
 import org.springframework.boot.web.client.ClientHttpRequestFactorySettings;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.scheduling.annotation.EnableAsync;
@@ -19,8 +22,10 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Configuration
 @EnableAsync
@@ -30,10 +35,19 @@ public class WebConfig implements WebMvcConfigurer {
     public static final String SERVICE_IDENTITY_HEADER = "X-Service-Identity";
     public static final String SERVICE_IDENTITY = "search-service";
 
+    static final String OUTBOUND_TIMER = "search.outbound.http";
+
     private final SearchProperties properties;
+    /** Optional: tests that build the client by hand have none. */
+    private MeterRegistry meters;
 
     public WebConfig(SearchProperties properties) {
         this.properties = properties;
+    }
+
+    @Autowired(required = false)
+    void setMeters(MeterRegistry meters) {
+        this.meters = meters;
     }
 
     /**
@@ -112,7 +126,16 @@ public class WebConfig implements WebMvcConfigurer {
                 .requestInterceptor((request, body, execution) -> {
                     request.getHeaders().set("X-Request-Id", UUID.randomUUID().toString());
                     request.getHeaders().set("X-Request-Timeout-Ms", Long.toString(timeout.toMillis()));
-                    return execution.execute(request, body);
+                    String dependency = dependencyOf(request.getURI());
+                    long started = System.nanoTime();
+                    String outcome = "io_error";
+                    try {
+                        ClientHttpResponse response = execution.execute(request, body);
+                        outcome = outcomeOf(response.getStatusCode().value());
+                        return response;
+                    } finally {
+                        record(dependency, outcome, System.nanoTime() - started);
+                    }
                 })
                 .requestFactory(ClientHttpRequestFactories.get(ClientHttpRequestFactorySettings.DEFAULTS
                         .withConnectTimeout(timeout)
@@ -121,5 +144,46 @@ public class WebConfig implements WebMvcConfigurer {
                     converters.removeIf(MappingJackson2HttpMessageConverter.class::isInstance);
                     converters.add(new MappingJackson2HttpMessageConverter(objectMapper));
                 });
+    }
+
+    /** The provider a call goes to, by host: low-cardinality metric label (Search ADR-024). */
+    private String dependencyOf(URI uri) {
+        String host = uri.getHost();
+        PropertiesHosts hosts = new PropertiesHosts(properties.export());
+        if (host != null && host.equals(hosts.product)) {
+            return "product";
+        }
+        if (host != null && host.equals(hosts.inventory)) {
+            return "inventory";
+        }
+        if (host != null && host.equals(hosts.review)) {
+            return "review";
+        }
+        return "other";
+    }
+
+    private static String outcomeOf(int status) {
+        return status < 400 ? "success" : status < 500 ? "client_error" : "server_error";
+    }
+
+    private void record(String dependency, String outcome, long nanos) {
+        if (meters != null) {
+            meters.timer(OUTBOUND_TIMER, "dependency", dependency, "outcome", outcome)
+                    .record(nanos, TimeUnit.NANOSECONDS);
+        }
+    }
+
+    private record PropertiesHosts(String product, String inventory, String review) {
+        PropertiesHosts(SearchProperties.Export export) {
+            this(host(export.productBaseUrl()), host(export.inventoryBaseUrl()), host(export.reviewBaseUrl()));
+        }
+
+        private static String host(String url) {
+            try {
+                return URI.create(url).getHost();
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
     }
 }

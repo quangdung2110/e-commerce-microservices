@@ -3,6 +3,7 @@ package com.ecommerce.order.client;
 import com.ecommerce.order.config.OrderProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,10 +19,10 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Inventory.class)
-    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.inventoryBaseUrl(), c.connectTimeout(), c.inventoryRead(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("inventory", c.inventoryBaseUrl(), c.connectTimeout(), c.inventoryRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls());
         String base = "/internal/inventory/v1";
         return new Gateways.Inventory() {
             @Override
@@ -84,10 +85,10 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Promotion.class)
-    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.promotionBaseUrl(), c.connectTimeout(), c.promotionRead(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("promotion", c.promotionBaseUrl(), c.connectTimeout(), c.promotionRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls());
         String base = "/internal/v1/promotion-allocation";
         return new Gateways.Promotion() {
             @Override
@@ -109,10 +110,10 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Payment.class)
-    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.paymentBaseUrl(), c.connectTimeout(), c.paymentRead(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("payment", c.paymentBaseUrl(), c.connectTimeout(), c.paymentRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls());
         return new Gateways.Payment() {
             @Override
             public RemoteResult initiate(String key, String correlationId, JsonNode body) {

@@ -79,8 +79,8 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_REPORT_THRESHOLD` | 10 | Sensitive; never expose publicly |
 | `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` | none | Required, stable v1 secret for author pseudonym without direct PII; secret rotation changes aliases for future reviews |
 | `REVIEW_PRIVACY_GUARD_HMAC_SECRET` | none | Required, stable secret for HMAC deletion guards. Do not rotate while a guard with its key version is retained. |
-| `REVIEW_INTERNAL_PDP_TOKENS` | none | Bearer token allowlist cho `/internal/v1/reviews/products/**`. Rỗng nghĩa là từ chối mọi caller |
-| `REVIEW_INTERNAL_EXPORT_TOKENS` | none | Bearer token allowlist cho `/internal/v1/reviews/rating-aggregate-exports**`. Tách khỏi PDP để Product Detail BFF không phân trang được rating export và Search không đọc được PDP summary |
+| `REVIEW_INTERNAL_PDP_CALLERS` | `product-detail-bff` | Allowlist `X-Service-Identity` cho `/internal/v1/reviews/products/**`. Rỗng nghĩa là từ chối mọi caller ([ADR-015](./decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)) |
+| `REVIEW_INTERNAL_EXPORT_CALLERS` | `search-service` | Allowlist `X-Service-Identity` cho `/internal/v1/reviews/rating-aggregate-exports**`. Tách khỏi PDP để Product Detail BFF không phân trang được rating export và Search không đọc được PDP summary |
 | `REVIEW_S3_ENDPOINT` / `REVIEW_S3_BUCKET` / `REVIEW_S3_ACCESS_KEY` / `REVIEW_S3_SECRET_KEY` | none | Object storage S3-compatible cho media bytes; đổi provider là thay cấu hình, không phải đổi contract |
 | `REVIEW_S3_PUBLIC_ENDPOINT` | empty → `REVIEW_S3_ENDPOINT` | Origin storage mà trình duyệt truy cập được; presigner ký trực tiếp origin này cho upload/download. S3 client HEAD/DELETE vẫn dùng endpoint nội bộ. Compose local: `http://localhost:9000`; không rewrite host của signed URL |
 | `REVIEW_S3_REGION` | `us-east-1` | Region dùng để ký SigV4; MinIO chấp nhận bất kỳ giá trị nào miễn là ổn định |

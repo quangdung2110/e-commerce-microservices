@@ -27,7 +27,10 @@ Neither the Lua scripts nor the gRPC stubs are authored here:
   [`docs/cart/scripts`](../../../docs/cart/scripts). `make check-lua` fails the
   build on drift; `make sync-lua` re-copies them.
 - `internal/infrastructure/product/pb/` is generated from the canonical proto
-  by `make generate`.
+  by `make generate` (or `scripts/generate-pb.sh`, which runs it in Docker with the pinned protoc and plugins).
+  `pb/PROTO_SHA256` records the hash of the source protos; `make check-pb` and
+  `TestGeneratedStubsMatchCanonicalProto` fail when a proto changed and the stubs were not regenerated
+  ([Cart ADR-015](../../../docs/cart/decisions/ADR-015-proto-stub-drift-detection.md)).
 
 ## Layout
 

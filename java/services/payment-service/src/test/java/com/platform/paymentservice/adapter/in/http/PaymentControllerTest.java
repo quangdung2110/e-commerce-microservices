@@ -72,14 +72,15 @@ class PaymentControllerTest {
     }
 
     @Test
-    void invalid_workload_attribution_is_a_no_store_problem() throws Exception {
+    void a_caller_outside_the_allowlist_is_a_no_store_forbidden_problem() throws Exception {
         mvc.perform(get("/v1/payments/{transactionId}/client-data", TXN)
                         .header("X-Service-Identity", "other-service")
                         .header("X-Correlation-Id", "checkout-3"))
-                .andExpect(status().isBadRequest())
+                .andExpect(status().isForbidden())
                 .andExpect(content().contentType("application/problem+json"))
                 .andExpect(header().string("Cache-Control", "private, no-store"))
-                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.retryable").value(false));
     }
 
     @Test

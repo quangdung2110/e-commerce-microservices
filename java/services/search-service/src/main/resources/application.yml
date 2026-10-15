@@ -172,8 +172,6 @@ search:
     product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8081}
     inventory-base-url: ${INVENTORY_INTERNAL_URL:http://inventory-service:8080}
     review-base-url: ${REVIEW_INTERNAL_URL:http://review-service:8080}
-    # Bearer service identity for Review's /internal/v1/** rating export.
-    review-token: ${REVIEW_INTERNAL_TOKEN:}
     review-enabled: ${REVIEW_EXPORT_ENABLED:true}
     # 25 s: the mesh allows 30 s on the export routes and the caller must stay at least 1 s under it
     # (contracts ADR-003, Search ADR-023). It is also sent to the provider as X-Request-Timeout-Ms.

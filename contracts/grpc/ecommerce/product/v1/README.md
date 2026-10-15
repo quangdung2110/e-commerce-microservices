@@ -33,6 +33,11 @@ Caller gửi `x-service-identity`, `x-request-id` và, khi có trace đến, `tr
 [ADR-002](../../../../decisions/ADR-002-correlation-and-trace-propagation.md). Cart và Checkout đều gửi đủ.
 Provider không được từ chối vì `x-request-id` sai định dạng.
 
+Product kiểm `x-service-identity` với `product.internal.grpc-clients` (mặc định `cart-service`,
+`checkout-service`) làm defense-in-depth sau mesh ([ADR-004](../../../../decisions/ADR-004-service-identity-allowlist.md)):
+thiếu là `UNAUTHENTICATED`, ngoài danh sách là `PERMISSION_DENIED`. Cả hai là lỗi cấu hình của caller, không
+retry. gRPC reflection tắt mặc định (chỉ profile `dev` hoặc `PRODUCT_GRPC_REFLECTION=true`).
+
 ## Failure
 
 - SKU không tồn tại/không khả dụng là business result trong `oneof`, không phải

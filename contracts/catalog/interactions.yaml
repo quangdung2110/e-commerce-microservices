@@ -102,7 +102,8 @@ interactions:
     status: implemented
     notes: >-
       Internal service-identity PDP read after Product resolves product_id; BFF sends
-      the static Bearer token from PDP_REVIEW_SERVICE_TOKEN and preview_limit from
+      X-Service-Identity: product-detail-bff (checked against Review's pdp-callers allowlist, no
+      bearer token; contracts ADR-004) and preview_limit from
       PDP_REVIEW_PREVIEW_LIMIT (default 3, at most 5). Review
       remains source of truth; timeout degrades only the Review section and never
       becomes aggregate zero.

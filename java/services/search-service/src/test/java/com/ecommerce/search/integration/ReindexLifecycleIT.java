@@ -81,7 +81,6 @@ class ReindexLifecycleIT extends AbstractSearchIntegrationTest {
         registry.add("search.export.product-base-url", STUB::baseUrl);
         registry.add("search.export.inventory-base-url", STUB::baseUrl);
         registry.add("search.export.review-base-url", STUB::baseUrl);
-        registry.add("search.export.review-token", () -> "stub-token");
     }
 
     @AfterAll

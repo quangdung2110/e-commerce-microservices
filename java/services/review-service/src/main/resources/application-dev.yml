@@ -4,9 +4,6 @@ review:
   secrets:
     author-alias-hmac: dev-review-author-alias-secret
     privacy-guard-hmac: dev-review-privacy-guard-secret
-  internal:
-    pdp-tokens: dev-product-detail-bff-token
-    export-tokens: dev-search-export-token
 
 logging:
   level:

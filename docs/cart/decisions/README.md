@@ -48,3 +48,4 @@ Tạo ADR khi quyết định:
 | [ADR-012](./ADR-012-catalog-only-cart-validation.md) | Cart chỉ xác thực catalog, mô tả caller Inventory cũ | Superseded | 2026-09-01 | — | ADR-013 |
 | [ADR-013](./ADR-013-checkout-preview-order-reserve-boundary.md) | Cart catalog-only; Checkout Preview, Order Reserve | Accepted | 2026-09-20 | ADR-012 | — |
 | [ADR-014](./ADR-014-purge-cart-on-user-deleted.md) | Xóa giỏ hàng khi account bị xóa (`USER_DELETED`) | Accepted | 2026-10-09 | — | — |
+| [ADR-015](./ADR-015-proto-stub-drift-detection.md) | Phát hiện stub Product lệch proto chuẩn bằng hash; regenerate stub cũ | Accepted | 2026-10-15 | — | — |

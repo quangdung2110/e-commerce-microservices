@@ -126,6 +126,9 @@ order:
     inventory-read-timeout: 8s
     promotion-read-timeout: 8s
     payment-read-timeout: 10s
+    # Calls in flight to one provider at once. More are not sent and come back as UNKNOWN BULKHEAD_FULL,
+    # which the saga replays later; it keeps one slow provider from taking every worker thread (Order ADR-024).
+    max-concurrent: 64
   kafka:
     consumers-enabled: ${ORDER_CONSUMERS_ENABLED:true}
     payment-topic: t.payment.events.v2

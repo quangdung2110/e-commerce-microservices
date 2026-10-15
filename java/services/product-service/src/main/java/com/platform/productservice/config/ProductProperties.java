@@ -65,6 +65,14 @@ public class ProductProperties {
                 new ArrayList<>(List.of("search-service", "promotion-service"));
 
         /**
+         * Caller của gRPC {@code ProductService} (identity trong metadata
+         * {@code x-service-identity}), khớp interaction
+         * {@code cart-and-checkout-query-product-skus}. Mesh là nơi thực thi chính;
+         * danh sách này là lớp phòng thủ thứ hai (contracts ADR-004).
+         */
+        private List<String> grpcClients = new ArrayList<>(List.of("cart-service", "checkout-service"));
+
+        /**
          * Caller của nhóm route buyer-read ({@code /internal/v1/product-details/}),
          * khớp security scheme {@code productDetailBffMtls} (ADR-015). Tách khỏi
          * nhóm reindex để BFF storefront không đọc được export toàn catalog và

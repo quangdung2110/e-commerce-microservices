@@ -8,6 +8,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -15,6 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
+import java.util.function.Supplier;
 
 /**
  * Publishes the normalized request ID, the inbound trace context and the caller deadline for the
@@ -35,10 +38,16 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RequestCorrelationFilter.class);
 
-    private final MeterRegistry meters;
+    private final Supplier<MeterRegistry> meters;
+
+    /** The registry is optional: web slice tests have none, and the counter is then skipped. */
+    @Autowired
+    public RequestCorrelationFilter(ObjectProvider<MeterRegistry> meters) {
+        this.meters = meters::getIfAvailable;
+    }
 
     public RequestCorrelationFilter(MeterRegistry meters) {
-        this.meters = meters;
+        this.meters = () -> meters;
     }
 
     @Override
@@ -70,7 +79,10 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     private void reportOverrun(HttpServletRequest request, RequestCorrelation correlation) {
         Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
         String route = pattern == null ? "UNMATCHED" : pattern.toString();
-        meters.counter(DEADLINE_COUNTER, "route", route).increment();
+        MeterRegistry registry = meters.get();
+        if (registry != null) {
+            registry.counter(DEADLINE_COUNTER, "route", route).increment();
+        }
         log.warn("request outlived the caller deadline route={} elapsed_ms={} budget_ms={}", route,
                 correlation.elapsed().toMillis(), correlation.timeoutMs());
     }

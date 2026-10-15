@@ -137,20 +137,6 @@ public class SnapshotExportClient {
     }
 
     /**
-     * The bearer service identity Review requires on {@code /internal/v1/**}.
-     *
-     * <p>Review keeps a separate token list per internal route group, so this token
-     * reaches the rating export and nothing else. It is left off when unconfigured rather
-     * than faked, so a missing token fails loudly as a 401 instead of quietly.
-     */
-    private void reviewServiceIdentity(org.springframework.http.HttpHeaders headers) {
-        String token = properties.export().reviewToken();
-        if (token != null && !token.isBlank()) {
-            headers.setBearerAuth(token);
-        }
-    }
-
-    /**
      * Opens a Review rating export session, pinning the {@code t.review.events} offsets to
      * replay from before any aggregate is scanned.
      *
@@ -162,7 +148,6 @@ public class SnapshotExportClient {
                 .path("/internal/v1/reviews/rating-aggregate-exports")
                 .build(true).toUri();
         return http.post().uri(uri)
-                .headers(this::reviewServiceIdentity)
                 .retrieve().body(ExportPages.RatingExportSession.class);
     }
 
@@ -180,7 +165,6 @@ public class SnapshotExportClient {
                 .buildAndExpand(sessionId).encode().toUri();
         try {
             return http.get().uri(uri)
-                    .headers(this::reviewServiceIdentity)
                     .retrieve().body(ExportPages.RatingExportPage.class);
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();

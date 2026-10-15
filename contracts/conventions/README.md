@@ -12,6 +12,7 @@
 | Trace và correlation | [tracing.md](tracing.md) |
 | Deadline | [deadlines.md](deadlines.md) |
 | Security và PII | [security-and-pii.md](security-and-pii.md) |
+| Service identity | [service-identity.md](service-identity.md) |
 | Versioning | [compatibility.md](compatibility.md) |
 | Viết Markdown | [documentation-style.md](documentation-style.md) |
 

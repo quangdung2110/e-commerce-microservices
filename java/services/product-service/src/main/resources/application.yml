@@ -56,7 +56,9 @@ server:
 grpc:
   server:
     port: ${GRPC_PORT:9091}
-    reflection-service-enabled: true
+    # Reflection lộ toàn bộ schema cho bất kỳ ai tới được cổng gRPC; chỉ bật ở profile dev
+    # hoặc bằng PRODUCT_GRPC_REFLECTION=true khi cần grpcurl (Product ADR-022).
+    reflection-service-enabled: ${PRODUCT_GRPC_REFLECTION:false}
 
 # Cấu hình riêng của service. Không có mục cache/inventory/scheduler:
 # thiết kế hiện hành không có các workload đó.
@@ -83,6 +85,10 @@ product:
     cursor-secret: ${EXPORT_CURSOR_SECRET:dev-export-cursor-secret-change-in-prod}
     cursor-ttl: 30m
     default-limit: 200
+    # gRPC ProductService: x-service-identity phải nằm trong danh sách này (contracts ADR-004).
+    grpc-clients:
+      - cart-service
+      - checkout-service
     max-limit: 500
     # Topic Debezium route outbox tới; export chụp offset của chúng làm replay
     # boundary cho Search (ADR-014).

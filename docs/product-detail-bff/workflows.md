@@ -21,7 +21,7 @@ owners:
    chiếu (media trỏ SKU không có, variant value không có option, trùng `sku_id`/`media_id`, storage key có segment `.`/`..`/rỗng), hoặc status ngoài contract (`4xx` khác `400`/`401`/`403`/`404`, `3xx`) thì BFF trả `503`.
 4. Với Product catalog-active, BFF lấy các `sku_id` active. Nếu deadline còn lại từ
    100 ms trở lên, BFF đồng thời gọi một Inventory batch availability read và Review
-   internal PDP read (`preview_limit` theo cấu hình, kèm Bearer token), mỗi call với
+   internal PDP read (`preview_limit` theo cấu hình), mỗi call với
    timeout `min(300 ms, deadline còn lại − 50 ms)`; dependency bị tắt bằng cờ, có circuit
    mở hoặc bulkhead đầy thì không được gọi. Nếu còn dưới 100 ms, BFF bỏ cả hai call.
 5. Với mỗi SKU active, BFF map kết quả Inventory `IN_STOCK`/`OUT_OF_STOCK`; item
