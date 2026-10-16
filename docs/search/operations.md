@@ -250,7 +250,7 @@ nếu không thì gợi ý và số đếm danh mục ở local luôn trống �
 
 ## Product grouping and PIT rollout (ADR-020)
 
-Mỗi request scan toàn tập Product khớp; mặc định product-scan-batch-size=500, max-matching-products=50000 và tổng query budget=5s. Không trả partial/approximate total_products. Budget timeout trả SEARCH_TIMEOUT; shard failure hoặc vượt cap trả lỗi hạ tầng.
+Mỗi request scan toàn tập Product khớp; mặc định product-scan-batch-size=500, max-matching-products=50000 và tổng query budget=5s. Không trả partial/approximate total_products. Budget timeout và shard failure trả SEARCH_TIMEOUT (504, ADR-022); vượt cap trả ELASTICSEARCH_UNAVAILABLE (503).
 
 Cursor PIT keep-alive=2m, renew theo request; trang cuối/lỗi đóng context, bỏ dở tự expire. Theo dõi heap, open PIT, es_query_duration_seconds query_type=product_groups và latency/throughput. Benchmark trước khi tăng cap hoặc rollout catalog lớn. Không có result cache ứng dụng.
 

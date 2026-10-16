@@ -77,8 +77,8 @@ public class ProductSearchRepository {
                         .allowPartialSearchResults(false).timeout(Math.max(1, remaining / 1_000_000) + "ms")
                         .aggregations(aggregations), Void.class);
                 if (response.pitId() != null) pit = response.pitId();
-                if (response.timedOut()) throw new IOException("product grouping timeout: incomplete results");
-                if (response.shards().failed().intValue() > 0) throw new IOException("product grouping returned incomplete shard results");
+                if (response.timedOut()) throw new IncompleteResultsException("product grouping timeout: incomplete results");
+                if (response.shards().failed().intValue() > 0) throw new IncompleteResultsException("product grouping returned incomplete shard results");
                 if (after == null) facets = response.aggregations();
                 var groups = response.aggregations().get("products").composite();
                 for (var bucket : groups.buckets().array()) {

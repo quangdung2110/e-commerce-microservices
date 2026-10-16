@@ -2,9 +2,14 @@ package com.ecommerce.search.controller;
 
 import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import com.ecommerce.search.common.ErrorCode;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ecommerce.search.common.SearchException;
 import com.ecommerce.search.config.RequestIdFilter;
+import com.ecommerce.search.repository.IncompleteResultsException;
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.http.util.EntityUtils;
+import org.elasticsearch.client.ResponseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
@@ -47,6 +52,8 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
     /** Wait advertised on a retryable 503; Search has no better estimate of when Elasticsearch recovers (contracts ADR-005). */
     static final int RETRY_AFTER_SECONDS = 2;
 
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     @ExceptionHandler(SearchException.class)
     public ResponseEntity<Object> onSearchException(SearchException e, HttpServletRequest request) {
         if (e.code().status().is5xxServerError()) {
@@ -56,10 +63,10 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Elasticsearch failures. A timeout is {@code SEARCH_TIMEOUT}, an unreachable or
-     * overloaded cluster is {@code ELASTICSEARCH_UNAVAILABLE}, and anything else the cluster
-     * rejects is our own bug and stays {@code INTERNAL_ERROR}. None of them is evidence about
-     * the catalog.
+     * Elasticsearch failures. A timeout or a failed shard is {@code SEARCH_TIMEOUT}, an
+     * unreachable or overloaded cluster is {@code ELASTICSEARCH_UNAVAILABLE}, and anything else
+     * the cluster rejects is our own bug and stays {@code INTERNAL_ERROR}
+     * ({@code docs/search/interfaces.md} error catalog). None of them is evidence about the catalog.
      */
     @ExceptionHandler({IOException.class, ElasticsearchException.class})
     public ResponseEntity<Object> onElasticsearchFailure(Exception e, HttpServletRequest request) {
@@ -80,8 +87,30 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
             return ErrorCode.INTERNAL_ERROR;
         }
         boolean timedOut = e instanceof SocketTimeoutException
+                || e instanceof IncompleteResultsException
+                || (e instanceof ResponseException failure && shardsFailed(failure))
                 || String.valueOf(e.getMessage()).toLowerCase().contains("timeout");
         return timedOut ? ErrorCode.SEARCH_TIMEOUT : ErrorCode.ELASTICSEARCH_UNAVAILABLE;
+    }
+
+    /**
+     * The buyer read paths set {@code allow_partial_search_results=false}, so a failed shard does not
+     * arrive as a {@code 200} listing it: Elasticsearch answers {@code 500}
+     * {@code search_phase_execution_exception} "all shards failed", which the low-level client
+     * raises as a {@link ResponseException}. The usual cause is the query budget running out
+     * ({@code query_phase_execution_exception} "Time exceeded", docs/performance/search-scale-benchmark.md).
+     * Either way it is a shard failure, {@code SEARCH_TIMEOUT}, not an unavailable cluster.
+     */
+    static boolean shardsFailed(ResponseException failure) {
+        if (failure.getResponse().getStatusLine().getStatusCode() != 500) {
+            return false;
+        }
+        try {
+            JsonNode error = JSON.readTree(EntityUtils.toString(failure.getResponse().getEntity())).path("error");
+            return "search_phase_execution_exception".equals(error.path("type").asText());
+        } catch (IOException | RuntimeException unreadable) {
+            return false;
+        }
     }
 
     @ExceptionHandler(Exception.class)

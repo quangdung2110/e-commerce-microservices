@@ -119,8 +119,8 @@ Trả cây danh mục cho sidebar điều hướng.
   được job recompute làm mới nên có thể trễ so với kết quả search. Nó là số DISTINCT
   Product của **cả nhánh**, nên danh mục cha luôn lớn hơn hoặc bằng tổng con.
   `product_count_updated_at` là `null` cho tới khi job chạy lần đầu cho node đó.
-- Danh mục `is_deleted = true` không xuất hiện trong cây. Quá hạn (5s) hoặc shard lỗi là `504`/`503`, không
-  bao giờ một cây thiếu node.
+- Danh mục `is_deleted = true` không xuất hiện trong cây. Quá hạn (5s) hoặc shard lỗi là `504 SEARCH_TIMEOUT`;
+  Elasticsearch không tới được là `503 ELASTICSEARCH_UNAVAILABLE`; không bao giờ một cây thiếu node.
 
 ### 3.4 `GET /api/v2/search/categories/{category_id}/facets`
 
