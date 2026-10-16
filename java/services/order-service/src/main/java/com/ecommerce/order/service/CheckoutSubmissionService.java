@@ -10,6 +10,7 @@ import com.ecommerce.order.domain.CheckoutRules;
 import com.ecommerce.order.store.OrderStore;
 import com.ecommerce.order.store.SubmissionStore;
 import com.ecommerce.order.store.SubmissionStore.SubmissionRow;
+import com.ecommerce.order.store.SubmissionStore.CheckpointRow;
 import com.ecommerce.order.web.dto.CheckoutDtos.CheckoutOrderSubmissionRequest;
 import com.ecommerce.order.workflow.WorkflowNames;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,6 +21,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.context.request.async.DeferredResult;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -43,10 +45,11 @@ public class CheckoutSubmissionService {
     private final TransactionTemplate tx;
     private final Json json;
     private final OrderProperties.Checkout config;
+    private final SubmissionWaiters waiters;
 
     public CheckoutSubmissionService(SubmissionStore submissions, OrderStore orders, WorkflowEnqueuer enqueuer,
                                      PaymentClientDataReader clientData, TransactionTemplate tx, Json json,
-                                     OrderProperties properties) {
+                                     OrderProperties properties, SubmissionWaiters waiters) {
         this.submissions = submissions;
         this.orders = orders;
         this.enqueuer = enqueuer;
@@ -54,9 +57,10 @@ public class CheckoutSubmissionService {
         this.tx = tx;
         this.json = json;
         this.config = properties.checkout();
+        this.waiters = waiters;
     }
 
-    public ResponseEntity<Object> submit(String idempotencyKey, CheckoutOrderSubmissionRequest request) {
+    public DeferredResult<ResponseEntity<Object>> submit(String idempotencyKey, CheckoutOrderSubmissionRequest request) {
         if (!request.checkoutToken().equalsIgnoreCase(idempotencyKey)) {
             throw ApiException.invalid("Idempotency-Key must equal checkout_token");
         }
@@ -85,18 +89,20 @@ public class CheckoutSubmissionService {
             enqueuer.dispatch(null, enqueuer.checkout(token.toString()));
             return true;
         });
-        SubmissionRow submission = awaitCheckpoint(token);
-        return switch (submission.state()) {
-            case "PAYMENT_READY" -> ready(submission, Boolean.TRUE.equals(created) ? HttpStatus.CREATED : HttpStatus.OK);
-            case "PREPARING" -> throw new ApiException(ErrorCode.SUBMISSION_IN_PROGRESS,
-                    "Order is still preparing payment; retry with the identical key and body", List.of(), 2, Map.of());
-            default -> failure(submission);
-        };
+        Duration wait = RequestCorrelation.effectiveTimeout(config.submitWait(), Duration.ofSeconds(1));
+        return waiters.await(token, wait.isNegative() ? Duration.ZERO : wait, RequestCorrelation.current(),
+                submission -> switch (submission.state()) {
+                    case "PAYMENT_READY" -> ready(submission,
+                            Boolean.TRUE.equals(created) ? HttpStatus.CREATED : HttpStatus.OK);
+                    case "PREPARING" -> throw new ApiException(ErrorCode.SUBMISSION_IN_PROGRESS,
+                            "Order is still preparing payment; retry with the identical key and body", List.of(), 2, Map.of());
+                    default -> failure(submission);
+                });
     }
 
     public ObjectNode status(String checkoutToken) {
         UUID token = Ids.parseUuid(checkoutToken);
-        SubmissionRow submission = token == null ? null : submissions.find(token).orElse(null);
+        CheckpointRow submission = token == null ? null : submissions.checkpoint(token).orElse(null);
         if (submission == null) {
             throw ApiException.notFound();
         }
@@ -114,25 +120,7 @@ public class CheckoutSubmissionService {
         return body;
     }
 
-    private SubmissionRow awaitCheckpoint(UUID token) {
-        // contracts ADR-003: never wait past what Checkout said it would wait, less a second to answer.
-        Duration wait = RequestCorrelation.effectiveTimeout(config.submitWait(), Duration.ofSeconds(1));
-        long deadline = System.nanoTime() + Math.max(0, wait.toNanos());
-        while (true) {
-            SubmissionRow submission = submissions.find(token).orElseThrow();
-            if (!"PREPARING".equals(submission.state()) || System.nanoTime() >= deadline) {
-                return submission;
-            }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return submission;
-            }
-        }
-    }
-
-    private ResponseEntity<Object> ready(SubmissionRow submission, HttpStatus status) {
+    private ResponseEntity<Object> ready(CheckpointRow submission, HttpStatus status) {
         ObjectNode body = json.object();
         body.put("checkout_token", submission.checkoutToken().toString());
         body.put("order_id", Ids.wire(submission.orderId()));
@@ -145,14 +133,14 @@ public class CheckoutSubmissionService {
                 .body(body);
     }
 
-    private ObjectNode payment(SubmissionRow submission) {
+    private ObjectNode payment(CheckpointRow submission) {
         OrderStore.OrderRow order = orders.find(submission.orderId()).orElseThrow();
         // The initial attempt is the payment ready at the checkpoint.
         return clientData.read(order.activeAttemptNumber(), order.activeTransactionId(),
                 WorkflowNames.checkout(order.checkoutToken()));
     }
 
-    private ResponseEntity<Object> failure(SubmissionRow submission) {
+    private ResponseEntity<Object> failure(CheckpointRow submission) {
         JsonNode problem = json.read(submission.failureJson());
         return ResponseEntity.status(problem.path("status").asInt(409))
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)

@@ -90,6 +90,12 @@ liệu không tin cậy cho đến khi validate event, workflow identity và FSM
   data được durable checkpoint, không đợi capture. Payment-attempt POST atomically ghi
   operation + durable workflow message; client data được đọc từ operation khi attempt
   mới thực sự được tạo.
+- HTTP submission dùng `DeferredResult`: sau durable accept, registry waiter theo token ở RAM
+  từng replica và trả thread Tomcat về pool. Trigger PostgreSQL báo terminal checkpoint sau commit;
+  LISTEN session riêng đánh thức bounded response executor để đọc DB/Payment tươi rồi hoàn tất
+  response cũ. Shared batch sweep 1 s sửa notification bị bỏ lỡ; không poll 100 ms trên từng request.
+  Không callback sang Checkout; DB/Temporal vẫn là nguồn recovery sau crash. Chi tiết
+  [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
 - Temporal activity gọi Inventory/Promotion/Payment đồng bộ theo timeout/retry.
 - Inventory reservation commands complete from durable HTTP receipts and checkpointed
   command query/replay; they have no Kafka acknowledgment consumer. Only physical

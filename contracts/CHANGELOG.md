@@ -3,6 +3,14 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-16 (Order submission response capacity)
+
+- Order internal submission giữ `201/200`, terminal problems và bounded checkpoint wait. Làm rõ
+  response vẫn mở khi server dùng async waiter; disconnect không huỷ durable acceptance, recovery
+  dùng cùng token và không cần callback Checkout. Response capacity đầy có thể trả `503 ORDER_UNAVAILABLE`
+  với `Retry-After` sau khi đã accept. Không đổi request/response schema, status code hay event contract.
+  Thiết kế và giới hạn: [Order ADR-027](../docs/order/decisions/ADR-027-async-submission-checkpoint-waiters.md).
+
 ## 2026-10-16 (Bằng chứng resilience, mesh)
 
 - [ADR-010](decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md): fault injection ở mức socket cho client HTTP của Order và Search, load test k6 chỉ đọc

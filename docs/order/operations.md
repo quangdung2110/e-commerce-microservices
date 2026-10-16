@@ -45,6 +45,8 @@ restart process.
 | `TEMPORAL_TARGET`, `TEMPORAL_NAMESPACE`, `TEMPORAL_ENABLED`, `TEMPORAL_WORKER_ENABLED` | Temporal client + worker ba queue `order-checkout-queue`, `order-refund-queue`, `order-financial-reconciliation-queue` | `localhost:7233`, `default`, bật | Có (TLS khi có) |
 | `order.temporal.activity-timeout`, `activity-max-attempts` | Activity start-to-close/retry burst | 30 giây, 3 lần; hết burst thì workflow sleep có backoff rồi thử lại | Không |
 | `order.checkout.payment-window`, `clock-skew-safety`, `submit-wait` | Business ceiling; safety trừ vào hold expiry; thời gian HTTP chờ `PAYMENT_READY` | 15 phút, 30 giây, 12 giây (mesh timeout 15 giây) | Không |
+| `ORDER_SUBMISSION_MAX_WAITERS`, `ORDER_SUBMISSION_RESPONSE_THREADS` | `order.checkout.waiter.max-waiters`/`response-threads`, giới hạn RAM waiter và executor mỗi replica | 512 waiter, 16 thread; queue `max-waiters + 1` | Không |
+| `order.checkout.waiter.batch-size`, `recovery-interval`, `reconnect-delay` | Batch đọc bù token terminal; chu kỳ phục hồi và nối lại LISTEN | 256 token, 1 giây, 1 giây | Không |
 | `order.refund.inspection-wait` | Inventory inspection gate trước manual verification | 30 ngày | Không |
 | `order.search.default-window` | Khoảng mặc định khi thiếu `created_from/to` | 90 ngày | Không |
 | `order.fulfillment.delivery-confirmation-overdue`, `delivered-at-future-skew` | Ngưỡng của gauge `order.fulfillment.delivery_confirmation_overdue` (line `DISPATCHED` chưa được Admin xác nhận giao; không bao giờ tự giao); sai lệch tối đa của `delivered_at` ở tương lai | 7 ngày, 5 phút | Không |
@@ -57,6 +59,19 @@ Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi h
 8.000 event. Không ghi secret thật vào repository.
 
 ## 3. Quan sát hệ thống
+
+Checkout checkpoint dùng async HTTP waiter ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)).
+Mỗi replica mở thêm **một JDBC LISTEN session ngoài Hikari**; tính connection này vào tổng budget DB.
+Listener dùng `spring.datasource.url/username/password`; TLS/schema phải có trong URL nếu cần,
+và connection phải giữ session (không transaction-pooling). Migration V3 additive; rollback binary
+giữ trigger/Flyway history. Listener hỏng vẫn có shared batch recovery mỗi giây; instance chết thì
+Checkout GET cùng token qua replica khác hoặc sau restart. Một replica Compose không có HA.
+
+- `order.checkout.waiters`: số HTTP waiter đang chiếm capacity; cleanup ở result/error/timeout/shutdown.
+- `order.checkout.response.active`/`queued`: executor đang xử lý/đang chờ, Payment chậm có thể làm đầy.
+- `order.checkout.waiter.rejected`: capacity/queue đầy, trả `503 ORDER_UNAVAILABLE`, `Retry-After: 2`.
+- `order.checkout.notification.connected`: 0/1; nếu 0 kéo dài, kiểm tra DB session và log SQLState.
+  Notification không phải nguồn kết quả; không cần khôi phục RAM registry sau restart.
 
 Metrics tối thiểu:
 

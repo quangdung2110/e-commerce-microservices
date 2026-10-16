@@ -123,6 +123,11 @@ submission vẫn `PREPARING` thì POST trả `503 SUBMISSION_IN_PROGRESS` (`retr
 đọc recovery, không coi là chưa nhận. Các lỗi hạ tầng khác (`DEPENDENCY_UNAVAILABLE`,
 `ORDER_UNAVAILABLE`) cũng là `503 retryable=true`; Checkout xử lý chúng bằng luồng recovery với
 cùng key/body.
+Theo [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md), HTTP vẫn chờ cùng
+checkpoint nhưng controller dùng `DeferredResult`, không giữ Tomcat thread hay SELECT mỗi 100 ms.
+Terminal transition sau commit đánh thức waiter; fallback batch sweep 1 s bù mất notification.
+Waiter/response queue đầy trả `503 ORDER_UNAVAILABLE` có `Retry-After: 2`, có thể xảy ra sau durable
+accept; Checkout luôn recovery cùng token. Không đổi schema/status hay thêm API callback.
 Trạng thái submission được lưu trong `order_checkout_submissions`. `final_amount` phải
 ≥ 1 VND vì Payment chỉ nhận amount dương; `0` là `422 INVALID_CHECKOUT_SNAPSHOT`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.

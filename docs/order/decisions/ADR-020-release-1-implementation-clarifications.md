@@ -106,6 +106,8 @@ và Payment.
     (`PREPARING/PAYMENT_READY/RECALCULATION_REQUIRED/FAILED`), `order_id` và problem. Đây
     là nguồn của recovery read. Workflow checkout chỉ nhận `checkout_token`; snapshot có
     PII (địa chỉ, số điện thoại) không vào Temporal history.
+    [ADR-027](./ADR-027-async-submission-checkpoint-waiters.md) bổ sung async HTTP waiter và trigger
+    commit notification; RAM waiter và NOTIFY không thay thế nguồn recovery bền vững này.
 12. **`payment_deadline_at`** được ghi khi tạo order bằng business ceiling
     (`created_at + 15 phút`), rồi khoá một lần tại `PAYMENT_READY` bằng minimum trong
     ADR-014 (chỉ có thể giảm) và đánh dấu `payment_deadline_locked_at`. Sau khi khoá nó

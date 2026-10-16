@@ -13,7 +13,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
-/** Upgrade a real V1 database, rather than testing V2 only on an empty schema. */
+/** Upgrade a real V1 database through V2/V3, retaining historical fulfilment and submissions. */
 class DeliveryMigrationIT {
 
     @Test
@@ -50,11 +50,19 @@ class DeliveryMigrationIT {
                 insertLine(jdbc, 2, "DELIVERED", "delivery_proof_id", "OLD-REFERENCE", false);
                 insertLine(jdbc, 3, "DISPATCHED", "delivery_proof_id", null, false);
                 Object oldTime = jdbc.queryForObject("SELECT delivered_at FROM order_item_lines WHERE id=1", Object.class);
+                UUID submissionToken = UUID.randomUUID();
+                jdbc.update("""
+                        INSERT INTO order_checkout_submissions (checkout_token, user_id, request_digest, request, state, failure)
+                        VALUES (?, ?, ?, '{}'::jsonb, 'FAILED', '{}'::jsonb)
+                        """, submissionToken, UUID.randomUUID(), "a".repeat(64));
 
                 Flyway flyway = Flyway.configure().dataSource(url, user, password).schemas(schema)
                         .defaultSchema(schema).load();
-                assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
+                assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2); // V2 fulfilment + V3 notification trigger.
                 flyway.validate();
+                assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
+                assertThat(jdbc.queryForObject("SELECT state FROM order_checkout_submissions WHERE checkout_token = ?",
+                        String.class, submissionToken)).isEqualTo("FAILED");
                 assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id=1", String.class)).isEqualTo("COMPLETED");
                 assertThat(jdbc.queryForObject("SELECT delivered_at FROM order_item_lines WHERE id=1", Object.class)).isEqualTo(oldTime);
                 assertThat(jdbc.queryForObject("SELECT delivery_reference FROM order_item_lines WHERE id=1", String.class)).isNull();

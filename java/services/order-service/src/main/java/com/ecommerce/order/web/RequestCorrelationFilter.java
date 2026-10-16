@@ -36,6 +36,7 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     static final String MDC_REQUEST_ID = "request_id";
     static final String MDC_TRACE_ID = "trace_id";
     static final String DEADLINE_COUNTER = "http.server.caller_deadline_exceeded";
+    private static final String CONTEXT_ATTRIBUTE = RequestCorrelationFilter.class.getName() + ".context";
 
     private static final Logger log = LoggerFactory.getLogger(RequestCorrelationFilter.class);
 
@@ -52,13 +53,22 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        RequestCorrelation correlation = RequestCorrelation.fromHeaders(
+        RequestCorrelation correlation = (RequestCorrelation) request.getAttribute(CONTEXT_ATTRIBUTE);
+        if (correlation == null) {
+            correlation = RequestCorrelation.fromHeaders(
                 request.getHeader(RequestCorrelation.REQUEST_ID_HEADER),
                 request.getHeader(RequestCorrelation.TRACEPARENT_HEADER),
                 request.getHeader(RequestCorrelation.TRACESTATE_HEADER),
                 request.getHeader(RequestCorrelation.TIMEOUT_HEADER));
+            request.setAttribute(CONTEXT_ATTRIBUTE, correlation);
+        }
         RequestCorrelation.set(correlation);
         MDC.put(MDC_REQUEST_ID, correlation.requestId());
         if (correlation.traceId() != null) {
@@ -68,7 +78,9 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
         try {
             chain.doFilter(request, response);
         } finally {
-            if (correlation.deadlineExceeded()) {
+            // The first async dispatch exits before the response is complete. Keep the original
+            // receivedAtNanos on the request and count only when the final dispatch completes.
+            if (!request.isAsyncStarted() && correlation.deadlineExceeded()) {
                 reportOverrun(request, correlation);
             }
             RequestCorrelation.clear();

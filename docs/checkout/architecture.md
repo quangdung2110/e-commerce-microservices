@@ -107,6 +107,12 @@ mesh cắt ở 15 giây, nên timeout Checkout cho Order là `min(13 000 ms, dea
 200 ms)`. Nếu trước Bước 3 deadline còn dưới 2 000 ms, Checkout không gọi Order, chuyển
 token sang `RETRYABLE` và trả `202 RESULT_UNKNOWN`; luồng recovery sẽ gửi lại đúng payload.
 
+Order thực thi khoảng chờ bằng `DeferredResult` và PostgreSQL commit notification, có batch recovery
+([Order ADR-027](../order/decisions/ADR-027-async-submission-checkpoint-waiters.md)). Request HTTP vẫn
+mở nhưng không giữ thread Order trong lúc saga chuẩn bị. Checkout không cần callback/subscription
+hay thay đổi WebClient: `201/200`, business problem và `503` vẫn map như trước. Instance Order chết
+làm request lỗi/timeout; recovery đọc submission bền vững bằng cùng token qua instance còn sống nếu có.
+
 **Hủy request.** Trước Bước 1, client ngắt kết nối thì Checkout hủy mọi lời gọi. Từ Bước 1
 trở đi, phần việc còn lại chạy tách khỏi request context (vẫn trong deadline Submit) để
 kết quả luôn được ghi vào Redis; client lấy kết quả qua endpoint status. Preview và voucher

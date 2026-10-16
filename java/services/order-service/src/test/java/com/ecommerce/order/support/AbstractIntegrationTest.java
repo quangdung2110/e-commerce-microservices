@@ -110,6 +110,10 @@ public abstract class AbstractIntegrationTest {
 
     protected Response call(MockHttpServletRequestBuilder request) throws Exception {
         MvcResult result = mvc.perform(request).andReturn();
+        if (result.getRequest().isAsyncStarted()) {
+            result.getAsyncResult(30_000);
+            result = mvc.perform(MockMvcRequestBuilders.asyncDispatch(result)).andReturn();
+        }
         String content = result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
         return new Response(result.getResponse().getStatus(), content.isEmpty() ? null : mapper.readTree(content), result);
     }

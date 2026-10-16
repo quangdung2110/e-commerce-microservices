@@ -12,6 +12,7 @@ evidence:
   - java/services/order-service/src/main/java/com/ecommerce/order
   - java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql
   - java/services/order-service/src/main/resources/db/migration/V2__admin_delivery_confirmation.sql
+  - java/services/order-service/src/main/resources/db/migration/V3__submission_checkpoint_notification.sql
   - java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json
   - java/services/order-service/src/test/java/com/ecommerce/order
 verified_against_commit: null
@@ -35,6 +36,10 @@ verified_against_commit: null
 | Contract | Order HTTP v1.1.0 / AsyncAPI v1.1.0 `x-adoption-status: implemented`; chưa `verified` vì chưa có consumer contract test (xem [ADOPTION](../../contracts/ADOPTION.md)) |
 
 ## 2. Mục tiêu
+
+Checkout submission dùng async HTTP waiter tới `PAYMENT_READY`: `DeferredResult`, PostgreSQL
+commit notification và bounded batch recovery, giữ nguyên response/idempotency/deadline.
+Registry RAM không thay thế DB recovery; xem [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
 
 Order Service quản lý vòng đời đơn hàng từ lúc Checkout submit đến khi thanh
 toán, thực hiện, giao đủ, hủy hoặc hoàn tiền. Service tạo attempt thanh toán có

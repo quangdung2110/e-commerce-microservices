@@ -31,7 +31,7 @@ Spring Boot 3.3, JDBC + Flyway, Spring Kafka, Temporal Java SDK 1.25.1.
 | `.../messaging` | Payment/Inventory intake (durable inbox), Kafka listeners, receipt observer |
 | `.../worker` | Workflow dispatcher (SignalWithStart), closed-target resolver, reconcilers, trimmer |
 | `.../store` | SQL tường minh, row lock/CAS |
-| `src/main/resources/db/migration` | `V1__order_baseline.sql`, `V2__admin_delivery_confirmation.sql` |
+| `src/main/resources/db/migration` | V1 baseline, V2 Admin delivery confirmation, V3 submission checkpoint NOTIFY trigger |
 | `src/main/resources/kafka` | Debezium connector multi-destination outbox |
 
 ## 2. Chạy local và dependency
@@ -97,6 +97,17 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Read/search | `QueryIT`: owner/404/admin/403/401, card/keyset/`q` không dấu |
 | Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
 | Migration | `DeliveryMigrationIT`: V1 có delivery lịch sử thiếu reference → V2 thành công, giữ nguyên dữ liệu/không phát outbox, cờ legacy không thể tạo mới hoặc đổi; delivery mới cần đầy đủ bản ghi Admin |
+| Async submission | `SubmissionWaitersTest`, `SubmissionNotificationIT`: bounded waiters/executor, deadline/context, same-token replay, batch repair, PostgreSQL commit/rollback/CAS, hai replica LISTEN, MockMvc async response/headers ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)) |
+
+MockMvc helper `AbstractIntegrationTest.call` phải đợi async result rồi `asyncDispatch` cho submission
+POST; validation/identity rejection vẫn đồng bộ. Khi thêm test controller, không đọc response body
+trước async dispatch. PostgreSQL test dùng DB riêng/Testcontainers, không thử fault bằng cách dừng
+Order hoặc PostgreSQL của stack người dùng đang chạy.
+
+Kết quả 2026-10-16: Order **97 test pass**; Checkout **164 test, 0 failure/error, 1 live test skip**;
+V1→V3 migration, commit/rollback notification, reconnect và hai replica được kiểm chứng với
+PostgreSQL test thật. Chi tiết và lệnh tái chạy:
+[async-submission-verification-2026-10-16.md](./async-submission-verification-2026-10-16.md).
 
 Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
 E2E tự động, load test.

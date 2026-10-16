@@ -90,6 +90,13 @@ order:
     clock-skew-safety: 30s
     # HTTP waits until PAYMENT_READY or this budget, then 503 retryable (mesh timeout 15s).
     submit-wait: 12s
+    # ADR-027: per-replica HTTP waiters; one dedicated LISTEN session outside Hikari.
+    waiter:
+      max-waiters: ${ORDER_SUBMISSION_MAX_WAITERS:512}
+      response-threads: ${ORDER_SUBMISSION_RESPONSE_THREADS:16}
+      batch-size: 256
+      recovery-interval: 1s
+      reconnect-delay: 1s
   refund:
     inspection-wait: 30d
   search:

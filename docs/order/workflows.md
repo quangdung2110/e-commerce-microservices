@@ -165,12 +165,16 @@ sequenceDiagram
   participant Y as Payment
   C->>O: POST checkout-order-submissions(snapshot, token)
   O->>T: start/attach order-checkout-{token}
+  O->>O: register DeferredResult, release HTTP thread (response open)
   T->>O: CreateOrder (không integration event)
   T->>I: ReserveInventory(allocation_plan_id, line mapping)
   T->>P: POST /internal/v1/promotion-allocation/reservations
   T->>Y: InitiatePayment(Stripe)
-  Y-->>T: txn_id, client_secret, publishable_key
-  T-->>O: payment client data
+  Y-->>T: transaction identity / initiation outcome
+  T->>O: commit PAYMENT_READY (DB trigger NOTIFY token)
+  O->>O: listener wakes response executor, read checkpoint
+  O->>Y: GET initial attempt client-data (fresh)
+  Y-->>O: usable, client_secret, publishable_key, expiry
   O-->>C: order_id + payment client data
   Note over T: chờ PaymentResult tối đa 15 phút
   Y-->>T: PAYMENT_SUCCESS signal qua consumer
@@ -179,6 +183,13 @@ sequenceDiagram
   T->>P: POST /internal/v1/promotion-allocation/confirmations
   T->>O: PAID -> PROCESSING (không integration event)
 ```
+
+HTTP wait dùng registry local theo token và `DeferredResult`, không giữ request thread. Listener
+nhận tất cả terminal transitions (ready/failure/recalculation/cancel), đọc lại DB và hoàn tất đúng
+một lần; register-before-read và shared batch recovery chống missed notification. Hết checkpoint
+budget trả `503 SUBMISSION_IN_PROGRESS`; đầy waiter/executor trả `503 ORDER_UNAVAILABLE`; workflow
+vẫn chạy. Mất instance/kết nối HTTP thì Checkout recovery bằng cùng token. Không đưa secret vào
+notification hay Temporal history. Xem [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
 
 ### Pre-payment happy path và compensation
 

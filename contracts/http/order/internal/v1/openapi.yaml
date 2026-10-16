@@ -33,6 +33,13 @@ paths:
         when it ends answers 503 SUBMISSION_IN_PROGRESS (retryable, Retry-After): Order has
         accepted the submission and keeps working, so the caller retries the identical key
         and body or reads the submission, and must not treat it as "not received".
+
+        The response remains open while waiting; accepting the request does not wait for
+        payment capture or workflow completion. Order may release its HTTP processing thread
+        and resume the response on a committed checkpoint notification. No Checkout callback
+        is required. A disconnected response does not cancel a committed submission: recover
+        using the same checkout_token. Bounded response capacity exhaustion is retryable
+        503 ORDER_UNAVAILABLE with Retry-After and may occur after durable acceptance.
       security: [{ checkoutWorkloadIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/RequestId'

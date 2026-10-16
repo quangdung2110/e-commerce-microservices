@@ -48,3 +48,4 @@ event is required and historical Order ADR bodies are unchanged.
 | [ADR-024](./ADR-024-remote-call-metrics-and-bulkhead.md) | Timer `order.remote.http` theo dependency; bulkhead theo dependency (`BULKHEAD_FULL` là UNKNOWN); ghi `Retry-After` | Accepted | 2026-10-15 | Bổ sung ADR-023 |
 | [ADR-025](./ADR-025-unreadable-success-body-is-unknown.md) | 2xx có body không đọc được là `UNKNOWN` `BODY_UNREADABLE`, không phải `ACCEPTED` với body null | Accepted | 2026-10-16 | — |
 | [ADR-026](./ADR-026-retry-after-default-on-503.md) | `Retry-After` mặc định `2` giây cho `503` retryable, `1` cho `429` | Accepted | 2026-10-16 | — |
+| [ADR-027](./ADR-027-async-submission-checkpoint-waiters.md) | `DeferredResult`, PostgreSQL commit notification và bounded batch recovery cho HTTP checkout checkpoint; giữ wire contract/deadline/idempotency | Accepted | 2026-10-16 | Refines ADR-020, ADR-023 |

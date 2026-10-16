@@ -181,7 +181,7 @@ kể cả khi `Content-Type` khác `application/json` (Checkout đọc byte rồ
 | Allocation preview | Inventory | `POST /internal/inventory/v1/allocation-previews` | Stateless, không giữ hàng; request chỉ có `lines`, không có địa chỉ |
 | Discount calculation | Promotion | `POST /internal/v1/promotion-discount-calculations` | Pure query; chỉ gọi khi có `promotion_id` |
 | Voucher options | Promotion | `POST /internal/v1/promotion-voucher-options` | `implemented` ([Promotion ADR-018](../promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); chỉ `checkout-service` được gọi |
-| Order submission | Order | `POST /internal/v1/checkout-order-submissions` | `Idempotency-Key = checkout_token`; chờ tới `PAYMENT_READY` tối đa 12 giây |
+| Order submission | Order | `POST /internal/v1/checkout-order-submissions` | `Idempotency-Key = checkout_token`; chờ checkpoint tối đa 12 giây bằng async HTTP waiter phía Order ([Order ADR-027](../order/decisions/ADR-027-async-submission-checkpoint-waiters.md)); wire contract không đổi |
 | Order recovery | Order | `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Nguồn duy nhất của Payment client data khi replay |
 
 ### Header gửi cho dependency

@@ -19,6 +19,30 @@ class RequestCorrelationFilterTest {
     private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private final RequestCorrelationFilter filter = new RequestCorrelationFilter(meters);
 
+    @Test
+    void asyncRedispatchKeepsOriginalContextAndCountsDeadlineOnlyAtFinalDispatch() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/internal/v1/checkout-order-submissions");
+        request.setAsyncSupported(true);
+        request.addHeader("X-Request-Timeout-Ms", "5");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicReference<RequestCorrelation> original = new AtomicReference<>();
+        filter.doFilter(request, response, (req, res) -> {
+            original.set(RequestCorrelation.current());
+            request.startAsync(req, res);
+        });
+        assertThat(RequestCorrelation.current()).isNull();
+        assertThat(meters.find("http.server.caller_deadline_exceeded").counter()).isNull();
+        Thread.sleep(30);
+        request.setAsyncStarted(false);
+        request.setDispatcherType(jakarta.servlet.DispatcherType.ASYNC);
+        filter.doFilter(request, response, (req, res) ->
+                assertThat(RequestCorrelation.current()).isSameAs(original.get()));
+        assertThat(response.getHeader("X-Request-Id")).isEqualTo(original.get().requestId());
+        assertThat(meters.counter("http.server.caller_deadline_exceeded", "route", "UNMATCHED").count()).isEqualTo(1);
+        assertThat(RequestCorrelation.current()).isNull();
+        assertThat(MDC.get("request_id")).isNull();
+    }
+
     @AfterEach
     void cleanUp() {
         RequestCorrelation.clear();

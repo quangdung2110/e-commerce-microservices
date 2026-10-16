@@ -5,6 +5,15 @@
 
 Mọi ADR resilience của dự án ghi con số khởi điểm "phải được xác nhận bằng load test". Tài liệu này ghi cách đo, số đo thực tế, và những gì số đo **không** chứng minh.
 
+Order [ADR-027](../order/decisions/ADR-027-async-submission-checkpoint-waiters.md) thay submission poll
+100 ms/request bằng `DeferredResult`, commit notification và shared batch recovery 1 s. Functional tests
+kiểm tra commit/rollback, hai replica listener, deadline và recovery; chưa có benchmark write-path trước/sau.
+Không suy ra RPS hoặc mức tăng throughput từ việc bỏ request thread chờ. Khi benchmark, đo đồng thời
+Order API latency, waiter/executor queue/rejections, Hikari pending, query rate, CPU DB và saga latency;
+thử provider chậm và listener mất kết nối trên môi trường test riêng.
+Kết quả kiểm chứng chức năng: [Order async submission verification 2026-10-16](../order/async-submission-verification-2026-10-16.md)
+(97 Order test pass; 164 Checkout test, 0 failure/error và 1 live test skip).
+
 ## Cách chạy
 
 ```bash

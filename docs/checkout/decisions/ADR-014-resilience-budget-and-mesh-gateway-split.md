@@ -60,6 +60,11 @@ xác nhận chưa nhận, không còn lời gọi nào có thể đang bay
 (`now − last_order_call_started_at ≥ 15 s + 5 s`), và còn trong **submit retry window 2 phút**
 kể từ claim. Quá cửa sổ mà Order vẫn `404` → token `FAILED` với `SUBMISSION_NOT_ACCEPTED`.
 
+[Order ADR-027](../../order/decisions/ADR-027-async-submission-checkpoint-waiters.md) thay khoảng chờ
+phía Order bằng async HTTP waiter/commit notification; không thay budget, retry hay circuit/bulkhead
+của Checkout. `503 ORDER_UNAVAILABLE` do response capacity sau durable accept vẫn qua recovery;
+`SUBMISSION_IN_PROGRESS` tiếp tục map thành `202 PREPARING`.
+
 **Circuit breaker và bulkhead** riêng từng dependency mỗi pod; tham số khởi điểm và công thức ở
 [operations.md](../operations.md#resilience). `4xx` nghiệp vụ và `400`/`401`/`403` không tính
 vào circuit; `400`/`401`/`403` phát alert cấu hình.

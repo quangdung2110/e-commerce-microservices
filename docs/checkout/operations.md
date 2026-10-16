@@ -61,7 +61,8 @@ operations của mình; hiện là known gap):
 | Circuit mở, bulkhead đầy, deadline còn < 200 ms trước một wave | `503`, không gọi dependency (`circuit_open`/`bulkhead_rejected`/`budget_skipped`) | Không | Checkout |
 | Kết quả nghiệp vụ (giỏ rỗng, SKU unavailable, address `404`, `REJECT_ALL`, `eligible=false`) | `422` theo error catalog | Không | — |
 | Promotion voucher options lỗi | `503 VOUCHER_OPTIONS_UNAVAILABLE`; Preview/Submit không bị ảnh hưởng | Có (circuit riêng) | Promotion |
-| Order POST timeout/`503` | `202 RESULT_UNKNOWN`, recovery | Có | Order + Checkout |
+| Order POST `503 SUBMISSION_IN_PROGRESS` | `202 PREPARING`, token `RETRYABLE`; recovery cùng token | Có | Order + Checkout |
+| Order POST timeout/`503` khác, gồm response capacity `ORDER_UNAVAILABLE` | `202 RESULT_UNKNOWN`, recovery cùng token | Có | Order + Checkout |
 | Order POST `400`/`401`/`403` | `503`, token `RETRYABLE`; alert cấu hình | Không | Checkout + platform |
 | Order POST `409`/`422` ngoài catalog | `409 SUBMISSION_REJECTED`; alert `contract_violation` | Không | Checkout + Order |
 | Redis lỗi/timeout | `503 CHECKOUT_UNAVAILABLE`; readiness `false` nếu kéo dài | — | Checkout + platform |

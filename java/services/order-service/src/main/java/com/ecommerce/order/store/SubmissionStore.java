@@ -6,6 +6,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -13,6 +15,10 @@ import java.util.UUID;
 /** Checkout submission snapshot and preparation state (data.md §3.9a, ADR-020). */
 @Repository
 public class SubmissionStore {
+
+    /** HTTP/recovery projection deliberately excludes the checkout snapshot and digest. */
+    public record CheckpointRow(UUID checkoutToken, String state, Long orderId, String failureJson, Instant updatedAt) {
+    }
 
     public record SubmissionRow(UUID checkoutToken, UUID userId, String requestDigest, String requestJson,
                                 String state, Long orderId, String failureJson, Instant createdAt,
@@ -43,6 +49,23 @@ public class SubmissionStore {
     public Optional<SubmissionRow> find(UUID token) {
         return jdbc.query("SELECT * FROM order_checkout_submissions WHERE checkout_token = :token",
                 Map.of("token", token), ROW).stream().findFirst();
+    }
+
+    public Optional<CheckpointRow> checkpoint(UUID token) {
+        return jdbc.query("""
+                SELECT checkout_token, state, order_id, failure, updated_at
+                FROM order_checkout_submissions WHERE checkout_token = :token
+                """, Map.of("token", token), (rs, i) -> new CheckpointRow(Db.uuid(rs, "checkout_token"),
+                rs.getString("state"), Db.nullableLong(rs, "order_id"), rs.getString("failure"),
+                Db.instant(rs, "updated_at"))).stream().findFirst();
+    }
+
+    public List<UUID> terminalTokens(Collection<UUID> tokens) {
+        if (tokens.isEmpty()) return List.of();
+        return jdbc.query("""
+                SELECT checkout_token FROM order_checkout_submissions
+                WHERE checkout_token IN (:tokens) AND state <> 'PREPARING'
+                """, Map.of("tokens", tokens), (rs, i) -> Db.uuid(rs, "checkout_token"));
     }
 
     public Optional<SubmissionRow> lock(UUID token) {

@@ -64,9 +64,12 @@ và [operations.md](../operations.md) chưa nêu.
 3. **Header gửi đi**: mọi lời gọi tới Inventory, Promotion, Payment mang `X-Request-Timeout-Ms` bằng
    đúng timeout hiệu dụng, cùng `X-Request-Id` (ADR-002).
 
-4. **`submit-wait` bị kẹp**: `awaitCheckpoint` chờ `min(12 giây, deadline còn lại − 1 giây)`, không âm.
+4. **`submit-wait` bị kẹp**: checkpoint wait chờ `min(12 giây, deadline còn lại − 1 giây)`, không âm.
    Hết thời gian chờ thì trả trạng thái hiện tại (`PREPARING` → `503 SUBMISSION_IN_PROGRESS`, retry với
    cùng key và body), đúng như khi hết `submit-wait` ngày nay.
+   [ADR-027](./ADR-027-async-submission-checkpoint-waiters.md) thay implementation `awaitCheckpoint`
+   bằng `DeferredResult`/commit notification/batch recovery; giữ công thức này và truyền context/deadline
+   gốc sang response executor, không reset deadline khi ASYNC redispatch.
 
 5. **Quan sát**: request vượt `X-Request-Timeout-Ms` được đếm
    (`http.server.caller_deadline_exceeded{route}`) và ghi WARN; Order không hủy công việc vì header

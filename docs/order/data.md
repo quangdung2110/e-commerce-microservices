@@ -641,6 +641,13 @@ API insert row này cùng `order_workflow_dispatches` của `order-checkout-{che
 trong một transaction; workflow chỉ nhận `checkout_token`. Response `201/200` và recovery
 read đọc row này rồi relay Payment client data tươi ([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
 
+Migration V3 thêm trigger `order_submission_checkpoint_changed`: chỉ khi state rời `PREPARING`,
+gọi `pg_notify('order_submission_changed', checkout_token::text)` trong cùng transaction; rollback
+và CAS no-op không phát. Notification chỉ là tín hiệu đánh thức, không lưu secret/PII và không là
+integration event. Waiter HTTP nằm trong RAM mỗi replica; recovery luôn đọc DB. HTTP checkpoint read
+chỉ lấy token/state/order/failure/updated_at, không lấy snapshot. Chi tiết
+[ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
+
 ### 3.10. `order_notification_commands`
 
 | Field | Kiểu | Quy tắc |
