@@ -11,6 +11,12 @@
 #
 #   scripts/ci/inventory-bench.sh <variant> <jar> <scenario> <hot-share>
 #   RATES="50 100 200" DURATION=60s scripts/ci/inventory-bench.sh baseline loadtest/inventory-bench/jars/inventory-baseline.jar hot 1
+#   MODE=reserve-commit COMMIT_DELAY=15 RELEASE_SHARE=0.1 DURATION=120s RATES="100 150" \
+#       scripts/ci/inventory-bench.sh baseline loadtest/inventory-bench/jars/inventory-baseline.jar flash 1
+#
+# MODE=reserve-commit also finishes every order with CommitPayment (or ReleaseReservation for RELEASE_SHARE of them)
+# COMMIT_DELAY seconds after its Reserve, at the same rate, so both commands contend for the same stock_position rows as
+# in a flash sale. RATES are then orders per second (Reserve and Commit/Release each arrive at that rate).
 #
 # Every invocation stops Inventory, reseeds the database (seed/inventory.sql), restarts Inventory and warms it up on
 # cold SKUs, so each variant and scenario starts from the same state. The shared compose stack is not touched.
@@ -27,6 +33,10 @@ DURATION="${DURATION:-60s}"
 PAUSE="${PAUSE:-15}"
 COLD_SKUS="${COLD_SKUS:-2000}"
 MAX_VUS="${MAX_VUS:-2000}"
+MODE="${MODE:-reserve}"
+COMMIT_DELAY="${COMMIT_DELAY:-15}"
+RELEASE_SHARE="${RELEASE_SHARE:-0}"
+TIMEOUT="${TIMEOUT:-30s}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 K6_IMAGE="${K6_IMAGE:-grafana/k6:0.54.0}"
 PROJECT=inventory-bench
@@ -44,6 +54,7 @@ psql_q() { compose exec -T postgres psql -U postgres -d inventory_service -At -F
 {
   echo "variant=$VARIANT scenario=$SCENARIO hot_share=$HOT_SHARE rates=$RATES duration=$DURATION pause=$PAUSE"
   echo "cold_skus=$COLD_SKUS max_vus=$MAX_VUS k6_image=$K6_IMAGE"
+  echo "mode=$MODE commit_delay=$COMMIT_DELAY release_share=$RELEASE_SHARE timeout=$TIMEOUT"
   echo "jar_sha256=$(sha256sum "$JAR" | cut -d' ' -f1)"
   echo "git_head=$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
   echo "inventory_src_changed_files=$(git -C "$REPO_ROOT" status --porcelain -- java/services/inventory-service | wc -l)"
@@ -71,9 +82,10 @@ wait_ready
 psql_q "SELECT name || '=' || setting FROM pg_settings WHERE name IN ('fsync','synchronous_commit','wal_sync_method',
     'shared_buffers','max_connections') ORDER BY 1" >> "$OUT_DIR/environment.txt"
 
-k6_run() { # $1 rate, $2 duration, $3 hot share, $4 run tag, $5 output file name
+k6_run() { # $1 rate, $2 duration, $3 hot share, $4 run tag, $5 output file name, $6 mode (default $MODE)
   docker run --rm --network "$NETWORK" -e RATE="$1" -e DURATION="$2" -e HOT_SHARE="$3" -e RUN_TAG="$4" \
-    -e COLD_SKUS="$COLD_SKUS" -e MAX_VUS="$MAX_VUS" -e OUT="/out/$5" \
+    -e COLD_SKUS="$COLD_SKUS" -e MAX_VUS="$MAX_VUS" -e OUT="/out/$5" -e MODE="${6:-$MODE}" \
+    -e COMMIT_DELAY="$COMMIT_DELAY" -e RELEASE_SHARE="$RELEASE_SHARE" -e TIMEOUT="$TIMEOUT" \
     -v "$(host_path "$REPO_ROOT/loadtest/k6"):/scripts:ro" -v "$(host_path "$OUT_DIR"):/out" \
     "$K6_IMAGE" run --quiet /scripts/inventory-reserve.js 2>&1 | grep '^rate=' || true
 }
@@ -81,8 +93,8 @@ k6_run() { # $1 rate, $2 duration, $3 hot share, $4 run tag, $5 output file name
 echo "== warm-up (cold SKUs, then a little hot)"
 mkdir -p "$OUT_DIR/warmup"
 if [ "${SKIP_WARMUP:-0}" != "1" ]; then
-  for rate in 20 50 100 150; do k6_run "$rate" 20s 0 "w$RUN_ID-c$rate" "warmup/cold-$rate.json"; done
-  k6_run 30 20s 1 "w$RUN_ID-h30" "warmup/hot-30.json"
+  for rate in 20 50 100 150; do k6_run "$rate" 20s 0 "w$RUN_ID-c$rate" "warmup/cold-$rate.json" reserve; done
+  k6_run 30 20s 1 "w$RUN_ID-h30" "warmup/hot-30.json"   # in MODE=reserve-commit this also warms Commit/Release
 fi
 sleep "$PAUSE"
 
@@ -121,7 +133,16 @@ stats_start() { # $1 file
   STATS_PID=$!
 }
 hot_position() {
-  psql_q "SELECT reserved, available_to_sell, revision FROM stock_position WHERE sku_id = 'BENCH-HOT'"
+  psql_q "SELECT reserved, available_to_sell, revision, committed FROM stock_position WHERE sku_id = 'BENCH-HOT'"
+}
+# Server-side reconciliation, independent of what the client saw (a client timeout leaves the outcome unknown to k6
+# while Inventory may still commit it): reservation lines per state against the buckets of the hot position.
+hot_reconcile() {
+  psql_q "SELECT (SELECT count(*) FILTER (WHERE state = 'RESERVED') FROM reservation_line WHERE sku_id = 'BENCH-HOT'),
+      (SELECT count(*) FILTER (WHERE state = 'COMMITTED') FROM reservation_line WHERE sku_id = 'BENCH-HOT'),
+      (SELECT count(*) FILTER (WHERE state = 'RELEASED') FROM reservation_line WHERE sku_id = 'BENCH-HOT'),
+      reserved, committed, on_hand - available_to_sell - quarantine
+      FROM stock_position WHERE sku_id = 'BENCH-HOT'"
 }
 db_counters() {
   psql_q "SELECT xact_commit, xact_rollback, deadlocks FROM pg_stat_database WHERE datname = 'inventory_service'"
@@ -140,6 +161,7 @@ for rate in $RATES; do
   samplers_stop "$step"
   sleep 3   # requests still inside Inventory's retries when k6 stopped
   echo "hot_after=$(hot_position)" >> "$OUT_DIR/$step-db.txt"
+  echo "hot_reconcile=$(hot_reconcile)" >> "$OUT_DIR/$step-db.txt"
   echo "db_after=$(db_counters)" >> "$OUT_DIR/$step-db.txt"
   psql_q "SELECT calls, round(total_exec_time::numeric, 1), round(mean_exec_time::numeric, 3),
       regexp_replace(left(query, 160), '\s+', ' ', 'g')

@@ -20,6 +20,11 @@ bão hoà, 22–23 trên 24 connection chờ khoá `stock_position` trong khi CP
 `INVENTORY_BUSY` nào ở mọi bậc, nên alert theo tỉ lệ busy không phát hiện được; [Inventory ADR-032](../inventory/decisions/ADR-032-reserve-saturation-alerts.md) thêm alert latency
 Reserve và alert pool. Mức sàn `UPDATE`+`COMMIT` một hàng là khoảng 700–750/s.
 
+[Inventory flash sale trên một SKU: baseline Reserve + Commit](./inventory-flash-sale-baseline-2026-10-19.md) (2026-10-19, chưa sửa code): mỗi đơn khoá hàng nóng hai lần
+(Reserve rồi Commit/Release). Với 64 request đồng thời như bulkhead của Order, flash sale đạt SLO tới **100 đơn/s**, trần khoảng **150–167 đơn/s**, và vượt
+trần không sụp. Không giới hạn đồng thời thì thông lượng tụt dần (16 đơn/s ở 300 đơn/s đưa vào). Báo cáo này đính chính baseline trên: trần chỉ Reserve là
+khoảng 285–290/s, không phải 330/s.
+
 ## Cách chạy
 
 ```bash

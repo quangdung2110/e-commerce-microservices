@@ -1,0 +1,15 @@
+variant=baseline scenario=flash hot_share=1 rates=50 75 100 125 150 200 300 duration=120s pause=15
+cold_skus=2000 max_vus=2000 k6_image=grafana/k6:0.54.0
+mode=reserve-commit commit_delay=15 release_share=0.1
+jar_sha256=4697d0c9be340f746fa6c0fbb75d796c3aa615459a29e049c0fe94a1906607fa
+git_head=cee1eb78
+inventory_src_changed_files=4
+docker_cpus=16 docker_mem=15969447936
+shared_stack_containers=0
+started=2026-10-19T19:58:47+07:00
+fsync=on
+max_connections=200
+shared_buffers=32768
+synchronous_commit=on
+wal_sync_method=fdatasync
+finished=2026-10-19T20:22:35+07:00

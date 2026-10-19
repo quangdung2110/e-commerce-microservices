@@ -1,5 +1,16 @@
 # Inventory Reserve trên một SKU nóng: baseline — 19/10/2026
 
+> **Đính chính (19/10/2026, sau [baseline flash sale](./inventory-flash-sale-baseline-2026-10-19.md)).** Lượt này để bộ
+> sinh tải gửi tới 2 000 request đồng thời, trong khi Order chỉ gửi tối đa 64 lệnh đồng thời tới Inventory mỗi replica
+> (bulkhead, timeout 8 s). Đo lại với giới hạn đó, mỗi bậc 120 s:
+> - **250/s vẫn đạt SLO** (p95 102 ms, p99 312 ms).
+> - **Trần là khoảng 285–290 RESERVED/s, không phải 330.**
+> - **Vượt trần không sụp:** p99 khoảng 0,7 s, phần dư không được gửi.
+>
+> Các latency hàng giây ở bậc 300–600/s dưới đây là hệ quả của hàng đợi không giới hạn, không phải hành vi dưới tải
+> thật. Ngoài ra, với hàng đợi không giới hạn, chính mức 250/s **sụp khi chạy 120 s** (p50 9,3 s, chỉ phục vụ 203/s); bậc
+> 60 giây của lượt này quá ngắn để thấy điều đó. Phần còn lại của báo cáo giữ nguyên số đo gốc.
+
 ## Kết luận chính
 
 Đây là phép đo **trước khi sửa** cho đề xuất rút ngắn vùng giữ khoá `stock_position` của lệnh Reserve (khoá muộn, gộp

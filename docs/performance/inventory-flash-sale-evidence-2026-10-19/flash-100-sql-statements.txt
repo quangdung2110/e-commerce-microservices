@@ -1,0 +1,25 @@
+20460 | 3008904.2 | 147.063 | SELECT warehouse_id, sku_id, on_hand, available_to_sell, reserved, committed, quarantine, revision, updated_at FROM stock_position WHERE warehouse_id = $1 AND s
+20502 | 4345.9 | 0.212 | INSERT INTO command_execution (caller_namespace, command_id, operation, fingerprint, correlation_id, recorded_at) VALUES ($1, $2,
+20460 | 4004.1 | 0.196 | UPDATE stock_position SET on_hand = $1, available_to_sell = $2, reserved = $3, committed = $4, quarantine = $5, revision = revision + $10, updated_at = $6 W
+20502 | 3592.1 | 0.175 | UPDATE command_execution SET result = $1, http_status = $2, error_code = $3, outcome = $4, resource_id = $5, response_body = $6::jsonb WHERE caller_namespac
+20460 | 3574.6 | 0.175 | INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, reverses_movement_id, reversal_sequence, delta_on
+10364 | 3161.0 | 0.305 | INSERT INTO reservation_line (order_id, order_line_id, line_no, sku_id, quantity, warehouse_id, state, committed_at) VALUES ($1, $
+10096 | 1917.6 | 0.190 | UPDATE reservation_line SET state = $1, committed_at = $2 WHERE order_id = $3 AND order_line_id = $4
+10096 | 1553.8 | 0.154 | UPDATE order_reservation SET state = $1, release_reason = $2, committed_release_reason = $3, payment_reference = $4, recovery_payment_reference = $5, revisi
+10364 | 1543.8 | 0.149 | INSERT INTO order_reservation (order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recove
+11372 | 1480.5 | 0.130 | INSERT INTO sku_availability_dirty (sku_id, first_marked_at, mark_seq, last_correlation_id, last_causation_id) VALUES ($1, $
+10096 | 1138.2 | 0.113 | SELECT l.order_id, l.order_line_id, l.line_no, l.sku_id, l.quantity, l.warehouse_id, l.state, l.committed_at, d.handover_reference, d.handed_over_at FROM reserv
+10364 | 1122.6 | 0.108 | INSERT INTO audit_entry (recorded_at, actor_type, actor_id, actor_role, session_id, caller_namespace, command_id, operation, target_type, target_id, reason,
+10138 | 984.4 | 0.097 | SELECT order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recovery_payment_reference, re
+10096 | 977.2 | 0.097 | INSERT INTO audit_entry (recorded_at, actor_type, actor_id, actor_role, session_id, caller_namespace, command_id, operation, target_type, target_id, reason,
+10364 | 673.3 | 0.065 | SELECT $2 FROM ONLY "public"."order_reservation" x WHERE "order_id"::pg_catalog.text OPERATOR(pg_catalog.=) $1::pg_catalog.text FOR KEY SHARE OF x
+10364 | 615.2 | 0.059 | SELECT order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recovery_payment_reference, re
+10364 | 549.3 | 0.053 | SELECT warehouse_id, name, address::text AS address, is_active, operational_state, fulfillment_priority, revision FROM warehouse WHERE warehouse_id = $1 FOR SHA
+20502 | 294.0 | 0.014 | SET LOCAL lock_timeout = '2000ms'
+10364 | 217.9 | 0.021 | SELECT 1 FROM ONLY "public"."warehouse" x WHERE "warehouse_id"::pg_catalog.text OPERATOR(pg_catalog.=) $1::pg_catalog.text FOR KEY SHARE OF x
+10455 | 145.6 | 0.014 | SELECT pg_advisory_xact_lock(hashtextextended('order-reserve:' || $1, 0))
+149 | 113.8 | 0.764 | SELECT extract($1 FROM now())::bigint, count(*) FILTER (WHERE wait_event_type = $2), count(*) FILTER (WHERE state = $3), count(*) FILTER
+91 | 71.6 | 0.787 | DELETE FROM sku_availability_dirty WHERE sku_id = $1 AND mark_seq = $2
+20502 | 45.7 | 0.002 | SAVEPOINT "SAVEPOINT_1"
+20460 | 40.2 | 0.002 | RELEASE SAVEPOINT "SAVEPOINT_1"
+14889 | 28.5 | 0.002 | BEGIN

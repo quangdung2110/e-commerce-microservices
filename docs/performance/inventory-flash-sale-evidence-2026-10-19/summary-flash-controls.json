@@ -1,0 +1,450 @@
+{
+  "flash-60s-flash": [
+    {
+      "offered_per_s": 50,
+      "hot_share": 1,
+      "reserved_per_s": 50.0,
+      "requests": 3000,
+      "dropped": 0,
+      "dropped_rate": 0.0,
+      "outcomes": {
+        "hot": {
+          "reserved": 3000,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 0,
+          "timeout": 0,
+          "other": 0
+        },
+        "cold": {
+          "reserved": 0,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 0,
+          "timeout": 0,
+          "other": 0
+        }
+      },
+      "error_rate": 0.0,
+      "latency_ms": {
+        "hot": {
+          "p50": 7.0,
+          "p95": 12.0,
+          "p99": 15.4,
+          "max": 37.3
+        }
+      },
+      "meets_slo": true,
+      "cpu": {
+        "inventory-service": {
+          "mean": 31.9,
+          "max": 77.1
+        },
+        "postgres": {
+          "mean": 29.4,
+          "max": 102.1
+        }
+      },
+      "hikari_pending": {
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "hikari_active": {
+        "mean": 0.6,
+        "max": 2.0
+      },
+      "hikari_timeouts": 0.0,
+      "busy_counter": 0.0,
+      "pg": {
+        "lock_waiters_mean": 0.5,
+        "lock_waiters_max": 1,
+        "active_mean": 1.3,
+        "backends_max": 15
+      },
+      "sql": {
+        "position_lock_mean_ms": 1.355,
+        "position_lock_share_of_sql_time": 0.597,
+        "top": [
+          {
+            "calls": 6000,
+            "total_ms": 8131.9,
+            "mean_ms": 1.355,
+            "query": "SELECT warehouse_id, sku_id, on_hand, available_to_sell, reserved, committed, quarantine, revision, updated_at FROM stock_position WHERE warehouse_id = $1 AND s"
+          },
+          {
+            "calls": 6000,
+            "total_ms": 934.4,
+            "mean_ms": 0.156,
+            "query": "INSERT INTO command_execution (caller_namespace, command_id, operation, fingerprint, correlation_id, recorded_at) VALUES ($1, $2,"
+          },
+          {
+            "calls": 6000,
+            "total_ms": 603.0,
+            "mean_ms": 0.101,
+            "query": "INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, reverses_movement_id, reversal_sequence, delta_on"
+          },
+          {
+            "calls": 6000,
+            "total_ms": 580.9,
+            "mean_ms": 0.097,
+            "query": "UPDATE command_execution SET result = $1, http_status = $2, error_code = $3, outcome = $4, resource_id = $5, response_body = $6::jsonb WHERE caller_namespac"
+          },
+          {
+            "calls": 6000,
+            "total_ms": 510.3,
+            "mean_ms": 0.085,
+            "query": "UPDATE stock_position SET on_hand = $1, available_to_sell = $2, reserved = $3, committed = $4, quarantine = $5, revision = revision + 1, updated_at = $6 WHE"
+          },
+          {
+            "calls": 3000,
+            "total_ms": 493.5,
+            "mean_ms": 0.165,
+            "query": "INSERT INTO reservation_line (order_id, order_line_id, line_no, sku_id, quantity, warehouse_id, state, committed_at) VALUES ($1, $"
+          },
+          {
+            "calls": 3000,
+            "total_ms": 331.1,
+            "mean_ms": 0.11,
+            "query": "UPDATE reservation_line SET state = $1, committed_at = $2 WHERE order_id = $3 AND order_line_id = $4"
+          },
+          {
+            "calls": 3000,
+            "total_ms": 259.7,
+            "mean_ms": 0.087,
+            "query": "UPDATE order_reservation SET state = $1, release_reason = $2, committed_release_reason = $3, payment_reference = $4, recovery_payment_reference = $5, revisi"
+          }
+        ]
+      },
+      "commits": 8584,
+      "rollbacks": 0,
+      "deadlocks": 0,
+      "hot_reserved_delta": 0,
+      "hot_reserved_responses": 3000,
+      "correct": true,
+      "finish": {
+        "finished_per_s": 50.0,
+        "requests": 3000,
+        "dropped": 0,
+        "outcomes": {
+          "hot": {
+            "committed": 2702,
+            "released": 298,
+            "not_reserved": 0,
+            "busy": 0,
+            "unavailable": 0,
+            "timeout": 0,
+            "other": 0
+          },
+          "cold": {
+            "committed": 0,
+            "released": 0,
+            "not_reserved": 0,
+            "busy": 0,
+            "unavailable": 0,
+            "timeout": 0,
+            "other": 0
+          }
+        },
+        "not_reserved": 0,
+        "error_rate": 0.0,
+        "latency_ms": {
+          "hot": {
+            "p50": 7.8,
+            "p95": 12.4,
+            "p99": 16.2,
+            "max": 33.1
+          }
+        },
+        "correct": true
+      },
+      "client_timeouts": 0,
+      "db_consistent": true
+    },
+    {
+      "offered_per_s": 100,
+      "hot_share": 1,
+      "reserved_per_s": 94.9,
+      "requests": 5693,
+      "dropped": 308,
+      "dropped_rate": 0.0513,
+      "outcomes": {
+        "hot": {
+          "reserved": 5692,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 1,
+          "timeout": 0,
+          "other": 0
+        },
+        "cold": {
+          "reserved": 0,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 0,
+          "timeout": 0,
+          "other": 0
+        }
+      },
+      "error_rate": 0.0002,
+      "latency_ms": {
+        "hot": {
+          "p50": 2150.3,
+          "p95": 5240.5,
+          "p99": 5828.6,
+          "max": 7025.4
+        }
+      },
+      "meets_slo": false,
+      "cpu": {
+        "inventory-service": {
+          "mean": 60.9,
+          "max": 109.8
+        },
+        "postgres": {
+          "mean": 114.4,
+          "max": 222.4
+        }
+      },
+      "hikari_pending": {
+        "mean": 84.2,
+        "max": 176.0
+      },
+      "hikari_active": {
+        "mean": 12.8,
+        "max": 24.0
+      },
+      "hikari_timeouts": 1.0,
+      "busy_counter": 0.0,
+      "pg": {
+        "lock_waiters_mean": 19.0,
+        "lock_waiters_max": 23,
+        "active_mean": 20.6,
+        "backends_max": 24
+      },
+      "sql": {
+        "position_lock_mean_ms": 110.384,
+        "position_lock_share_of_sql_time": 0.987,
+        "top": [
+          {
+            "calls": 11286,
+            "total_ms": 1245797.2,
+            "mean_ms": 110.384,
+            "query": "SELECT warehouse_id, sku_id, on_hand, available_to_sell, reserved, committed, quarantine, revision, updated_at FROM stock_position WHERE warehouse_id = $1 AND s"
+          },
+          {
+            "calls": 11287,
+            "total_ms": 2264.1,
+            "mean_ms": 0.201,
+            "query": "INSERT INTO command_execution (caller_namespace, command_id, operation, fingerprint, correlation_id, recorded_at) VALUES ($1, $2,"
+          },
+          {
+            "calls": 11286,
+            "total_ms": 2092.4,
+            "mean_ms": 0.185,
+            "query": "UPDATE stock_position SET on_hand = $1, available_to_sell = $2, reserved = $3, committed = $4, quarantine = $5, revision = revision + 1, updated_at = $6 WHE"
+          },
+          {
+            "calls": 11287,
+            "total_ms": 1869.0,
+            "mean_ms": 0.166,
+            "query": "UPDATE command_execution SET result = $1, http_status = $2, error_code = $3, outcome = $4, resource_id = $5, response_body = $6::jsonb WHERE caller_namespac"
+          },
+          {
+            "calls": 11286,
+            "total_ms": 1809.5,
+            "mean_ms": 0.16,
+            "query": "INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, reverses_movement_id, reversal_sequence, delta_on"
+          },
+          {
+            "calls": 5692,
+            "total_ms": 1602.3,
+            "mean_ms": 0.282,
+            "query": "INSERT INTO reservation_line (order_id, order_line_id, line_no, sku_id, quantity, warehouse_id, state, committed_at) VALUES ($1, $"
+          },
+          {
+            "calls": 5594,
+            "total_ms": 1002.3,
+            "mean_ms": 0.179,
+            "query": "UPDATE reservation_line SET state = $1, committed_at = $2 WHERE order_id = $3 AND order_line_id = $4"
+          },
+          {
+            "calls": 5594,
+            "total_ms": 789.4,
+            "mean_ms": 0.141,
+            "query": "UPDATE order_reservation SET state = $1, release_reason = $2, committed_release_reason = $3, payment_reference = $4, recovery_payment_reference = $5, revisi"
+          }
+        ]
+      },
+      "commits": 12292,
+      "rollbacks": 0,
+      "deadlocks": 0,
+      "hot_reserved_delta": 98,
+      "hot_reserved_responses": 5692,
+      "correct": true,
+      "finish": {
+        "finished_per_s": 93.2,
+        "requests": 5595,
+        "dropped": 406,
+        "outcomes": {
+          "hot": {
+            "committed": 5033,
+            "released": 561,
+            "not_reserved": 1,
+            "busy": 0,
+            "unavailable": 0,
+            "timeout": 0,
+            "other": 0
+          },
+          "cold": {
+            "committed": 0,
+            "released": 0,
+            "not_reserved": 0,
+            "busy": 0,
+            "unavailable": 0,
+            "timeout": 0,
+            "other": 0
+          }
+        },
+        "not_reserved": 1,
+        "error_rate": 0.0,
+        "latency_ms": {
+          "hot": {
+            "p50": 2252.4,
+            "p95": 5330.4,
+            "p99": 5832.4,
+            "max": 7363.6
+          }
+        },
+        "correct": true
+      },
+      "client_timeouts": 0,
+      "db_consistent": true
+    }
+  ],
+  "reserve-120s-hot": [
+    {
+      "offered_per_s": 250,
+      "hot_share": 1,
+      "reserved_per_s": 202.7,
+      "requests": 24326,
+      "dropped": 5675,
+      "dropped_rate": 0.1892,
+      "outcomes": {
+        "hot": {
+          "reserved": 24326,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 0,
+          "timeout": 0,
+          "other": 0
+        },
+        "cold": {
+          "reserved": 0,
+          "rejected": 0,
+          "busy": 0,
+          "unavailable": 0,
+          "timeout": 0,
+          "other": 0
+        }
+      },
+      "error_rate": 0.0,
+      "latency_ms": {
+        "hot": {
+          "p50": 9309.2,
+          "p95": 11866.5,
+          "p99": 12313.9,
+          "max": 13742.1
+        }
+      },
+      "meets_slo": false,
+      "cpu": {
+        "inventory-service": {
+          "mean": 66.3,
+          "max": 188.6
+        },
+        "postgres": {
+          "mean": 109.5,
+          "max": 202.5
+        }
+      },
+      "hikari_pending": {
+        "mean": 140.2,
+        "max": 176.0
+      },
+      "hikari_active": {
+        "mean": 19.7,
+        "max": 24.0
+      },
+      "hikari_timeouts": 0.0,
+      "busy_counter": 0.0,
+      "pg": {
+        "lock_waiters_mean": 22.5,
+        "lock_waiters_max": 23,
+        "active_mean": 23.5,
+        "backends_max": 24
+      },
+      "sql": {
+        "position_lock_mean_ms": 120.367,
+        "position_lock_share_of_sql_time": 0.988,
+        "top": [
+          {
+            "calls": 24326,
+            "total_ms": 2928036.7,
+            "mean_ms": 120.367,
+            "query": "SELECT warehouse_id, sku_id, on_hand, available_to_sell, reserved, committed, quarantine, revision, updated_at FROM stock_position WHERE warehouse_id = $1 AND s"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 5996.3,
+            "mean_ms": 0.246,
+            "query": "INSERT INTO reservation_line (order_id, order_line_id, line_no, sku_id, quantity, warehouse_id, state, committed_at) VALUES ($1, $"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 4229.7,
+            "mean_ms": 0.174,
+            "query": "INSERT INTO command_execution (caller_namespace, command_id, operation, fingerprint, correlation_id, recorded_at) VALUES ($1, $2,"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 4146.0,
+            "mean_ms": 0.17,
+            "query": "UPDATE command_execution SET result = $1, http_status = $2, error_code = $3, outcome = $4, resource_id = $5, response_body = $6::jsonb WHERE caller_namespac"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 3827.2,
+            "mean_ms": 0.157,
+            "query": "INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, reverses_movement_id, reversal_sequence, delta_on"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 3682.4,
+            "mean_ms": 0.151,
+            "query": "UPDATE stock_position SET on_hand = $1, available_to_sell = $2, reserved = $3, committed = $4, quarantine = $5, revision = revision + 1, updated_at = $6 WHE"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 3154.6,
+            "mean_ms": 0.13,
+            "query": "INSERT INTO order_reservation (order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recove"
+          },
+          {
+            "calls": 24326,
+            "total_ms": 2950.8,
+            "mean_ms": 0.121,
+            "query": "INSERT INTO audit_entry (recorded_at, actor_type, actor_id, actor_role, session_id, caller_namespace, command_id, operation, target_type, target_id, reason,"
+          }
+        ]
+      },
+      "commits": 24961,
+      "rollbacks": 0,
+      "deadlocks": 0,
+      "hot_reserved_delta": 24326,
+      "hot_reserved_responses": 24326,
+      "correct": true,
+      "client_timeouts": 0,
+      "db_consistent": true
+    }
+  ]
+}

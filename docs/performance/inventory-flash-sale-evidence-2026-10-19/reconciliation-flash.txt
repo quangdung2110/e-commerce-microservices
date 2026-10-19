@@ -1,0 +1,25 @@
+Server-side reconciliation of BENCH-HOT at the end of run 20261019-flash (after the 300 orders/s step), queried on the
+bench PostgreSQL before teardown. The run reseeded once at its start, so the totals cover warm-up and all seven steps.
+
+stock_position (BENCH-HOT)
+  on_hand 1000000000000  available_to_sell 999999933405  reserved 6551  committed 60044  quarantine 0
+  on_hand - available_to_sell = 66595 = reserved + committed
+
+reservation_line (BENCH-HOT) by state        order_reservation by state (same orders)
+  COMMITTED 60044 (quantity 60044)             COMMITTED 60044
+  RELEASED   6683 (quantity  6683)             RELEASED   6683
+  RESERVED   6551 (quantity  6551)             RESERVED   6551
+
+stock_movement (BENCH-HOT) by source operation
+  COMMIT_PAYMENT       60044  delta_available      0  delta_reserved -60044  delta_committed 60044
+  RELEASE_RESERVATION   6683  delta_available   6683  delta_reserved  -6683  delta_committed     0
+  RESERVE              73278  delta_available -73278  delta_reserved  73278  delta_committed     0
+
+Check: reserved 73278 - 60044 - 6683 = 6551 = bucket; committed 60044 = bucket;
+available 10^12 - 73278 + 6683 = 999999933405 = bucket. No oversell, no lost or duplicated movement.
+The 6551 RESERVED roots are orders whose Commit/Release timed out, was dropped by k6, or arrived before its Reserve
+finished; Order's payment timer would release them.
+
+The client-side check of analyze.py reports "—" for the 150, 200 and 300 steps: k6 timed out 3514-13258 requests whose
+outcome it never saw, while Inventory still committed them. Steps run after this file was written also record
+hot_reconcile per step (scripts/ci/inventory-bench.sh).

@@ -135,7 +135,7 @@ def step_summary(directory, rate):
     commits = db["db_after"][0] - db["db_before"][0] if db.get("db_after") and db.get("db_before") else None
     rollbacks = db["db_after"][1] - db["db_before"][1] if db.get("db_after") and db.get("db_before") else None
     deadlocks = db["db_after"][2] - db["db_before"][2] if db.get("db_after") and db.get("db_before") else None
-    return {
+    summary = {
         "offered_per_s": rate,
         "hot_share": k6["hot_share"],
         "reserved_per_s": round(reserved / seconds, 1),
@@ -161,12 +161,104 @@ def step_summary(directory, rate):
         "hot_reserved_responses": outcomes["hot"]["reserved"],
         "correct": hot_delta == outcomes["hot"]["reserved"] if hot_delta is not None else None,
     }
+    if "commit_outcomes" in k6:
+        summary["finish"] = finish_summary(k6, db, seconds)
+        summary["correct"] = summary["finish"]["correct"]
+        summary["meets_slo"] = summary["meets_slo"] and summary["finish"]["error_rate"] <= SLO_ERROR_RATE
+    # A client timeout leaves the outcome unknown to k6 while Inventory may still have committed it, so the client-side
+    # count proves nothing then. The server-side reconciliation (lines per state == buckets) is the check that holds.
+    timeouts = sum(c["timeout"] for c in outcomes.values()) + (
+        sum(c["timeout"] for c in summary["finish"]["outcomes"].values()) if "finish" in summary else 0)
+    if timeouts:
+        summary["correct"] = None
+    summary["client_timeouts"] = timeouts
+    reconcile = db.get("hot_reconcile")
+    if reconcile and len(reconcile) == 6:
+        lines_reserved, lines_committed, _, bucket_reserved, bucket_committed, taken = reconcile
+        summary["db_consistent"] = (lines_reserved == bucket_reserved and lines_committed == bucket_committed
+                                    and taken == bucket_reserved + bucket_committed)
+    return summary
+
+
+def finish_summary(k6, db, seconds):
+    """Commit/Release half of a MODE=reserve-commit step. There is no Commit SLO, so only its errors gate a step.
+
+    not_reserved (409) means the order's Reserve had failed or not finished when its Commit arrived; it is reported
+    apart, not as an Inventory error. Correctness on the hot row: reserved delta = RESERVED - COMMITTED - RELEASED,
+    committed delta = COMMITTED, available delta = RELEASED - RESERVED."""
+    outcomes = k6["commit_outcomes"]
+    hot = outcomes["hot"]
+    total = sum(sum(c.values()) for c in outcomes.values())
+    done = sum(c["committed"] + c["released"] for c in outcomes.values())
+    not_reserved = sum(c["not_reserved"] for c in outcomes.values())
+    failed = total - done - not_reserved
+    lat = {}
+    for cls in ("hot", "cold"):
+        values = k6["commit_latency_ms"].get(cls)
+        if values:
+            lat[cls] = {k: round(values[key], 1) for k, key in
+                        (("p50", "med"), ("p95", "p(95)"), ("p99", "p(99)"), ("max", "max"))}
+    correct = None
+    before, after = db.get("hot_before"), db.get("hot_after")
+    if before and after and len(before) >= 4 and len(after) >= 4:
+        reserved_ok = k6["outcomes"]["hot"]["reserved"]
+        correct = (after[0] - before[0] == reserved_ok - hot["committed"] - hot["released"]
+                   and after[3] - before[3] == hot["committed"]
+                   and after[1] - before[1] == hot["released"] - reserved_ok)
+    return {
+        "finished_per_s": round(done / seconds, 1),
+        "requests": total,
+        "dropped": k6.get("commit_dropped_iterations", 0),
+        "outcomes": outcomes,
+        "not_reserved": not_reserved,
+        "error_rate": round(failed / total, 4) if total else 0.0,
+        "latency_ms": lat,
+        "correct": correct,
+    }
+
+
+def correct_cell(s):
+    """yes / NO from the client-side count; with client timeouts that count is unknown and the server-side
+    reconciliation decides ("db yes"), or "—" when the step has none."""
+    if s.get("db_consistent") is False:
+        return "NO (db)"
+    if s["correct"] is None:
+        return "db yes" if s.get("db_consistent") else "—"
+    return "yes" if s["correct"] else "NO"
 
 
 def fmt(value, digits=0):
     if value is None:
         return "—"
     return f"{value:,.{digits}f}".replace(",", " ")
+
+
+def flash_table(name, steps):
+    """Table for MODE=reserve-commit: Offered/s is orders per second (Reserve and Commit/Release each at that rate)."""
+    lines = [f"## {name}", "",
+             "| Orders/s | RESERVED/s | Finished/s | SLO | Reserve hot p50 / p95 / p99 ms | Commit hot p50 / p95 / p99 ms | "
+             "Busy | Unavail. | Timeout | Not reserved | Dropped res / fin | Lock stmt mean ms | Lock waiters mean/max | "
+             "Hikari pending mean/max | CPU inv / pg % | Correct |",
+             "|" + "---:|" * 16]
+    for s in steps:
+        f = s["finish"]
+
+        def lat(v):
+            return f"{fmt(v['p50'], 1)} / {fmt(v['p95'], 1)} / {fmt(v['p99'], 1)}" if v else "—"
+        count = lambda r: sum(c[r] for c in s["outcomes"].values()) + sum(c[r] for c in f["outcomes"].values())
+        pg = s["pg"] or {}
+        hp = s["hikari_pending"] or {}
+        cpu = s["cpu"]
+        lines.append(
+            f"| {s['offered_per_s']} | {fmt(s['reserved_per_s'], 1)} | {fmt(f['finished_per_s'], 1)} | "
+            f"{'yes' if s['meets_slo'] else 'no'} | {lat(s['latency_ms'].get('hot'))} | {lat(f['latency_ms'].get('hot'))} | "
+            f"{count('busy')} | {count('unavailable')} | {count('timeout')} | {f['not_reserved']} | "
+            f"{s['dropped']} / {f['dropped']} | {fmt(s['sql']['position_lock_mean_ms'], 1)} | "
+            f"{fmt(pg.get('lock_waiters_mean'), 1)} / {fmt(pg.get('lock_waiters_max'))} | "
+            f"{fmt(hp.get('mean'), 1)} / {fmt(hp.get('max'))} | "
+            f"{fmt(cpu.get('inventory-service', {}).get('mean'))} / {fmt(cpu.get('postgres', {}).get('mean'))} | "
+            f"{correct_cell(s)} |")
+    return lines + [""]
 
 
 def main(run_dir):
@@ -178,6 +270,9 @@ def main(run_dir):
                        if (m := re.match(r"rate-(\d+)-k6\.json", f.name)))
         steps = [step_summary(directory, r) for r in rates]
         result[directory.name] = steps
+        if any("finish" in s for s in steps):
+            lines += flash_table(directory.name, steps)
+            continue
         lines += [f"## {directory.name}", "",
                   "| Offered/s | RESERVED/s | SLO | Hot p50 / p95 / p99 ms | Cold p50 / p95 / p99 ms | Busy | Unavail. | "
                   "Timeout | Dropped | Lock stmt mean ms | Lock waiters mean/max | Hikari pending mean/max | "
@@ -198,7 +293,7 @@ def main(run_dir):
                 f"{fmt(pg.get('lock_waiters_mean'), 1)} / {fmt(pg.get('lock_waiters_max'))} | "
                 f"{fmt(hp.get('mean'), 1)} / {fmt(hp.get('max'))} | "
                 f"{fmt(cpu.get('inventory-service', {}).get('mean'))} / {fmt(cpu.get('postgres', {}).get('mean'))} | "
-                f"{'yes' if s['correct'] else ('—' if s['correct'] is None else 'NO')} |")
+                f"{correct_cell(s)} |")
         lines.append("")
     (run / "summary.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     (run / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
