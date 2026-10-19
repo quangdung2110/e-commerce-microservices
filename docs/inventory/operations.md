@@ -49,8 +49,16 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 | Search freshness > 30 s / > 60 s, or readiness-suppressed facts grow | Warning / page: Inventory + Search | Repair readiness/projector, replay or snapshot bootstrap. |
 | Availability Read API latency/error or BFF `UNKNOWN` rate breaches its agreed budget | Warning / page: Inventory + Storefront | Repair read endpoint/projector/cache; BFF continues to degrade rather than replaying data. |
 | Any `RESERVED` root > 60 min | Operational page: Order | Order decides explicit outcome; no Inventory cleanup. |
-| `503 INVENTORY_BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
+| `503 INVENTORY_BUSY` > 1% of mutation attempts for 5 min (`InventoryCommandBusy`) | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
+| Reserve p95 > 200 ms or p99 > 500 ms on the Reserve route for 10 min (`InventoryReserveLatencySloBreach`) | High: Inventory + Platform | Check pool pending and `stock_position` lock waits; find the hot SKU ([runbook](../observability/runbook.md#inventoryreservelatencyslobreach)). Adding replicas does not help one hot row. |
+| Average Hikari pending > 10 per instance for 5 min (`InventoryDbPoolSaturated`) | Warning: Inventory + Platform | Early queueing signal: connections held by lock waits or a slow primary. |
 | Audit failure, privileged anomaly, direct-write attempt | Security page | Deny/contain, preserve evidence, investigate. |
+
+The busy rate alone does not detect a hot SKU. Callers queue for a pool connection and each lock wait stays far below
+`lock_timeout`, so `INVENTORY_BUSY` stays at 0 while Reserve latency reaches seconds; the latency and pool alerts cover
+that case ([ADR-032](decisions/ADR-032-reserve-saturation-alerts.md),
+[baseline benchmark](../performance/inventory-reserve-hot-sku-baseline-2026-10-19.md)). The three rules live in
+[`infra/observability/rules.yml`](../../infra/observability/rules.yml).
 
 Refund-scope/quarantine age is dashboarded but has no automatic closure threshold:
 Order owns return-window policy and Operations owns inspection cadence. A terminal

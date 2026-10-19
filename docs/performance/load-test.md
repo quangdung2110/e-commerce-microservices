@@ -14,6 +14,12 @@ thử provider chậm và listener mất kết nối trên môi trường test r
 Kết quả kiểm chứng chức năng: [Order async submission verification 2026-10-16](../order/async-submission-verification-2026-10-16.md)
 (97 Order test pass; 164 Checkout test, 0 failure/error và 1 live test skip).
 
+[Inventory Reserve trên một SKU nóng: baseline](./inventory-reserve-hot-sku-baseline-2026-10-19.md) (2026-10-19, chưa sửa code): stack tách biệt có giới hạn CPU, lệnh
+ReserveOrder theo tải mở. Một SKU nóng đạt SLO tới **250/s** và tối đa khoảng **330 RESERVED/s**; cùng service chia ra 2 000 SKU đạt SLO tới **600/s**. Khi
+bão hoà, 22–23 trên 24 connection chờ khoá `stock_position` trong khi CPU còn dư một nửa. Trộn 50/50 ở 600/s làm đơn SKU nguội cũng có p50 3,9 s. Không có
+`INVENTORY_BUSY` nào ở mọi bậc, nên alert theo tỉ lệ busy không phát hiện được; [Inventory ADR-032](../inventory/decisions/ADR-032-reserve-saturation-alerts.md) thêm alert latency
+Reserve và alert pool. Mức sàn `UPDATE`+`COMMIT` một hàng là khoảng 700–750/s.
+
 ## Cách chạy
 
 ```bash
@@ -60,7 +66,8 @@ script là các budget mà thiết kế nêu (p95 < 800 ms, p99 < 1,5 s cho chi 
 ## Không chứng minh được
 
 - **Dung lượng production.** Một máy, một replica, bộ sinh tải cùng máy, catalog nhỏ. Các con số là bằng chứng tương đối và phát hiện lỗi, không phải kế hoạch năng lực.
-- **Đường ghi.** Checkout, Order, Payment, Inventory reserve cần tài khoản, Stripe và dữ liệu; chưa có kịch bản k6.
+- **Đường ghi.** Checkout, Order, Payment cần tài khoản, Stripe và dữ liệu; chưa có kịch bản k6 end-to-end. Riêng Inventory Reserve đã đo cô lập
+  (gọi thẳng như Order, không có Temporal phía trước) trong [baseline SKU nóng](./inventory-reserve-hot-sku-baseline-2026-10-19.md).
 - **Chaos trên stack đang chạy** (dừng container, ngắt mạng). Stack local dùng chung với người đang phát triển nên không thực hiện; thay bằng fault injection ở mức socket trong test (dưới đây).
 - **Overhead của mesh** (HBONE, waypoint): chưa có cluster ([mesh runtime contract §10](../mesh/runtime-contract.md)).
 

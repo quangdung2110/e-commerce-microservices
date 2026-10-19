@@ -289,6 +289,7 @@ attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đ�
 | Tài liệu | Nội dung |
 |---|---|
 | [performance/load-test.md](./performance/load-test.md) | Load test k6 chỉ đọc cho route storefront (qua gateway và thẳng service), kết quả đo, giới hạn của số đo, và fault injection ở mức socket cho Order và Search ([contracts ADR-010](../contracts/decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md)). |
+| [performance/inventory-reserve-hot-sku-baseline-2026-10-19.md](./performance/inventory-reserve-hot-sku-baseline-2026-10-19.md) | Baseline (trước khi sửa) cho ReserveOrder của Inventory trên một SKU nóng, stack cô lập `scripts/ci/inventory-bench.sh`: đạt SLO tới 250/s, trần ≈ 330/s do hàng khoá `stock_position` (CPU còn dư một nửa); 2 000 SKU nguội đạt 600/s; trộn 50/50 làm đơn nguội chậm theo; 0 `INVENTORY_BUSY` nên alert busy không bắt được (đã thêm alert latency/pool, [Inventory ADR-032](./inventory/decisions/ADR-032-reserve-saturation-alerts.md)); mức sàn COMMIT một hàng ≈ 700–750/s; đối chiếu envelope 10 Reserve/s của Release 1. |
 
 ## 12. Frontend (`docs/frontend/`)
 

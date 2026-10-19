@@ -1,0 +1,18 @@
+pgbench on the bench PostgreSQL (same container, CPU limit 3, fsync/synchronous_commit on), scratch database pgb,
+one-row table hot(id=1), 15 s per case, run 2026-10-19 after the main baseline run.
+
+-- local socket, 1 client, UPDATE hot SET v = v + 1 WHERE id = 1 (autocommit)
+latency average = 1.297 ms
+tps = 770.761809
+-- local socket, 24 clients, same
+latency average = 35.438 ms
+tps = 677.243033
+-- over bench network, 1 client, same
+latency average = 1.424 ms
+tps = 702.466146
+-- over bench network, 24 clients, BEGIN; SELECT ... FOR UPDATE; 6 x SELECT 1; UPDATE; COMMIT (lock + 8 round trips + commit)
+latency average = 51.290 ms
+tps = 467.926997
+-- over bench network, 24 clients, UPDATE (autocommit)
+latency average = 32.153 ms
+tps = 746.430655
