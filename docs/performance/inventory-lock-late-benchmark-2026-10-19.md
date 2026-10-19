@@ -25,6 +25,11 @@ replica Order (bulkhead 64, timeout 8 s), mỗi bậc 120 giây. Baseline flash 
 - **Tính đúng không đổi.** Đối soát phía DB khớp ở mọi bậc. 60/60 test xanh, gồm 4 test chạy đồng thời mới. Hai đột biến
   có chủ đích (bỏ quay về savepoint, bỏ điều kiện tồn kho) đều bị test bắt.
 
+**Bước 2 ([ADR-034](../inventory/decisions/ADR-034-command-result-before-stock-and-dirty-mark-in-last-update.md), mục 7):**
+vùng khoá chỉ còn một câu lệnh và COMMIT. So với v1 trong cùng phiên, trần flash tăng thêm khoảng 16% (208 → 241 đơn/s),
+và p99 ở 200 đơn/s giảm từ 209 xuống 38 ms. Chỉ Reserve đạt SLO tới 400/s, trần khoảng 435/s. Từ đây nút thắt chuyển sang
+CPU của PostgreSQL và Inventory.
+
 Tải dự kiến của Release 1 là 10 Reserve/s, nên thay đổi này nhằm chuẩn bị cho flash sale, không sửa một vi phạm SLO hiện
 có. Các con số là **so sánh tương đối trên một máy**, không phải năng lực production (mục 6).
 
@@ -131,7 +136,80 @@ Làm cả hai thì vùng khoá chỉ còn 1 câu + COMMIT, khi đó mới tiến
 - **Đường `REJECT_ALL` chậm hơn trước** (ghi rồi quay về savepoint, rồi khoá và đọc lại). Benchmark không có trường hợp
   hết hàng, nên chi phí của đường này chưa được đo.
 
-## 7. Chạy lại
+## 7. Bước 2 (ADR-034) — 20/10/2026
+
+[ADR-034](../inventory/decisions/ADR-034-command-result-before-stock-and-dirty-mark-in-last-update.md) bỏ thêm hai
+round-trip khỏi vùng khoá:
+- executor ghi kết quả command **trước** các câu stock;
+- dirty mark nằm chung trong câu stock cuối (CTE).
+
+Với đơn một dòng, vùng khoá chỉ còn **một câu lệnh và COMMIT**. Đo bằng cùng kịch bản C, chạy liên tiếp trong một phiên
+00:22–01:20 (jar v2 `aaade35b…`, v1 là jar của ADR-033 `4d16b8df…`). Máy rảnh: 211 mẫu, không có tiến trình game, CPU
+trung bình 25% ([host-load.txt](./inventory-lock-late-v2-evidence-2026-10-20/host-load.txt)).
+
+### Flash sale: v1 và v2 trong cùng phiên
+
+| Đơn/s | v1: hoàn tất/s | v1: Reserve p95 / p99 ms | SLO | v2: hoàn tất/s | v2: Reserve p95 / p99 ms | SLO | Chờ khoá TB (ms) v1 → v2 |
+|---:|---:|---:|:---:|---:|---:|:---:|---:|
+| 100 | 100,0 | 8,2 / 10,2 | đạt | 100,0 | 9,0 / 12,6 | đạt | 0,7 → 0,7 |
+| 150 | 150,0 | 8,9 / 10,8 | đạt | 150,0 | 9,7 / 20,7 | đạt | 0,7 → 0,8 |
+| 175 | 174,8 | 9,3 / 66,7 | đạt | 175,0 | 9,6 / 25,3 | đạt | 1,5 → 0,8 |
+| 200 | 199,8 | 111 / 209 | đạt | 200,0 | **11,0 / 37,6** | đạt | 8,3 → 1,6 |
+| 250 | 204,8 | 269 / 371 | không | **228,4** | 230 / 317 | không (7% bị bỏ) | 46,4 → 38,4 |
+| 300 | 208,0 | 277 / 377 | không | **240,6** | 230 / 313 | không | 46,0 → 39,4 |
+
+- **Trần flash sale tăng khoảng 16%** (208 → 241 đơn/s). Ở 200 đơn/s, p99 của v2 là 38 ms so với 209 ms của v1. Cả hai
+  vẫn đạt SLO ở 200 đơn/s và cùng không đạt ở 250; bậc đo quá thưa để thấy khác biệt về mức SLO.
+- **Biến động giữa các phiên lớn.** Hôm nay v1 đạt SLO tới 200 đơn/s, trong khi hôm 19/10 chỉ tới 150 (mục 3). Chỉ so
+  sánh các lượt chạy trong cùng một phiên.
+
+### Chỉ Reserve: v2
+
+| Reserve/s | RESERVED/s | p95 / p99 ms | SLO | Chờ khoá TB ms | CPU Inv / PG % |
+|---:|---:|---:|:---:|---:|---:|
+| 250 | 250,0 | 7,5 / 9,8 | đạt | 0,2 | 53 / 60 |
+| 300 | 300,0 | 8,0 / 47,7 | đạt | 0,9 | 57 / 73 |
+| 350 | 350,0 | 8,2 / 37,1 | đạt | 0,9 | 63 / 90 |
+| **400** | **400,0** | **8,6 / 21,7** | **đạt** | 0,7 | 75 / 101 |
+| 500 | **435,3** | 259 / 350 | không | 49,6 | **100 / 233** |
+
+v1 chạy hôm 19/10 đạt SLO tới 300/s, trần khoảng 317/s. Lượt chỉ-Reserve của v1 **không** được chạy lại hôm nay. Phần
+v2 nhỉnh hơn (400 so với 300, 435 so với 317) vì vậy gồm cả biến động giữa hai phiên. Riêng lượt flash cho thấy biến động
+đó có thể tới khoảng một bậc.
+
+### Nút thắt chuyển sang CPU
+
+Ở 500 Reserve/s, PostgreSQL dùng trung bình 228% (đỉnh 284%) trên trần 300%, và Inventory dùng 98–100% trên trần 200%.
+Số connection chờ khoá vẫn khoảng 15 trên 23, nhưng hàng nóng không còn là giới hạn duy nhất. Mỗi lệnh giữ khoá khoảng
+2,1–2,3 ms ở trần (v1 khoảng 2,45 ms), sát mức sàn COMMIT khoảng 1,3 ms cộng phần thực thi. Muốn đi xa hơn thì phải thêm
+CPU hoặc bớt câu lệnh cho mỗi đơn, chứ không còn là rút vùng khoá nữa.
+
+### Tính đúng
+
+62/62 test xanh, gồm hai test mới:
+- đơn cùng SKU ở hai kho chạy cùng đơn một kho: không deadlock, mỗi lệnh đánh dấu dirty đúng một lần, Commit không đánh
+  dấu;
+- Reserve thiếu hàng ở bước cuối: kết quả lưu bền là `REJECT_ALL`.
+
+Hai đột biến đều bị bắt ([test-results.txt](./inventory-lock-late-v2-evidence-2026-10-20/test-results.txt)):
+- "dirty mark ở mọi câu stock": đơn hai kho nhận `503` (deadlock hoặc lock timeout);
+- "executor bỏ qua outcome thay thế": 6 test fail.
+
+Đối soát DB khớp ở mọi bậc.
+
+Evidence: [inventory-lock-late-v2-evidence-2026-10-20/](./inventory-lock-late-v2-evidence-2026-10-20/) (summary,
+environment, host-load, `pg_stat_statements` ở bậc bão hoà, test, raw).
+
+```bash
+MODE=reserve-commit COMMIT_DELAY=15 RELEASE_SHARE=0.1 MAX_VUS=32 TIMEOUT=8s DURATION=120s RUN_ID=20261020-lock-late-v2 \
+  RATES="100 150 175 200 250 300" bash scripts/ci/inventory-bench.sh lock-late-v2 loadtest/inventory-bench/jars/inventory-lock-late-v2.jar flash 1
+MAX_VUS=64 TIMEOUT=8s DURATION=120s RUN_ID=20261020-lock-late-v2 RATES="250 300 350 400 500" \
+  bash scripts/ci/inventory-bench.sh lock-late-v2 loadtest/inventory-bench/jars/inventory-lock-late-v2.jar hot 1
+MODE=reserve-commit COMMIT_DELAY=15 RELEASE_SHARE=0.1 MAX_VUS=32 TIMEOUT=8s DURATION=120s RUN_ID=20261020-lock-late-v2 \
+  RATES="100 150 175 200 250 300" bash scripts/ci/inventory-bench.sh lock-late-v1-rerun loadtest/inventory-bench/jars/inventory-lock-late.jar flash 1
+```
+
+## 8. Chạy lại
 
 ```bash
 cp java/services/inventory-service/target/inventory-service-1.0.0-SNAPSHOT.jar loadtest/inventory-bench/jars/inventory-lock-late.jar

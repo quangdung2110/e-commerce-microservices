@@ -11,7 +11,6 @@ import com.ecommerce.inventory.domain.ReservationStates;
 import com.ecommerce.inventory.domain.ReservationStates.LineState;
 import com.ecommerce.inventory.domain.ReservationStates.ReleaseReason;
 import com.ecommerce.inventory.domain.ReservationStates.RootState;
-import com.ecommerce.inventory.store.AvailabilityStore;
 import com.ecommerce.inventory.store.EvidenceStore;
 import com.ecommerce.inventory.store.ReservationStore;
 import com.ecommerce.inventory.store.Savepoints;
@@ -32,6 +31,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Order Temporal Saga reservation commands (interfaces.md §2, ADR-019/020/021). Every method
@@ -47,18 +47,16 @@ public class ReservationService {
     private final ReservationStore reservations;
     private final WarehouseStore warehouses;
     private final StockStore stock;
-    private final AvailabilityStore availability;
     private final EvidenceStore evidence;
     private final Savepoints savepoints;
     private final InventoryProperties properties;
 
     public ReservationService(ReservationStore reservations, WarehouseStore warehouses, StockStore stock,
-                              AvailabilityStore availability, EvidenceStore evidence, Savepoints savepoints,
+                              EvidenceStore evidence, Savepoints savepoints,
                               InventoryProperties properties) {
         this.reservations = reservations;
         this.warehouses = warehouses;
         this.stock = stock;
-        this.availability = availability;
         this.evidence = evidence;
         this.savepoints = savepoints;
         this.properties = properties;
@@ -69,10 +67,11 @@ public class ReservationService {
      * up; a stale line rejects the whole order and no alternate warehouse is tried.
      *
      * <p>The stock rows are locked last (ADR-033): warehouse eligibility and position existence
-     * are checked first, the root, lines, movements and audit are written, and only then does each
-     * position take its guarded update. When a guard fails, every write since the savepoint is
-     * undone and the shortfall is evaluated under the position locks as before, so
-     * {@code REJECT_ALL} names exactly the lines that cannot be allocated.
+     * are checked first, the root, lines, movements and audit are written, the executor records
+     * the {@code RESERVED} result, and only then does each position take its guarded update (the
+     * last one also marks the SKUs dirty). When a guard fails, every write since the savepoint,
+     * the recorded result included, is undone and the shortfall is evaluated under the position
+     * locks as before, so {@code REJECT_ALL} names exactly the lines that cannot be allocated.
      */
     public Accepted reserve(WorkflowDtos.ReserveOrderRequest request, CommandContext context) {
         String orderId = request.orderId();
@@ -105,25 +104,32 @@ public class ReservationService {
             return rejectAll(request, unavailableUnderLock(demand, ineligible), context);
         }
 
+        List<String> dirty = new ArrayList<>(new TreeSet<>(demand.keySet().stream().map(PositionKey::skuId).toList()));
         savepoints.set(RESERVE_SAVEPOINT);
         ReservationStore.Root root = writeReservation(request, demand, context);
-        if (!applyLast(demand, BucketDelta::reserve, context)) {
+        return reserved(request, root, context).thenLast(() -> {
+            if (applyLast(demand, BucketDelta::reserve, dirty, context)) {
+                return null;
+            }
             savepoints.rollbackTo(RESERVE_SAVEPOINT);
             Set<PositionKey> unavailable = unavailableUnderLock(demand, ineligible);
             if (!unavailable.isEmpty()) {
                 return rejectAll(request, unavailable, context);
             }
             // Stock was freed concurrently; the positions are now locked and sufficient.
-            root = writeReservation(request, demand, context);
-            if (!applyLast(demand, BucketDelta::reserve, context)) {
+            ReservationStore.Root again = writeReservation(request, demand, context);
+            if (!applyLast(demand, BucketDelta::reserve, dirty, context)) {
                 throw new IllegalStateException("guarded reserve failed under the position locks");
             }
-        }
-        availability.markDirty(demand.keySet().stream().map(PositionKey::skuId).toList(), context);
+            return reserved(request, again, context);
+        });
+    }
 
+    private static Accepted reserved(WorkflowDtos.ReserveOrderRequest request, ReservationStore.Root root,
+                                     CommandContext context) {
         return new Accepted(new WorkflowDtos.ReservedResponse(context.commandId(), context.correlationId(),
-                "RESERVED", context.now(), false, orderId, root.expiresAt(), root.revision(), request.lines()),
-                "RESERVED", orderId);
+                "RESERVED", context.now(), false, request.orderId(), root.expiresAt(), root.revision(),
+                request.lines()), "RESERVED", request.orderId());
     }
 
     /**
@@ -194,8 +200,10 @@ public class ReservationService {
         reservations.updateRoot(next, context.now());
         evidence.audit(context, TARGET, orderId, null, null, Map.of("state", root.state().name()),
                 Map.of("state", next.state().name(), "payment_reference", request.paymentReference()));
-        moveAllLast(lines, BucketDelta::commitPayment, "COMMIT_PAYMENT", orderId, context);
-        return reservationResult("COMMITTED", next, context);
+        appendMovements(lines, BucketDelta::commitPayment, "COMMIT_PAYMENT", orderId, context);
+        // Commit leaves available_to_sell unchanged, so it marks nothing dirty.
+        return reservationResult("COMMITTED", next, context)
+                .thenLast(covered(lines, BucketDelta::commitPayment, orderId, List.of(), context));
     }
 
     /** Whole-root release of a {@code RESERVED} root with one immutable reason. */
@@ -214,9 +222,9 @@ public class ReservationService {
         reservations.updateRoot(next, context.now());
         evidence.audit(context, TARGET, orderId, request.reason().name(), null, Map.of("state", root.state().name()),
                 Map.of("state", next.state().name(), "release_reason", request.reason().name()));
-        moveAllLast(lines, BucketDelta::releaseReservation, "RELEASE_RESERVATION", orderId, context);
-        availability.markDirty(skus(lines), context);
-        return reservationResult("RELEASED", next, context);
+        appendMovements(lines, BucketDelta::releaseReservation, "RELEASE_RESERVATION", orderId, context);
+        return reservationResult("RELEASED", next, context)
+                .thenLast(covered(lines, BucketDelta::releaseReservation, orderId, skus(lines), context));
     }
 
     /**
@@ -245,13 +253,18 @@ public class ReservationService {
         evidence.audit(context, TARGET, orderId, ReleaseReason.RESERVATION_EXPIRED.name(), null,
                 Map.of("state", root.state().name()),
                 Map.of("state", next.state().name(), "payment_reference", request.paymentReference()));
-        // A failed guard is the durable rejection; the executor undoes every write of this handler.
-        if (!applyAllLast(lines, BucketDelta::recoverToCommitted, "RECOVER_TIMED_OUT_PAYMENT", orderId, context)) {
-            throw new DomainRejection(ErrorCode.RESERVATION_NOT_RECOVERABLE,
-                    "The original allocation is no longer fully available at its original warehouses");
-        }
-        availability.markDirty(skus(lines), context);
-        return reservationResult("COMMITTED", next, context);
+        appendMovements(lines, BucketDelta::recoverToCommitted, "RECOVER_TIMED_OUT_PAYMENT", orderId, context);
+        Map<PositionKey, Long> demand = demand(lines);
+        List<String> dirty = skus(lines);
+        return reservationResult("COMMITTED", next, context).thenLast(() -> {
+            // A failed guard is the durable rejection; the executor undoes every write of this
+            // command, the recorded result included.
+            if (!applyLast(demand, BucketDelta::recoverToCommitted, dirty, context)) {
+                throw new DomainRejection(ErrorCode.RESERVATION_NOT_RECOVERABLE,
+                        "The original allocation is no longer fully available at its original warehouses");
+            }
+            return null;
+        });
     }
 
     /**
@@ -275,44 +288,55 @@ public class ReservationService {
         reservations.updateRoot(next, context.now());
         evidence.audit(context, TARGET, orderId, ReservationStates.COMMITTED_RELEASE_REASON, null,
                 Map.of("state", root.state().name()), Map.of("state", next.state().name()));
-        moveAllLast(lines, BucketDelta::releaseCommitted, "RELEASE_COMMITTED_BEFORE_DISPATCH", orderId, context);
-        availability.markDirty(skus(lines), context);
+        appendMovements(lines, BucketDelta::releaseCommitted, "RELEASE_COMMITTED_BEFORE_DISPATCH", orderId, context);
         List<String> released = lines.stream().map(ReservationStore.Line::orderLineId).toList();
         return new Accepted(new WorkflowDtos.ReleasedCommittedOrderResponse(context.commandId(),
                 context.correlationId(), "RELEASED", context.now(), false, orderId, next.revision(), released),
-                "RELEASED", orderId);
+                "RELEASED", orderId)
+                .thenLast(covered(lines, BucketDelta::releaseCommitted, orderId, skus(lines), context));
+    }
+
+    /** The movements of a transition; they touch no position row, so they belong in the body. */
+    private void appendMovements(List<ReservationStore.Line> lines, Function<Long, BucketDelta> transition,
+                                 String type, String orderId, CommandContext context) {
+        demand(lines).forEach((key, quantity) -> stock.appendMovement(key, transition.apply(quantity),
+                StockStore.MovementSpec.of(type, orderId), context));
     }
 
     /**
-     * Applies a transition the reservation's own buckets already cover (Commit, Release,
+     * Last step for a transition the reservation's own buckets already cover (Commit, Release,
      * pre-dispatch release). A failed guard means a position is missing or its buckets no longer
      * hold this order's quantity: an invariant breach, never a domain outcome.
      */
-    private void moveAllLast(List<ReservationStore.Line> lines, Function<Long, BucketDelta> transition, String type,
-                             String orderId, CommandContext context) {
-        if (!applyAllLast(lines, transition, type, orderId, context)) {
-            throw new Buckets.InvariantViolation("reservation " + orderId + " is not covered by its stock positions");
-        }
-    }
-
-    /** Movements first, then the guarded position updates in key order, last (ADR-033). */
-    private boolean applyAllLast(List<ReservationStore.Line> lines, Function<Long, BucketDelta> transition,
-                                 String type, String orderId, CommandContext context) {
+    private Supplier<Accepted> covered(List<ReservationStore.Line> lines, Function<Long, BucketDelta> transition,
+                                       String orderId, List<String> dirty, CommandContext context) {
         Map<PositionKey, Long> demand = demand(lines);
-        demand.forEach((key, quantity) -> stock.appendMovement(key, transition.apply(quantity),
-                StockStore.MovementSpec.of(type, orderId), context));
-        return applyLast(demand, transition, context);
+        return () -> {
+            if (!applyLast(demand, transition, dirty, context)) {
+                throw new Buckets.InvariantViolation("reservation " + orderId + " is not covered by its stock positions");
+            }
+            return null;
+        };
     }
 
     /**
-     * Guarded updates in {@link PositionKey} order; stops at the first position that cannot take
-     * its delta. The caller then rolls back (savepoint, rejection or exception), so no partial
-     * stock change survives.
+     * Guarded updates in {@link PositionKey} order, the last statements of the transaction
+     * (ADR-033); the last position's statement also marks {@code dirty} (sorted SKU IDs), so
+     * dirty rows are locked after every position row. Stops at the first position that cannot
+     * take its delta and marks nothing; the caller then rolls back (savepoint, rejection or
+     * exception), so no partial stock change survives.
      */
     private boolean applyLast(Map<PositionKey, Long> demand, Function<Long, BucketDelta> transition,
-                              CommandContext context) {
-        for (Map.Entry<PositionKey, Long> entry : demand.entrySet()) {
-            if (!stock.applyGuarded(entry.getKey(), transition.apply(entry.getValue()), context.now())) {
+                              List<String> dirty, CommandContext context) {
+        List<Map.Entry<PositionKey, Long>> entries = new ArrayList<>(demand.entrySet());
+        for (int i = 0; i < entries.size(); i++) {
+            PositionKey key = entries.get(i).getKey();
+            BucketDelta delta = transition.apply(entries.get(i).getValue());
+            boolean last = i == entries.size() - 1;
+            boolean applied = last && !dirty.isEmpty()
+                    ? stock.applyGuardedMarkingDirty(key, delta, dirty, context)
+                    : stock.applyGuarded(key, delta, context.now());
+            if (!applied) {
                 return false;
             }
         }

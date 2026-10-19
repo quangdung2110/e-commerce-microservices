@@ -27,7 +27,9 @@ khoảng 285–290/s, không phải 330/s.
 
 [Khoá `stock_position` sau cùng, trước/sau](./inventory-lock-late-benchmark-2026-10-19.md) (2026-10-19, Inventory ADR-033): cùng kịch bản 64 đồng thời,
 baseline chạy lại trong cùng phiên. Flash sale đạt SLO **100 → 150 đơn/s**, trần **147–165 → 192–204 đơn/s**; chỉ Reserve đạt SLO **250 → 300/s**, trần
-**≈ 290 → 317/s**. Thấp hơn ước lượng 2,2 lần vì vùng khoá còn dirty mark, kết quả command và COMMIT.
+**≈ 290 → 317/s**. Thấp hơn ước lượng 2,2 lần vì vùng khoá còn dirty mark, kết quả command và COMMIT. Bước 2 (ADR-034, 2026-10-20) đưa
+hai câu đó ra khỏi vùng khoá: so với ADR-033 trong cùng phiên, trần flash **≈ 208 → 241 đơn/s**, chỉ Reserve đạt SLO tới **400/s** (trần ≈ 435/s); nút thắt
+chuyển sang CPU của PostgreSQL và Inventory.
 
 ## Cách chạy
 

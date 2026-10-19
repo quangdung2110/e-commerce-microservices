@@ -127,6 +127,82 @@ class LockLateConcurrencyIT extends AbstractIntegrationTest {
         }
     }
 
+    /**
+     * The dirty marks ride on the last position's statement only, so a transaction locks every
+     * position row before any dirty row. Orders holding the same SKU in two warehouses next to
+     * single-warehouse orders would deadlock if a dirty row were taken between two position rows.
+     */
+    @Test
+    void sameSkuInTwoWarehousesDoesNotDeadlockAndMarksDirtyOncePerCommand() throws Exception {
+        String north = createWarehouse("North", 0);
+        String south = createWarehouse("South", 1);
+        receive(north, "sku-x", 1000);
+        receive(south, "sku-x", 1000);
+        int marksBefore = markSeq("sku-x");
+        ExecutorService pool = Executors.newFixedThreadPool(16);
+        try {
+            List<Future<Response>> results = new ArrayList<>();
+            for (int i = 0; i < 60; i++) {
+                String orderId = "order-" + i;
+                int shape = i % 3;
+                results.add(pool.submit(() -> switch (shape) {
+                    case 0 -> reserve(orderId, "l1", north, "sku-x", "1", "l2", south, "sku-x", "1");
+                    case 1 -> reserve(orderId, "l1", north, "sku-x", "1");
+                    default -> reserve(orderId, "l1", south, "sku-x", "1");
+                }));
+            }
+            for (Future<Response> result : results) {
+                Response response = result.get();
+                assertThat(response.status()).isEqualTo(200);
+                assertThat(response.body().path("outcome").asText()).isEqualTo("RESERVED");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        // One coalesced mark per Reserve, whatever its number of positions.
+        assertThat(markSeq("sku-x") - marksBefore).isEqualTo(60);
+
+        workflow(HttpMethod.POST, BASE + "/reservations/order-0/commit", Map.of("payment_reference", "p0"), key());
+        assertThat(markSeq("sku-x") - marksBefore).as("Commit leaves available_to_sell unchanged").isEqualTo(60);
+        workflow(HttpMethod.POST, BASE + "/reservations/order-1/release", Map.of("reason", "PAYMENT_FAILED"), key());
+        assertThat(markSeq("sku-x") - marksBefore).isEqualTo(61);
+
+        assertThat(position(north, "sku-x").path("committed").asLong()).isEqualTo(1);
+        // North holds 40 reserved units (20 two-warehouse + 20 north-only orders), less one committed, one released.
+        assertThat(position(north, "sku-x").path("reserved").asLong()).isEqualTo(40 - 1 - 1);
+        assertThat(position(south, "sku-x").path("committed").asLong()).isEqualTo(1);
+        assertThat(position(south, "sku-x").path("reserved").asLong()).isEqualTo(40 - 1);
+        assertMovementsMatchBuckets(north, "sku-x");
+        assertMovementsMatchBuckets(south, "sku-x");
+    }
+
+    /**
+     * The executor records the result before the guarded update runs; a shortfall found there
+     * rolls that record back with the rest, so the stored result is the {@code REJECT_ALL}.
+     */
+    @Test
+    void shortfallFoundInTheLastStepStoresRejectAll() throws Exception {
+        String wh = createWarehouse("Main", 0);
+        receive(wh, "sku-a", 1);
+        int marksBefore = markSeq("sku-a");
+        reserve("order-1", "l1", wh, "sku-a", "1");
+        String key = key();
+        Response rejected = workflow(HttpMethod.POST, BASE + "/reservations", Map.of("order_id", "order-2",
+                "allocation_plan_id", "plan-2", "lines",
+                List.of(Map.of("order_line_id", "l1", "warehouse_id", wh, "sku_id", "sku-a", "quantity", 1))), key);
+        assertThat(rejected.body().path("outcome").asText()).isEqualTo("REJECT_ALL");
+
+        Response command = workflow(HttpMethod.GET, BASE + "/commands/" + key, null, null);
+        assertThat(command.body().path("result").asText()).isEqualTo("ACCEPTED");
+        assertThat(command.body().path("outcome").asText()).isEqualTo("REJECT_ALL");
+        Map<String, Object> stored = jdbc.queryForMap(
+                "SELECT outcome, response_body::text AS body FROM command_execution WHERE command_id = ?", key);
+        assertThat(stored.get("outcome")).isEqualTo("REJECT_ALL");
+        assertThat(objectMapper.readTree((String) stored.get("body")).path("rejected_lines").get(0).asText())
+                .isEqualTo("l1");
+        assertThat(markSeq("sku-a") - marksBefore).as("only the accepted Reserve marked the SKU").isEqualTo(1);
+    }
+
     @Test
     void rejectAllNamesEveryUnavailableLineAndLeavesNoTrace() throws Exception {
         String wh = createWarehouse("Main", 0);
@@ -230,6 +306,13 @@ class LockLateConcurrencyIT extends AbstractIntegrationTest {
         assertThat(((Number) sums.get("reserved")).longValue()).isEqualTo(position.path("reserved").asLong());
         assertThat(((Number) sums.get("committed")).longValue()).isEqualTo(position.path("committed").asLong());
         assertThat(((Number) sums.get("quarantine")).longValue()).isEqualTo(position.path("quarantine").asLong());
+    }
+
+    /** Coalesced dirty-mark count of a SKU; workers are off in tests, so marks only accumulate. */
+    private int markSeq(String sku) {
+        List<Integer> seq = jdbc.queryForList("SELECT mark_seq FROM sku_availability_dirty WHERE sku_id = ?",
+                Integer.class, sku);
+        return seq.isEmpty() ? 0 : seq.get(0);
     }
 
     private int countLines(String sku, String state) {

@@ -8,6 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Collection;
@@ -126,6 +127,71 @@ public class StockStore {
                 """, delta.onHand(), delta.availableToSell(), delta.reserved(), delta.committed(), delta.quarantine(),
                 Timestamp.from(now), key.warehouseId(), key.skuId(),
                 delta.onHand(), delta.availableToSell(), delta.reserved(), delta.committed(), delta.quarantine()) == 1;
+    }
+
+    /**
+     * {@link #applyGuarded} plus, in the same statement and only when the update happened, the
+     * availability dirty marks of {@code dirtySkuIds} with the coalescing of
+     * {@link AvailabilityStore#markDirty(Collection, CommandContext)}. Saves one round trip while
+     * the hot row is locked (ADR-033). Use it only for the <em>last</em> position a transaction
+     * updates: dirty rows are then locked after every position row, in the order of
+     * {@code dirtySkuIds} (pass them sorted, as {@code markDirty} sorts them), so the lock order
+     * of data.md is unchanged.
+     *
+     * @return {@code false} when the position is absent or a bucket would go negative; nothing changed
+     */
+    public boolean applyGuardedMarkingDirty(PositionKey key, BucketDelta delta, List<String> dirtySkuIds,
+                                            CommandContext context) {
+        String sql = """
+                WITH changed AS (
+                    UPDATE stock_position
+                    SET on_hand = on_hand + ?, available_to_sell = available_to_sell + ?, reserved = reserved + ?,
+                        committed = committed + ?, quarantine = quarantine + ?, revision = revision + 1,
+                        updated_at = ?
+                    WHERE warehouse_id = ? AND sku_id = ?
+                      AND on_hand + ? >= 0 AND available_to_sell + ? >= 0 AND reserved + ? >= 0
+                      AND committed + ? >= 0 AND quarantine + ? >= 0
+                    RETURNING 1
+                ), marked AS (
+                    INSERT INTO sku_availability_dirty (sku_id, first_marked_at, mark_seq, last_correlation_id,
+                                                        last_causation_id)
+                    SELECT u.sku_id, ?, 1, ?, ?
+                    FROM unnest(?::varchar[]) WITH ORDINALITY AS u(sku_id, n)
+                    WHERE EXISTS (SELECT 1 FROM changed)
+                    ORDER BY u.n
+                    ON CONFLICT (sku_id) DO UPDATE
+                    SET mark_seq = sku_availability_dirty.mark_seq + 1,
+                        first_marked_at = LEAST(sku_availability_dirty.first_marked_at, EXCLUDED.first_marked_at),
+                        last_correlation_id = EXCLUDED.last_correlation_id,
+                        last_causation_id = EXCLUDED.last_causation_id
+                    RETURNING 1
+                )
+                SELECT (SELECT count(*) FROM changed) AS changed, (SELECT count(*) FROM marked) AS marked
+                """;
+        Timestamp now = Timestamp.from(context.now());
+        Long changed = jdbc.query(connection -> {
+            PreparedStatement statement = connection.prepareStatement(sql);
+            int i = 0;
+            statement.setLong(++i, delta.onHand());
+            statement.setLong(++i, delta.availableToSell());
+            statement.setLong(++i, delta.reserved());
+            statement.setLong(++i, delta.committed());
+            statement.setLong(++i, delta.quarantine());
+            statement.setTimestamp(++i, now);
+            statement.setString(++i, key.warehouseId());
+            statement.setString(++i, key.skuId());
+            statement.setLong(++i, delta.onHand());
+            statement.setLong(++i, delta.availableToSell());
+            statement.setLong(++i, delta.reserved());
+            statement.setLong(++i, delta.committed());
+            statement.setLong(++i, delta.quarantine());
+            statement.setTimestamp(++i, now);
+            statement.setString(++i, context.correlationId());
+            statement.setString(++i, context.commandId());
+            statement.setArray(++i, connection.createArrayOf("varchar", dirtySkuIds.toArray()));
+            return statement;
+        }, rs -> rs.next() ? rs.getLong("changed") : 0L);
+        return changed != null && changed == 1;
     }
 
     /** Positions that exist, read without a lock; rows are never deleted, so absence is final. */
