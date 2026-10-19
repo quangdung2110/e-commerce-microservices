@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -102,13 +103,58 @@ public class StockStore {
                 """, next.onHand(), next.availableToSell(), next.reserved(), next.committed(), next.quarantine(),
                 Timestamp.from(context.now()), position.key().warehouseId(), position.key().skuId(),
                 position.revision());
+        return appendMovement(position.key(), delta, movement, context);
+    }
+
+    /**
+     * Applies a delta to an unlocked position in one guarded statement and takes the row lock
+     * only now (ADR-033): the update happens only if every bucket stays non-negative. Under
+     * {@code READ COMMITTED} PostgreSQL re-evaluates the guard on the newest row version after
+     * waiting for a concurrent holder, so check and change are one atomic step. Callers apply
+     * positions in {@link PositionKey} order, as the last stock statements of their transaction.
+     *
+     * @return {@code false} when the position is absent or a bucket would go negative; nothing changed
+     */
+    public boolean applyGuarded(PositionKey key, BucketDelta delta, Instant now) {
+        return jdbc.update("""
+                UPDATE stock_position
+                SET on_hand = on_hand + ?, available_to_sell = available_to_sell + ?, reserved = reserved + ?,
+                    committed = committed + ?, quarantine = quarantine + ?, revision = revision + 1, updated_at = ?
+                WHERE warehouse_id = ? AND sku_id = ?
+                  AND on_hand + ? >= 0 AND available_to_sell + ? >= 0 AND reserved + ? >= 0
+                  AND committed + ? >= 0 AND quarantine + ? >= 0
+                """, delta.onHand(), delta.availableToSell(), delta.reserved(), delta.committed(), delta.quarantine(),
+                Timestamp.from(now), key.warehouseId(), key.skuId(),
+                delta.onHand(), delta.availableToSell(), delta.reserved(), delta.committed(), delta.quarantine()) == 1;
+    }
+
+    /** Positions that exist, read without a lock; rows are never deleted, so absence is final. */
+    public Set<PositionKey> existing(Collection<PositionKey> keys) {
+        Set<PositionKey> found = new TreeSet<>();
+        for (PositionKey key : new TreeSet<>(keys)) {
+            Integer n = jdbc.queryForObject("SELECT count(*) FROM stock_position WHERE warehouse_id = ? AND sku_id = ?",
+                    Integer.class, key.warehouseId(), key.skuId());
+            if (n != null && n > 0) {
+                found.add(key);
+            }
+        }
+        return found;
+    }
+
+    /**
+     * Appends the immutable movement of a delta. {@code stock_movement} has no foreign key to
+     * {@code stock_position}, so this touches no position row and can run before the guarded update.
+     *
+     * @return the new movement ID
+     */
+    public String appendMovement(PositionKey key, BucketDelta delta, MovementSpec movement, CommandContext context) {
         String movementId = Ids.newId();
         jdbc.update("""
                 INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type,
                     source_operation_id, reverses_movement_id, reversal_sequence, delta_on_hand, delta_available,
                     delta_reserved, delta_committed, delta_quarantine, command_id, recorded_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, movementId, position.key().warehouseId(), position.key().skuId(),
+                """, movementId, key.warehouseId(), key.skuId(),
                 movement.sourceOperationType(), movement.sourceOperationId(), movement.reversesMovementId(),
                 movement.reversalSequence(), delta.onHand(), delta.availableToSell(), delta.reserved(),
                 delta.committed(), delta.quarantine(), context.commandId(), Timestamp.from(context.now()));

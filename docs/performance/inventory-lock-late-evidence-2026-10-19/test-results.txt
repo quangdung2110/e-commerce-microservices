@@ -1,0 +1,55 @@
+Inventory test runs for ADR-033 (2026-10-19), maven:3.9-eclipse-temurin-21 + Testcontainers postgres:16-alpine.
+
+== before the change (HEAD d3462c97 plus the staged observability files of 2026-10-18)
+Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.299 s -- in com.ecommerce.inventory.common.RequestCorrelationTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.186 s -- in com.ecommerce.inventory.domain.DomainRulesTest
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 25.16 s -- in com.ecommerce.inventory.integration.AdminOperationsIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.537 s -- in com.ecommerce.inventory.integration.AuditCorrectionsIT
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.782 s -- in com.ecommerce.inventory.integration.AvailabilityExportIT
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.596 s -- in com.ecommerce.inventory.integration.ConcurrencyIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.454 s -- in com.ecommerce.inventory.integration.RefundReturnIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.592 s -- in com.ecommerce.inventory.integration.ReservationWorkflowIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.005 s -- in com.ecommerce.inventory.web.ProblemsRetryAfterTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.111 s -- in com.ecommerce.inventory.web.RequestCorrelationFilterTest
+Tests run: 56, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+
+== after the change (same tree plus ADR-033)
+Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.469 s -- in com.ecommerce.inventory.common.RequestCorrelationTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.184 s -- in com.ecommerce.inventory.domain.DomainRulesTest
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 25.98 s -- in com.ecommerce.inventory.integration.AdminOperationsIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.478 s -- in com.ecommerce.inventory.integration.AuditCorrectionsIT
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.768 s -- in com.ecommerce.inventory.integration.AvailabilityExportIT
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.734 s -- in com.ecommerce.inventory.integration.ConcurrencyIT
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 6.460 s -- in com.ecommerce.inventory.integration.LockLateConcurrencyIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.472 s -- in com.ecommerce.inventory.integration.RefundReturnIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.556 s -- in com.ecommerce.inventory.integration.ReservationWorkflowIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in com.ecommerce.inventory.web.ProblemsRetryAfterTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.155 s -- in com.ecommerce.inventory.web.RequestCorrelationFilterTest
+Tests run: 60, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+
+== mutant 'savepoint' (ConcurrencyIT, LockLateConcurrencyIT, ReservationWorkflowIT)
+   Reserve no longer rolls back to its savepoint after a failed guard
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 23.68 s -- in com.ecommerce.inventory.integration.ConcurrencyIT
+Tests run: 4, Failures: 3, Errors: 0, Skipped: 0, Time elapsed: 7.811 s <<< FAILURE! -- in com.ecommerce.inventory.integration.LockLateConcurrencyIT
+Tests run: 7, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 1.551 s <<< FAILURE! -- in com.ecommerce.inventory.integration.ReservationWorkflowIT
+  LockLateConcurrencyIT.acceptedAndRejectedReservesReplayTheStoredResult:196->assertMovementsMatchBuckets:229 
+  LockLateConcurrencyIT.rejectAllNamesEveryUnavailableLineAndLeavesNoTrace:152 
+  LockLateConcurrencyIT.scarceSkuNeverOversellsUnderReserveCommitAndRelease:79->assertMovementsMatchBuckets:229 
+  ReservationWorkflowIT.reserveIsAllOrNothingAndReplaysTheSameReceipt:50 
+Tests run: 13, Failures: 4, Errors: 0, Skipped: 0
+
+== mutant 'guard' (ConcurrencyIT, LockLateConcurrencyIT, ReservationWorkflowIT)
+   applyGuarded ignores the available_to_sell >= 0 guard
+Tests run: 2, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 23.64 s <<< FAILURE! -- in com.ecommerce.inventory.integration.ConcurrencyIT
+Tests run: 4, Failures: 3, Errors: 0, Skipped: 0, Time elapsed: 6.449 s <<< FAILURE! -- in com.ecommerce.inventory.integration.LockLateConcurrencyIT
+Tests run: 7, Failures: 2, Errors: 0, Skipped: 0, Time elapsed: 1.512 s <<< FAILURE! -- in com.ecommerce.inventory.integration.ReservationWorkflowIT
+  ConcurrencyIT.hotSkuNeverOversells:41 
+  LockLateConcurrencyIT.acceptedAndRejectedReservesReplayTheStoredResult:183 
+  LockLateConcurrencyIT.rejectAllNamesEveryUnavailableLineAndLeavesNoTrace:140 
+  LockLateConcurrencyIT.scarceSkuNeverOversellsUnderReserveCommitAndRelease:38->reserveAll:210 
+  ReservationWorkflowIT.onlyAnExpiredReleaseCanBeRecoveredAsAWholeRoot:154 
+  ReservationWorkflowIT.reserveIsAllOrNothingAndReplaysTheSameReceipt:47 
+Tests run: 13, Failures: 6, Errors: 0, Skipped: 0
+

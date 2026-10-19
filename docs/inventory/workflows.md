@@ -36,7 +36,7 @@ sequenceDiagram
 
 1. Checkout requests an advisory Preview. Inventory excludes inactive/outage warehouses and selects a single eligible warehouse per line by `(fulfillment_priority, warehouse_id)`.
 2. Preview success never promises stock. Checkout records the proposed plan in Order; Inventory persists no plan and creates no hold. `allocation_plan_id` is an opaque correlation identifier with no expiry ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
-3. Only Order Temporal Saga calls `ReserveOrder`. Inventory stores `allocation_plan_id` for audit without looking it up, then locks/revalidates the **exact** submitted warehouse/line quantities.
+3. Only Order Temporal Saga calls `ReserveOrder`. Inventory stores `allocation_plan_id` for audit without looking it up, then revalidates the **exact** submitted warehouse/line quantities; each position's quantity is checked and reserved by one guarded update at the end of the transaction ([ADR-033](decisions/ADR-033-stock-position-lock-taken-last.md)).
 4. If any line is unavailable or its plan became invalid, the entire command returns durable domain outcome `REJECT_ALL`. No reservation, no partial allocation, and no silent attempt of another warehouse remains.
 5. A successful command creates one root and all lines in `RESERVED`, records the advisory `expires_at = accepted_at + 15 minutes`, writes command result, audit/movements and affected-SKU dirty markers atomically, and returns the exact durable result. It emits no reservation-result event to Order.
 

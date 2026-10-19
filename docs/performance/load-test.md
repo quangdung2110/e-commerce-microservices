@@ -25,6 +25,10 @@ Reserve và alert pool. Mức sàn `UPDATE`+`COMMIT` một hàng là khoảng 70
 trần không sụp. Không giới hạn đồng thời thì thông lượng tụt dần (16 đơn/s ở 300 đơn/s đưa vào). Báo cáo này đính chính baseline trên: trần chỉ Reserve là
 khoảng 285–290/s, không phải 330/s.
 
+[Khoá `stock_position` sau cùng, trước/sau](./inventory-lock-late-benchmark-2026-10-19.md) (2026-10-19, Inventory ADR-033): cùng kịch bản 64 đồng thời,
+baseline chạy lại trong cùng phiên. Flash sale đạt SLO **100 → 150 đơn/s**, trần **147–165 → 192–204 đơn/s**; chỉ Reserve đạt SLO **250 → 300/s**, trần
+**≈ 290 → 317/s**. Thấp hơn ước lượng 2,2 lần vì vùng khoá còn dirty mark, kết quả command và COMMIT.
+
 ## Cách chạy
 
 ```bash

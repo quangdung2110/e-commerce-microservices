@@ -81,6 +81,8 @@ One accepted command transaction performs, in order:
 
 No broker, HTTP call, cache call, or external evidence-store call is inside this transaction. If any required step fails, it rolls back completely. Expected domain `REJECT_ALL` is durable but has no stock movement; technical failures leave no accepted result and can retry.
 
+Reservation commands (Reserve, Commit, Release, late-payment recovery, pre-dispatch release) order steps 3 and 4 the other way round for `StockPosition` ([ADR-033](decisions/ADR-033-stock-position-lock-taken-last.md)): they write root/line state, movements and audit first, then apply each bucket delta as one guarded update (`StockStore.applyGuarded`: relative delta, every bucket must stay non-negative), followed by the SKU dirty markers and the command result. The guarded update is what takes the position row lock, so a hot SKU is held only for those last statements and the commit. ADMIN, receipt, dispatch and return commands still lock the position first.
+
 Reserve/Commit/Release/recovery results are retained in `CommandExecution` and returned
 as HTTP receipts; none creates a reservation-result public event. Reserve/Release and
 successful recovery still atomically mark affected SKUs when sellable quantity changes.
@@ -90,9 +92,9 @@ required public outbox records ([ADR-020](decisions/ADR-020-command-receipts-and
 
 ### Reserve transaction
 
-Inventory groups planned quantities by `(warehouse_id, sku_id)`, locks the exact selected Warehouse/StockPosition rows in a stable order, revalidates activity/outage and full-line availability, then creates the root/lines and all bucket deltas in one commit. It does not rerank or choose an alternate warehouse after its preview plan fails. `allocation_plan_id` is stored on the root but never looked up, because Preview persists no plan.
+Inventory groups planned quantities by `(warehouse_id, sku_id)` and share-locks the selected Warehouse rows in a stable order. An inactive/outage warehouse or a missing position rejects the whole order before anything is written. Otherwise Reserve sets a savepoint, creates the root, lines, movements and audit, and then applies each position's reserve delta as a guarded update in `(warehouse_id, sku_id)` order, last ([ADR-033](decisions/ADR-033-stock-position-lock-taken-last.md)). If a guard finds too little `available_to_sell`, Reserve rolls back to the savepoint, locks the positions as before ADR-033, and returns `REJECT_ALL` naming every unavailable line, with no root, line, movement, audit or bucket change. If the locked positions turn out sufficient (stock freed concurrently), it writes again under those locks. It does not rerank or choose an alternate warehouse after its preview plan fails. `allocation_plan_id` is stored on the root but never looked up, because Preview persists no plan.
 
-Commit locks the root and lines and requires only root state `RESERVED`; it does not compare the clock with `expires_at`. Release stores its reason immutably on the root ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)).
+Commit locks the root and lines and requires only root state `RESERVED`; it does not compare the clock with `expires_at`. Release stores its reason immutably on the root ([ADR-021](decisions/ADR-021-order-integration-lifecycle-corrections.md)). Both update the root and lines and write audit and movements before their guarded position updates; a guard that fails there means the reservation is no longer covered by its buckets, an invariant breach that rolls the command back.
 
 Reserve first takes a transaction-scoped lock keyed by `order_id`, then looks for an existing root. Two Reserve commands for one order under different command IDs therefore run one after the other, and the second answers `RESERVATION_ALREADY_EXISTS` instead of evaluating stock the first already reserved ([ADR-028](decisions/ADR-028-post-implementation-audit-corrections.md)).
 
@@ -103,6 +105,8 @@ Reserve first takes a transaction-scoped lock keyed by `order_id`, then looks fo
 3. OrderReservation root and lines;
 4. Refund Scope, line, receipt, inspection, and disposition records;
 5. StockPosition rows in `(warehouse_id ASC, sku_id ASC)` order.
+
+SKU availability dirty markers are taken after the StockPosition rows by every command; the availability projector never locks a position, so the two cannot wait on each other. In reservation commands the StockPosition locks come from the guarded updates at the end of the transaction rather than from an earlier `SELECT … FOR UPDATE` ([ADR-033](decisions/ADR-033-stock-position-lock-taken-last.md)); the order among them is the same.
 
 The target isolation baseline is `READ COMMITTED` with explicit row locking and conditional guards. Every transaction runs with `lock_timeout = 2 s`. Deadlock, serialization conflict, or lock timeout aborts all work; Inventory retries internally at most twice, then returns retryable `503 INVENTORY_BUSY` with `Retry-After: 1` ([ADR-027](decisions/ADR-027-pre-implementation-contract-corrections.md)).
 

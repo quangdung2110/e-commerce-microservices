@@ -24,6 +24,8 @@ SLO_DROPPED_RATE = 0.01
 SERVICES = ["inventory-service", "postgres"]
 SAMPLE = re.compile(r"^(\d+) ([a-z_]+)(\{[^}]*\})? ([0-9.eE+-]+)$")
 LOCK_SQL = "FROM stock_position WHERE warehouse_id = $1 AND s"
+# Inventory ADR-033: the position lock is taken by the guarded relative update instead of SELECT ... FOR UPDATE.
+GUARDED_SQL = "UPDATE stock_position SET on_hand = on_hand +"
 
 
 def cpu_stats(path):
@@ -102,7 +104,10 @@ def sql_stats(path):
             if len(parts) == 4:
                 statements.append({"calls": int(parts[0]), "total_ms": float(parts[1]), "mean_ms": float(parts[2]),
                                    "query": parts[3]})
-    lock = next((s for s in statements if LOCK_SQL in s["query"] and s["query"].startswith("SELECT")), None)
+    # The statement that waits for the position lock: whichever of the two forms took the most time.
+    candidates = [s for s in statements if (LOCK_SQL in s["query"] and s["query"].startswith("SELECT"))
+                  or s["query"].startswith(GUARDED_SQL)]
+    lock = max(candidates, key=lambda s: s["total_ms"], default=None)
     return {
         "position_lock_mean_ms": lock["mean_ms"] if lock else None,
         "position_lock_share_of_sql_time": round(lock["total_ms"] / sum(s["total_ms"] for s in statements), 3)
