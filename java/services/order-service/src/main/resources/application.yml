@@ -151,6 +151,9 @@ order:
     instance-id: ${HOSTNAME:order-local}
     dispatch-interval: PT0.2S
     dispatch-batch-size: 50
+    dispatch-threads: ${ORDER_DISPATCH_THREADS:8}
+    dispatch-ack-batch-size: ${ORDER_DISPATCH_ACK_BATCH_SIZE:50}
+    dispatch-ack-interval: ${ORDER_DISPATCH_ACK_INTERVAL:PT0.02S}
     lease: PT30S
     reconcile-interval: PT30S
   outbox:

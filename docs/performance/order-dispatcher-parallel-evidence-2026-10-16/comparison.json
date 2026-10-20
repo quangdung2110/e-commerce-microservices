@@ -1,0 +1,133 @@
+{
+  "identical_environment_fields": [
+    "java",
+    "os",
+    "available_processors",
+    "jvm_max_heap_bytes",
+    "postgres",
+    "fsync",
+    "synchronous_commit",
+    "full_page_writes",
+    "shared_buffers",
+    "dispatch_batch_size",
+    "lease_s",
+    "dispatch_interval_ms",
+    "hikari_max",
+    "hikari_min_idle",
+    "window_seconds",
+    "saturated_backlog_target",
+    "temporal_workers",
+    "temporal_sdk"
+  ],
+  "legacy_saturated_median_start_s": 54.46666666666667,
+  "parallel_saturated_median_start_s": 177.66666666666666,
+  "saturated_speedup": 3.2619339045287634,
+  "legacy_ack_transactions_per_start": 1.0,
+  "parallel_ack_transactions_per_start": 0.17396396396396396,
+  "parallel_mean_rows_per_ack": 5.748316934230968,
+  "ack_transactions_per_start_reduction_pct": 82.6036036036036,
+  "legacy_measured_operations": 12050,
+  "parallel_measured_operations": 23100,
+  "common_scenarios": [
+    {
+      "scenario": "arrival-100",
+      "legacy_ack_s": 55.06666666666667,
+      "parallel_ack_s": 99.46666666666667,
+      "legacy_p95_ms": 11944.2237,
+      "parallel_p95_ms": 96.2101,
+      "p95_reduction_pct": 99.19450520673017,
+      "legacy_backlog": 674,
+      "parallel_backlog": 8
+    },
+    {
+      "scenario": "arrival-40",
+      "legacy_ack_s": 39.8,
+      "parallel_ack_s": 39.93333333333333,
+      "legacy_p95_ms": 98.8649,
+      "parallel_p95_ms": 47.2887,
+      "p95_reduction_pct": 52.168363089428105,
+      "legacy_backlog": 3,
+      "parallel_backlog": 1
+    },
+    {
+      "scenario": "arrival-50",
+      "legacy_ack_s": 49.333333333333336,
+      "parallel_ack_s": 49.8,
+      "legacy_p95_ms": 317.7257,
+      "parallel_p95_ms": 61.2955,
+      "p95_reduction_pct": 80.70804470648739,
+      "legacy_backlog": 10,
+      "parallel_backlog": 3
+    },
+    {
+      "scenario": "arrival-70",
+      "legacy_ack_s": 54.06666666666667,
+      "parallel_ack_s": 69.8,
+      "legacy_p95_ms": 4165.4999,
+      "parallel_p95_ms": 75.9381,
+      "p95_reduction_pct": 98.176975109278,
+      "legacy_backlog": 239,
+      "parallel_backlog": 3
+    },
+    {
+      "scenario": "burst-50",
+      "legacy_ack_s": 51.66801399624497,
+      "parallel_ack_s": 143.26475154167198,
+      "legacy_p95_ms": 928.4686,
+      "parallel_p95_ms": 350.5371,
+      "p95_reduction_pct": 62.245669912800494,
+      "legacy_backlog": 0,
+      "parallel_backlog": 0
+    },
+    {
+      "scenario": "burst-500",
+      "legacy_ack_s": 48.47556608966233,
+      "parallel_ack_s": 170.8899614246672,
+      "legacy_p95_ms": 9755.0048,
+      "parallel_p95_ms": 2839.9299,
+      "p95_reduction_pct": 70.88745768736064,
+      "legacy_backlog": 0,
+      "parallel_backlog": 0
+    },
+    {
+      "scenario": "saturated-mixed-50-50",
+      "legacy_ack_s": 54.4,
+      "parallel_ack_s": 86.66666666666667,
+      "legacy_p95_ms": 18836.2159,
+      "parallel_p95_ms": 12169.2736,
+      "p95_reduction_pct": 35.394276299413185,
+      "legacy_backlog": 1084,
+      "parallel_backlog": 1000
+    },
+    {
+      "scenario": "saturated-starts-1",
+      "legacy_ack_s": 53.53333333333333,
+      "parallel_ack_s": 165.8,
+      "legacy_p95_ms": 19977.9904,
+      "parallel_p95_ms": 6701.7605,
+      "p95_reduction_pct": 66.45428110727293,
+      "legacy_backlog": 997,
+      "parallel_backlog": 1013
+    },
+    {
+      "scenario": "saturated-starts-2",
+      "legacy_ack_s": 54.46666666666667,
+      "parallel_ack_s": 187.73333333333332,
+      "legacy_p95_ms": 19693.7616,
+      "parallel_p95_ms": 5853.5447,
+      "p95_reduction_pct": 70.27716279453693,
+      "legacy_backlog": 1083,
+      "parallel_backlog": 984
+    },
+    {
+      "scenario": "saturated-starts-3",
+      "legacy_ack_s": 56.2,
+      "parallel_ack_s": 177.66666666666666,
+      "legacy_p95_ms": 19492.7601,
+      "parallel_p95_ms": 6060.4969,
+      "p95_reduction_pct": 68.90898534169104,
+      "legacy_backlog": 1057,
+      "parallel_backlog": 1035
+    }
+  ]
+}

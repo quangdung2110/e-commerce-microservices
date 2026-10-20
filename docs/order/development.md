@@ -98,6 +98,7 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
 | Migration | `DeliveryMigrationIT`: V1 có delivery lịch sử thiếu reference → V2 thành công, giữ nguyên dữ liệu/không phát outbox, cờ legacy không thể tạo mới hoặc đổi; delivery mới cần đầy đủ bản ghi Admin |
 | Async submission | `SubmissionWaitersTest`, `SubmissionNotificationIT`: bounded waiters/executor, deadline/context, same-token replay, batch repair, PostgreSQL commit/rollback/CAS, hai replica LISTEN, MockMvc async response/headers ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)) |
+| Dispatcher | `WorkflowDispatcherTest`, `WorkflowDispatchStoreIT`: 8 RPC có giới hạn, ACK theo lô/straggler, retry từng row, shutdown, lease renewal, PostgreSQL rollback/reclaim, owner/generation fencing và `SKIP LOCKED` ([ADR-028](./decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md)) |
 
 MockMvc helper `AbstractIntegrationTest.call` phải đợi async result rồi `asyncDispatch` cho submission
 POST; validation/identity rejection vẫn đồng bộ. Khi thêm test controller, không đọc response body
@@ -108,6 +109,10 @@ Kết quả 2026-10-16: Order **97 test pass**; Checkout **164 test, 0 failure/e
 V1→V3 migration, commit/rollback notification, reconnect và hai replica được kiểm chứng với
 PostgreSQL test thật. Chi tiết và lệnh tái chạy:
 [async-submission-verification-2026-10-16.md](./async-submission-verification-2026-10-16.md).
+
+Sau ADR-028, Order suite có **109 test, 0 failure/error, 1 benchmark opt-in skip**;
+11 test mới bao phủ dispatcher/claim fencing trên PostgreSQL thật. Benchmark dispatcher có
+[báo cáo so sánh một thread và tám worker](../performance/order-dispatcher-parallel-benchmark-2026-10-16.md).
 
 Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
 E2E tự động, load test.

@@ -53,12 +53,20 @@ restart process.
 | `INVENTORY_BASE_URL`, `PROMOTION_BASE_URL`, `PAYMENT_BASE_URL`, `order.clients.*-timeout` | Remote activities; gửi `X-Service-Identity: order-service` | `:8094`, `:8085`, `:8089`; connect 2 giây, read 10 giây | Không |
 | `ORDER_FRONTEND_BASE_URL` | Dựng `order_url`/`review_url` cho notification | `http://localhost:3000` | Không |
 | `WORKERS_ENABLED`, `order.workers.*` | Dispatcher (poll 200 ms + nudge sau commit, lease 30 giây), reconciler 30 giây | bật | Không |
+| `ORDER_DISPATCH_THREADS` | Giới hạn start RPC đồng thời của dispatcher, worker không giữ JDBC connection | 8 | Không |
+| `ORDER_DISPATCH_ACK_BATCH_SIZE`, `ORDER_DISPATCH_ACK_INTERVAL` | Gom kết quả start và ghi một transaction; flush khi đủ row, hết interval hoặc nhóm start đã xong | 50, `PT0.02S` | Không |
 | `order.outbox.retention`, `receipt-safety-delay`, `trim-cron` | Trimmer chỉ xoá khi có exact receipt | 15 ngày, 1 giờ, `0 0 4 * * *` | Không |
 
 Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi history vượt
 8.000 event. Không ghi secret thật vào repository.
 
 ## 3. Quan sát hệ thống
+
+Dispatcher start dùng bounded executor và batched ACK theo [ADR-028](./decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md).
+Coordinator renew row chưa ACK mỗi lease/3; ACK/renew kiểm tra owner + `attempts` để từ chối kết quả
+stale sau reclaim. Theo dõi `order.workflow.dispatch.active`, distribution summary
+`order.workflow.dispatch.ack.batch` và counter `order.workflow.dispatch.ack.stale`, cùng tuổi outbox.
+Message `SignalWithStart` vẫn chạy từng row trên coordinator sau nhóm start.
 
 Checkout checkpoint dùng async HTTP waiter ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)).
 Mỗi replica mở thêm **một JDBC LISTEN session ngoài Hikari**; tính connection này vào tổng budget DB.

@@ -1,6 +1,7 @@
 package com.ecommerce.order.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 import java.util.List;
@@ -79,7 +80,26 @@ public record OrderProperties(
     }
 
     public record Workers(boolean enabled, String instanceId, Duration dispatchInterval, int dispatchBatchSize,
-                          Duration lease, Duration reconcileInterval) {
+                          Duration lease, Duration reconcileInterval, int dispatchThreads,
+                          int dispatchAckBatchSize, Duration dispatchAckInterval) {
+        @ConstructorBinding
+        public Workers {
+            if (dispatchThreads < 1 || dispatchThreads > 64 || dispatchBatchSize < 1 || dispatchBatchSize > 1000
+                    || dispatchAckBatchSize < 1 || dispatchAckBatchSize > 1000) {
+                throw new IllegalArgumentException("Invalid dispatcher thread/batch bounds");
+            }
+            if (lease == null || lease.compareTo(Duration.ofSeconds(1)) < 0 || dispatchAckInterval == null
+                    || dispatchAckInterval.isNegative() || dispatchAckInterval.isZero()
+                    || dispatchAckInterval.compareTo(lease.dividedBy(3)) >= 0) {
+                throw new IllegalArgumentException("Lease must be >= 1s; ACK interval must be positive and < lease/3");
+            }
+        }
+
+        public Workers(boolean enabled, String instanceId, Duration dispatchInterval, int dispatchBatchSize,
+                       Duration lease, Duration reconcileInterval) {
+            this(enabled, instanceId, dispatchInterval, dispatchBatchSize, lease, reconcileInterval,
+                    8, 50, Duration.ofMillis(20));
+        }
     }
 
     public record Outbox(Duration retention, Duration receiptSafetyDelay, String trimCron) {

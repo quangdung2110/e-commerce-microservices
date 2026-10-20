@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.StringJoiner;
 
 /**
  * DB-to-Temporal outboxes (ADR-015): {@code order_workflow_dispatches} for start/attach
@@ -22,6 +23,17 @@ public class WorkflowOutboxStore {
 
     public record DispatchRow(UUID dispatchId, Long orderId, String workflowId, String workflowType,
                               String taskQueue, String inputJson, String status, int attempts) {
+    }
+
+    /** attempts is the monotonically increasing claim generation, also when the same pod reclaims. */
+    public record DispatchCompletion(UUID dispatchId, int attempts, boolean started, String error, Duration backoff) {
+        public static DispatchCompletion started(DispatchRow row) {
+            return new DispatchCompletion(row.dispatchId(), row.attempts(), true, null, Duration.ZERO);
+        }
+
+        public static DispatchCompletion retry(DispatchRow row, String error, Duration backoff) {
+            return new DispatchCompletion(row.dispatchId(), row.attempts(), false, error, backoff);
+        }
     }
 
     public record MessageRow(String messageId, Long orderId, String targetWorkflowId, String workflowType,
@@ -101,21 +113,50 @@ public class WorkflowOutboxStore {
                 .addValue("lease", lease.toSeconds() + " seconds"), MESSAGE);
     }
 
-    public void dispatchStarted(UUID dispatchId) {
-        jdbc.update("""
-                UPDATE order_workflow_dispatches SET status = 'STARTED', lease_owner = NULL, lease_until = NULL,
-                    last_error = NULL, updated_at = NOW()
-                WHERE dispatch_id = :id
-                """, Map.of("id", dispatchId));
+    /** One SQL statement/transaction for mixed successes and retries; late owners cannot overwrite a newer claim. */
+    public List<UUID> completeDispatches(String owner, List<DispatchCompletion> completions) {
+        if (completions.isEmpty()) return List.of();
+        MapSqlParameterSource params = new MapSqlParameterSource("owner", owner);
+        StringJoiner values = new StringJoiner(",");
+        for (int i = 0; i < completions.size(); i++) {
+            DispatchCompletion c = completions.get(i);
+            values.add("(CAST(:id" + i + " AS uuid), CAST(:attempt" + i + " AS integer), CAST(:ok" + i
+                    + " AS boolean), CAST(:error" + i + " AS text), CAST(:delay" + i + " AS bigint))");
+            params.addValue("id" + i, c.dispatchId()).addValue("attempt" + i, c.attempts())
+                    .addValue("ok" + i, c.started()).addValue("error" + i, truncate(c.error()))
+                    .addValue("delay" + i, c.backoff().toMillis());
+        }
+        return jdbc.query("""
+                UPDATE order_workflow_dispatches d
+                SET status = CASE WHEN v.ok THEN 'STARTED' ELSE 'RETRY' END,
+                    lease_owner = NULL, lease_until = NULL, last_error = v.error,
+                    available_at = CASE WHEN v.ok THEN d.available_at
+                        ELSE NOW() + v.delay * INTERVAL '1 millisecond' END, updated_at = NOW()
+                FROM (VALUES %s) AS v(id, attempt, ok, error, delay)
+                WHERE d.dispatch_id = v.id AND d.status = 'IN_FLIGHT'
+                    AND d.lease_owner = :owner AND d.attempts = v.attempt
+                RETURNING d.dispatch_id
+                """.formatted(values), params, (rs, n) -> Db.uuid(rs, "dispatch_id"));
     }
 
-    public void dispatchRetry(UUID dispatchId, String error, Duration backoff) {
-        jdbc.update("""
-                UPDATE order_workflow_dispatches SET status = 'RETRY', lease_owner = NULL, lease_until = NULL,
-                    last_error = :error, available_at = NOW() + CAST(:backoff AS interval), updated_at = NOW()
-                WHERE dispatch_id = :id
-                """, new MapSqlParameterSource().addValue("id", dispatchId).addValue("error", truncate(error))
-                .addValue("backoff", backoff.toMillis() + " milliseconds"));
+    /** Extend only the current generation. No transaction/DB connection is held during Temporal RPCs. */
+    public List<UUID> renewDispatches(String owner, List<DispatchRow> rows, Duration lease) {
+        if (rows.isEmpty()) return List.of();
+        MapSqlParameterSource params = new MapSqlParameterSource("owner", owner)
+                .addValue("leaseMillis", lease.toMillis());
+        StringJoiner values = new StringJoiner(",");
+        for (int i = 0; i < rows.size(); i++) {
+            values.add("(CAST(:id" + i + " AS uuid), CAST(:attempt" + i + " AS integer))");
+            params.addValue("id" + i, rows.get(i).dispatchId()).addValue("attempt" + i, rows.get(i).attempts());
+        }
+        return jdbc.query("""
+                UPDATE order_workflow_dispatches d
+                SET lease_until = NOW() + :leaseMillis * INTERVAL '1 millisecond', updated_at = NOW()
+                FROM (VALUES %s) AS v(id, attempt)
+                WHERE d.dispatch_id = v.id AND d.status = 'IN_FLIGHT'
+                    AND d.lease_owner = :owner AND d.attempts = v.attempt
+                RETURNING d.dispatch_id
+                """.formatted(values), params, (rs, n) -> Db.uuid(rs, "dispatch_id"));
     }
 
     public void dispatchQuarantined(UUID dispatchId, String error) {

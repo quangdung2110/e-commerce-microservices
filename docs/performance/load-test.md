@@ -14,6 +14,16 @@ thử provider chậm và listener mất kết nối trên môi trường test r
 Kết quả kiểm chứng chức năng: [Order async submission verification 2026-10-16](../order/async-submission-verification-2026-10-16.md)
 (97 Order test pass; 164 Checkout test, 0 failure/error và 1 live test skip).
 
+Đã có [baseline riêng cho Order workflow dispatcher một thread](./order-dispatcher-single-thread-benchmark-2026-10-16.md)
+(2026-10-16): PostgreSQL và Temporal persistence thật, khoảng 54–55 start/s trong môi trường đo;
+tải 100/s làm p95 commit-outbox-to-ACK lên khoảng 11 giây. Phép đo này cô lập khâu dispatch,
+không thay thế benchmark end-to-end checkout/Order/Payment tới `PAYMENT_READY`.
+
+[So sánh sau tối ưu tám worker và batch ACK](./order-dispatcher-parallel-benchmark-2026-10-16.md)
+chạy lại implementation cũ cùng phiên đo: median **54,47 → 177,67 start/s** (**3,26 lần**),
+ACK transaction/start giảm **82,6%**; tải 100/s có p95 dispatch **11,94 s → 96 ms**.
+Message vẫn xử lý tuần tự, nên mixed 50/50 tăng **1,59 lần**. Evidence và lệnh chạy lại đi kèm báo cáo.
+
 [Inventory Reserve trên một SKU nóng: baseline](./inventory-reserve-hot-sku-baseline-2026-10-19.md) (2026-10-19, chưa sửa code): stack tách biệt có giới hạn CPU, lệnh
 ReserveOrder theo tải mở. Một SKU nóng đạt SLO tới **250/s** và tối đa khoảng **330 RESERVED/s**; cùng service chia ra 2 000 SKU đạt SLO tới **600/s**. Khi
 bão hoà, 22–23 trên 24 connection chờ khoá `stock_position` trong khi CPU còn dư một nửa. Trộn 50/50 ở 600/s làm đơn SKU nguội cũng có p50 3,9 s. Không có
