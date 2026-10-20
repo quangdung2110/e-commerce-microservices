@@ -1,0 +1,24 @@
+scenario | ops/s | ACK n | commit-to-ACK p50 / p95 / p99 ms | backlog
+saturated-mixed-50-50-adr028-1 | 95.87 | 2500 | 10121.75 / 10945.66 / 11173.11 | 962
+saturated-mixed-50-50-parallel-1 | 248.40 | 4800 | 3936.11 / 4268.07 / 4348.12 | 974
+saturated-starts-adr028-1 | 233.33 | 4500 | 4253.87 / 4637.27 / 4755.06 | 1000
+saturated-starts-parallel-1 | 235.67 | 4600 | 4238.34 / 4586.54 / 4699.55 | 965
+saturated-mixed-50-50-parallel-2 | 275.40 | 5200 | 3624.78 / 3908.25 / 4035.66 | 969
+saturated-mixed-50-50-adr028-2 | 106.67 | 2600 | 9423.55 / 10151.33 / 10332.69 | 1000
+saturated-starts-parallel-2 | 221.80 | 4400 | 4368.57 / 4747.02 / 4855.33 | 973
+saturated-starts-adr028-2 | 226.60 | 4400 | 4297.66 / 4596.52 / 4702.40 | 1001
+saturated-mixed-50-50-adr028-3 | 102.20 | 2600 | 9527.05 / 10304.19 / 10483.42 | 967
+saturated-mixed-50-50-parallel-3 | 261.80 | 5000 | 3733.03 / 4145.50 / 4212.05 | 973
+saturated-starts-adr028-3 | 223.33 | 4400 | 4433.49 / 4897.69 / 4990.86 | 1050
+saturated-starts-parallel-3 | 220.93 | 4400 | 4449.26 / 5115.45 / 5276.24 | 986
+saturated-mixed-50-50-parallel-4 | 234.53 | 4600 | 4157.23 / 5141.25 / 5508.56 | 982
+saturated-mixed-50-50-adr028-4 | 98.93 | 2500 | 10034.25 / 11037.78 / 11233.90 | 1016
+saturated-starts-parallel-4 | 205.40 | 4100 | 4522.63 / 5406.79 / 5676.83 | 1019
+saturated-starts-adr028-4 | 212.33 | 4200 | 4616.27 / 5073.35 / 5146.99 | 1015
+arrival-mixed-80-adr028 | 79.33 | 1200 | 48.75 / 167.35 / 240.16 | 10
+arrival-mixed-80-parallel | 79.87 | 1200 | 31.13 / 61.37 / 104.75 | 1
+arrival-mixed-120-parallel | 119.67 | 1800 | 42.05 / 103.83 / 148.52 | 4
+arrival-mixed-120-adr028 | 106.73 | 1800 | 799.52 / 1937.50 / 2199.43 | 198
+arrival-mixed-160-adr028 | 110.40 | 2400 | 3413.40 / 6194.04 / 6587.14 | 743
+arrival-mixed-160-parallel | 159.13 | 2400 | 71.46 / 161.72 / 206.40 | 13
+VERIFIED: 75600 operations, 22 scenarios; adr028: saturated median=224.97 start/s mixed median=100.57 ops/s; parallel: saturated median=221.37 start/s mixed median=255.10 ops/s

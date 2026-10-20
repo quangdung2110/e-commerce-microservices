@@ -22,7 +22,16 @@ không thay thế benchmark end-to-end checkout/Order/Payment tới `PAYMENT_REA
 [So sánh sau tối ưu tám worker và batch ACK](./order-dispatcher-parallel-benchmark-2026-10-16.md)
 chạy lại implementation cũ cùng phiên đo: median **54,47 → 177,67 start/s** (**3,26 lần**),
 ACK transaction/start giảm **82,6%**; tải 100/s có p95 dispatch **11,94 s → 96 ms**.
-Message vẫn xử lý tuần tự, nên mixed 50/50 tăng **1,59 lần**. Evidence và lệnh chạy lại đi kèm báo cáo.
+Khi đó message vẫn xử lý tuần tự, nên mixed 50/50 chỉ tăng **1,59 lần**. Evidence và lệnh chạy lại đi kèm báo cáo.
+
+[Message lanes sau ADR-029](./order-dispatcher-message-lanes-benchmark-2026-10-20.md) (2026-10-20, Order
+[ADR-029](../order/decisions/ADR-029-parallel-workflow-messages-per-target-lanes.md)): message `SignalWithStart` dùng chung
+8 RPC slot với start, một message đang bay mỗi target, ACK/renew theo lô có fencing. ADR-028 và ADR-029 chạy **xen kẽ từng
+cửa sổ trong cùng JVM** (8 cặp) vì môi trường hôm đó có những khoảng RPC Temporal chậm vài giây làm hai lượt riêng
+không so sánh được. Mixed 50/50 bão hoà **104 → 250 ACK/s** (median theo cặp 2,47 lần), start-only không đổi (khoảng 222/s),
+ACK transaction/thao tác **0,58 → 0,124**; tải mở mixed 160/s: p95 **6–7 s → khoảng 160 ms**, backlog 743–803 → 10–13.
+Trần dispatch Order suy ra khoảng **50 → 125 đơn/s** mỗi replica, vẫn là trần thấp nhất đo được trên đường mua hàng
+(Inventory SKU nóng sau ADR-034 khoảng 241 đơn/s).
 
 [Inventory Reserve trên một SKU nóng: baseline](./inventory-reserve-hot-sku-baseline-2026-10-19.md) (2026-10-19, chưa sửa code): stack tách biệt có giới hạn CPU, lệnh
 ReserveOrder theo tải mở. Một SKU nóng đạt SLO tới **250/s** và tối đa khoảng **330 RESERVED/s**; cùng service chia ra 2 000 SKU đạt SLO tới **600/s**. Khi

@@ -149,6 +149,8 @@ class WorkflowDispatcherTest {
         assertThat(started.await(3, TimeUnit.SECONDS)).isTrue();
         dispatcher.stop();
         assertThat(dispatcher.isRunning()).isFalse();
+        // The pool is terminated when stop() returns; a worker thread object can outlive its last task briefly.
+        for (Thread worker : workers) worker.join(1000);
         assertThat(workers).hasSize(8).noneMatch(Thread::isAlive);
     }
 

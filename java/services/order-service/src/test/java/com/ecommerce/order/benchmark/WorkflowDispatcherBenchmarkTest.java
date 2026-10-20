@@ -4,6 +4,7 @@ import com.ecommerce.order.common.Json;
 import com.ecommerce.order.config.OrderProperties;
 import com.ecommerce.order.service.DispatchNudger;
 import com.ecommerce.order.store.WorkflowOutboxStore;
+import com.ecommerce.order.benchmark.baseline.Adr028WorkflowDispatcher;
 import com.ecommerce.order.benchmark.baseline.LegacyWorkflowDispatcher;
 import com.ecommerce.order.benchmark.baseline.LegacyWorkflowOutboxStore;
 import com.ecommerce.order.worker.ClosedTargetResolver;
@@ -61,7 +62,9 @@ import java.util.zip.GZIPOutputStream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
-/** Opt-in measurement of the production dispatcher or frozen legacy dispatcher, real PostgreSQL and Temporal.
+/** Opt-in measurement of the production dispatcher or a frozen baseline, real PostgreSQL and Temporal.
+ * Variants: parallel = production (ADR-028 starts + ADR-029 message lanes), adr028 = frozen ADR-028
+ * dispatcher (sequential messages), legacy = frozen single-thread dispatcher.
  * No Spring application, business worker, HTTP, fake RPC, injected delay or TestWorkflowEnvironment.
  * Run with scripts/ci/order-dispatch-bench.ps1; the compose databases are disposable and isolated. */
 @EnabledIfEnvironmentVariable(named = "ORDER_DISPATCH_BENCH", matches = "true")
@@ -69,8 +72,10 @@ class WorkflowDispatcherBenchmarkTest {
     private static final int SECONDS = Integer.parseInt(env("ORDER_BENCH_SECONDS", "15"));
     private static final int BACKLOG = 1000;
     private static final String QUEUE = "order-dispatch-benchmark";
-    private static final boolean LEGACY = env("ORDER_BENCH_VARIANT", "parallel").equals("legacy");
-    private static final int THREADS = LEGACY ? 1 : 8;
+    private static final String VARIANT = env("ORDER_BENCH_VARIANT", "parallel");
+    private static final String PROFILE = env("ORDER_BENCH_PROFILE", "full");
+    /** Variant of the scenario being measured; the paired profile alternates adr028 and parallel per window. */
+    private String variant = VARIANT;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Json json = new Json(mapper);
     private final Path output = Path.of(env("ORDER_BENCH_OUTPUT", "target/order-dispatch-bench"));
@@ -83,8 +88,12 @@ class WorkflowDispatcherBenchmarkTest {
     private final AtomicInteger maxActive = new AtomicInteger();
     private final AtomicReference<Throwable> producerFailure = new AtomicReference<>();
     private final ThreadLocal<String> txKind = new ThreadLocal<>();
-    private final ThreadLocal<Integer> txRows = ThreadLocal.withInitial(() -> 0);
+    private final ThreadLocal<Integer> txStartRows = ThreadLocal.withInitial(() -> 0);
+    private final ThreadLocal<Integer> txMessageRows = ThreadLocal.withInitial(() -> 0);
     private final AtomicLong ackBatchSequence = new AtomicLong();
+    private final AtomicLong kindSequence = new AtomicLong();
+    private final Map<String, AtomicInteger> activePerTarget = new ConcurrentHashMap<>();
+    private final AtomicInteger maxActivePerTarget = new AtomicInteger();
     private final List<String> targets = new ArrayList<>();
     private JdbcTemplate jdbc;
     private WorkflowOutboxStore rawStore;
@@ -130,20 +139,50 @@ class WorkflowDispatcherBenchmarkTest {
                     targets.add(id);
                 }
                 writeEnvironment();
+                if (PROFILE.equals("paired")) variant = "parallel";
                 runBurst("warmup", 500, false);
-                runBurst("burst-50", 50, true);
-                runBurst("burst-500", 500, true);
-                double[] rates = new double[3];
-                for (int i = 0; i < rates.length; i++) {
-                    rates[i] = runSaturated("saturated-starts-" + (i + 1), false);
+                if (PROFILE.equals("paired")) {
+                    // ADR-029: old and new alternate window by window (ABBA) against the same JVM, Temporal
+                    // and databases, so slow drift and transient stalls of the host hit both alike.
+                    List<List<String>> rounds = List.of(List.of("adr028", "parallel"), List.of("parallel", "adr028"),
+                            List.of("adr028", "parallel"), List.of("parallel", "adr028"));
+                    for (int i = 1; i <= rounds.size(); i++) {
+                        for (String v : rounds.get(i - 1)) {
+                            variant = v; runSaturated("saturated-mixed-50-50-" + v + "-" + i, true);
+                        }
+                        for (String v : rounds.get(i - 1)) {
+                            variant = v; runSaturated("saturated-starts-" + v + "-" + i, false);
+                        }
+                    }
+                    for (int rate : List.of(80, 120, 160)) {
+                        for (String v : rate == 120 ? List.of("parallel", "adr028") : List.of("adr028", "parallel")) {
+                            variant = v; runArrivals("arrival-mixed-" + rate + "-" + v, rate, true);
+                        }
+                    }
+                } else if (PROFILE.equals("mixed")) {
+                    // ADR-029: start-only and 50/50 ceilings alternate so drift hits both alike.
+                    for (int i = 1; i <= 3; i++) {
+                        runSaturated("saturated-starts-" + i, false);
+                        runSaturated("saturated-mixed-50-50-" + i, true);
+                    }
+                    for (int rate : List.of(80, 120, 160)) {
+                        runArrivals("arrival-mixed-" + rate, rate, true);
+                    }
+                } else {
+                    runBurst("burst-50", 50, true);
+                    runBurst("burst-500", 500, true);
+                    double[] rates = new double[3];
+                    for (int i = 0; i < rates.length; i++) {
+                        rates[i] = runSaturated("saturated-starts-" + (i + 1), false);
+                    }
+                    Arrays.sort(rates);
+                    int below = Math.max(10, (int) Math.round(rates[1] * 0.70 / 10) * 10);
+                    int above = Math.max(below + 10, (int) Math.round(rates[1] * 1.30 / 10) * 10);
+                    for (int rate : new LinkedHashSet<>(List.of(50, 100, 40, 70, below, above))) {
+                        runArrivals("arrival-" + rate, rate, false);
+                    }
+                    runSaturated("saturated-mixed-50-50", true);
                 }
-                Arrays.sort(rates);
-                int below = Math.max(10, (int) Math.round(rates[1] * 0.70 / 10) * 10);
-                int above = Math.max(below + 10, (int) Math.round(rates[1] * 1.30 / 10) * 10);
-                for (int rate : new LinkedHashSet<>(List.of(50, 100, 40, 70, below, above))) {
-                    runArrivals("arrival-" + rate, rate);
-                }
-                runSaturated("saturated-mixed-50-50", true);
                 mapper.writerWithDefaultPrettyPrinter().writeValue(output.resolve("summary.json").toFile(), results);
             } finally {
                 stubs.shutdown();
@@ -157,7 +196,8 @@ class WorkflowDispatcherBenchmarkTest {
         jdbc.execute("TRUNCATE order_workflow_dispatches, order_workflow_messages");
         entries.clear(); transactions.clear(); dispatchThreads.clear();
         completed.set(0); maxActive.set(0); producerFailure.set(null);
-        ackBatchSequence.set(0);
+        ackBatchSequence.set(0); kindSequence.set(0);
+        activePerTarget.clear(); maxActivePerTarget.set(0);
         origin = System.nanoTime();
         originUtc = Instant.now();
     }
@@ -169,9 +209,11 @@ class WorkflowDispatcherBenchmarkTest {
         var workers = new OrderProperties.Workers(true, "bench-single-thread", Duration.ofMillis(200), 50,
                 Duration.ofSeconds(30), Duration.ofSeconds(30));
         var props = new OrderProperties(null, null, null, null, null, null, null, null, null, workers, null, null);
-        return LEGACY ? new LegacyWorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
-                mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry())
-                : new WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
+        if (legacy()) return new LegacyWorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
+                mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
+        if (adr028()) return new Adr028WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
+                mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
+        return new WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
                 mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
     }
 
@@ -213,7 +255,7 @@ class WorkflowDispatcherBenchmarkTest {
         } finally { dispatcher.stop(); awaitStopped(); }
     }
 
-    private void runArrivals(String name, int rate) throws Exception {
+    private void runArrivals(String name, int rate, boolean mixed) throws Exception {
         reset(name);
         DispatchNudger nudger = new DispatchNudger();
         SmartLifecycle dispatcher = dispatcher(nudger);
@@ -225,7 +267,7 @@ class WorkflowDispatcherBenchmarkTest {
             for (int i = 0; i < rate * SECONDS; i++) {
                 long scheduled = begin + (long) i * 1_000_000_000L / rate;
                 while (System.nanoTime() < scheduled) LockSupport.parkNanos(scheduled - System.nanoTime());
-                insert(1, false, scheduled, nudger);
+                insert(1, mixed, scheduled, nudger);
             }
             while (System.nanoTime() < until) LockSupport.parkNanos(until - System.nanoTime());
             long producerEnd = System.nanoTime();
@@ -248,14 +290,16 @@ class WorkflowDispatcherBenchmarkTest {
         producerTx.executeWithoutResult(s -> {
             for (int i = 0; i < count; i++) {
                 UUID id = UUID.randomUUID();
-                boolean message = mixed && i % 2 == 1;
+                // Alternates across calls too, so one-row arrivals are also 50/50.
+                boolean message = mixed && kindSequence.getAndIncrement() % 2 == 1;
                 String key = message ? "bench-" + id : "order-checkout-" + id;
-                Entry e = new Entry(id, key, message ? "message" : "start", scheduled);
+                String target = message ? targets.get(Math.floorMod(id.hashCode(), targets.size())) : "";
+                Entry e = new Entry(id, key, message ? "message" : "start", scheduled, target);
                 entries.put(key, e); batch.add(e);
                 String input = json.write(Map.of("checkout_token", id.toString()));
                 String digest = json.digest(Map.of("checkout_token", id.toString()));
                 if (message) {
-                    rawStore.insertMessage(key, null, targets.get(Math.floorMod(id.hashCode(), targets.size())), WorkflowNames.CHECKOUT_TYPE,
+                    rawStore.insertMessage(key, null, target, WorkflowNames.CHECKOUT_TYPE,
                             QUEUE, input, "BENCHMARK", "{}", json.digest(Map.of()));
                 } else {
                     rawStore.insertDispatch(id, null, key, WorkflowNames.CHECKOUT_TYPE, QUEUE, input, digest);
@@ -293,11 +337,16 @@ class WorkflowDispatcherBenchmarkTest {
         long retries = jdbc.queryForObject("SELECT COUNT(*) FROM order_workflow_dispatches WHERE status <> 'STARTED' OR attempts <> 1", Long.class)
                 + jdbc.queryForObject("SELECT COUNT(*) FROM order_workflow_messages WHERE status <> 'DELIVERED' OR attempts <> 1", Long.class);
         assertThat(retries).isZero();
-        assertThat(maxActive.get()).isBetween(1, THREADS);
-        if (LEGACY) assertThat(dispatchThreads).containsExactly("order-workflow-dispatcher");
-        else assertThat(dispatchThreads).allMatch(name -> name.startsWith("order-workflow-start-")
+        assertThat(maxActive.get()).isBetween(1, threads());
+        if (legacy()) assertThat(dispatchThreads).containsExactly("order-workflow-dispatcher");
+        else assertThat(dispatchThreads).allMatch(name -> name.startsWith(rpcThreadPrefix())
                 || name.equals("order-workflow-dispatcher"));
-        if (!LEGACY && scenario.startsWith("saturated-starts-")) assertThat(maxActive.get()).isEqualTo(THREADS);
+        if (!legacy() && scenario.startsWith("saturated-starts-")) assertThat(maxActive.get()).isEqualTo(threads());
+        // ADR-029 lanes: one in-flight message per target workflow (the baselines are sequential anyway).
+        assertThat(maxActivePerTarget.get()).isLessThanOrEqualTo(1);
+        if (!legacy() && !adr028() && scenario.startsWith("saturated-mixed-")) {
+            assertThat(dispatchThreads).noneMatch(name -> name.equals("order-workflow-dispatcher"));
+        }
         assertThat(all).allMatch(e -> e.committed > 0 && e.claimed >= e.committed
                 && e.rpcBegin >= e.claimed && e.rpcEnd >= e.rpcBegin && e.acked >= e.rpcEnd);
         long dbCount = jdbc.queryForObject("SELECT (SELECT COUNT(*) FROM order_workflow_dispatches) + (SELECT COUNT(*) FROM order_workflow_messages)", Long.class);
@@ -305,7 +354,7 @@ class WorkflowDispatcherBenchmarkTest {
         double seconds = (end - begin) / 1e9;
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("scenario", scenario); row.put("window_s", seconds);
-        row.put("variant", LEGACY ? "legacy" : "parallel"); row.put("dispatcher_threads", THREADS);
+        row.put("variant", variant); row.put("dispatcher_threads", threads());
         row.put("window_begin_ns", begin - origin); row.put("window_end_ns", end - origin);
         row.put("drained_ns", drained - origin);
         row.put("window_start_utc", originUtc.plusNanos(begin - origin).toString());
@@ -319,25 +368,38 @@ class WorkflowDispatcherBenchmarkTest {
         row.put("drain_after_window_s", (drained - end) / 1e9);
         row.put("completed_after_drain", completed.get()); row.put("nonterminal_or_retried", retries);
         row.put("max_concurrent_gateway_calls", maxActive.get()); row.put("gateway_threads", dispatchThreads);
+        row.put("max_concurrent_messages_per_target", maxActivePerTarget.get());
+        row.put("message_targets", targets.size());
         row.put("jvm_cpu_seconds_in_window", cpu / 1e9);
         row.put("window", entryStats(window)); row.put("window_starts", entryStats(starts));
         row.put("window_messages", entryStats(messages)); row.put("all_including_drain", entryStats(all));
+        // A kind joined with '+' is one transaction carrying several statements (ADR-029 claim/ACK/renew).
         Map<String, Object> txStats = new LinkedHashMap<>();
-        for (String kind : List.of("claim_start", "claim_message", "ack_start", "ack_message", "renew_start")) {
+        assertThat(transactions).allMatch(t -> t.kind != null);
+        for (String kind : transactions.stream().map(TxSample::kind).distinct().sorted().toList()) {
             txStats.put(kind, stats(transactions.stream().filter(t -> t.kind.equals(kind)
                     && t.end >= begin && t.end <= end).mapToDouble(t -> t.nanos / 1e6).toArray()));
         }
         row.put("transaction_ms", txStats); results.add(row);
-        long ackTransactions = transactions.stream().filter(t -> "ack_start".equals(t.kind)).count();
-        long ackRows = transactions.stream().filter(t -> "ack_start".equals(t.kind)).mapToLong(t -> t.rows).sum();
-        row.put("ack_start_transactions_total", ackTransactions); row.put("ack_start_rows_total", ackRows);
-        row.put("ack_start_batch_mean", ackTransactions == 0 ? 0 : (double) ackRows / ackTransactions);
+        for (String kind : List.of("start", "message")) {
+            List<TxSample> acks = transactions.stream().filter(t -> t.has("ack_" + kind)).toList();
+            long rows = acks.stream().mapToLong(t -> kind.equals("start") ? t.startRows : t.messageRows).sum();
+            row.put("ack_" + kind + "_transactions_total", (long) acks.size());
+            row.put("ack_" + kind + "_rows_total", rows);
+            row.put("ack_" + kind + "_batch_mean", acks.isEmpty() ? 0 : (double) rows / acks.size());
+        }
+        List<TxSample> acks = transactions.stream().filter(t -> t.has("ack_start") || t.has("ack_message")).toList();
+        row.put("ack_transactions_total", (long) acks.size());
+        row.put("ack_transactions_per_operation", all.isEmpty() ? 0 : (double) acks.size() / all.size());
+        row.put("dispatcher_transactions_total", (long) transactions.size());
+        row.put("dispatcher_transactions_per_operation", all.isEmpty() ? 0 : (double) transactions.size() / all.size());
         writeSamples(all);
         try (var writer = new BufferedWriter(new OutputStreamWriter(new GZIPOutputStream(
                 Files.newOutputStream(output.resolve(scenario + "-transactions.csv.gz"))), StandardCharsets.UTF_8))) {
-            writer.write("kind,duration_ns,end_ns,rows\n");
+            writer.write("kind,duration_ns,end_ns,rows,start_rows,message_rows\n");
             for (TxSample sample : transactions) writer.write(sample.kind + "," + sample.nanos + ","
-                    + (sample.end - origin) + "," + sample.rows + "\n");
+                    + (sample.end - origin) + "," + (sample.startRows + sample.messageRows) + ","
+                    + sample.startRows + "," + sample.messageRows + "\n");
         }
         mapper.writerWithDefaultPrettyPrinter().writeValue(output.resolve("summary.json").toFile(), results);
         System.out.printf("BENCH|%s|%.2f ops/s|%d/%d completed in %.3fs|backlog=%s%n",
@@ -367,10 +429,10 @@ class WorkflowDispatcherBenchmarkTest {
     private void writeSamples(List<Entry> all) throws Exception {
         try (var writer = new BufferedWriter(new OutputStreamWriter(new GZIPOutputStream(
                 Files.newOutputStream(output.resolve(scenario + ".csv.gz"))), StandardCharsets.UTF_8))) {
-            writer.write("id,kind,scheduled_ns,committed_ns,claimed_ns,rpc_begin_ns,rpc_end_ns,acked_ns,result,ack_batch\n");
+            writer.write("id,kind,scheduled_ns,committed_ns,claimed_ns,rpc_begin_ns,rpc_end_ns,acked_ns,result,ack_batch,target\n");
             for (Entry e : all) writer.write(String.join(",", e.key, e.kind, relative(e.scheduled), relative(e.committed),
                     relative(e.claimed), relative(e.rpcBegin), relative(e.rpcEnd), relative(e.acked), e.result,
-                    Long.toString(e.ackBatch)) + "\n");
+                    Long.toString(e.ackBatch), e.target) + "\n");
         }
     }
 
@@ -384,9 +446,11 @@ class WorkflowDispatcherBenchmarkTest {
         data.put("jvm_max_heap_bytes", Runtime.getRuntime().maxMemory()); data.put("postgres", jdbc.queryForObject("SELECT version()", String.class));
         for (String setting : List.of("fsync", "synchronous_commit", "full_page_writes", "shared_buffers"))
             data.put(setting, jdbc.queryForObject("SHOW " + setting, String.class));
-        data.put("variant", LEGACY ? "legacy" : "parallel");
-        data.put("dispatcher_threads", THREADS); data.put("dispatch_batch_size", 50); data.put("lease_s", 30);
-        data.put("ack_batch_size", LEGACY ? 1 : 50); data.put("ack_flush_ms", LEGACY ? 0 : 20);
+        data.put("variant", PROFILE.equals("paired") ? "paired" : VARIANT); data.put("profile", PROFILE);
+        data.put("message_delivery", PROFILE.equals("paired") ? "paired: adr028 sequential vs parallel lanes"
+                : legacy() || adr028() ? "sequential-per-row-ack" : "per-target-lanes-batched-ack");
+        data.put("dispatcher_threads", threads()); data.put("dispatch_batch_size", 50); data.put("lease_s", 30);
+        data.put("ack_batch_size", legacy() ? 1 : 50); data.put("ack_flush_ms", legacy() ? 0 : 20);
         data.put("dispatch_interval_ms", 200); data.put("hikari_max", 24); data.put("hikari_min_idle", 4);
         data.put("window_seconds", SECONDS); data.put("saturated_backlog_target", BACKLOG);
         data.put("temporal_workers", 0); data.put("temporal_sdk", "1.25.1");
@@ -405,26 +469,39 @@ class WorkflowDispatcherBenchmarkTest {
 
     private static String env(String name, String fallback) { return System.getenv().getOrDefault(name, fallback); }
 
+    private boolean legacy() { return variant.equals("legacy"); }
+    private boolean adr028() { return variant.equals("adr028"); }
+    private int threads() { return legacy() ? 1 : 8; }
+    private String rpcThreadPrefix() { return adr028() ? "order-workflow-start-" : "order-workflow-rpc-"; }
+
     private static class Entry {
-        final UUID id; final String key; final String kind; final long scheduled;
+        final UUID id; final String key; final String kind; final long scheduled; final String target;
         volatile long committed, claimed, rpcBegin, rpcEnd, acked, ackBatch;
         volatile String result;
-        Entry(UUID id, String key, String kind, long scheduled) {
-            this.id = id; this.key = key; this.kind = kind; this.scheduled = scheduled;
+        Entry(UUID id, String key, String kind, long scheduled, String target) {
+            this.id = id; this.key = key; this.kind = kind; this.scheduled = scheduled; this.target = target;
         }
     }
 
-    private record TxSample(String kind, long nanos, long end, int rows) { }
+    /** kind joins every statement kind of the transaction with '+', in execution order. */
+    private record TxSample(String kind, long nanos, long end, int startRows, int messageRows) {
+        boolean has(String part) { return kind != null && List.of(kind.split("\\+")).contains(part); }
+    }
+
+    private void kind(String part) {
+        String current = txKind.get();
+        txKind.set(current == null ? part : current + "+" + part);
+    }
 
     private class TimedTx extends TransactionTemplate {
         TimedTx(DataSourceTransactionManager manager) { super(manager); }
         @Override public <T> T execute(TransactionCallback<T> callback) {
-            txKind.remove(); txRows.set(0); long begin = System.nanoTime();
+            txKind.remove(); txStartRows.set(0); txMessageRows.set(0); long begin = System.nanoTime();
             try { return super.execute(callback); }
             finally {
                 long end = System.nanoTime();
-                transactions.add(new TxSample(txKind.get(), end - begin, end, txRows.get()));
-                txKind.remove(); txRows.remove();
+                transactions.add(new TxSample(txKind.get(), end - begin, end, txStartRows.get(), txMessageRows.get()));
+                txKind.remove(); txStartRows.remove(); txMessageRows.remove();
             }
         }
     }
@@ -432,40 +509,49 @@ class WorkflowDispatcherBenchmarkTest {
     private class MeasuredStore extends LegacyWorkflowOutboxStore {
         MeasuredStore(NamedParameterJdbcTemplate jdbc) { super(jdbc); }
         @Override public List<DispatchRow> claimDispatches(String owner, int limit, Duration lease) {
-            txKind.set("claim_start"); var rows = super.claimDispatches(owner, limit, lease);
+            kind("claim_start"); var rows = super.claimDispatches(owner, limit, lease);
             afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.workflowId()).claimed = now); });
             return rows;
         }
         @Override public List<MessageRow> claimMessages(String owner, int limit, Duration lease) {
-            txKind.set("claim_message"); var rows = super.claimMessages(owner, limit, lease);
+            kind("claim_message"); var rows = super.claimMessages(owner, limit, lease);
             afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.messageId()).claimed = now); });
             return rows;
         }
         @Override public void dispatchStarted(UUID id) {
-            txKind.set("ack_start"); txRows.set(1); super.dispatchStarted(id);
+            kind("ack_start"); txStartRows.set(1); super.dispatchStarted(id);
             ack(entries.get("order-checkout-" + id));
         }
         @Override public List<UUID> completeDispatches(String owner, List<DispatchCompletion> batch) {
-            txKind.set("ack_start");
-            List<UUID> applied = super.completeDispatches(owner, batch); txRows.set(applied.size());
-            afterCommit(() -> {
-                long now = System.nanoTime(); long batchId = ackBatchSequence.incrementAndGet();
-                for (UUID id : applied) {
-                    Entry entry = entries.get("order-checkout-" + id);
-                    entry.ackBatch = batchId; entry.acked = now; completed.incrementAndGet();
-                }
-            });
+            kind("ack_start");
+            List<UUID> applied = super.completeDispatches(owner, batch); txStartRows.set(applied.size());
+            ackBatch(applied.stream().map(id -> entries.get("order-checkout-" + id)).toList());
+            return applied;
+        }
+        @Override public List<String> completeMessages(String owner, List<MessageCompletion> batch) {
+            kind("ack_message");
+            List<String> applied = super.completeMessages(owner, batch); txMessageRows.set(applied.size());
+            ackBatch(applied.stream().map(entries::get).toList());
             return applied;
         }
         @Override public List<UUID> renewDispatches(String owner, List<DispatchRow> rows, Duration lease) {
-            txKind.set("renew_start"); return super.renewDispatches(owner, rows, lease);
+            kind("renew_start"); return super.renewDispatches(owner, rows, lease);
+        }
+        @Override public List<String> renewMessages(String owner, List<MessageRow> rows, Duration lease) {
+            kind("renew_message"); return super.renewMessages(owner, rows, lease);
         }
         @Override public void messageDelivered(String id, String outcome, String replacement) {
-            txKind.set("ack_message"); txRows.set(1); super.messageDelivered(id, outcome, replacement); ack(entries.get(id));
+            kind("ack_message"); txMessageRows.set(1); super.messageDelivered(id, outcome, replacement); ack(entries.get(id));
         }
         private void ack(Entry entry) {
             afterCommit(() -> { entry.ackBatch = ackBatchSequence.incrementAndGet();
                 entry.acked = System.nanoTime(); completed.incrementAndGet(); });
+        }
+        private void ackBatch(List<Entry> applied) {
+            afterCommit(() -> {
+                long now = System.nanoTime(); long batchId = ackBatchSequence.incrementAndGet();
+                for (Entry entry : applied) { entry.ackBatch = batchId; entry.acked = now; completed.incrementAndGet(); }
+            });
         }
     }
 
@@ -476,9 +562,12 @@ class WorkflowDispatcherBenchmarkTest {
             finally { after(e); }
         }
         @Override public Result signalWithStart(String id, String type, String queue, WorkflowInput input, WorkflowMessage message) {
-            Entry e = entries.get(message.messageId()); before(e);
+            Entry e = entries.get(message.messageId());
+            AtomicInteger perTarget = activePerTarget.computeIfAbsent(id, t -> new AtomicInteger());
+            maxActivePerTarget.accumulateAndGet(perTarget.incrementAndGet(), Math::max);
+            before(e);
             try { Result r = realGateway.signalWithStart(id, type, queue, input, message); e.result = r.name(); return r; }
-            finally { after(e); }
+            finally { after(e); perTarget.decrementAndGet(); }
         }
         private void before(Entry e) {
             dispatchThreads.add(Thread.currentThread().getName());

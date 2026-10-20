@@ -1,0 +1,24 @@
+scenario | ops/s | ACK n | commit-to-ACK p50 / p95 / p99 ms | backlog
+saturated-mixed-50-50-adr028-1 | 97.27 | 2500 | 10044.50 / 10886.97 / 11180.11 | 1041
+saturated-mixed-50-50-parallel-1 | 251.40 | 4800 | 3804.66 / 4245.29 / 4331.58 | 1029
+saturated-starts-adr028-1 | 235.27 | 4600 | 4110.29 / 4569.02 / 4667.62 | 971
+saturated-starts-parallel-1 | 238.40 | 4600 | 4061.54 / 4673.09 / 4849.46 | 1024
+saturated-mixed-50-50-parallel-2 | 133.13 | 3000 | 3660.29 / 14594.75 / 14730.58 | 1003
+saturated-mixed-50-50-adr028-2 | 108.73 | 2700 | 9312.57 / 10013.38 / 10119.95 | 969
+saturated-starts-parallel-2 | 211.60 | 4200 | 4296.51 / 5624.45 / 5778.92 | 1026
+saturated-starts-adr028-2 | 216.40 | 4300 | 4549.11 / 5245.69 / 5363.59 | 954
+saturated-mixed-50-50-adr028-3 | 107.27 | 2600 | 9249.50 / 9963.61 / 10065.90 | 991
+saturated-mixed-50-50-parallel-3 | 248.47 | 4800 | 4017.89 / 4339.63 / 4456.91 | 973
+saturated-starts-adr028-3 | 216.67 | 4300 | 4589.44 / 4942.47 / 5048.68 | 1050
+saturated-starts-parallel-3 | 214.27 | 4300 | 4647.95 / 5015.95 / 5086.09 | 986
+saturated-mixed-50-50-parallel-4 | 252.53 | 4800 | 3905.63 / 4268.13 / 4365.33 | 1012
+saturated-mixed-50-50-adr028-4 | 106.40 | 2600 | 9252.34 / 9968.44 / 10081.85 | 1004
+saturated-starts-parallel-4 | 226.33 | 4400 | 4402.63 / 4770.70 / 4865.36 | 1005
+saturated-starts-adr028-4 | 222.80 | 4400 | 4484.60 / 4840.73 / 5001.80 | 1058
+arrival-mixed-80-adr028 | 79.80 | 1200 | 57.72 / 199.23 / 265.24 | 3
+arrival-mixed-80-parallel | 79.80 | 1200 | 37.30 / 92.90 / 124.06 | 3
+arrival-mixed-120-parallel | 119.73 | 1800 | 43.97 / 102.67 / 196.33 | 4
+arrival-mixed-120-adr028 | 99.53 | 1800 | 1710.75 / 2839.91 / 3196.06 | 306
+arrival-mixed-160-adr028 | 106.40 | 2400 | 3756.33 / 7003.48 / 7254.07 | 803
+arrival-mixed-160-parallel | 159.27 | 2400 | 61.13 / 159.36 / 229.78 | 10
+VERIFIED: 73700 operations, 22 scenarios; adr028: saturated median=219.73 start/s mixed median=106.83 ops/s; parallel: saturated median=220.30 start/s mixed median=249.93 ops/s

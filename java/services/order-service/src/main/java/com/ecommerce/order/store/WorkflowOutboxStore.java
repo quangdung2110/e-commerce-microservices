@@ -41,6 +41,28 @@ public class WorkflowOutboxStore {
                              String status, int attempts, Instant createdAt) {
     }
 
+    /** DELIVERED (with outcome), RETRY (with backoff) or QUARANTINED for one claim generation (ADR-029). */
+    public record MessageCompletion(String messageId, int attempts, String status, String outcome,
+                                    String replacementId, String error, Duration backoff) {
+        public static MessageCompletion delivered(MessageRow row, String outcome, String replacementId) {
+            return new MessageCompletion(row.messageId(), row.attempts(), "DELIVERED", outcome, replacementId, null,
+                    Duration.ZERO);
+        }
+
+        public static MessageCompletion retry(MessageRow row, String error, Duration backoff) {
+            return new MessageCompletion(row.messageId(), row.attempts(), "RETRY", null, null, error, backoff);
+        }
+
+        public static MessageCompletion quarantined(MessageRow row, String error) {
+            return new MessageCompletion(row.messageId(), row.attempts(), "QUARANTINED", null, null, error,
+                    Duration.ZERO);
+        }
+
+        public boolean retrying() {
+            return "RETRY".equals(status);
+        }
+    }
+
     private static final RowMapper<DispatchRow> DISPATCH = (rs, i) -> new DispatchRow(Db.uuid(rs, "dispatch_id"),
             Db.nullableLong(rs, "order_id"), rs.getString("workflow_id"), rs.getString("workflow_type"),
             rs.getString("task_queue"), rs.getString("input"), rs.getString("status"), rs.getInt("attempts"));
@@ -167,31 +189,56 @@ public class WorkflowOutboxStore {
                 """, Map.of("id", dispatchId, "error", truncate(error)));
     }
 
-    public void messageDelivered(String messageId, String outcome, String replacementId) {
-        jdbc.update("""
-                UPDATE order_workflow_messages SET status = 'DELIVERED', delivery_outcome = :outcome,
-                    replacement_message_id = :replacement, lease_owner = NULL, lease_until = NULL, last_error = NULL,
-                    delivered_at = NOW(), updated_at = NOW()
-                WHERE message_id = :id
-                """, new MapSqlParameterSource().addValue("id", messageId).addValue("outcome", outcome)
-                .addValue("replacement", replacementId));
+    /** Same fencing as {@link #completeDispatches}: one statement for delivered, retried and quarantined messages. */
+    public List<String> completeMessages(String owner, List<MessageCompletion> completions) {
+        if (completions.isEmpty()) return List.of();
+        MapSqlParameterSource params = new MapSqlParameterSource("owner", owner);
+        StringJoiner values = new StringJoiner(",");
+        for (int i = 0; i < completions.size(); i++) {
+            MessageCompletion c = completions.get(i);
+            values.add("(CAST(:id" + i + " AS varchar), CAST(:attempt" + i + " AS integer), CAST(:status" + i
+                    + " AS varchar), CAST(:outcome" + i + " AS varchar), CAST(:replacement" + i
+                    + " AS varchar), CAST(:error" + i + " AS text), CAST(:delay" + i + " AS bigint))");
+            params.addValue("id" + i, c.messageId()).addValue("attempt" + i, c.attempts())
+                    .addValue("status" + i, c.status()).addValue("outcome" + i, c.outcome())
+                    .addValue("replacement" + i, c.replacementId()).addValue("error" + i, truncate(c.error()))
+                    .addValue("delay" + i, c.backoff().toMillis());
+        }
+        return jdbc.query("""
+                UPDATE order_workflow_messages m
+                SET status = v.status,
+                    delivery_outcome = CASE WHEN v.status = 'DELIVERED' THEN v.outcome ELSE m.delivery_outcome END,
+                    replacement_message_id = CASE WHEN v.status = 'DELIVERED' THEN v.replacement
+                        ELSE m.replacement_message_id END,
+                    delivered_at = CASE WHEN v.status = 'DELIVERED' THEN NOW() ELSE m.delivered_at END,
+                    available_at = CASE WHEN v.status = 'RETRY' THEN NOW() + v.delay * INTERVAL '1 millisecond'
+                        ELSE m.available_at END,
+                    lease_owner = NULL, lease_until = NULL, last_error = v.error, updated_at = NOW()
+                FROM (VALUES %s) AS v(id, attempt, status, outcome, replacement, error, delay)
+                WHERE m.message_id = v.id AND m.status = 'IN_FLIGHT'
+                    AND m.lease_owner = :owner AND m.attempts = v.attempt
+                RETURNING m.message_id
+                """.formatted(values), params, (rs, n) -> rs.getString("message_id"));
     }
 
-    public void messageRetry(String messageId, String error, Duration backoff) {
-        jdbc.update("""
-                UPDATE order_workflow_messages SET status = 'RETRY', lease_owner = NULL, lease_until = NULL,
-                    last_error = :error, available_at = NOW() + CAST(:backoff AS interval), updated_at = NOW()
-                WHERE message_id = :id
-                """, new MapSqlParameterSource().addValue("id", messageId).addValue("error", truncate(error))
-                .addValue("backoff", backoff.toMillis() + " milliseconds"));
-    }
-
-    public void messageQuarantined(String messageId, String error) {
-        jdbc.update("""
-                UPDATE order_workflow_messages SET status = 'QUARANTINED', lease_owner = NULL, lease_until = NULL,
-                    last_error = :error, updated_at = NOW()
-                WHERE message_id = :id
-                """, Map.of("id", messageId, "error", truncate(error)));
+    /** Extend only the current message generation, as {@link #renewDispatches} does for starts. */
+    public List<String> renewMessages(String owner, List<MessageRow> rows, Duration lease) {
+        if (rows.isEmpty()) return List.of();
+        MapSqlParameterSource params = new MapSqlParameterSource("owner", owner)
+                .addValue("leaseMillis", lease.toMillis());
+        StringJoiner values = new StringJoiner(",");
+        for (int i = 0; i < rows.size(); i++) {
+            values.add("(CAST(:id" + i + " AS varchar), CAST(:attempt" + i + " AS integer))");
+            params.addValue("id" + i, rows.get(i).messageId()).addValue("attempt" + i, rows.get(i).attempts());
+        }
+        return jdbc.query("""
+                UPDATE order_workflow_messages m
+                SET lease_until = NOW() + :leaseMillis * INTERVAL '1 millisecond', updated_at = NOW()
+                FROM (VALUES %s) AS v(id, attempt)
+                WHERE m.message_id = v.id AND m.status = 'IN_FLIGHT'
+                    AND m.lease_owner = :owner AND m.attempts = v.attempt
+                RETURNING m.message_id
+                """.formatted(values), params, (rs, n) -> rs.getString("message_id"));
     }
 
     public Optional<MessageRow> message(String messageId) {

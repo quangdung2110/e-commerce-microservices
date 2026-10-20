@@ -1,6 +1,7 @@
 param(
     [int]$Seconds = 15,
-    [ValidateSet("legacy", "parallel")][string]$Variant = "parallel",
+    [ValidateSet("legacy", "adr028", "parallel")][string]$Variant = "parallel",
+    [ValidateSet("full", "mixed", "paired")][string]$Profile = "full",
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$Maven = "mvn.cmd"
 )
@@ -25,6 +26,7 @@ New-Item -ItemType Directory -Path $output -Force | Out-Null
 $env:ORDER_DISPATCH_BENCH = "true"
 $env:ORDER_BENCH_SECONDS = "$Seconds"
 $env:ORDER_BENCH_VARIANT = $Variant
+$env:ORDER_BENCH_PROFILE = $Profile
 $env:ORDER_BENCH_OUTPUT = $output
 $dbPort = if ($env:ORDER_BENCH_DB_PORT) { $env:ORDER_BENCH_DB_PORT } else { "25432" }
 $temporalPort = if ($env:ORDER_BENCH_TEMPORAL_PORT) { $env:ORDER_BENCH_TEMPORAL_PORT } else { "27233" }
@@ -38,6 +40,7 @@ try {
         (Join-Path $repo "java/services/order-service/src/main/java/com/ecommerce/order/worker/TemporalWorkflowGateway.java"),
         (Join-Path $repo "java/services/order-service/src/main/java/com/ecommerce/order/config/OrderProperties.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/LegacyWorkflowDispatcher.java"),
+        (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/Adr028WorkflowDispatcher.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/LegacyWorkflowOutboxStore.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/WorkflowDispatcherBenchmarkTest.java") |
         Select-Object Path,Hash | ConvertTo-Json | Set-Content (Join-Path $output "source-hashes.json")
@@ -61,10 +64,15 @@ try {
             Start-Sleep -Seconds 3
         }
     }
+    # Windows PowerShell 5.1 turns merged native stderr (JVM warnings) into terminating errors under
+    # "Stop"; the exit code below is the real verdict.
+    $ErrorActionPreference = "Continue"
     & $Maven -B -f (Join-Path $repo "java/services/order-service/pom.xml") test `
         "-Dtest=WorkflowDispatcherBenchmarkTest" "-DargLine=-Xms256m -Xmx1024m" 2>&1 |
-        Tee-Object -FilePath (Join-Path $output "maven.log")
-    if ($LASTEXITCODE -ne 0) { throw "Benchmark failed; inspect $output/maven.log" }
+        ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $output "maven.log")
+    $mavenExit = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($mavenExit -ne 0) { throw "Benchmark failed; inspect $output/maven.log" }
     Copy-Item (Join-Path $repo "java/services/order-service/target/surefire-reports/*WorkflowDispatcherBenchmarkTest*") $output
     Write-Output "RESULTS: $output"
 } finally {
@@ -74,4 +82,5 @@ try {
     docker ps --format '{{.Names}} {{.Image}}' | Set-Content (Join-Path $output "shared-containers-after.txt")
     Remove-Item Env:ORDER_DISPATCH_BENCH -ErrorAction SilentlyContinue
     Remove-Item Env:ORDER_BENCH_VARIANT -ErrorAction SilentlyContinue
+    Remove-Item Env:ORDER_BENCH_PROFILE -ErrorAction SilentlyContinue
 }

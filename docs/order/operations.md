@@ -53,8 +53,8 @@ restart process.
 | `INVENTORY_BASE_URL`, `PROMOTION_BASE_URL`, `PAYMENT_BASE_URL`, `order.clients.*-timeout` | Remote activities; gửi `X-Service-Identity: order-service` | `:8094`, `:8085`, `:8089`; connect 2 giây, read 10 giây | Không |
 | `ORDER_FRONTEND_BASE_URL` | Dựng `order_url`/`review_url` cho notification | `http://localhost:3000` | Không |
 | `WORKERS_ENABLED`, `order.workers.*` | Dispatcher (poll 200 ms + nudge sau commit, lease 30 giây), reconciler 30 giây | bật | Không |
-| `ORDER_DISPATCH_THREADS` | Giới hạn start RPC đồng thời của dispatcher, worker không giữ JDBC connection | 8 | Không |
-| `ORDER_DISPATCH_ACK_BATCH_SIZE`, `ORDER_DISPATCH_ACK_INTERVAL` | Gom kết quả start và ghi một transaction; flush khi đủ row, hết interval hoặc nhóm start đã xong | 50, `PT0.02S` | Không |
+| `ORDER_DISPATCH_THREADS` | Tổng RPC đồng thời của dispatcher, chung cho start và message `SignalWithStart`; worker không giữ JDBC connection | 8 | Không |
+| `ORDER_DISPATCH_ACK_BATCH_SIZE`, `ORDER_DISPATCH_ACK_INTERVAL` | Gom kết quả start và message, ghi chung một transaction; flush khi đủ row, hết interval hoặc lượt đã xong | 50, `PT0.02S` | Không |
 | `order.outbox.retention`, `receipt-safety-delay`, `trim-cron` | Trimmer chỉ xoá khi có exact receipt | 15 ngày, 1 giờ, `0 0 4 * * *` | Không |
 
 Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi history vượt
@@ -63,10 +63,17 @@ Checkout workflow không dùng Workflow Execution Timeout; Continue-As-New khi h
 ## 3. Quan sát hệ thống
 
 Dispatcher start dùng bounded executor và batched ACK theo [ADR-028](./decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md).
-Coordinator renew row chưa ACK mỗi lease/3; ACK/renew kiểm tra owner + `attempts` để từ chối kết quả
-stale sau reclaim. Theo dõi `order.workflow.dispatch.active`, distribution summary
-`order.workflow.dispatch.ack.batch` và counter `order.workflow.dispatch.ack.stale`, cùng tuổi outbox.
-Message `SignalWithStart` vẫn chạy từng row trên coordinator sau nhóm start.
+Message `SignalWithStart` dùng chung pool đó theo [ADR-029](./decisions/ADR-029-parallel-workflow-messages-per-target-lanes.md):
+mỗi lượt claim cả hai hàng đợi trong một transaction rồi luân phiên start/message. Mỗi target workflow có tối đa
+một message đang bay, gửi theo `created_at`; head bị `RETRY` thì message sau nó trong lượt bị trả `RETRY` cùng
+backoff (`last_error` = `Deferred behind message ...`). Closed-target resolution vẫn chạy trên coordinator.
+Thread RPC tên `order-workflow-rpc-N`.
+
+Coordinator renew row start và message chưa ACK mỗi lease/3; ACK/renew của cả hai bảng kiểm tra owner +
+`attempts` để từ chối kết quả stale sau reclaim. Theo dõi `order.workflow.dispatch.active` (RPC đang chạy, cả hai loại),
+distribution summary `order.workflow.dispatch.ack.batch`/`order.workflow.message.ack.batch`, counter
+`order.workflow.dispatch.ack.stale`/`order.workflow.message.ack.stale`, `order.workflow.message{result=DEFERRED}`
+cùng tuổi outbox. `ack.stale` khác 0 nghĩa là có reclaim (coordinator dừng lâu hơn lease hoặc pod chết).
 
 Checkout checkpoint dùng async HTTP waiter ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)).
 Mỗi replica mở thêm **một JDBC LISTEN session ngoài Hikari**; tính connection này vào tổng budget DB.
@@ -199,8 +206,8 @@ consumer config -> quan sát -> dọn field/table cũ sau verification. Rollback
 | Payment consumer | `t.payment.events.v2` | Exact accepted types; stream-scoped inbox + mapping/amount/currency/per-transaction version guard | Atomically persist evidence/workflow message; dispute chỉ update obligation evidence |
 | Inventory dispatch consumer | `com.ecommerce.inventory.reservation.line-dispatched.v1` | Durable inbox + `reservation_revision` + line/warehouse guard | `DISPATCHED` (không bao giờ `DELIVERED`/`COMPLETED`) |
 | Inventory return consumer | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` | Durable inbox + scope revision | Persist full evidence + workflow message in one transaction |
-| Workflow start dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest | Start/attach retry after API crash |
-| Workflow message dispatcher | `order_workflow_messages` | Stable message ID + `SignalWithStart`; DB leases with `SKIP LOCKED` | Retry until Temporal durable acknowledgement; duplicate history is no-op |
+| Workflow start dispatcher | `order_workflow_dispatches` | Fixed workflow ID/input digest; shared RPC pool (`ORDER_DISPATCH_THREADS`), fenced batch ACK (ADR-028) | Start/attach retry after API crash |
+| Workflow message dispatcher | `order_workflow_messages` | Stable message ID + `SignalWithStart`; DB leases with `SKIP LOCKED`; same RPC pool, one in-flight message per target workflow, fenced batch ACK/renew (ADR-029) | Retry until Temporal durable acknowledgement; duplicate history is no-op |
 | Prerequisite/convergence reconciler | Payment fact chờ identity bind, open required obligations, orders `PROCESSING` mà mọi line đã `DELIVERED` | Order lock + deterministic guards | Replay identity bind; invoke `TryCompleteOrder`; never infer evidence |
 | Refund scope finalization reconciler | Unresolved finalization metadata/checkpoints, including financially terminal Buyer cases | Same scope/generation/command; conflict requires audited decision | Restore durable finalization dispatch on `order-refund-queue`; never call Payment |
 | Temporal worker | Three task queues | WorkflowID per checkout/order; idempotent activity | Activity 30s/3 retry burst; durable history/continue-as-new |

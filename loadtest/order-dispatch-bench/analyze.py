@@ -66,8 +66,20 @@ def main(directory):
         if threads == 1:
             assert run["gateway_threads"] == ["order-workflow-dispatcher"]
         else:
-            assert all(t.startswith("order-workflow-start-") or t == "order-workflow-dispatcher"
+            # ADR-028 pool threads are order-workflow-start-N; since ADR-029 they are order-workflow-rpc-N.
+            assert all(t.startswith(("order-workflow-start-", "order-workflow-rpc-")) or t == "order-workflow-dispatcher"
                        for t in run["gateway_threads"])
+        if "max_concurrent_messages_per_target" in run:
+            assert run["max_concurrent_messages_per_target"] <= 1, run["max_concurrent_messages_per_target"]
+        if rows and "target" in rows[0]:
+            # Independent lane check from raw timestamps: no two RPCs to one target overlap.
+            per_target = {}
+            for r in rows:
+                if r["kind"] == "message":
+                    per_target.setdefault(r["target"], []).append((int(r["rpc_begin_ns"]), int(r["rpc_end_ns"])))
+            for spans in per_target.values():
+                spans.sort()
+                assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans
         if "window_begin_ns" in run:
             begin, end = run["window_begin_ns"], run["window_end_ns"]
             window = [r for r in rows if begin <= int(r["acked_ns"]) <= end]
@@ -79,12 +91,20 @@ def main(directory):
             backlog = sum(int(r["committed_ns"]) <= end < int(r["acked_ns"]) for r in rows)
             assert backlog == run["backlog_at_window_end"]
             txs = samples(folder / (run["scenario"] + "-transactions.csv.gz"))
+            allowed = {"claim_start", "claim_message", "ack_start", "ack_message", "renew_start", "renew_message"}
             for t in txs:
-                assert t["kind"] in ("claim_start", "claim_message", "ack_start", "ack_message", "renew_start"), t
+                # Since ADR-029 one transaction may carry several statements, joined with '+'.
+                assert set(t["kind"].split("+")) <= allowed, t
                 assert int(t["duration_ns"]) >= 0, t
+
+            def kind_rows(t, kind):
+                if "start_rows" in t:
+                    return int(t[kind + "_rows"])
+                return int(t.get("rows", 1))
+
             for kind in ("start", "message"):
-                ack_txs = [t for t in txs if t["kind"] == "ack_" + kind]
-                assert sum(int(t.get("rows", 1)) for t in ack_txs) == sum(r["kind"] == kind for r in rows)
+                ack_txs = [t for t in txs if "ack_" + kind in t["kind"].split("+")]
+                assert sum(kind_rows(t, kind) for t in ack_txs) == sum(r["kind"] == kind for r in rows)
                 if rows and "ack_batch" in rows[0]:
                     assert len({r["ack_batch"] for r in rows if r["kind"] == kind}) == len(ack_txs)
                     groups = {}
@@ -93,9 +113,14 @@ def main(directory):
                             assert int(r["ack_batch"]) > 0
                             groups.setdefault(r["ack_batch"], set()).add(r["acked_ns"])
                     assert all(len(timestamps) == 1 for timestamps in groups.values())
-            if "ack_start_transactions_total" in run:
-                assert run["ack_start_transactions_total"] == sum(t["kind"] == "ack_start" for t in txs)
-                assert run["ack_start_rows_total"] == sum(r["kind"] == "start" for r in rows)
+            for kind in ("start", "message"):
+                if f"ack_{kind}_transactions_total" in run:
+                    assert run[f"ack_{kind}_transactions_total"] == sum("ack_" + kind in t["kind"].split("+") for t in txs)
+                    assert run[f"ack_{kind}_rows_total"] == sum(r["kind"] == kind for r in rows)
+            if "ack_transactions_total" in run:
+                assert run["ack_transactions_total"] == sum(
+                    bool({"ack_start", "ack_message"} & set(t["kind"].split("+"))) for t in txs)
+                assert run["dispatcher_transactions_total"] == len(txs)
             for kind, expected in run["transaction_ms"].items():
                 verify_stats([int(t["duration_ns"]) / 1e6 for t in txs
                               if t["kind"] == kind and begin <= int(t["end_ns"]) <= end], expected)
@@ -112,8 +137,17 @@ def main(directory):
               f'{latency["p50"]:.2f} / {latency["p95"]:.2f} / {latency["p99"]:.2f} | '
               f'{run["backlog_at_window_end"]}')
         total += len(rows)
-    rates = [r["throughput_s"] for r in summary if r["scenario"].startswith("saturated-starts-")]
-    print(f"VERIFIED: {total} operations, {len(summary)} scenarios; saturated median={statistics.median(rates):.2f} start/s")
+    line = f"VERIFIED: {total} operations, {len(summary)} scenarios"
+    for variant in sorted({r.get("variant", "") for r in summary}):
+        runs = [r for r in summary if r.get("variant", "") == variant]
+        rates = [r["throughput_s"] for r in runs if r["scenario"].startswith("saturated-starts-")]
+        mixed = [r["throughput_s"] for r in runs if r["scenario"].startswith("saturated-mixed-")]
+        line += f"; {variant or 'run'}:"
+        if rates:
+            line += f" saturated median={statistics.median(rates):.2f} start/s"
+        if mixed:
+            line += f" mixed median={statistics.median(mixed):.2f} ops/s"
+    print(line)
 
 
 if __name__ == "__main__":

@@ -99,6 +99,7 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Migration | `DeliveryMigrationIT`: V1 có delivery lịch sử thiếu reference → V2 thành công, giữ nguyên dữ liệu/không phát outbox, cờ legacy không thể tạo mới hoặc đổi; delivery mới cần đầy đủ bản ghi Admin |
 | Async submission | `SubmissionWaitersTest`, `SubmissionNotificationIT`: bounded waiters/executor, deadline/context, same-token replay, batch repair, PostgreSQL commit/rollback/CAS, hai replica LISTEN, MockMvc async response/headers ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)) |
 | Dispatcher | `WorkflowDispatcherTest`, `WorkflowDispatchStoreIT`: 8 RPC có giới hạn, ACK theo lô/straggler, retry từng row, shutdown, lease renewal, PostgreSQL rollback/reclaim, owner/generation fencing và `SKIP LOCKED` ([ADR-028](./decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md)) |
+| Message lanes | `WorkflowMessageLanesTest`, `WorkflowDispatchStoreIT`: một message đang bay mỗi target theo `created_at`, start/message chia 8 slot luân phiên, ACK message theo lô chung transaction với start, defer lane sau head `RETRY`, closed target trên coordinator, renewal/shutdown; PostgreSQL: fencing hai owner và cùng pod khác generation, rollback/reclaim, hai dispatcher thật cùng DB và reclaim pod đã chết ([ADR-029](./decisions/ADR-029-parallel-workflow-messages-per-target-lanes.md)) |
 
 MockMvc helper `AbstractIntegrationTest.call` phải đợi async result rồi `asyncDispatch` cho submission
 POST; validation/identity rejection vẫn đồng bộ. Khi thêm test controller, không đọc response body
@@ -113,6 +114,11 @@ PostgreSQL test thật. Chi tiết và lệnh tái chạy:
 Sau ADR-028, Order suite có **109 test, 0 failure/error, 1 benchmark opt-in skip**;
 11 test mới bao phủ dispatcher/claim fencing trên PostgreSQL thật. Benchmark dispatcher có
 [báo cáo so sánh một thread và tám worker](../performance/order-dispatcher-parallel-benchmark-2026-10-16.md).
+
+Sau ADR-029 (2026-10-20), Order suite có **124 test, 0 failure/error, 1 benchmark opt-in skip**
+(chạy với `TEST_DB_URL` trỏ tới PostgreSQL test mới); 8 unit test lane và 6 test PostgreSQL thật mới.
+So sánh với ADR-028 trong cùng phiên:
+[báo cáo message lanes](../performance/order-dispatcher-message-lanes-benchmark-2026-10-20.md).
 
 Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
 E2E tự động, load test.

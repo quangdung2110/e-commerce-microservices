@@ -16,6 +16,11 @@ evidence:
 
 # ADR-028 — Tám worker start Temporal và ACK theo lô có claim fencing
 
+> **Cập nhật ADR-029 (2026-10-20):** mục 6 (message tuần tự trên coordinator, ACK từng row) được thay bằng
+> [ADR-029](./ADR-029-parallel-workflow-messages-per-target-lanes.md): message dùng chung pool RPC, một message
+> đang bay mỗi target, ACK/renew message theo lô có fencing và luân phiên với start. Pool đổi tên thread thành
+> `order-workflow-rpc-N`. Các quyết định còn lại giữ nguyên.
+
 ## Bối cảnh
 
 [Baseline một thread](../../performance/order-dispatcher-single-thread-benchmark-2026-10-16.md)

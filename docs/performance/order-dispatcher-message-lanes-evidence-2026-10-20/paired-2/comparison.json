@@ -1,0 +1,175 @@
+{
+  "profile": "paired",
+  "variants": [
+    "adr028",
+    "parallel"
+  ],
+  "measured_operations": 75600,
+  "adr028": {
+    "mixed_windows_ops_s": [
+      95.87,
+      106.67,
+      102.2,
+      98.93
+    ],
+    "mixed_median_ops_s": 100.56666666666666,
+    "mixed_median_starts_s": 51.1,
+    "mixed_median_messages_s": 49.46666666666667,
+    "start_windows_s": [
+      233.33,
+      226.6,
+      223.33,
+      212.33
+    ],
+    "start_median_s": 224.96666666666667,
+    "mixed_ack_transactions_per_operation": 0.5804901960784313,
+    "mixed_dispatcher_transactions_per_operation": 0.6012745098039216,
+    "mixed_max_concurrent_gateway_calls": 8,
+    "max_concurrent_messages_per_target": 1,
+    "mixed_to_start_only_ratio": 0.44702918950955695
+  },
+  "parallel": {
+    "mixed_windows_ops_s": [
+      248.4,
+      275.4,
+      261.8,
+      234.53
+    ],
+    "mixed_median_ops_s": 255.10000000000002,
+    "mixed_median_starts_s": 127.6,
+    "mixed_median_messages_s": 127.5,
+    "start_windows_s": [
+      235.67,
+      221.8,
+      220.93,
+      205.4
+    ],
+    "start_median_s": 221.36666666666667,
+    "mixed_ack_transactions_per_operation": 0.1238265306122449,
+    "mixed_dispatcher_transactions_per_operation": 0.13403061224489796,
+    "mixed_max_concurrent_gateway_calls": 8,
+    "max_concurrent_messages_per_target": 1,
+    "mixed_to_start_only_ratio": 1.152386688751694
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "mixed_old": 95.86666666666666,
+      "mixed_new": 248.4,
+      "mixed_ratio": 2.5910987482614747,
+      "starts_old": 233.33333333333334,
+      "starts_new": 235.66666666666666,
+      "starts_ratio": 1.01
+    },
+    {
+      "round": 2,
+      "mixed_old": 106.66666666666667,
+      "mixed_new": 275.4,
+      "mixed_ratio": 2.5818749999999997,
+      "starts_old": 226.6,
+      "starts_new": 221.8,
+      "starts_ratio": 0.9788172992056487
+    },
+    {
+      "round": 3,
+      "mixed_old": 102.2,
+      "mixed_new": 261.8,
+      "mixed_ratio": 2.5616438356164384,
+      "starts_old": 223.33333333333334,
+      "starts_new": 220.93333333333334,
+      "starts_ratio": 0.9892537313432835
+    },
+    {
+      "round": 4,
+      "mixed_old": 98.93333333333334,
+      "mixed_new": 234.53333333333333,
+      "mixed_ratio": 2.370619946091644,
+      "starts_old": 212.33333333333334,
+      "starts_new": 205.4,
+      "starts_ratio": 0.9673469387755101
+    }
+  ],
+  "median_round_mixed_ratio": 2.5717594178082193,
+  "median_round_starts_ratio": 0.9840355152744662,
+  "mixed_median_speedup": 2.5366257872058338,
+  "arrivals": [
+    {
+      "scenario": "arrival-mixed-80-adr028",
+      "variant": "adr028",
+      "rate": 80,
+      "committed_per_s": 80.0,
+      "ack_s": 79.33333333333333,
+      "messages_s": 39.6,
+      "backlog": 10,
+      "p95_ms": 167.3502,
+      "p99_ms": 240.1598,
+      "message_p95_ms": 177.1694,
+      "producer_elapsed_s": 15.012344
+    },
+    {
+      "scenario": "arrival-mixed-80-parallel",
+      "variant": "parallel",
+      "rate": 80,
+      "committed_per_s": 79.93333333333334,
+      "ack_s": 79.86666666666666,
+      "messages_s": 39.93333333333333,
+      "backlog": 1,
+      "p95_ms": 61.3702,
+      "p99_ms": 104.748,
+      "message_p95_ms": 59.3183,
+      "producer_elapsed_s": 15.0035627
+    },
+    {
+      "scenario": "arrival-mixed-120-parallel",
+      "variant": "parallel",
+      "rate": 120,
+      "committed_per_s": 119.93333333333334,
+      "ack_s": 119.66666666666667,
+      "messages_s": 59.8,
+      "backlog": 4,
+      "p95_ms": 103.8333,
+      "p99_ms": 148.518,
+      "message_p95_ms": 105.7066,
+      "producer_elapsed_s": 15.00312
+    },
+    {
+      "scenario": "arrival-mixed-120-adr028",
+      "variant": "adr028",
+      "rate": 120,
+      "committed_per_s": 119.93333333333334,
+      "ack_s": 106.73333333333333,
+      "messages_s": 52.333333333333336,
+      "backlog": 198,
+      "p95_ms": 1937.5034,
+      "p99_ms": 2199.4311,
+      "message_p95_ms": 1909.9219,
+      "producer_elapsed_s": 15.0058815
+    },
+    {
+      "scenario": "arrival-mixed-160-adr028",
+      "variant": "adr028",
+      "rate": 160,
+      "committed_per_s": 159.93333333333334,
+      "ack_s": 110.4,
+      "messages_s": 54.266666666666666,
+      "backlog": 743,
+      "p95_ms": 6194.0362,
+      "p99_ms": 6587.1441,
+      "message_p95_ms": 4526.6302,
+      "producer_elapsed_s": 15.0036344
+    },
+    {
+      "scenario": "arrival-mixed-160-parallel",
+      "variant": "parallel",
+      "rate": 160,
+      "committed_per_s": 160.0,
+      "ack_s": 159.13333333333333,
+      "messages_s": 79.53333333333333,
+      "backlog": 13,
+      "p95_ms": 161.7177,
+      "p99_ms": 206.4023,
+      "message_p95_ms": 165.9717,
+      "producer_elapsed_s": 15.0056987
+    }
+  ]
+}

@@ -1,5 +1,10 @@
 # Order dispatcher: một thread so với tám worker và batch ACK
 
+> Sau [ADR-029](../order/decisions/ADR-029-parallel-workflow-messages-per-target-lanes.md) (2026-10-20), message
+> `SignalWithStart` cũng chạy trên pool RPC chung với lane theo target và ACK theo lô; `-Variant parallel` nay đo
+> implementation đó, còn implementation của báo cáo này được giữ làm fixture `-Variant adr028`. Xem
+> [so sánh message lanes](./order-dispatcher-message-lanes-benchmark-2026-10-20.md). Số liệu lịch sử bên dưới giữ nguyên.
+
 ## Kết quả chính
 
 Đã cập nhật code production sang **8 worker gửi start Temporal**, ghi kết quả theo lô, kiểm tra claim generation khi ACK/renew và gia hạn lease cho work chưa ACK.

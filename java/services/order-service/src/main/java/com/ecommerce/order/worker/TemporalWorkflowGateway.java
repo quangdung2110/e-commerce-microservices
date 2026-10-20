@@ -15,6 +15,8 @@ import org.slf4j.LoggerFactory;
  * Starts/attaches fixed Workflow IDs and delivers messages with SignalWithStart. Business
  * workflows reject duplicate IDs so a closed saga is never restarted; finalization and
  * reconciliation only replay frozen commands and allow a new run (ADR-020 §13).
+ * Called concurrently from the dispatcher's RPC pool (ADR-028/029): every call builds its own stub
+ * over the shared, thread-safe {@link WorkflowClient} and touches no database.
  */
 public class TemporalWorkflowGateway implements WorkflowGateway {
 

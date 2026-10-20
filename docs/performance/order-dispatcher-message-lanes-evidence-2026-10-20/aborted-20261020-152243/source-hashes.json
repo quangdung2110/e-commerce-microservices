@@ -1,0 +1,34 @@
+[
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\worker\\WorkflowDispatcher.java",
+        "Hash":  "E43325DECE6EB643F30C01E738FC8E8361119C439CCE7C417B6E155214ECC3B5"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\store\\WorkflowOutboxStore.java",
+        "Hash":  "894B5DB062DF05F6AC9F17CA19B2C0929FF984FCCF47B3C650717EE48CADAED7"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\worker\\TemporalWorkflowGateway.java",
+        "Hash":  "114597094F317CA939B43D5A38BD8D14E1241645FB2B86C52F6E041A0E7ACF1F"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\config\\OrderProperties.java",
+        "Hash":  "0D01C7A87E410B96F16478722700CC8B406FDE522DF500EC11BB82960DED55B9"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\test\\java\\com\\ecommerce\\order\\benchmark\\baseline\\LegacyWorkflowDispatcher.java",
+        "Hash":  "71703D1283508BF0F23E1E70A2630765451E863A1B48F505DA7505E043EFA061"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\test\\java\\com\\ecommerce\\order\\benchmark\\baseline\\Adr028WorkflowDispatcher.java",
+        "Hash":  "5BF1CAF637E5E217977A5DD10509DB493142651BE50D844863F2A6E0559E8CAD"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\test\\java\\com\\ecommerce\\order\\benchmark\\baseline\\LegacyWorkflowOutboxStore.java",
+        "Hash":  "B910698C90AB8410169C5DF4503DF81EFEB4C81A222EE7C787F0B7EB7D79DFA3"
+    },
+    {
+        "Path":  "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\.claude\\worktrees\\unruffled-napier-826dd0\\java\\services\\order-service\\src\\test\\java\\com\\ecommerce\\order\\benchmark\\WorkflowDispatcherBenchmarkTest.java",
+        "Hash":  "1E7F16A8680F68DA9AA1097C1308A20964E2336A2A714925131A2F748B255380"
+    }
+]
