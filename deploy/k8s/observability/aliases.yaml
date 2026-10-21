@@ -1,0 +1,153 @@
+# ExternalName trùng tên compose, để infra/observability/prometheus.yml (target static như
+# search-service:8080) và env của exporter dùng được không đổi; nhãn instance giữ như compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: search-service
+spec:
+  type: ExternalName
+  externalName: search-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: review-service
+spec:
+  type: ExternalName
+  externalName: review-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+spec:
+  type: ExternalName
+  externalName: product-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promotion-service
+spec:
+  type: ExternalName
+  externalName: promotion-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+spec:
+  type: ExternalName
+  externalName: inventory-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+spec:
+  type: ExternalName
+  externalName: order-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-service
+spec:
+  type: ExternalName
+  externalName: checkout-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-detail-bff
+spec:
+  type: ExternalName
+  externalName: product-detail-bff.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+spec:
+  type: ExternalName
+  externalName: payment-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+spec:
+  type: ExternalName
+  externalName: notification-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+spec:
+  type: ExternalName
+  externalName: auth-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+spec:
+  type: ExternalName
+  externalName: user-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cart-service
+spec:
+  type: ExternalName
+  externalName: cart-service.ecommerce.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-auth
+spec:
+  type: ExternalName
+  externalName: gateway-auth.edge.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+spec:
+  type: ExternalName
+  externalName: api-gateway.edge.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  type: ExternalName
+  externalName: redis.data.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-redis
+spec:
+  type: ExternalName
+  externalName: checkout-redis.data.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  type: ExternalName
+  externalName: postgres.data.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+spec:
+  type: ExternalName
+  externalName: kafka.data.svc.cluster.local

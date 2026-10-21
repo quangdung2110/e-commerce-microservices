@@ -28,4 +28,6 @@ Manifest Kubernetes và Istio của [service mesh](../../docs/mesh/runtime-contr
 
 Thứ tự: Gateway API CRDs (`versions.yaml`) → `helm/base` → `helm/istiod` → `helm/cni` → `helm/ztunnel` → `generated/00-…` đến `80-…`. Đưa namespace vào ambient
 theo thứ tự `observability`, `edge`, `ecommerce`, và chạy policy ở chế độ quan sát trước khi enforce ([implementation plan](../../docs/mesh/implementation_plan.md)).
-Điền digest vào `versions.yaml` ở lần cài đầu tiên. Deployment và Service của các service chưa có trong repository.
+Điền digest vào `versions.yaml` ở lần cài đầu tiên. Deployment và Service của các service nằm ở
+[deploy/k8s](../k8s/README.md) (sinh từ docker-compose, cùng tên ServiceAccount, nhãn `app.kubernetes.io/name` và cổng của
+`topology.yaml`); chúng chưa chạy cùng mesh.

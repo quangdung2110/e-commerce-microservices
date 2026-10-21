@@ -1,0 +1,46 @@
+# Hạ tầng dùng chung (namespace data, ngoài mesh — docs/mesh/design.md §Namespace và phạm vi).
+# Build bằng deploy/k8s/apply.sh: configMapGenerator đọc file ngoài thư mục này (init-db.sh,
+# infra/minio) nên cần --load-restrictor LoadRestrictionsNone; như vậy file gốc vẫn là nguồn
+# duy nhất, không chép sang đây.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: data
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ecommerce
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - checkout-redis.yaml
+  - zookeeper.yaml
+  - kafka.yaml
+  - kafka-connect.yaml
+  - elasticsearch.yaml
+  - minio.yaml
+  - temporal.yaml
+  - host-ports.yaml
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - init-db.sh=../../../init-db.sh
+  - name: minio-seed
+    files:
+      - product-media-read.json=../../../infra/minio/policies/product-media-read.json
+      - product.svg=../../../infra/minio/product-media/placeholder/product.svg
+
+# Chỉ dùng cho môi trường local; giá trị trùng docker-compose.yml.
+secretGenerator:
+  - name: postgres-credentials
+    literals:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+  - name: minio-credentials
+    literals:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin

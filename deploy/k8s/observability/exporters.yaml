@@ -1,0 +1,167 @@
+# Exporter hạ tầng; tên Service/cổng trùng target trong infra/observability/prometheus.yml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: redis-exporter
+  ports:
+    - name: metrics
+      port: 9121
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-exporter
+    spec:
+      # Service link REDIS_EXPORTER_* trùng tiền tố cấu hình của exporter.
+      enableServiceLinks: false
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.94.0
+          env:
+            - name: REDIS_ADDR
+              value: redis://redis:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-redis-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: checkout-redis-exporter
+  ports:
+    - name: metrics
+      port: 9121
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout-redis-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: checkout-redis-exporter
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.94.0
+          env:
+            - name: REDIS_ADDR
+              value: redis://checkout-redis:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: postgres-exporter
+  ports:
+    - name: metrics
+      port: 9187
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-exporter
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres-exporter
+          image: prometheuscommunity/postgres-exporter:v0.20.1
+          envFrom:
+            - secretRef:
+                name: postgres-exporter
+          ports:
+            - name: metrics
+              containerPort: 9187
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-exporter
+spec:
+  selector:
+    app.kubernetes.io/name: kafka-exporter
+  ports:
+    - name: metrics
+      port: 9308
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-exporter
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: kafka-exporter
+          image: danielqsj/kafka-exporter:v1.10.0
+          args: ["--kafka.server=kafka:9092"]
+          ports:
+            - name: metrics
+              containerPort: 9308
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

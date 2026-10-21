@@ -1,0 +1,109 @@
+# Cổng trên máy host, giống docker-compose, để script và công cụ local (psql :15432, Connect
+# :8084, kafka :29092…) dùng được không đổi. LoadBalancer của Docker Desktop mở trên localhost;
+# không chạy song song với `docker compose up` vì trùng cổng.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 15432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: kafka
+  ports:
+    - name: plaintext-host
+      port: 29092
+      targetPort: 29092
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-connect-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: kafka-connect
+  ports:
+    - name: rest
+      port: 8084
+      targetPort: 8083
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: elasticsearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: temporal
+  ports:
+    - name: frontend
+      port: 7233
+      targetPort: 7233
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal-ui-external
+spec:
+  type: LoadBalancer
+  selector:
+    app: temporal-ui
+  ports:
+    - name: http
+      port: 8233
+      targetPort: 8080
