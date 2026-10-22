@@ -1,0 +1,41 @@
+# Tạo topic từ infra/kafka/topics.txt (cùng script với kafka-init của docker-compose). Broker tắt
+# auto-create (mesh ADR-002), nên Job này phải xong trước khi apply lớp services. Idempotent;
+# deploy/k8s/apply.sh xoá Job cũ trước mỗi lần apply vì spec của Job không sửa được.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics-init
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: kafka-topics-init
+    spec:
+      # Image Confluent đọc mọi KAFKA_*, kể cả biến service link.
+      enableServiceLinks: false
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topics
+          image: confluentinc/cp-kafka:7.5.0
+          command: ["/bin/sh", "/scripts/create-topics.sh"]
+          env:
+            - name: BOOTSTRAP_SERVER
+              value: kafka.data.svc.cluster.local:9092
+            - name: TOPICS_FILE
+              value: /scripts/topics.txt
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: kafka-topics

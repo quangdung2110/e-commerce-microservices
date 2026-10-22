@@ -267,7 +267,10 @@ Namespace, ServiceAccount, `PeerAuthentication`, waypoint, `AuthorizationPolicy`
 (HBONE, test dương/âm `403 RBAC`, retry, phân bố gRPC, trace) vẫn chưa đạt. Repository chưa có manifest Kubernetes của chính các service
 (Deployment, Service), nên Service và `appProtocol` ở mục 3 vẫn là yêu cầu chưa thực hiện, và digest image chưa được pin. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
-Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
+Compose là bằng chứng bảo mật. Từ [mesh ADR-002](decisions/ADR-002-local-runtime-exposure-and-broker-auth.md), phạm vi spoof thu về
+máy dev và mạng compose: chỉ gateway và frontend nghe trên mọi interface, cổng service/hạ tầng bind `127.0.0.1`; `deploy/k8s`
+chỉ có LoadBalancer cho Traefik và frontend, kèm NetworkPolicy L4 dẫn xuất từ mục 5.2 (chỉ có tác dụng với CNI thực thi
+NetworkPolicy). Kafka vẫn chưa có SASL/ACL. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
 và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service

@@ -101,10 +101,13 @@ payment:
     refund-success-lookback: P35D
     batch-size: 500
     auto-correction-frozen: false
-  # Callers of the Order-facing routes (X-Service-Identity); the mesh is the real boundary
-  # (contracts ADR-004, Payment ADR-026). An empty list rejects every caller.
+  # Callers per route group (X-Service-Identity); the mesh is the real boundary
+  # (contracts ADR-004, Payment ADR-026, ADR-028). An empty list rejects every caller.
   identity:
+    # /v1/payments/** (except the webhook) and /v1/refunds/**
     allowed-callers: ${PAYMENT_ALLOWED_CALLERS:order-service}
+    # /internal/v1/payment/** (Finance Ops, contracts/http/payment/internal/v1)
+    operations-callers: ${PAYMENT_OPERATIONS_CALLERS:finance-ops,accounting-ops}
 
 logging:
   pattern:

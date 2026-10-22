@@ -19,20 +19,6 @@ spec:
     port: 4566
     targetPort: http
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: localstack-external
-  namespace: ecommerce
-spec:
-  type: LoadBalancer
-  selector:
-    app.kubernetes.io/name: localstack
-  ports:
-  - name: http
-    port: 4566
-    targetPort: 4566
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:

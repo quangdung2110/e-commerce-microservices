@@ -1,0 +1,69 @@
+# Mọi topic của broker local. Broker tắt auto.create.topics.enable (mesh ADR-002), nên một topic
+# chỉ tồn tại khi có ở đây: kafka-init (docker-compose) và Job kafka-topics-init (deploy/k8s/infra)
+# tạo chúng bằng kafka-topics --create --if-not-exists, không bao giờ sửa topic đã có.
+#
+# Cột: tên  số-partition  [cấu hình topic, cách nhau bằng dấu phẩy]
+# Local chạy một broker và một partition, giống các topic auto-create trước đây. Môi trường thật
+# dùng số partition và replication factor trong tài liệu từng service.
+# Không liệt kê topic nội bộ: __consumer_offsets do broker tạo, product-service-connect-* do Kafka
+# Connect tạo bằng Admin API.
+
+# Auth (Go, sarama): danh tính và thông báo bảo mật.
+t.auth.events                         1
+t.auth.events.dlq                     1
+t.auth.notification.events            1
+t.auth.notification.events.dlq        1
+
+# User
+t.user.events                         1
+t.user.events.dlq                     1
+
+# Cart
+t.cart.events                         1
+t.cart.events.dlq                     1
+
+# Product (Debezium outbox) và Search
+t.product.events                      1
+t.product.events.promotion.dlq        1
+t.category.events                     1
+t.catalog.control.events              1
+
+# Promotion (Debezium outbox) → Product
+t.promotion.markdown.events           1
+t.promotion.markdown.events.dlq       1
+
+# Inventory (Debezium outbox)
+t.inventory.order.events.v1           1
+t.inventory.stock.events.v1           1
+
+# Delivery → Order (ADR-021: chưa có Delivery service; Order vẫn consume)
+t.delivery.order.events.v1            1
+
+# Order (Debezium outbox)
+t.order.events                        1
+t.order.events.dlq                    1
+
+# Payment (Debezium outbox, webhook inbox)
+t.payment.events.v2                   1
+t.payment.webhooks.raw                1
+
+# Review (outbox) và DLQ <topic>.dlq của các consumer Review/Notification
+t.review.events                       1
+t.review.events.dlq                   1
+
+# Notification
+t.notification.critical.v1            1
+t.notification.critical.v1.dlq        1
+t.notification.transactional.v1       1
+t.notification.transactional.v1.dlq   1
+t.notification.bulk.v1                1
+t.notification.bulk.v1.dlq            1
+t.notification.outcomes.v1            1
+t.notification.outcomes.v1.dlq        1
+
+# Heartbeat của các Debezium connector (heartbeat.interval.ms, tên __debezium-heartbeat.<topic.prefix>)
+__debezium-heartbeat.product-db       1
+__debezium-heartbeat.promotion-db     1
+__debezium-heartbeat.inventory-db     1
+__debezium-heartbeat.order-db         1
+__debezium-heartbeat.payment-db       1

@@ -2,7 +2,8 @@ spring:
   elasticsearch:
     uris: ${ES_URIS:http://localhost:9200}
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    # Host listener of the root compose broker (127.0.0.1 only); 9092 is not published.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
 
 search:
   # Local only: create the v1 indices and aliases from docs/search/schema at startup so a

@@ -85,11 +85,25 @@ WORKLOADS = {
 # Service compose chạy một lần → Job. kafka-connect-init ở data cạnh Kafka Connect.
 JOBS = {"kafka-connect-init": dict(ns="data", mem=("256Mi", "512Mi"))}
 
-# Hạ tầng do deploy/k8s/infra quản lý (namespace data).
+# Hạ tầng do deploy/k8s/infra quản lý (namespace data). kafka-init là Job kafka-topics-init ở đó.
 INFRA = {
-    "postgres", "redis", "checkout-redis", "zookeeper", "kafka", "kafka-connect",
+    "postgres", "redis", "checkout-redis", "zookeeper", "kafka", "kafka-init", "kafka-connect",
     "elasticsearch", "minio", "minio-init", "temporal", "temporal-ui",
 }
+
+# NetworkPolicy (mesh ADR-002): ai được gọi workload nào lấy từ AuthorizationPolicy L7 mà
+# deploy/mesh/generate.py sinh từ docs/mesh/runtime-contract.md §5.2 — cùng một ma trận, ở mức L4
+# (pod nguồn, mọi cổng). Prometheus scrape mọi workload. Workload ngoài ma trận mesh:
+#   PUBLIC         nhận từ mọi nguồn (Service LoadBalancer duy nhất của cụm)
+#   EXTRA_CALLERS  "namespace/serviceaccount" được gọi, cho workload mesh không mô tả
+MESH_POLICIES = ROOT / "deploy" / "mesh" / "generated" / "41-authorizationpolicies-ecommerce.yaml"
+PUBLIC = {"api-gateway", "frontend"}
+EXTRA_CALLERS = {
+    "gateway-auth": ["edge/traefik"],  # runtime-contract §5.1 (L4, ztunnel)
+    "mailpit": ["ecommerce/notification-service"],
+    "localstack": ["ecommerce/notification-service"],
+}
+SCRAPER = "observability/prometheus"
 
 # Service chỉ có ở cụm này, viết theo cú pháp compose. Compose để người dùng nạp schema Auth bằng tay
 # (migration không chạy lại được trên volume đã nạp tay); database của cụm này mới và chỉ migrate nạp
@@ -361,18 +375,97 @@ class Build:
         return docs
 
     def host_ports(self, service, ports):
-        """Cổng host của compose → LoadBalancer trên localhost. Bỏ cổng chỉ bind loopback (dashboard
-        Traefik) và cổng container không có listener."""
+        """Cổng host mở cho mọi interface của compose → LoadBalancer (Docker Desktop mở nó trên mọi
+        interface của máy). Bỏ cổng container không có listener."""
+        return [
+            {key: value for key, value in item.items() if key != "loopback"}
+            for item in self.compose_ports(service, ports)
+            if not item["loopback"]
+        ]
+
+    def compose_ports(self, service, ports):
+        """`ports` của compose: "host:container" (mọi interface) hoặc "127.0.0.1:host:container"."""
         by_number = {p: n for n, p in ports.items()}
         result = []
         for entry in self.services[service].get("ports") or []:
             parts = str(entry).split(":")
-            if len(parts) != 2:
-                continue
+            if len(parts) == 3 and parts[0] == "127.0.0.1":
+                loopback, parts = True, parts[1:]
+            elif len(parts) == 2:
+                loopback = False
+            else:
+                fail(f"{service}: cổng compose chưa hỗ trợ {entry!r}")
             host, target = int(parts[0]), int(parts[1].split("/")[0])
             if target in by_number:
-                result.append({"name": by_number[target], "port": host, "targetPort": target})
+                result.append({"name": by_number[target], "port": host, "targetPort": target, "loopback": loopback})
         return result
+
+    def port_forwards(self):
+        """Cổng compose chỉ bind 127.0.0.1 → dòng cho deploy/k8s/port-forward-dev.sh, để công cụ local
+        dùng cùng địa chỉ như compose mà cụm không mở LoadBalancer."""
+        lines = []
+        for service in WORKLOADS:
+            for item in self.compose_ports(service, self.ports(service)):
+                if item["loopback"]:
+                    lines.append(f"{WORKLOADS[service]['ns']} svc/{service} {item['port']}:{item['targetPort']}")
+        return lines
+
+    def network_policies(self):
+        """Default deny ingress cho ecommerce và edge, rồi mỗi workload một policy cho đúng caller của nó."""
+        callers = {}
+        for doc in yaml.safe_load_all(MESH_POLICIES.read_text(encoding="utf-8")):
+            if not doc or doc.get("kind") != "AuthorizationPolicy":
+                continue
+            targets = [ref["name"] for ref in doc["spec"].get("targetRefs", []) if ref.get("kind") == "Service"]
+            principals = {
+                principal.split("/ns/", 1)[1].replace("/sa/", "/")
+                for rule in doc["spec"].get("rules", [])
+                for source in rule.get("from", [])
+                for principal in source["source"].get("principals", [])
+            }
+            for target in targets:
+                callers.setdefault(target, set()).update(principals)
+
+        def peer(source):
+            namespace, account = source.split("/")
+            return {
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
+                # ServiceAccount, nhãn app.kubernetes.io/name và tên workload trùng nhau ở lớp này.
+                "podSelector": {"matchLabels": {"app.kubernetes.io/name": account}},
+            }
+
+        docs = [
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": "default-deny-ingress", "namespace": namespace},
+                "spec": {"podSelector": {}, "policyTypes": ["Ingress"]},
+            }
+            for namespace in ("ecommerce", "edge")
+        ]
+        for service, spec in WORKLOADS.items():
+            name = workload_name(service)
+            if service in PUBLIC:
+                ingress = [{}]
+            else:
+                if service in EXTRA_CALLERS:
+                    sources = set(EXTRA_CALLERS[service])
+                elif service in callers:
+                    sources = callers[service] - {"ecommerce/ecommerce-waypoint"}
+                else:
+                    fail(f"{service}: không có caller trong {rel(MESH_POLICIES)} lẫn EXTRA_CALLERS")
+                ingress = [{"from": [peer(source) for source in sorted(sources | {SCRAPER})]}]
+            docs.append({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": f"allow-{name}", "namespace": spec["ns"]},
+                "spec": {
+                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": name}},
+                    "policyTypes": ["Ingress"],
+                    "ingress": ingress,
+                },
+            })
+        return docs
 
     def job(self, service):
         spec = JOBS[service]
@@ -496,6 +589,9 @@ def render():
         files[f"{service}.yaml"] = dump(build.workload(service))
     for service in JOBS:
         files[f"{service}.yaml"] = dump(build.job(service))
+    files["networkpolicies.yaml"] = dump(build.network_policies())
+    # Không phải manifest: deploy/k8s/port-forward-dev.sh đọc file này (namespace, Service, host:cổng).
+    files["port-forwards.txt"] = HEADER + "".join(f"{line}\n" for line in build.port_forwards())
 
     kustomization = {
         "apiVersion": "kustomize.config.k8s.io/v1beta1",

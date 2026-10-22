@@ -22,20 +22,6 @@ spec:
     port: 8081
     targetPort: internal
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: auth-service-external
-  namespace: ecommerce
-spec:
-  type: LoadBalancer
-  selector:
-    app.kubernetes.io/name: auth-service
-  ports:
-  - name: http
-    port: 8086
-    targetPort: 8080
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,7 +80,7 @@ spec:
         - name: AUTH_REDIS_PORT
           value: '6379'
         - name: REDIS_PASSWORD
-          value: ''
+          value: local-dev-redis-password
         - name: AUTH_KAFKA_BROKERS
           value: kafka:9092
         - name: AUTH_KEYS_MASTER_KEY

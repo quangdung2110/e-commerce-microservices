@@ -23,12 +23,21 @@ resources:
   - elasticsearch.yaml
   - minio.yaml
   - temporal.yaml
-  - host-ports.yaml
+  - kafka-topics-init.yaml
+  - networkpolicies.yaml
+
+# Không còn Service LoadBalancer cho hạ tầng (mesh ADR-002): LoadBalancer của Docker Desktop mở cổng
+# trên mọi interface của máy. Công cụ local dùng deploy/k8s/port-forward-dev.sh (bind 127.0.0.1).
 
 configMapGenerator:
   - name: postgres-init
     files:
       - init-db.sh=../../../init-db.sh
+  # Danh sách topic chung với kafka-init của docker-compose.
+  - name: kafka-topics
+    files:
+      - create-topics.sh=../../../infra/kafka/create-topics.sh
+      - topics.txt=../../../infra/kafka/topics.txt
   - name: minio-seed
     files:
       - product-media-read.json=../../../infra/minio/policies/product-media-read.json
@@ -44,3 +53,7 @@ secretGenerator:
     literals:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
+  # Trùng x-redis-password của docker-compose; service nhận giá trị này qua env do generate.py sinh.
+  - name: redis-credentials
+    literals:
+      - REDIS_PASSWORD=local-dev-redis-password

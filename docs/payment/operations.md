@@ -551,3 +551,10 @@ caller ([ADR-026](./decisions/ADR-026-service-identity-allowlist-and-401-403.md)
 `UNAUTHENTICATED`/`FORBIDDEN` ở Order là lỗi cấu hình, không phải lỗi request: kiểm tra Order còn gửi
 `order-service` và danh sách còn chứa nó.
 
+Route Finance Ops `/internal/v1/payment/**` có danh sách riêng `payment.identity.operations-callers` (env
+`PAYMENT_OPERATIONS_CALLERS`, mặc định `finance-ops,accounting-ops`; rỗng từ chối mọi caller), kiểm trước
+maker-checker: thiếu `X-Service-Identity` là `401 UNAUTHENTICATED`, tên ngoài danh sách (kể cả `order-service`)
+là `403 FORBIDDEN` ([ADR-028](./decisions/ADR-028-finance-ops-caller-allowlist.md)). Path `/internal/**` khác
+không thuộc nhóm nào nên luôn bị từ chối. Ở docker-compose cổng `8089` chỉ bind `127.0.0.1`; gọi tay từ máy
+dev phải gửi `X-Service-Identity: finance-ops` cùng `X-Actor`/`X-Approver`.
+

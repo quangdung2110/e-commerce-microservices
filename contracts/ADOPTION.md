@@ -42,12 +42,12 @@ File này phân biệt rõ ba trạng thái dễ bị nhầm:
 ## Provider thật theo contract
 
 `contracts/tools/verify_providers.py` ([ADR-009](decisions/ADR-009-provider-verification-against-running-stack.md)) gọi provider
-đang chạy như consumer gọi và kiểm câu trả lời với OpenAPI. Các interaction HTTP đã có probe (39 probe, chỉ đọc):
+đang chạy như consumer gọi và kiểm câu trả lời với OpenAPI. Các interaction HTTP đã có probe (41 probe, chỉ đọc):
 `search-reindexes-product-catalog`, `promotion-validates-product-snapshot`, `product-detail-bff-queries-product-catalog`,
 `product-detail-bff-queries-review-summary`, `product-detail-bff-queries-inventory-availability`, `checkout-previews-inventory-allocation`,
 `checkout-lists-voucher-options`, `checkout-calculates-promotions`, `checkout-reads-cart-snapshot`,
 `checkout-reads-user-address-snapshot`, `checkout-creates-order` (đọc), `order-initiates-payment` (đọc),
-`support-queries-notification-status` và `notification-resolves-auth-contact`; cùng với đó là `401`/`403` của từng provider. Đây là bằng chứng
+`support-queries-notification-status` và `notification-resolves-auth-contact`; cùng với đó là `401`/`403` của từng provider (kể cả `finance-ops-operates-payment`, Payment ADR-028). Đây là bằng chứng
 cho điều kiện "provider thật vượt qua contract test", chưa đủ để chuyển `verified`: còn thiếu test retry/duplicate của consumer, và lệnh có side
 effect (reserve, thanh toán, tạo order) chưa được probe.
 

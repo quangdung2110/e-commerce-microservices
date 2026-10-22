@@ -151,8 +151,10 @@ curl -X POST -H 'Content-Type: application/json' \
   --data @go/services/notification-service/deploy/debezium/notification-outbox-connector.json \
   http://localhost:8084/connectors
 
-# 4. topic Kafka (dev: auto-create bật; production: tạo trước với số partition ở 01-lanes.md §5)
+# 4. topic Kafka: broker tắt auto-create (mesh ADR-002); kafka-init tạo topic trong
+#    infra/kafka/topics.txt (dev: 1 partition). Production tạo trước với số partition ở 01-lanes.md §5:
 #    t.notification.critical.v1 (3) · transactional.v1 (12) · bulk.v1 (24) · outcomes.v1 (12) · *.dlq
+#    Topic mới phải được thêm vào topics.txt rồi `docker compose up kafka-init`.
 
 # 5. chạy (cách A: container trong compose; cách B: go run tại chỗ)
 docker compose --profile notification up -d notification-service

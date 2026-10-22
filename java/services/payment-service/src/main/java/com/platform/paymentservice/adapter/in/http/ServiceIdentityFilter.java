@@ -19,12 +19,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Caller check for the Order-facing routes (contracts ADR-004, Payment ADR-026): {@code /v1/payments/**}
- * except the Stripe webhook, and {@code /v1/refunds/**}. The caller names itself in
- * {@code X-Service-Identity}: a missing value is {@code 401 UNAUTHENTICATED}, a name outside
- * {@code payment.identity.allowed-callers} is {@code 403 FORBIDDEN}. The mesh is the real boundary and the
- * header is attribution, so this is the second layer. The webhook is public (Stripe, verified by signature)
- * and the Finance Ops routes under {@code /internal/v1/payment} have their own callers; neither is checked here.
+ * Caller check per route group (contracts ADR-004, Payment ADR-026 and ADR-028). The caller names itself in
+ * {@code X-Service-Identity}: a missing value is {@code 401 UNAUTHENTICATED}, a name outside the group's
+ * allowlist is {@code 403 FORBIDDEN}.
+ * <ul>
+ *   <li>Order-facing: {@code /v1/payments/**} except the Stripe webhook, and {@code /v1/refunds/**};
+ *       {@code payment.identity.allowed-callers}.</li>
+ *   <li>Finance Ops: {@code /internal/v1/payment/**}; {@code payment.identity.operations-callers}. The
+ *       maker-checker headers are checked afterwards by {@code PaymentOperationsContractInterceptor}.</li>
+ *   <li>Any other {@code /internal/**} path belongs to no group and rejects every caller.</li>
+ * </ul>
+ * The mesh is the real boundary and the header is attribution, so this is the second layer. The webhook is
+ * public (Stripe, verified by signature) and is not checked. An empty allowlist rejects every caller.
  *
  * <p>The decision is made on the decoded path without {@code ;param} so encoding cannot skip it.
  */
@@ -34,14 +40,18 @@ public class ServiceIdentityFilter extends OncePerRequestFilter {
 
     static final String HEADER = "X-Service-Identity";
     private static final String WEBHOOK_PREFIX = "/v1/payments/webhook";
+    private static final String OPERATIONS_PREFIX = "/internal/v1/payment";
     private static final String MISSING_CORRELATION = "missing-correlation-id";
 
     private final List<String> allowedCallers;
+    private final List<String> operationsCallers;
     private final ObjectMapper mapper;
 
     public ServiceIdentityFilter(@Value("${payment.identity.allowed-callers:order-service}") List<String> allowedCallers,
+                                 @Value("${payment.identity.operations-callers:}") List<String> operationsCallers,
                                  ObjectMapper mapper) {
-        this.allowedCallers = allowedCallers.stream().map(String::trim).filter(name -> !name.isEmpty()).toList();
+        this.allowedCallers = clean(allowedCallers);
+        this.operationsCallers = clean(operationsCallers);
         this.mapper = mapper;
     }
 
@@ -49,7 +59,8 @@ public class ServiceIdentityFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
-        if (!orderFacing(path)) {
+        List<String> callers = callersFor(path);
+        if (callers == null) {
             chain.doFilter(request, response);
             return;
         }
@@ -57,19 +68,40 @@ public class ServiceIdentityFilter extends OncePerRequestFilter {
         caller = caller == null ? "" : caller.trim();
         if (caller.isEmpty()) {
             reject(request, response, 401, "UNAUTHENTICATED");
-        } else if (!allowedCallers.contains(caller)) {
+        } else if (!callers.contains(caller)) {
             reject(request, response, 403, "FORBIDDEN");
         } else {
             chain.doFilter(request, response);
         }
     }
 
+    /** The allowlist of the route group, an empty list for an internal path of no group, null when unchecked. */
+    List<String> callersFor(String path) {
+        if (orderFacing(path)) {
+            return allowedCallers;
+        }
+        if (under(path, OPERATIONS_PREFIX)) {
+            return operationsCallers;
+        }
+        if (under(path, "/internal")) {
+            return List.of();
+        }
+        return null;
+    }
+
     static boolean orderFacing(String path) {
-        if (path.equals(WEBHOOK_PREFIX) || path.startsWith(WEBHOOK_PREFIX + "/")) {
+        if (under(path, WEBHOOK_PREFIX)) {
             return false;
         }
-        return path.equals("/v1/payments") || path.startsWith("/v1/payments/")
-                || path.equals("/v1/refunds") || path.startsWith("/v1/refunds/");
+        return under(path, "/v1/payments") || under(path, "/v1/refunds");
+    }
+
+    private static boolean under(String path, String prefix) {
+        return path.equals(prefix) || path.startsWith(prefix + "/");
+    }
+
+    private static List<String> clean(List<String> names) {
+        return names.stream().map(String::trim).filter(name -> !name.isEmpty()).toList();
     }
 
     private void reject(HttpServletRequest request, HttpServletResponse response, int status, String code)

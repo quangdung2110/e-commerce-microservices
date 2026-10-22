@@ -12,7 +12,8 @@ spring:
         format_sql: true
 
   kafka:
-    bootstrap-servers: localhost:9092
+    # Listener host của broker compose (chỉ bind 127.0.0.1); 9092 không publish ra host.
+    bootstrap-servers: localhost:29092
 
 logging:
   level:

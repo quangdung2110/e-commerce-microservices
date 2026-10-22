@@ -28,6 +28,7 @@ resources:
 - api-gateway.yaml
 - frontend.yaml
 - kafka-connect-init.yaml
+- networkpolicies.yaml
 configMapGenerator:
 - name: cart-service-app-configs
   namespace: ecommerce

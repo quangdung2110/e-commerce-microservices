@@ -33,6 +33,19 @@ func TestShippedApplicationYAMLIsValid(t *testing.T) {
 	}
 }
 
+// The shared Redis requires a password (mesh ADR-002): configs/application.yaml
+// reads it from REDIS_PASSWORD, which docker-compose sets.
+func TestShippedApplicationYAMLReadsTheRedisPassword(t *testing.T) {
+	t.Setenv("REDIS_PASSWORD", "redis-secret-from-env")
+	cfg, err := Load("../../../configs/application.yaml")
+	if err != nil {
+		t.Fatalf("configs/application.yaml: %v", err)
+	}
+	if cfg.Redis.Password != "redis-secret-from-env" {
+		t.Fatalf("redis.password = %q, want the REDIS_PASSWORD value", cfg.Redis.Password)
+	}
+}
+
 func TestValidateOrderingAndPrivacy(t *testing.T) {
 	base := func(t *testing.T) *Config {
 		t.Helper()

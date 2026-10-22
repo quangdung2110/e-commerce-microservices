@@ -1,3 +1,12 @@
+# Password of the shared Redis (requirepass). It holds Auth security state (reset tokens, OTP,
+# revocation), so it is never open (mesh ADR-002). Development value only; override with
+# REDIS_PASSWORD in .env. gateway-auth repeats the same default inside its redis:// URL.
+x-redis-password: &redis-password ${REDIS_PASSWORD:-local-dev-redis-password}
+
+# Host ports: every service, database and broker binds 127.0.0.1 only, so nothing but the gateway
+# (8088) and the frontend (3000) is reachable from another machine (mesh ADR-002). Services trust
+# X-User-* and X-Service-Identity headers without a mesh, so a reachable service port is a bypass.
+
 services:
   # ── Elasticsearch ──────────────────────────────────────────
   elasticsearch:
@@ -11,7 +20,7 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -28,8 +37,8 @@ services:
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
-    ports:
-      - "2181:2181"
+    # No host port: ZooKeeper has no authentication and owns the Kafka metadata. Tools reach it
+    # on the Compose network (scripts/restore-auth-topic-ids.ps1).
     # Metadata must survive alongside Kafka log volumes. Existing stacks must
     # copy the old anonymous volumes before adopting these mounts; see runbook.
     volumes:
@@ -57,10 +66,13 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Topics are created explicitly by kafka-init (infra/kafka/topics.txt): a client must not
+      # create a topic by producing to a name (mesh ADR-002).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    # PLAINTEXT without SASL/ACL: only the Compose network and host loopback reach the broker.
+    # 9092 advertises kafka:9092 and is not published; host tools use localhost:29092.
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "127.0.0.1:29092:29092"
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
       interval: 10s
@@ -68,6 +80,26 @@ services:
       retries: 10
     volumes:
       - kafka-data:/var/lib/kafka/data
+    networks:
+      - ecommerce-network
+
+  # Creates every topic of infra/kafka/topics.txt (one-shot, idempotent) now that the broker does
+  # not auto-create. Every Kafka client waits for it. Run again by hand:
+  # `docker compose up kafka-init`. A new topic is added to topics.txt, not produced into being.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    entrypoint: ["/bin/sh", "/scripts/create-topics.sh"]
+    restart: "no"
+    environment:
+      BOOTSTRAP_SERVER: kafka:9092
+      TOPICS_FILE: /scripts/topics.txt
+    volumes:
+      - ./infra/kafka/create-topics.sh:/scripts/create-topics.sh:ro
+      - ./infra/kafka/topics.txt:/scripts/topics.txt:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
     networks:
       - ecommerce-network
 
@@ -89,11 +121,15 @@ services:
       CONNECT_PRODUCER_ACKS: all
       CONNECT_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
       CONNECT_HEAP_MAX_SIZE: 512m
+    # The Connect REST API has no authentication: it can read connector configs (database
+    # credentials) and register new connectors. Loopback only.
     ports:
-      - "8084:8083"
+      - "127.0.0.1:8084:8083"
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -154,7 +190,7 @@ services:
       - -c
       - max_connections=300
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
@@ -171,14 +207,26 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: >
-      redis-server
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --appendfsync everysec
+    # requirepass: Redis holds Auth reset tokens, OTPs and the revocation list, so whoever can
+    # write it can take over an account (mesh ADR-002). Every client gets REDIS_PASSWORD.
+    # A shell expands the password from the environment; the image entrypoint still drops root.
+    command:
+      - sh
+      - -c
+      - >-
+        exec docker-entrypoint.sh redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --appendonly yes
+        --appendfsync everysec
+        --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: *redis-password
+      # redis-cli inside this container authenticates with it, so `docker exec redis redis-cli …`
+      # (healthcheck, frontend/scripts/create-dev-account.sh) keeps working unchanged.
+      REDISCLI_AUTH: *redis-password
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -199,9 +247,11 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+    # Browsers on this machine use localhost:9000 for signed Review uploads; others go through
+    # the gateway (/media/**).
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -265,6 +315,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
@@ -276,7 +328,7 @@ services:
       # Full reindex pulls the Product/Category export; Product listens on 8081.
       PRODUCT_INTERNAL_URL: http://product-service:8081
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     networks:
       - ecommerce-network
     labels:
@@ -305,6 +357,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
     environment:
@@ -336,7 +390,7 @@ services:
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8087:8080"
+      - "127.0.0.1:8087:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
       interval: 30s
@@ -382,6 +436,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8081
@@ -402,8 +458,8 @@ services:
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8082:8081"
-      - "9091:9091"
+      - "127.0.0.1:8082:8081"
+      - "127.0.0.1:9091:9091"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
       interval: 30s
@@ -460,7 +516,7 @@ services:
       PDP_MEDIA_REQUIRE_HTTPS: "false"
       TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
-      - "8093:8080"
+      - "127.0.0.1:8093:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -498,6 +554,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8085
@@ -510,6 +568,7 @@ services:
       # Redis runtime: snapshot cache, claim gate/pool, budget reservation, campaign schedule.
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: *redis-password
 
       # Kafka: chi consume product-deleted.v1; outbound qua outbox + Debezium.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -521,7 +580,7 @@ services:
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
       interval: 30s
@@ -584,7 +643,7 @@ services:
       WORKERS_ENABLED: "true"
       JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
     ports:
-      - "8094:8080"
+      - "127.0.0.1:8094:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -627,7 +686,7 @@ services:
       POSTGRES_PWD: postgres
       POSTGRES_SEEDS: postgres
     ports:
-      - "7233:7233"
+      - "127.0.0.1:7233:7233"
     healthcheck:
       test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health | grep -q SERVING"]
       interval: 10s
@@ -646,7 +705,7 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
     ports:
-      - "8233:8080"
+      - "127.0.0.1:8233:8080"
     networks:
       - ecommerce-network
 
@@ -663,6 +722,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       redis:
         condition: service_started
       temporal:
@@ -674,6 +735,7 @@ services:
       DB_PASSWORD: postgres
       KAFKA_BROKERS: kafka:9092
       REDIS_HOST: redis
+      REDIS_PASSWORD: *redis-password
       TEMPORAL_TARGET: temporal:7233
       INVENTORY_BASE_URL: http://inventory-service:8080
       PROMOTION_BASE_URL: http://promotion-service:8085
@@ -681,7 +743,7 @@ services:
       ORDER_FRONTEND_BASE_URL: http://localhost:3000
       JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
     ports:
-      - "8095:8080"
+      - "127.0.0.1:8095:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -725,6 +787,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       product-service:
         condition: service_healthy
     environment:
@@ -733,6 +797,7 @@ services:
       # Override yaml config via CART_-prefixed env vars (viper maps . → _)
       # Redis: the cart source of truth.
       CART_REDIS_ADDRS: redis:6379
+      CART_REDIS_PASSWORD: *redis-password
 
       # Kafka: CART_ABANDONED out, ORDER_PAID in.
       CART_KAFKA_BROKERS: kafka:9092
@@ -775,6 +840,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       # Config doc override qua tien to AUTH_ (viper SetEnvPrefix trong
       # internal/common/config). Bien khong co tien to bi bo qua im lang, tru
@@ -786,13 +853,13 @@ services:
       DB_PASSWORD: postgres
       AUTH_REDIS_HOST: redis
       AUTH_REDIS_PORT: "6379"
-      REDIS_PASSWORD: ''
+      REDIS_PASSWORD: *redis-password
       AUTH_KAFKA_BROKERS: kafka:9092
       # AES-256-GCM key bao ve private JWT key trong auth.jwt_keys.
       # CHI danh cho development. Production phai lay tu secret manager.
       AUTH_KEYS_MASTER_KEY: "CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0="
     ports:
-      - "8086:8080"
+      - "127.0.0.1:8086:8080"
     volumes:
       - ./go/services/auth-service/configs:/app/configs:ro
     networks:
@@ -832,7 +899,8 @@ services:
       AUTH_JWT_AUDIENCE: "ecommerce-api"
       AUTH_JWT_ALLOWED_ALGORITHMS: "RS256"
       AUTH_JWKS_URL: "http://auth-service:8080/.well-known/jwks.json"
-      AUTH_REVOCATION_REDIS_URL: "redis://redis:6379/0"
+      # Same password as x-redis-password; a URL cannot reference the anchor.
+      AUTH_REVOCATION_REDIS_URL: "redis://:${REDIS_PASSWORD:-local-dev-redis-password}@redis:6379/0"
     networks:
       - ecommerce-network
 
@@ -864,6 +932,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       # Every key of configs/application.yaml is overridable with a USER_ prefix.
       USER_APP_ENV: development
@@ -876,7 +946,7 @@ services:
       # Temporary triage switch only; buyer bootstrap requires the consumer enabled.
       USER_KAFKA_CONSUMER_ENABLED: ${USER_KAFKA_CONSUMER_ENABLED:-true}
       DB_PASSWORD: postgres
-      REDIS_PASSWORD: ""
+      REDIS_PASSWORD: *redis-password
     # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
     volumes:
       - ./go/services/user-service/configs:/app/configs:ro
@@ -903,8 +973,8 @@ services:
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
       MP_MAX_MESSAGES: "5000"
     ports:
-      - "1025:1025"     # SMTP
-      - "8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
+      - "127.0.0.1:1025:1025"     # SMTP
+      - "127.0.0.1:8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
       interval: 10s
@@ -923,7 +993,7 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
     ports:
-      - "4566:4566"
+      - "127.0.0.1:4566:4566"
     volumes:
       # Tạo SNS topic ses-events, SQS queue notification-ses-events (+ DLQ) và subscription.
       - ./go/services/notification-service/deploy/localstack/init-ses-events.sh:/etc/localstack/init/ready.d/init-ses-events.sh:ro
@@ -953,6 +1023,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       mailpit:
         condition: service_healthy
       localstack:
@@ -965,7 +1037,7 @@ services:
       NOTIFICATION_DATABASE_NAME: notification_db
       DB_PASSWORD: postgres
       NOTIFICATION_REDIS_HOST: redis
-      REDIS_PASSWORD: ""
+      REDIS_PASSWORD: *redis-password
       NOTIFICATION_KAFKA_BROKERS: kafka:9092
       NOTIFICATION_EMAIL_PROVIDER: smtp
       NOTIFICATION_EMAIL_SMTP_HOST: mailpit
@@ -981,8 +1053,8 @@ services:
       # Outbox: debezium (cần đăng ký connector, 13-development.md §4) hoặc poller.
       NOTIFICATION_OUTBOX_PUBLISHER: poller
     ports:
-      - "8091:8080"
-      - "8092:8081"
+      - "127.0.0.1:8091:8080"
+      - "127.0.0.1:8092:8081"
     volumes:
       - ./go/services/notification-service/configs:/app/configs:ro
     networks:
@@ -1006,6 +1078,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
       SPRING_PROFILES_ACTIVE: dev
       PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
@@ -1018,7 +1092,7 @@ services:
       PAYMENT_STRIPE_API_VERSION: 2026-08-26.dahlia
       PAYMENT_CRYPTO_LOCAL_KEY: ${PAYMENT_CRYPTO_LOCAL_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
     ports:
-      - "8089:8080"
+      - "127.0.0.1:8089:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
       interval: 20s
@@ -1124,7 +1198,7 @@ services:
       CHECKOUT_MEDIA_REQUIRE_HTTPS: "false"
       TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
-      - "8096:8080"
+      - "127.0.0.1:8096:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8080/health/ready || exit 1"]
       interval: 15s
@@ -1174,7 +1248,7 @@ services:
     ports:
       - "8088:80"       # HTTP
       - "8443:443"      # HTTPS
-      - "8090:8090"     # Dashboard & Metrics
+      - "127.0.0.1:8090:8090"     # Dashboard & Metrics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro

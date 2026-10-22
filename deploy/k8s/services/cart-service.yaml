@@ -52,6 +52,8 @@ spec:
           value: development
         - name: CART_REDIS_ADDRS
           value: redis:6379
+        - name: CART_REDIS_PASSWORD
+          value: local-dev-redis-password
         - name: CART_KAFKA_BROKERS
           value: kafka:9092
         - name: CART_PRODUCT_ADDRESS

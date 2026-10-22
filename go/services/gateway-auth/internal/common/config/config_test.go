@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,19 @@ func TestLoad_ContractEnvironmentOverrides(t *testing.T) {
 	assert.Equal(t, "http://auth.test/.well-known/jwks.json", cfg.JWKS.URL)
 	assert.Equal(t, "redis://cache.test:6379/2", cfg.Redis.URL)
 	assert.Equal(t, 9090, cfg.Server.Port)
+}
+
+// The shared Redis requires a password (mesh ADR-002); docker-compose and
+// deploy/k8s pass it inside AUTH_REVOCATION_REDIS_URL, which main parses.
+func TestLoad_RevocationURLCarriesTheRedisPassword(t *testing.T) {
+	t.Setenv("AUTH_REVOCATION_REDIS_URL", "redis://:redis-secret-from-env@redis:6379/0")
+
+	cfg, err := Load(shippedConfig)
+	require.NoError(t, err)
+	options, err := goredis.ParseURL(cfg.Redis.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "redis-secret-from-env", options.Password)
+	assert.Equal(t, "redis:6379", options.Addr)
 }
 
 func TestLoad_RefusesWeakAlgorithms(t *testing.T) {

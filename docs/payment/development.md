@@ -140,7 +140,7 @@ trace cho observability, không được dùng để dựng lại hoặc hiểu 
 |---|---|---|---|
 | PostgreSQL 16 | `postgres` / 15432 | DB `payment_service`; Flyway tự chạy migration khi start | Không (Testcontainers ở test) |
 | Redis 7 | `redis` / 6379 | Payment Gate 3 chưa có adapter đọc/ghi; Compose vẫn cung cấp cho hệ thống | Không cần mock vì không có Payment code path phụ thuộc Redis |
-| Kafka | `kafka` / 9092 (nội bộ), 29092 (host) | Dev broker auto-create được topic; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
+| Kafka | `kafka` / 9092 (nội bộ), 29092 (host, chỉ 127.0.0.1) | Broker tắt auto-create ([mesh ADR-002](../mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)); `kafka-init` tạo topic trong `infra/kafka/topics.txt`; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
 | Kafka Connect (Debezium) | `kafka-connect` / 8084 | Đăng ký connector §2.5 | Có — bỏ qua khi chỉ test API; outbox vẫn được ghi |
 | Stripe | Internet, test mode | Sandbox riêng + Stripe CLI | Có — narrow `StripeGateway` fake dùng SDK model thật (§6) |
 | Order | Không cần | Gọi Payment bằng `curl`/fixture với `X-Service-Identity: order-service` | — |

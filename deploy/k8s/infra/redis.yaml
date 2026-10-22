@@ -1,5 +1,6 @@
 # Redis dùng chung (cache, stream của Cart, session của gateway-auth). allkeys-lru: Checkout
-# không dùng instance này (xem checkout-redis.yaml).
+# không dùng instance này (xem checkout-redis.yaml). Bắt buộc mật khẩu; không có cổng host
+# (dùng deploy/k8s/port-forward-dev.sh).
 apiVersion: v1
 kind: Service
 metadata:
@@ -30,6 +31,8 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          # requirepass như docker-compose (mesh ADR-002): Redis giữ reset token, OTP, danh sách
+          # thu hồi của Auth. $(REDIS_PASSWORD) do kubelet thay từ Secret redis-credentials.
           args:
             - redis-server
             - --maxmemory
@@ -40,6 +43,20 @@ spec:
             - "yes"
             - --appendfsync
             - everysec
+            - --requirepass
+            - $(REDIS_PASSWORD)
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
+            # redis-cli trong container (probe, `kubectl exec redis-0 -- redis-cli …`) tự xác thực.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: REDIS_PASSWORD
           ports:
             - name: redis
               containerPort: 6379

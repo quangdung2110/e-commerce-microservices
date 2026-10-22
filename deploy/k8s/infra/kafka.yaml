@@ -44,8 +44,9 @@ spec:
               value: "1"
             - name: KAFKA_ZOOKEEPER_CONNECT
               value: zookeeper:2181
-            # PLAINTEXT cho pod trong cluster (mọi namespace); PLAINTEXT_HOST cho máy host qua
-            # LoadBalancer kafka-external (localhost:29092), giống docker-compose.
+            # PLAINTEXT cho pod trong cluster; PLAINTEXT_HOST cho máy host qua `kubectl port-forward`
+            # (deploy/k8s/port-forward-dev.sh, localhost:29092), giống docker-compose. Chưa có
+            # SASL/ACL (mesh ADR-002): NetworkPolicy chỉ cho namespace của dự án tới broker.
             - name: KAFKA_LISTENERS
               value: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
             - name: KAFKA_ADVERTISED_LISTENERS
@@ -56,8 +57,9 @@ spec:
               value: PLAINTEXT
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
               value: "1"
+            # Topic do Job kafka-topics-init tạo từ infra/kafka/topics.txt (mesh ADR-002).
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
-              value: "true"
+              value: "false"
             - name: KAFKA_HEAP_OPTS
               value: -Xms512m -Xmx512m
           ports:

@@ -17,7 +17,7 @@ Java 21, Spring Boot 3.3.0, gRPC 1.63 / protobuf 3.25 (`grpc-spring` 3.1), Postg
 Flyway, Kafka, và Kafka Connect/Debezium khi cần chạy CDC. Phiên bản chính xác ở
 `java/services/product-service/pom.xml`. Product không cần Redis/RedisJSON.
 
-Chạy local: dựng PostgreSQL (`localhost:15432`) và Kafka (`localhost:9092`) từ `docker-compose.yml`
+Chạy local: dựng PostgreSQL (`localhost:15432`) và Kafka (`localhost:29092`, listener host chỉ bind 127.0.0.1) từ `docker-compose.yml`
 ở repo root, rồi chạy service với profile `dev`; biến môi trường mẫu ở `.env.example`. Cổng HTTP
 `8081`, gRPC `9091`. Máy không có sẵn JDK/Maven thì build bằng container
 `maven:3.9-eclipse-temurin-21` với `-Dos.detected.classifier=linux-x86_64` (cần cho

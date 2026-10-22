@@ -57,7 +57,7 @@ spec:
         - name: AUTH_JWKS_URL
           value: http://auth-service:8080/.well-known/jwks.json
         - name: AUTH_REVOCATION_REDIS_URL
-          value: redis://redis:6379/0
+          value: redis://:local-dev-redis-password@redis:6379/0
         ports:
         - name: http
           containerPort: 8080

@@ -6,3 +6,4 @@ Hành vi vận hành bắt buộc vẫn nằm ở [runtime-contract.md](../runti
 | ADR | Decision | Status | Date |
 |---|---|---|---|
 | [ADR-001](./ADR-001-manifests-generated-from-runtime-contract.md) | Manifest mesh sinh từ runtime contract bằng `deploy/mesh/generate.py`; chốt Istio 1.24.2; dịch đường dẫn sang Istio; kiểm tra không cần cluster | Accepted | 2026-10-16 |
+| [ADR-002](./ADR-002-local-runtime-exposure-and-broker-auth.md) | Ngoài mesh: chỉ gateway/frontend nghe mọi interface (compose loopback, k8s ClusterIP + NetworkPolicy), Redis `requirepass`, Kafka tắt auto-create; SASL/ACL và định danh ký là việc còn mở | Accepted | 2026-10-22 |

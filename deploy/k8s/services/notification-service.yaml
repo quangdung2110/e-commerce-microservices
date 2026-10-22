@@ -22,23 +22,6 @@ spec:
     port: 8081
     targetPort: internal
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: notification-service-external
-  namespace: ecommerce
-spec:
-  type: LoadBalancer
-  selector:
-    app.kubernetes.io/name: notification-service
-  ports:
-  - name: http
-    port: 8091
-    targetPort: 8080
-  - name: internal
-    port: 8092
-    targetPort: 8081
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -81,7 +64,7 @@ spec:
         - name: NOTIFICATION_REDIS_HOST
           value: redis
         - name: REDIS_PASSWORD
-          value: ''
+          value: local-dev-redis-password
         - name: NOTIFICATION_KAFKA_BROKERS
           value: kafka:9092
         - name: NOTIFICATION_EMAIL_PROVIDER

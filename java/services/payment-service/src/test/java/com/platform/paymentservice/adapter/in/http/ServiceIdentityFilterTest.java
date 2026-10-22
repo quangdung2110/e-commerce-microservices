@@ -16,8 +16,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * contracts ADR-004 for Payment: the Order-facing routes need a named caller on the allowlist, the public
- * webhook and everything else do not, and encoding cannot skip the check.
+ * contracts ADR-004 for Payment: the Order-facing routes (ADR-026) and the Finance Ops routes (ADR-028) each need
+ * a named caller on their own allowlist, any other internal path rejects everyone, the public webhook and the
+ * actuator are not checked, and encoding cannot skip the check.
  */
 class ServiceIdentityFilterTest {
 
@@ -47,6 +48,11 @@ class ServiceIdentityFilterTest {
         String operations() {
             return "reached";
         }
+
+        @GetMapping("/internal/v1/other")
+        String otherInternal() {
+            return "reached";
+        }
     }
 
     private MockMvc mvc;
@@ -54,7 +60,8 @@ class ServiceIdentityFilterTest {
     @BeforeEach
     void setUp() {
         mvc = MockMvcBuilders.standaloneSetup(new Stub())
-                .addFilters(new ServiceIdentityFilter(List.of("order-service", " "), new ObjectMapper()))
+                .addFilters(new ServiceIdentityFilter(List.of("order-service", " "), List.of("finance-ops", ""),
+                        new ObjectMapper()))
                 .build();
     }
 
@@ -108,20 +115,58 @@ class ServiceIdentityFilterTest {
     }
 
     @Test
-    void thePublicWebhookTheActuatorAndFinanceOpsRoutesAreNotChecked() throws Exception {
+    void thePublicWebhookAndTheActuatorAreNotChecked() throws Exception {
         assertThat(status("/v1/payments/webhook/stripe", null)).isEqualTo(200);
         assertThat(status("/actuator/health", null)).isEqualTo(200);
-        assertThat(status("/internal/v1/payment/review-cases", null)).isEqualTo(200);
+    }
+
+    // Payment ADR-028: the Finance Ops routes have their own allowlist.
+    @Test
+    void financeOpsRoutesNeedAnOperationsCaller() throws Exception {
+        var response = mvc.perform(MockMvcRequestBuilders.get("/internal/v1/payment/review-cases")
+                        .header("X-Correlation-Id", "corr-ops"))
+                .andReturn().getResponse();
+
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentType()).startsWith("application/problem+json");
+        assertThat(response.getContentAsString()).contains("\"code\":\"UNAUTHENTICATED\"", "\"retryable\":false",
+                "\"correlation_id\":\"corr-ops\"");
+        assertThat(status("/internal/v1/payment/review-cases", " ")).isEqualTo(401);
+        assertThat(status("/internal/v1/payment/review-cases", "order-service")).isEqualTo(403);
+        assertThat(status("/internal/v1/payment/review-cases", "finance-ops")).isEqualTo(200);
+    }
+
+    @Test
+    void anOperationsCallerCannotUseTheOrderFacingRoutes() throws Exception {
+        assertThat(status("/v1/payments/TXN_1", "finance-ops")).isEqualTo(403);
+        assertThat(status("/v1/refunds/TXN_1", "finance-ops")).isEqualTo(403);
+    }
+
+    @Test
+    void encodingOrPathParametersDoNotSkipTheOperationsCheck() throws Exception {
+        assertThat(status("/internal/v1/%70ayment/review-cases", null)).isEqualTo(401);
+        assertThat(status("/internal/v1/payment;x=1/review-cases", null)).isEqualTo(401);
+        assertThat(status("/internal/v1/payment/review-cases;x=1", "order-service")).isEqualTo(403);
+    }
+
+    @Test
+    void anInternalPathOutsideEveryGroupRejectsEveryCaller() throws Exception {
+        assertThat(status("/internal/v1/other", null)).isEqualTo(401);
+        assertThat(status("/internal/v1/other", "finance-ops")).isEqualTo(403);
+        assertThat(status("/internal/v1/other", "order-service")).isEqualTo(403);
     }
 
     @Test
     void anEmptyAllowlistRejectsEveryCaller() throws Exception {
         MockMvc closed = MockMvcBuilders.standaloneSetup(new Stub())
-                .addFilters(new ServiceIdentityFilter(List.of(), new ObjectMapper())).build();
+                .addFilters(new ServiceIdentityFilter(List.of(), List.of(), new ObjectMapper())).build();
 
-        int status = closed.perform(MockMvcRequestBuilders.get("/v1/payments/TXN_1")
+        int payment = closed.perform(MockMvcRequestBuilders.get("/v1/payments/TXN_1")
                 .header("X-Service-Identity", "order-service")).andReturn().getResponse().getStatus();
+        int operations = closed.perform(MockMvcRequestBuilders.get("/internal/v1/payment/review-cases")
+                .header("X-Service-Identity", "finance-ops")).andReturn().getResponse().getStatus();
 
-        assertThat(status).isEqualTo(403);
+        assertThat(payment).isEqualTo(403);
+        assertThat(operations).isEqualTo(403);
     }
 }

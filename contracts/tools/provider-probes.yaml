@@ -250,6 +250,19 @@ probes:
     request: {method: GET, path: "/v1/payments/TXN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
     expect: [401]
 
+  # Finance Ops routes have their own allowlist (Payment ADR-028); Order is not on it.
+  - id: identity-payment-ops-missing
+    interaction: finance-ops-operates-payment
+    as: null
+    request: {method: GET, path: "/internal/v1/payment/ledger/journals/FJN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [401]
+
+  - id: identity-payment-ops-foreign
+    interaction: finance-ops-operates-payment
+    as: order-service
+    request: {method: GET, path: "/internal/v1/payment/ledger/journals/FJN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [403]
+
   - id: identity-cart-missing
     interaction: checkout-reads-cart-snapshot
     as: null

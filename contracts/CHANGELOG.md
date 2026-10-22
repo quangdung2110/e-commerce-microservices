@@ -3,6 +3,13 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-22 (Payment Operations caller allowlist)
+
+- Payment internal HTTP v1.1.0: mọi operation `/internal/v1/payment/**` bắt buộc `X-Service-Identity`
+  (`finance-ops`, `accounting-ops`); thiếu là `401 UNAUTHENTICATED`, ngoài allowlist là `403 FORBIDDEN`, trước
+  kiểm tra maker-checker. Trước đây route này không kiểm caller. Không đổi body, header khác hay hành vi khi
+  caller hợp lệ. Xem [Payment ADR-028](../docs/payment/decisions/ADR-028-finance-ops-caller-allowlist.md).
+
 ## 2026-10-16 (Order submission response capacity)
 
 - Order internal submission giữ `201/200`, terminal problems và bounded checkpoint wait. Làm rõ

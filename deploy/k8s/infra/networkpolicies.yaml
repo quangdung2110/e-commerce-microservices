@@ -1,0 +1,29 @@
+# Hạ tầng dùng chung chỉ nhận kết nối từ namespace của dự án (mesh ADR-002). PostgreSQL, Kafka,
+# ZooKeeper, Kafka Connect, Elasticsearch, MinIO và Temporal không có xác thực mạnh ở local (Kafka
+# PLAINTEXT, ZooKeeper và REST của Connect không xác thực), nên pod ở namespace khác không được tới.
+# `kubectl port-forward` đi qua kubelet, không qua NetworkPolicy, nên công cụ local vẫn dùng được.
+# Chỉ có tác dụng khi CNI thực thi NetworkPolicy (Docker Desktop kubeadm thì không).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-project-namespaces
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [data, ecommerce, edge, observability]

@@ -216,3 +216,18 @@ func TestEnvironmentOverridesUseThePrefixedConfigPath(t *testing.T) {
 		t.Fatalf("topic_auth_events = %q", cfg.Kafka.TopicAuthEvents)
 	}
 }
+
+// The shared Redis requires a password (mesh ADR-002); docker-compose passes it
+// as CART_REDIS_PASSWORD and the shipped file must not pin it.
+func TestRedisPasswordComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("CART_REDIS_PASSWORD", "redis-secret-from-env")
+
+	cfg, err := Load(filepath.Join("..", "..", "..", "configs", "application.yaml"))
+	if err != nil {
+		t.Fatalf("load the shipped configuration: %v", err)
+	}
+
+	if cfg.Redis.Password != "redis-secret-from-env" {
+		t.Fatalf("redis.password = %q, want the CART_REDIS_PASSWORD value", cfg.Redis.Password)
+	}
+}

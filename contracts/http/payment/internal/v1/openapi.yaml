@@ -1,11 +1,12 @@
 openapi: 3.1.0
 info:
   title: Payment Operations API
-  version: 1.0.0
+  version: 1.1.0
   license: { name: MIT, identifier: MIT }
   description: >-
-    Internal-only operations contract. It is never exposed by the public Gateway. Mutations require
-    workload identity, an attributable actor, correlation and an idempotency key. Sensitive
+    Internal-only operations contract. It is never exposed by the public Gateway. Every operation
+    requires an allowlisted caller in X-Service-Identity (401 when missing, 403 when not allowed;
+    Payment ADR-028). Mutations also require an attributable actor, correlation and an idempotency key. Sensitive
     financial mutations (review resolution, replay, reconciliation execution and freeze changes) are
     subject to RBAC and maker-checker policy.
 x-adoption-status: implemented
@@ -18,6 +19,7 @@ paths:
       summary: List payment review cases
       operationId: listPaymentReviewCases
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/CorrelationId'
         - {
@@ -33,6 +35,7 @@ paths:
             maximum: 200
             default: 100
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
         '200':
           description: Review cases visible to the caller.
           content:
@@ -60,10 +63,13 @@ paths:
       operationId: claimPaymentReviewCase
       parameters:
         - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '200':
           {
             description: Claimed case,
@@ -88,6 +94,7 @@ paths:
       operationId: resolvePaymentReviewCase
       parameters:
         - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/Approver'
         - $ref: '#/components/parameters/CorrelationId'
@@ -96,6 +103,7 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/ResolveReviewCaseRequest' } } }
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
         '200':
           {
             description: Resolved or escalated case,
@@ -126,6 +134,7 @@ paths:
         immutable journal.
       parameters:
         - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/Approver'
         - $ref: '#/components/parameters/CorrelationId'
@@ -136,6 +145,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ManualCorrectionRequest' }
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '200':
           {
             description: Correction atomically committed through the aggregate FSM.,
@@ -160,6 +171,7 @@ paths:
         signature recency and never accepts a new raw payload.
       parameters:
         - $ref: '#/components/parameters/StripeEventId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/Approver'
         - $ref: '#/components/parameters/CorrelationId'
@@ -174,6 +186,8 @@ paths:
               required: [ cause_ref ]
               properties: { cause_ref: { type: string, minLength: 1, maxLength: 255 } }
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '202':
           {
             description: Replay scheduled through the durable inbox.,
@@ -196,6 +210,7 @@ paths:
       summary: Start a payment reconciliation run
       operationId: startPaymentReconciliation
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/Approver'
         - $ref: '#/components/parameters/CorrelationId'
@@ -213,6 +228,8 @@ paths:
                 window_from: { type: string, format: date-time }
                 window_to: { type: string, format: date-time }
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '202':
           {
             description: Execution completed synchronously; the durable lane run is COMPLETED. A new idempotency
@@ -247,6 +264,7 @@ paths:
       summary: Change the reconciliation correction freeze
       operationId: setPaymentReconciliationFreeze
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/Approver'
         - $ref: '#/components/parameters/CorrelationId'
@@ -263,6 +281,7 @@ paths:
                 frozen: { type: boolean }
                 cause_ref: { type: string, minLength: 1, maxLength: 255 }
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
         '200':
           {
             description: Freeze state stored and audited.,
@@ -300,9 +319,12 @@ paths:
       operationId: getPaymentFinancialJournal
       parameters:
         - $ref: '#/components/parameters/JournalId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/CorrelationId'
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '200':
           {
             description: Immutable balanced journal,
@@ -324,9 +346,12 @@ paths:
       operationId: getPaymentDispute
       parameters:
         - $ref: '#/components/parameters/DisputeId'
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/Actor'
         - $ref: '#/components/parameters/CorrelationId'
       responses:
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004, Payment ADR-028); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the Finance Ops allowlist (Payment ADR-028), or RBAC denies the action; retryable=false.' }
         '200':
           description: Current dispute and funds state.
           content: { application/json: { schema: { $ref: '#/components/schemas/PaymentDispute' } } }
@@ -349,6 +374,15 @@ components:
   securitySchemes:
     workloadIdentity: { type: mutualTLS }
   parameters:
+    ServiceIdentity:
+      name: X-Service-Identity
+      in: header
+      required: true
+      description: >-
+        Calling workload (its ServiceAccount name). Attribution, not authentication evidence: the mesh
+        authorizes the principal. Payment also checks it against payment.identity.operations-callers as
+        defense-in-depth; missing is 401, not on the list is 403 (contracts ADR-004, Payment ADR-028).
+      schema: { type: string, enum: [ finance-ops, accounting-ops ] }
     Actor:
       {
         name: X-Actor,

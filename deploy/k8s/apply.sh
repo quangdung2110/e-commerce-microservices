@@ -22,7 +22,10 @@ fi
 # Spec của Job không sửa được; các Job ở đây idempotent nên chạy lại mỗi lần apply.
 case "$layer" in
   infra)
-    kubectl -n data delete job minio-init --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n data delete job minio-init kafka-topics-init --ignore-not-found >/dev/null 2>&1 || true
+    # Lớp này từng có Service LoadBalancer cho cổng host (host-ports.yaml); mesh ADR-002 bỏ chúng.
+    kubectl -n data delete service postgres-external redis-external kafka-external kafka-connect-external \
+      elasticsearch-external minio-external temporal-external temporal-ui-external --ignore-not-found >/dev/null 2>&1 || true
     ;;
   services)
     if command -v python >/dev/null 2>&1; then
@@ -31,6 +34,10 @@ case "$layer" in
       echo "không có python: bỏ qua kiểm tra deploy/k8s/services còn khớp docker-compose.yml" >&2
     fi
     kubectl -n data delete job kafka-connect-init --ignore-not-found >/dev/null 2>&1 || true
+    # Service nghiệp vụ không còn LoadBalancer (mesh ADR-002); apply không tự xoá bản cũ.
+    for svc in $(kubectl -n ecommerce get service -o name 2>/dev/null | grep -- '-external$' || true); do
+      kubectl -n ecommerce delete "$svc" --ignore-not-found >/dev/null 2>&1 || true
+    done
     ;;
 esac
 

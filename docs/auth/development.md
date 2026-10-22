@@ -44,7 +44,10 @@ hoặc chạy trực tiếp khi Postgres/Redis/Kafka đã sẵn sàng:
 go run ./cmd/server -config ./configs/application.yaml
 ```
 
-Biến môi trường bắt buộc: `AUTH_KEYS_MASTER_KEY` (base64 của 32 byte), `DB_PASSWORD`; `REDIS_PASSWORD` có thể rỗng.
+Biến môi trường bắt buộc: `AUTH_KEYS_MASTER_KEY` (base64 của 32 byte), `DB_PASSWORD`; `REDIS_PASSWORD` chỉ rỗng được
+với Redis không đặt mật khẩu. Redis của `docker-compose.yml` gốc bật `requirepass` vì giữ reset token, OTP và danh sách
+thu hồi ([mesh ADR-002](../mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)); mật khẩu dev là
+`x-redis-password` trong compose (đổi bằng `REDIS_PASSWORD` trong `.env`), và `docker exec redis redis-cli` tự xác thực.
 Mọi key cấu hình override được bằng tiền tố `AUTH_` (xem bảng ở [Operations §1](./operations.md#cấu-hình)). Biến không có
 tiền tố và không có default trong `config.go` bị bỏ qua im lặng. Không commit master key, mật khẩu hay file `.env`.
 Schema được nạp tự động trong compose riêng của Auth khi volume Postgres còn trống; với database có sẵn dùng

@@ -6,7 +6,7 @@ Istio vẫn ở [deploy/mesh](../mesh/README.md) và chưa được cài.
 
 | Lớp | Namespace | Nội dung | Nguồn |
 |---|---|---|---|
-| `infra/` | `data` | PostgreSQL, Redis, checkout-redis, ZooKeeper, Kafka, Kafka Connect, Elasticsearch, MinIO (+ Job tạo bucket), Temporal, Temporal UI | Viết tay |
+| `infra/` | `data` | PostgreSQL, Redis (bắt buộc mật khẩu), checkout-redis, ZooKeeper, Kafka (+ Job `kafka-topics-init`), Kafka Connect, Elasticsearch, MinIO (+ Job tạo bucket), Temporal, Temporal UI, NetworkPolicy | Viết tay |
 | `services/` | `ecommerce` | 13 service nghiệp vụ (product, search, review, product-detail-bff, promotion, inventory, order, payment, checkout, cart, auth, user, notification) + Mailpit, LocalStack | **Sinh** từ `docker-compose.yml` |
 | `services/` | `edge` | Traefik (Service `api-gateway`), `gateway-auth`, frontend | **Sinh** |
 | `services/` | `data` | Job `kafka-connect-init` đăng ký 5 connector Debezium | **Sinh** |
@@ -52,9 +52,11 @@ Lần đầu, các JVM cùng khởi động mất 3–6 phút; startupProbe cho 
 | `docker-compose.yml`: `image`/`build`, `environment`, `command`/`entrypoint` | Container; `${VAR:-default}` lấy default, không đọc env của máy chạy script (secret trên máy không lọt vào file sinh) |
 | `healthcheck` của compose | startup/readiness probe; liveness chỉ kiểm cổng TCP |
 | Bind mount `./…` | ConfigMap mount đúng đường dẫn đó |
-| `ports` của compose | Service `<tên>-external` kiểu LoadBalancer trên localhost |
+| `ports` của compose bind mọi interface (chỉ gateway, frontend) | Service `<tên>-external` kiểu LoadBalancer |
+| `ports` của compose bind `127.0.0.1` (mọi service khác) | Dòng trong `services/port-forwards.txt` cho `port-forward-dev.sh`; không LoadBalancer |
 | Label `traefik.*` | `services/routes.yml` cho file provider của Traefik, cạnh `dynamic.yml` gốc |
 | `deploy/mesh/topology.yaml` | Cổng của Service và tên cổng |
+| `deploy/mesh/generated/41-authorizationpolicies-ecommerce.yaml` | `services/networkpolicies.yaml`: default deny ingress cho `ecommerce`/`edge`, mỗi workload chỉ nhận từ pod caller trong ma trận mesh + Prometheus |
 
 Bảng trong `generate.py` chỉ giữ những gì compose không nói: namespace, bộ nhớ, probe cho service compose
 không có healthcheck, alias DNS, và `auth-migrate`. Script dừng với lỗi khi một service compose chưa được
@@ -65,16 +67,23 @@ Sau khi sửa `docker-compose.yml` hay `dynamic.yml`: chạy `generate.py`, rồ
 
 ## Địa chỉ
 
-Gateway: **http://localhost:8088** (Traefik). Frontend: **http://localhost:3000**.
+Gateway: **http://localhost:8088** (Traefik). Frontend: **http://localhost:3000**. Đây là hai Service LoadBalancer duy nhất
+([mesh ADR-002](../../docs/mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)): LoadBalancer của Docker Desktop nghe trên
+mọi interface của máy, trong khi service tin header danh tính và hạ tầng không xác thực mạnh. Cổng host của hạ tầng và service chỉ mở
+khi chạy `port-forward-dev.sh` (bind 127.0.0.1, giữ terminal; Ctrl+C để đóng):
+
+```bash
+bash deploy/k8s/port-forward-dev.sh            # hạ tầng + service; `infra` hoặc `services` để mở một phần
+```
 
 Trong cụm, mỗi namespace có Service `ExternalName` trùng tên compose (`postgres`, `kafka`, `redis`,
 `auth-service`…) trỏ sang namespace thật, nên giá trị env của compose (`postgres:5432`, `kafka:9092`,
 `http://auth-service:8080`) dùng được không đổi.
 
-| Thành phần | Trong cụm | Trên host |
+| Thành phần | Trong cụm | Trên host (qua `port-forward-dev.sh`) |
 |---|---|---|
 | PostgreSQL | `postgres.data:5432` | `localhost:15432` |
-| Redis | `redis.data:6379` | `localhost:6379` |
+| Redis (mật khẩu: Secret `redis-credentials`) | `redis.data:6379` | `localhost:6379` |
 | Redis của Checkout | `checkout-redis.data:6379` | — |
 | Kafka | `kafka.data.svc.cluster.local:9092` | `localhost:29092` |
 | Kafka Connect | `kafka-connect.data:8083` | `localhost:8084` |
@@ -83,14 +92,19 @@ Trong cụm, mỗi namespace có Service `ExternalName` trùng tên compose (`po
 | Temporal / UI | `temporal.data:7233` / `temporal-ui.data:8080` | `localhost:7233` / `localhost:8233` |
 | Service nghiệp vụ | `<tên>.ecommerce:<cổng topology>` | Cổng host như compose: product 8082 (gRPC 9091), search 8081, review 8087, product-detail-bff 8093, promotion 8085, inventory 8094, order 8095, auth 8086, payment 8089, checkout 8096, notification 8091/8092 |
 | Mailpit / LocalStack | `mailpit.ecommerce:8025` / `localstack.ecommerce:4566` | `localhost:8025` (SMTP 1025) / `localhost:4566` |
+| Dashboard Traefik | `traefik.edge:8090` | `localhost:8090` |
 
-Compose chỉ bind loopback cho các UI quản trị, nên cụm không mở LoadBalancer cho chúng; dùng
-`kubectl port-forward` (mặc định bind 127.0.0.1):
+UI observability dùng script riêng (compose cũng chỉ bind loopback cho chúng):
 
 | UI | Lệnh | Địa chỉ |
 |---|---|---|
 | Grafana (`admin` / `local-observability`), Prometheus, Alertmanager, Loki, Jaeger | `bash deploy/k8s/port-forward-observability.sh` | http://localhost:3001, :9090, :9093, :3100, :16686 (như compose) |
-| Dashboard Traefik | `kubectl -n edge port-forward deploy/traefik 8090:8090` | http://localhost:8090 |
+
+**NetworkPolicy**: `services/networkpolicies.yaml` (sinh) và `infra/networkpolicies.yaml` chặn ingress mặc định; mỗi workload ở
+`ecommerce`/`edge` chỉ nhận từ caller trong ma trận mesh (runtime contract §5.2) và Prometheus, namespace `data` chỉ nhận từ các
+namespace của dự án. `kubectl port-forward` không đi qua NetworkPolicy. Cụm kubeadm của Docker Desktop **không thực thi**
+NetworkPolicy, nên ở đây chúng là cấu hình sẵn cho cụm có CNI thực thi (Calico, Cilium…). Khi cài mesh, thay bộ này bằng
+`deploy/mesh/generated/80-networkpolicies.yaml`: traffic L7 đi qua waypoint nên nguồn không còn là pod caller.
 
 ## Lớp observability
 
@@ -121,7 +135,9 @@ Dùng nguyên file của `infra/observability/` qua `configMapGenerator`: `prome
 - **`payment-service` và `notification-service` (+ Mailpit, LocalStack) chạy mặc định**, không theo profile.
   Payment dùng khoá Stripe giả của compose; khoá test thật: `kubectl -n ecommerce set env deploy/payment-service PAYMENT_STRIPE_SECRET_KEY=… PAYMENT_STRIPE_WEBHOOK_SECRETS=…` (mất khi apply lại).
 - **Kafka** là Service headless với `publishNotReadyAddresses`, readiness kiểm cổng TCP; broker quảng bá
-  `kafka.data.svc.cluster.local:9092` cho pod và `localhost:29092` cho host.
+  `kafka.data.svc.cluster.local:9092` cho pod và `localhost:29092` cho host (`port-forward-dev.sh` forward tới `pod/kafka-0`).
+  Broker tắt auto-create: Job `kafka-topics-init` tạo topic trong `infra/kafka/topics.txt` (cùng file với `kafka-init` của
+  compose), nên apply lớp `infra` và chờ Job xong trước lớp `services`. Topic mới: thêm vào file rồi `apply.sh infra`.
 - **Deployment của lớp services dùng `strategy: Recreate`**: một node, RAM sát; RollingUpdate chạy pod mới
   cạnh pod cũ và nhân đôi số JVM mỗi lần apply.
 - Khi chưa apply lớp observability, service log lỗi `otel-collector: Name has no usable address` mỗi lần
@@ -146,7 +162,8 @@ kubectl -n data rollout restart deploy/kafka-connect
 ```
 
 **Tài khoản dev**: `frontend/scripts/create-dev-account.sh` đọc OTP bằng `docker exec redis`, không chạy với
-cụm này. Đọc OTP bằng `kubectl -n data exec redis-0 -- redis-cli --scan --pattern 'auth:delivery:*'`, hoặc
+cụm này. Đọc OTP bằng `kubectl -n data exec redis-0 -- redis-cli --scan --pattern 'auth:delivery:*'` (container có
+`REDISCLI_AUTH` nên không cần nhập mật khẩu), hoặc
 mở Mailpit (http://localhost:8025) khi Notification đã gửi mail; cấp ADMIN bằng
 `kubectl -n data exec postgres-0 -- psql -U postgres -d auth_db …`. `frontend/scripts/seed-dev-catalog.sh`
 chỉ gọi gateway nên chạy được nguyên.

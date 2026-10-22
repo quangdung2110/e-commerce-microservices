@@ -19,20 +19,6 @@ spec:
     port: 8080
     targetPort: http
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: order-service-external
-  namespace: ecommerce
-spec:
-  type: LoadBalancer
-  selector:
-    app.kubernetes.io/name: order-service
-  ports:
-  - name: http
-    port: 8095
-    targetPort: 8080
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -76,6 +62,8 @@ spec:
           value: kafka:9092
         - name: REDIS_HOST
           value: redis
+        - name: REDIS_PASSWORD
+          value: local-dev-redis-password
         - name: TEMPORAL_TARGET
           value: temporal:7233
         - name: INVENTORY_BASE_URL

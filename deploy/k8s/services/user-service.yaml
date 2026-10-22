@@ -80,7 +80,7 @@ spec:
         - name: DB_PASSWORD
           value: postgres
         - name: REDIS_PASSWORD
-          value: ''
+          value: local-dev-redis-password
         volumeMounts:
         - name: app-configs
           mountPath: /app/configs

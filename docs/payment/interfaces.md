@@ -40,7 +40,7 @@ verified_against_commit: null
 | `stripe-delivers-payment-webhook` | Inbound | HTTPS | Payment ← Gateway ← Stripe | Gateway giữ exact bytes; ingress Payment verify signature/300s trước inbox/Kafka | OpenAPI v1 ingress + Stripe event schema (API version pin) |
 | `payment-publishes-payment-events` | Outbound | Kafka `t.payment.events.v2` | Payment → Order, Analytics | Outbox CDC, at-least-once, key `order_id` | AsyncAPI v2 |
 | `t.payment.webhooks.raw` | Internal | Kafka | `payment-api` → `payment-worker` | Nội bộ, confidential, retention 7 ngày | Internal AsyncAPI v1 |
-| Payment operations | Inbound | Internal HTTP | Payment ← Finance Ops / Accounting Ops | Mesh mTLS + RBAC + actor; mutation maker-checker + idempotency | Internal OpenAPI v1 |
+| Payment operations | Inbound | Internal HTTP | Payment ← Finance Ops / Accounting Ops | Mesh mTLS + RBAC + `X-Service-Identity` theo `payment.identity.operations-callers` (`finance-ops`, `accounting-ops`; thiếu `401`, ngoài danh sách `403`, [ADR-028](decisions/ADR-028-finance-ops-caller-allowlist.md)) + actor; mutation maker-checker + idempotency | Internal OpenAPI v1 |
 | Stripe API | Outbound | HTTPS (`stripe-java`) | Stripe ← Payment | Secret key, egress `ServiceEntry`, idempotency key per operation | Stripe API (pin version) |
 
 Payment **không** có route cho buyer/CSKH; mọi read đi qua Order. Payment không
@@ -68,7 +68,7 @@ của balance lane; run đó FAILED và không advance watermark.
 | Khía cạnh | Quy tắc |
 |---|---|
 | Base path | `/v1` nội bộ mesh. Riêng Stripe gọi public `/api/payments/webhook/stripe`; Gateway rewrite path sang `/v1/payments/webhook/stripe` và giữ nguyên raw body/header |
-| Xác thực | Mesh mTLS + `AuthorizationPolicy`; Order bắt buộc gửi `X-Service-Identity: order-service`. Header không phải bằng chứng authentication, nhưng Payment kiểm nó với `payment.identity.allowed-callers` (mặc định `order-service`) làm defense-in-depth: thiếu là `401 UNAUTHENTICATED`, ngoài danh sách là `403 FORBIDDEN` ([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md), [ADR-026](decisions/ADR-026-service-identity-allowlist-and-401-403.md)). Webhook Stripe và route Finance Ops không áp dụng |
+| Xác thực | Mesh mTLS + `AuthorizationPolicy`; Order bắt buộc gửi `X-Service-Identity: order-service`. Header không phải bằng chứng authentication, nhưng Payment kiểm nó với `payment.identity.allowed-callers` (mặc định `order-service`) làm defense-in-depth: thiếu là `401 UNAUTHENTICATED`, ngoài danh sách là `403 FORBIDDEN` ([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md), [ADR-026](decisions/ADR-026-service-identity-allowlist-and-401-403.md)). Webhook Stripe không áp dụng; route Finance Ops có allowlist riêng `payment.identity.operations-callers` ([ADR-028](decisions/ADR-028-finance-ops-caller-allowlist.md)), nên `order-service` gọi `/internal/v1/payment/**` nhận `403` |
 | Correlation | `X-Correlation-Id` 1–128 ký tự (khớp financial event schema), bắt buộc trên 6 operation Order-facing (Order truyền Temporal Workflow ID); Payment echo lại và ghi vào `outbox_events.headers` |
 | Idempotency | Header `Idempotency-Key` (16–255 ký tự) bắt buộc với ba command Order-facing `initiate/cancel/refund`; không áp dụng cho webhook; namespace là `(action, key)` và mỗi cặp chỉ có một fingerprint; xem §2.2 |
 | Money | `{ "amount_minor": <int64>, "currency": "VND" }`; VND zero-decimal, không nhân/chia |

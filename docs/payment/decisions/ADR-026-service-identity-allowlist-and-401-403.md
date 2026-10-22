@@ -1,7 +1,8 @@
 # ADR-026 — Configurable caller allowlist for the Order-facing routes, with 401 and 403
 
 Status: Accepted — 2026-10-15. Applies [contracts ADR-004](../../../contracts/decisions/ADR-004-service-identity-allowlist.md) to Payment. Refines
-ADR-001 to ADR-025 in nothing; it replaces a check that lived in the controllers.
+ADR-001 to ADR-025 in nothing; it replaces a check that lived in the controllers. Decision 3 (Finance Ops routes
+unchecked) is refined by [ADR-028](ADR-028-finance-ops-caller-allowlist.md).
 
 ## Context
 

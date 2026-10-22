@@ -19,20 +19,6 @@ spec:
     port: 8085
     targetPort: http
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: promotion-service-external
-  namespace: ecommerce
-spec:
-  type: LoadBalancer
-  selector:
-    app.kubernetes.io/name: promotion-service
-  ports:
-  - name: http
-    port: 8085
-    targetPort: 8085
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,6 +64,8 @@ spec:
           value: redis
         - name: REDIS_PORT
           value: '6379'
+        - name: REDIS_PASSWORD
+          value: local-dev-redis-password
         - name: KAFKA_BOOTSTRAP_SERVERS
           value: kafka:9092
         - name: PRODUCT_EVENTS_TOPIC

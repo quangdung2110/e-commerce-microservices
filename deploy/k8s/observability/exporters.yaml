@@ -32,6 +32,10 @@ spec:
           env:
             - name: REDIS_ADDR
               value: redis://redis:6379
+            # Giá trị dev, trùng Secret redis-credentials của namespace data (Secret không dùng
+            # chéo namespace được) và x-redis-password của docker-compose.
+            - name: REDIS_PASSWORD
+              value: local-dev-redis-password
           ports:
             - name: metrics
               containerPort: 9121
