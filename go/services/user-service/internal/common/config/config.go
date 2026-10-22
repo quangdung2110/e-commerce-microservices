@@ -125,6 +125,10 @@ type KafkaConfig struct {
 	PublishMaxAttempts int           `mapstructure:"publish_max_attempts"`
 	PublishBackoff     time.Duration `mapstructure:"publish_backoff"`
 	PublishTimeout     time.Duration `mapstructure:"publish_timeout"`
+	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
+	// username keeps PLAINTEXT, for tests and a standalone broker.
+	SASLUsername string `mapstructure:"sasl_username"`
+	SASLPassword string `mapstructure:"sasl_password"`
 	// Enabled allows a local run without a broker.
 	Enabled bool `mapstructure:"enabled"`
 	// ConsumerEnabled lets a replica publish without joining the consumer group.
@@ -256,6 +260,9 @@ func (c *Config) Validate() error {
 		if c.Kafka.UserTopic == "" {
 			problems = append(problems, "kafka.user_topic is required when kafka is enabled")
 		}
+		if c.Kafka.SASLUsername != "" && c.Kafka.SASLPassword == "" {
+			problems = append(problems, "kafka.sasl_password is required with kafka.sasl_username")
+		}
 		if c.Kafka.ConsumerEnabled {
 			if c.Kafka.AuthTopic == "" {
 				problems = append(problems, "kafka.auth_topic is required when the consumer is enabled")
@@ -350,6 +357,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.notification_topic", "t.notification.outcomes.v1")
 	v.SetDefault("kafka.notification_dlq_topic", "t.notification.outcomes.v1.dlq")
 	v.SetDefault("kafka.user_topic", "t.user.events")
+	v.SetDefault("kafka.sasl_username", "")
+	v.SetDefault("kafka.sasl_password", "")
 	v.SetDefault("kafka.consumer_group", "user-service")
 	v.SetDefault("kafka.session_timeout", "30s")
 	v.SetDefault("kafka.heartbeat_interval", "3s")

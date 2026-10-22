@@ -33,6 +33,16 @@ spec:
       containers:
         - name: kafka-connect
           image: debezium/connect:3.0.0.Final
+          # Giống docker-compose (mesh ADR-003): worker xác thực là kafka-connect; dòng JAAS dựng từ
+          # SCRAM_PASSWORD_KAFKA_CONNECT. Mỗi connector produce bằng principal debezium-<service>
+          # của nó (producer.override.sasl.jaas.config với ${env:SCRAM_PASSWORD_DEBEZIUM_<SERVICE>}).
+          command:
+            - /bin/bash
+            - -c
+            - export CONNECT_SASL_JAAS_CONFIG="org.apache.kafka.common.security.scram.ScramLoginModule required username=\"kafka-connect\" password=\"${SCRAM_PASSWORD_KAFKA_CONNECT}\";"; exec /docker-entrypoint.sh start
+          envFrom:
+            - secretRef:
+                name: kafka-connect-credentials
           env:
             - name: BOOTSTRAP_SERVERS
               value: kafka:9092
@@ -52,12 +62,29 @@ spec:
               value: "false"
             - name: VALUE_CONVERTER_SCHEMAS_ENABLE
               value: "false"
+            - name: CONNECT_SECURITY_PROTOCOL
+              value: SASL_PLAINTEXT
+            - name: CONNECT_SASL_MECHANISM
+              value: SCRAM-SHA-512
             - name: CONNECT_PRODUCER_BOOTSTRAP_SERVERS
               value: kafka:9092
             - name: CONNECT_PRODUCER_ACKS
               value: all
+            - name: CONNECT_PRODUCER_SECURITY_PROTOCOL
+              value: SASL_PLAINTEXT
+            - name: CONNECT_PRODUCER_SASL_MECHANISM
+              value: SCRAM-SHA-512
+            # Connector chỉ được override cấu hình SASL (sasl.jaas.config, sasl.mechanism, security.protocol).
+            - name: CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY
+              value: Principal
             - name: CONNECT_CONSUMER_BOOTSTRAP_SERVERS
               value: kafka:9092
+            - name: CONNECT_CONFIG_PROVIDERS
+              value: env
+            - name: CONNECT_CONFIG_PROVIDERS_ENV_CLASS
+              value: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+            - name: CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN
+              value: ^SCRAM_PASSWORD_DEBEZIUM_[A-Z]+$
             - name: HEAP_OPTS
               value: -Xms256m -Xmx512m
             # Worker quảng bá địa chỉ pod cho REST nội bộ thay vì hostname không phân giải được.

@@ -1,6 +1,6 @@
 # ADR-002: Runtime ngoài mesh — chỉ gateway ra ngoài, Redis bắt buộc mật khẩu, Kafka không tự tạo topic
 
-- Status: Accepted
+- Status: Accepted (mục 6 thay bởi [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md))
 - Date: 2026-10-22
 
 ## Context
@@ -39,10 +39,11 @@ thứ bảo đảm header đó là mesh (Istio ambient + `AuthorizationPolicy`),
    `AUTH_REVOCATION_REDIS_URL`) và redis-exporter. Container Redis có `REDISCLI_AUTH`, nên `docker exec redis redis-cli …` (healthcheck,
    `frontend/scripts/create-dev-account.sh`) không phải đổi. Ở k8s: Secret `redis-credentials` (`infra/kustomization.yaml`).
 5. **Kafka không tự tạo topic.** `auto.create.topics.enable=false`; mọi topic nằm trong `infra/kafka/topics.txt`, được `kafka-init`
-   (compose, mọi client Kafka `depends_on` nó) và Job `kafka-topics-init` (k8s) tạo bằng `kafka-topics --create --if-not-exists`.
+   (compose, mọi client Kafka `depends_on` nó) và Job `kafka-topics-init` (k8s) tạo, chỉ thêm topic thiếu (từ
+   [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md) bằng `infra/kafka/KafkaInit.java` thay cho `create-topics.sh`).
    Produce vào một tên lạ không còn tạo ra topic; topic mới là một dòng trong file đó.
-6. **Kafka vẫn PLAINTEXT, chưa có SASL/ACL** (xem Việc còn mở). Biện pháp hiện có: broker chỉ tới được từ mạng compose/namespace
-   dự án và từ loopback của máy dev.
+6. ~~**Kafka vẫn PLAINTEXT, chưa có SASL/ACL.**~~ Thay bởi [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md) (2026-10-22): SASL/SCRAM
+   theo principal của từng client và ACL theo `infra/kafka/acls.txt`.
 
 ## Alternatives considered
 
@@ -71,7 +72,9 @@ thứ bảo đảm header đó là mesh (Istio ambient + `AuthorizationPolicy`),
 
 ## Việc còn mở
 
-1. **Kafka SASL/SCRAM + ACL theo principal.** Listener `SASL_PLAINTEXT` (sau đó `SASL_SSL`), một user SCRAM cho mỗi service,
+1. **Đã xong ở [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md)** (policy `Principal` thay `All`, không cần `IDEMPOTENT_WRITE`;
+   SASL_SSL và REST Connect không xác thực còn mở ở đó). Nguyên văn:
+   **Kafka SASL/SCRAM + ACL theo principal.** Listener `SASL_PLAINTEXT` (sau đó `SASL_SSL`), một user SCRAM cho mỗi service,
    Connect worker và từng connector (`connector.client.config.override.policy=All` + `producer.override.sasl.jaas.config`), ACL
    `WRITE` theo topic chủ sở hữu (ví dụ chỉ principal của connector Payment ghi `t.payment.events.v2`), `READ` theo consumer group,
    `IDEMPOTENT_WRITE` cho producer idempotent; kafka-exporter chỉ `DESCRIBE`. Go cần `xdg-go/scram` cho sarama. Sau khi có ACL,

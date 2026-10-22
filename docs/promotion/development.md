@@ -46,7 +46,7 @@ Integration test có thể trỏ vào dependency sẵn có bằng `TEST_DB_URL`,
 ## 2. Configuration
 
 Profile `dev` trỏ vào PostgreSQL/Redis/Kafka của docker-compose; `prod` nhận env `DB_URL`,
-`REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`. Property nghiệp vụ nằm dưới prefix
+`REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`; với broker compose thêm `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SASL_*` và `KAFKA_SASL_USERNAME`/`KAFKA_SASL_PASSWORD` của principal `promotion-service` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)). Property nghiệp vụ nằm dưới prefix
 `promotion.*` (`PromotionProperties`):
 `internal.{calculation,options,allocation,legacy-migration}-clients`, `admin.*`,
 `product.*`, `snapshot.ttl`, `discovery.batch-size`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size,pending-retry-after-seconds}`,

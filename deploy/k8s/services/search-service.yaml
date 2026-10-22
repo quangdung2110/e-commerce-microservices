@@ -44,6 +44,12 @@ spec:
         image: e-commerce-microservices-search-service:latest
         imagePullPolicy: Never
         env:
+        - name: SPRING_KAFKA_SECURITY_PROTOCOL
+          value: SASL_PLAINTEXT
+        - name: SPRING_KAFKA_PROPERTIES_SASL_MECHANISM
+          value: SCRAM-SHA-512
+        - name: SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG
+          value: org.apache.kafka.common.security.scram.ScramLoginModule required username="${KAFKA_SASL_USERNAME}" password="${KAFKA_SASL_PASSWORD}";
         - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
           value: http://otel-collector:4318/v1/traces
         - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
@@ -54,6 +60,10 @@ spec:
           value: http://elasticsearch:9200
         - name: KAFKA_BOOTSTRAP
           value: kafka:9092
+        - name: KAFKA_SASL_USERNAME
+          value: search-service
+        - name: KAFKA_SASL_PASSWORD
+          value: search-service-local-dev
         - name: SPRING_PROFILES_ACTIVE
           value: dev
         - name: CDN_BASE_URL

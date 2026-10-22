@@ -159,7 +159,17 @@ spec:
       containers:
         - name: kafka-exporter
           image: danielqsj/kafka-exporter:v1.10.0
-          args: ["--kafka.server=kafka:9092"]
+          # Principal kafka-exporter chỉ có DESCRIBE trên topic và group (mesh ADR-003). Mật khẩu dev
+          # trùng x-kafka-passwords của docker-compose; $(VAR) do kubelet thay.
+          args:
+            - --kafka.server=kafka:9092
+            - --sasl.enabled
+            - --sasl.mechanism=scram-sha512
+            - --sasl.username=kafka-exporter
+            - --sasl.password=$(SCRAM_PASSWORD)
+          env:
+            - name: SCRAM_PASSWORD
+              value: kafka-exporter-local-dev
           ports:
             - name: metrics
               containerPort: 9308

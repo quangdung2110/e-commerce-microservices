@@ -125,6 +125,8 @@ func run(configPath string) error {
 		RequiredAcks:    cfg.Kafka.RequiredAcks,
 		Timeout:         cfg.Kafka.ProduceTimeout,
 		TLSEnabled:      cfg.Kafka.TLSEnabled,
+		SASLUsername:    cfg.Kafka.SASLUsername,
+		SASLPassword:    cfg.Kafka.SASLPassword,
 	})
 	if err != nil {
 		return err
@@ -215,6 +217,8 @@ func run(configPath string) error {
 			InitialOffset:  cfg.Kafka.InitialOffset,
 			TLSEnabled:     cfg.Kafka.TLSEnabled,
 			SessionTimeout: cfg.Kafka.SessionTimeout,
+			SASLUsername:   cfg.Kafka.SASLUsername,
+			SASLPassword:   cfg.Kafka.SASLPassword,
 		}, orderHandler.Handle, logger)
 		if err != nil {
 			return err
@@ -239,6 +243,8 @@ func run(configPath string) error {
 			InitialOffset:  cfg.Kafka.InitialOffset,
 			TLSEnabled:     cfg.Kafka.TLSEnabled,
 			SessionTimeout: cfg.Kafka.SessionTimeout,
+			SASLUsername:   cfg.Kafka.SASLUsername,
+			SASLPassword:   cfg.Kafka.SASLPassword,
 		}, deletedHandler.Handle, logger)
 		if err != nil {
 			return err

@@ -140,7 +140,7 @@ trace cho observability, không được dùng để dựng lại hoặc hiểu 
 |---|---|---|---|
 | PostgreSQL 16 | `postgres` / 15432 | DB `payment_service`; Flyway tự chạy migration khi start | Không (Testcontainers ở test) |
 | Redis 7 | `redis` / 6379 | Payment Gate 3 chưa có adapter đọc/ghi; Compose vẫn cung cấp cho hệ thống | Không cần mock vì không có Payment code path phụ thuộc Redis |
-| Kafka | `kafka` / 9092 (nội bộ), 29092 (host, chỉ 127.0.0.1) | Broker tắt auto-create ([mesh ADR-002](../mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)); `kafka-init` tạo topic trong `infra/kafka/topics.txt`; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
+| Kafka | `kafka` / 9092 (nội bộ), 29092 (host, chỉ 127.0.0.1) | Broker tắt auto-create ([mesh ADR-002](../mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)); `kafka-init` tạo topic trong `infra/kafka/topics.txt`; SASL/SCRAM + ACL ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)): principal `payment-service` chỉ đọc/ghi `t.payment.webhooks.raw`, còn `t.payment.events.v2` chỉ `debezium-payment` ghi được; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
 | Kafka Connect (Debezium) | `kafka-connect` / 8084 | Đăng ký connector §2.5 | Có — bỏ qua khi chỉ test API; outbox vẫn được ghi |
 | Stripe | Internet, test mode | Sandbox riêng + Stripe CLI | Có — narrow `StripeGateway` fake dùng SDK model thật (§6) |
 | Order | Không cần | Gọi Payment bằng `curl`/fixture với `X-Service-Identity: order-service` | — |
@@ -163,6 +163,7 @@ env var (`payment.stripe.secret-key` ↔ `PAYMENT_STRIPE_SECRET_KEY`).
 | `PAYMENT_SCHEDULER_*` | Chưa có env alias tổng quát | Không | Override bằng Spring property, ví dụ `PAYMENT_SCHEDULER_EXPIRATION_INTERVAL=PT10S` |
 | `PAYMENT_DATABASE_URL` | `spring.datasource.url` | Có | `jdbc:postgresql://localhost:15432/payment_service` |
 | `PAYMENT_KAFKA_BROKERS` | `spring.kafka.bootstrap-servers` | Có | `localhost:29092` |
+| `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SASL_*`, `KAFKA_SASL_USERNAME`/`KAFKA_SASL_PASSWORD` | `spring.kafka.security.protocol`, `spring.kafka.properties.sasl.*` | Có với broker compose | Principal `payment-service`; compose đặt qua `x-kafka-sasl-java` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)) |
 | `PAYMENT_REDIS_HOST` | `spring.data.redis.host` | Không | `localhost` (hạ tầng dự trù) |
 
 Quy tắc: `application.yml` chỉ chứa default không nhạy cảm và placeholder `${…}`;

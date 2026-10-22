@@ -9,7 +9,7 @@ Istio vẫn ở [deploy/mesh](../mesh/README.md) và chưa được cài.
 | `infra/` | `data` | PostgreSQL, Redis (bắt buộc mật khẩu), checkout-redis, ZooKeeper, Kafka (+ Job `kafka-topics-init`), Kafka Connect, Elasticsearch, MinIO (+ Job tạo bucket), Temporal, Temporal UI, NetworkPolicy | Viết tay |
 | `services/` | `ecommerce` | 13 service nghiệp vụ (product, search, review, product-detail-bff, promotion, inventory, order, payment, checkout, cart, auth, user, notification) + Mailpit, LocalStack | **Sinh** từ `docker-compose.yml` |
 | `services/` | `edge` | Traefik (Service `api-gateway`), `gateway-auth`, frontend | **Sinh** |
-| `services/` | `data` | Job `kafka-connect-init` đăng ký 5 connector Debezium | **Sinh** |
+| `services/` | `data` | Job `kafka-connect-init` đăng ký 6 connector Debezium | **Sinh** |
 | `observability/` | `observability` | Alloy (`otel-collector`), Prometheus, Alertmanager, Jaeger, Loki, Grafana, 4 exporter (Redis ×2, PostgreSQL, Kafka) | Viết tay; cấu hình lấy từ `infra/observability/` |
 
 ## Yêu cầu
@@ -138,6 +138,11 @@ Dùng nguyên file của `infra/observability/` qua `configMapGenerator`: `prome
   `kafka.data.svc.cluster.local:9092` cho pod và `localhost:29092` cho host (`port-forward-dev.sh` forward tới `pod/kafka-0`).
   Broker tắt auto-create: Job `kafka-topics-init` tạo topic trong `infra/kafka/topics.txt` (cùng file với `kafka-init` của
   compose), nên apply lớp `infra` và chờ Job xong trước lớp `services`. Topic mới: thêm vào file rồi `apply.sh infra`.
+  Broker bắt SASL/SCRAM và ACL ([mesh ADR-003](../../docs/mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)): cùng Job tạo
+  user SCRAM và ACL của `infra/kafka/acls.txt` từ Secret `kafka-credentials`; Kafka Connect đọc Secret
+  `kafka-connect-credentials` (worker và sáu connector). Công cụ từ host qua `localhost:29092` cần cấu hình SASL
+  của `kafka-admin`; trong pod: `kubectl -n data exec kafka-0 -- kafka-topics --bootstrap-server localhost:9092 --command-config /etc/kafka/admin.properties --list`.
+  ZooKeeper chỉ nhận từ pod `kafka` (NetworkPolicy `zookeeper-from-kafka`).
 - **Deployment của lớp services dùng `strategy: Recreate`**: một node, RAM sát; RollingUpdate chạy pod mới
   cạnh pod cũ và nhân đôi số JVM mỗi lần apply.
 - Khi chưa apply lớp observability, service log lỗi `otel-collector: Name has no usable address` mỗi lần

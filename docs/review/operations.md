@@ -88,6 +88,7 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_SCHEDULER_ENABLED` | true | Tắt hai scheduled pass. Chỉ dùng cho test và cho instance chạy read-only; môi trường thật phải có ít nhất một instance bật, nếu không partition outbox và cleanup ngừng chạy |
 | `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` / `DB_POOL_SIZE` | none / none / none / 16 | PostgreSQL. `DB_URL` phải mang `currentSchema=review,public` để enum cast và relation không định danh giải đúng schema Review sở hữu |
 | `KAFKA_BOOTSTRAP` | `localhost:9092` | Cluster cho ba consumer và cho lần chụp offset của export session |
+| `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SASL_*`, `KAFKA_SASL_USERNAME` / `KAFKA_SASL_PASSWORD` | PLAINTEXT | SASL/SCRAM principal `review-service` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)): `READ` ba topic và ba group, `WRITE` chỉ ba DLQ; `t.review.events` do `debezium-review` ghi |
 | `KAFKA_LISTENER_CONCURRENCY` | 3 | Số thread mỗi listener (profile `prod`; `spring.kafka.listener.concurrency`) |
 | `SERVER_PORT` | 8080 | Cổng HTTP của service |
 

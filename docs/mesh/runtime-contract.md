@@ -270,7 +270,9 @@ Namespace, ServiceAccount, `PeerAuthentication`, waypoint, `AuthorizationPolicy`
 Compose là bằng chứng bảo mật. Từ [mesh ADR-002](decisions/ADR-002-local-runtime-exposure-and-broker-auth.md), phạm vi spoof thu về
 máy dev và mạng compose: chỉ gateway và frontend nghe trên mọi interface, cổng service/hạ tầng bind `127.0.0.1`; `deploy/k8s`
 chỉ có LoadBalancer cho Traefik và frontend, kèm NetworkPolicy L4 dẫn xuất từ mục 5.2 (chỉ có tác dụng với CNI thực thi
-NetworkPolicy). Kafka vẫn chưa có SASL/ACL. Gateway route matrix vẫn còn prefix legacy
+NetworkPolicy). Từ [mesh ADR-003](decisions/ADR-003-kafka-sasl-scram-and-acls.md), Kafka xác thực SASL/SCRAM theo principal của
+từng client và chỉ chủ sở hữu topic được ghi (ACL), nên một container trong mạng compose không còn giả được event của service khác;
+REST của Kafka Connect vẫn không xác thực. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
 và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service

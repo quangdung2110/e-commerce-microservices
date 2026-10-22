@@ -56,6 +56,10 @@ spec:
           value: local-dev-redis-password
         - name: CART_KAFKA_BROKERS
           value: kafka:9092
+        - name: CART_KAFKA_SASL_USERNAME
+          value: cart-service
+        - name: CART_KAFKA_SASL_PASSWORD
+          value: cart-service-local-dev
         - name: CART_PRODUCT_ADDRESS
           value: product-service:9091
         - name: CART_MEDIA_CDN_BASE_URL

@@ -1,5 +1,6 @@
-# Tạo topic từ infra/kafka/topics.txt (cùng script với kafka-init của docker-compose). Broker tắt
-# auto-create (mesh ADR-002), nên Job này phải xong trước khi apply lớp services. Idempotent;
+# Tạo topic của infra/kafka/topics.txt, user SCRAM và ACL của infra/kafka/acls.txt (cùng chương
+# trình với kafka-init của docker-compose, mesh ADR-002/ADR-003). Broker tắt auto-create và từ chối
+# principal không có ACL, nên Job này phải xong trước khi apply lớp services. Idempotent;
 # deploy/k8s/apply.sh xoá Job cũ trước mỗi lần apply vì spec của Job không sửa được.
 apiVersion: batch/v1
 kind: Job
@@ -19,12 +20,20 @@ spec:
       containers:
         - name: kafka-topics
           image: confluentinc/cp-kafka:7.5.0
-          command: ["/bin/sh", "/scripts/create-topics.sh"]
+          command: ["/bin/sh", "/scripts/init.sh"]
           env:
             - name: BOOTSTRAP_SERVER
               value: kafka.data.svc.cluster.local:9092
             - name: TOPICS_FILE
               value: /scripts/topics.txt
+            - name: ACLS_FILE
+              value: /scripts/acls.txt
+            - name: SCRAM_ADMIN_USERNAME
+              value: kafka-admin
+          # SCRAM_ADMIN_PASSWORD và SCRAM_PASSWORD_<PRINCIPAL> của mọi principal trong acls.txt.
+          envFrom:
+            - secretRef:
+                name: kafka-credentials
           resources:
             requests:
               cpu: 50m

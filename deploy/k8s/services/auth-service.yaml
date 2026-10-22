@@ -83,6 +83,10 @@ spec:
           value: local-dev-redis-password
         - name: AUTH_KAFKA_BROKERS
           value: kafka:9092
+        - name: AUTH_KAFKA_SASL_USERNAME
+          value: auth-service
+        - name: AUTH_KAFKA_SASL_PASSWORD
+          value: auth-service-local-dev
         - name: AUTH_KEYS_MASTER_KEY
           value: CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0=
         volumeMounts:

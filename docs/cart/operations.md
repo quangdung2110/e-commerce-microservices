@@ -51,6 +51,7 @@ khóa của nó thành `CART_CART_*` (không phải `CART_*`).
 | `kafka.topic_cart_events` / `topic_cart_events_dlq` | `CART_KAFKA_TOPIC_CART_EVENTS` / `…_DLQ` | `t.cart.events` / `t.cart.events.dlq` |
 | `kafka.topic_order_events` / `consumer_group_order` | `CART_KAFKA_TOPIC_ORDER_EVENTS` / `CART_KAFKA_CONSUMER_GROUP_ORDER` | `t.order.events` / `cart-order-consumer` |
 | `kafka.topic_auth_events` / `consumer_group_auth` | `CART_KAFKA_TOPIC_AUTH_EVENTS` / `CART_KAFKA_CONSUMER_GROUP_AUTH` | `t.auth.events` / `cart-auth-consumer` |
+| `kafka.sasl_username` / `sasl_password` | `CART_KAFKA_SASL_USERNAME` / `CART_KAFKA_SASL_PASSWORD` | rỗng = PLAINTEXT; compose: principal SCRAM-SHA-512 `cart-service` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)) |
 | `kafka.initial_offset` | `CART_KAFKA_INITIAL_OFFSET` | `oldest` cho cả hai consumer; replay vô hại vì cả hai thao tác idempotent |
 | `kafka.event_data_schema` | `CART_KAFKA_EVENT_DATA_SCHEMA` | `/contracts/events/cart/v1/schemas/cart-abandoned.schema.json` |
 | `worker.<name>.enabled` | `CART_WORKER_<NAME>_ENABLED` | `true` cho `abandoned_marker`, `outbox_relay`, `stream_trimmer`, `order_consumer`, `user_deleted_consumer` |

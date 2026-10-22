@@ -94,7 +94,7 @@ async function replayOutbox(categoryMap) {
     ) latest ORDER BY created_at;`;
     const records = run(['exec','postgres','psql','-U','postgres','-d','product_service','-v','ON_ERROR_STOP=1','-At','-c',sql]).trim();
     if (!records) throw new Error(`No seed outbox events found for ${group.topic}`);
-    run(['exec','-i','kafka','kafka-console-producer','--bootstrap-server','kafka:9092','--topic',group.topic,'--property','parse.key=true'],records+'\n');
+    run(['exec','-i','kafka','kafka-console-producer','--bootstrap-server','kafka:9092','--producer.config','/etc/kafka/admin.properties','--topic',group.topic,'--property','parse.key=true'],records+'\n');
     console.log(`→ Replayed ${records.split('\n').length} canonical events to ${group.topic}`);
     // Let categories become visible before SKU events perform category enrichment.
     if (group.type === 'category') {

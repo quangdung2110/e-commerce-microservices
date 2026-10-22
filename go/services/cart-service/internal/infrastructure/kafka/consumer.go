@@ -19,6 +19,10 @@ type ConsumerConfig struct {
 	InitialOffset  string
 	TLSEnabled     bool
 	SessionTimeout time.Duration
+	// SASLUsername and SASLPassword are the service's SCRAM principal (mesh
+	// ADR-003); empty keeps PLAINTEXT.
+	SASLUsername string
+	SASLPassword string
 }
 
 // MessageHandler processes one Kafka message.
@@ -47,6 +51,7 @@ func NewConsumer(cfg ConsumerConfig, handler MessageHandler, logger *zap.Logger)
 		saramaCfg.Consumer.Group.Session.Timeout = cfg.SessionTimeout
 	}
 	saramaCfg.Net.TLS.Enable = cfg.TLSEnabled
+	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 
 	group, err := sarama.NewConsumerGroup(cfg.Brokers, cfg.GroupID, saramaCfg)
 	if err != nil {

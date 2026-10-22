@@ -83,3 +83,4 @@ configMapGenerator:
   - order-outbox.json=../../../java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json
   - inventory-outbox.json=../../../java/services/inventory-service/src/main/resources/kafka/debezium-connector-inventory-outbox.json
   - payment-outbox.json=../../../java/services/payment-service/src/main/resources/kafka/debezium-connector-payment-outbox.json
+  - review-outbox.json=../../../java/services/review-service/src/main/resources/debezium/review-postgres-connector.json

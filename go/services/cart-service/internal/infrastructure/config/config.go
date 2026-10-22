@@ -69,6 +69,10 @@ type Kafka struct {
 	ProduceTimeout    time.Duration `mapstructure:"produce_timeout"`
 	SessionTimeout    time.Duration `mapstructure:"session_timeout"`
 	TLSEnabled        bool          `mapstructure:"tls_enabled"`
+	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
+	// username keeps PLAINTEXT, for tests and a standalone broker.
+	SASLUsername string `mapstructure:"sasl_username"`
+	SASLPassword string `mapstructure:"sasl_password"`
 	// EventDataSchema is the dataschema URI stamped on every CloudEvent.
 	EventDataSchema string `mapstructure:"event_data_schema"`
 }
@@ -194,6 +198,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("media.require_https", true)
 	v.SetDefault("media.cdn_base_url", "")
 	v.SetDefault("media.placeholder_url", "")
+	v.SetDefault("kafka.sasl_username", "")
+	v.SetDefault("kafka.sasl_password", "")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config file %s: %w", path, err)
@@ -221,6 +227,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Kafka.TopicCartEvents == "" {
 		return fmt.Errorf("kafka.topic_cart_events is required")
+	}
+	if c.Kafka.SASLUsername != "" && c.Kafka.SASLPassword == "" {
+		return fmt.Errorf("kafka.sasl_password is required with kafka.sasl_username")
 	}
 	if c.Product.Address == "" {
 		return fmt.Errorf("product.address is required")

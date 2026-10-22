@@ -95,6 +95,7 @@ xác thực. Bảng đầy đủ các key nằm ở [Operations](./operations.md
 | USER_DATABASE_HOST / USER_DATABASE_NAME | postgres / user_service |
 | USER_REDIS_HOST | redis |
 | USER_KAFKA_BROKERS | kafka:9092 |
+| USER_KAFKA_SASL_USERNAME / USER_KAFKA_SASL_PASSWORD | Principal SCRAM `user-service` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)); rỗng = PLAINTEXT |
 | USER_KAFKA_CONSUMER_ENABLED | Bật consumer: bootstrap/xóa từ Auth và tắt marketing từ complaint của Notification |
 | USER_INTERNAL_ENABLED | Bật checkout snapshot trên cổng nội bộ 8083 |
 | USER_INTERNAL_ALLOWED_CALLERS | Allowlist `X-Service-Identity` của cổng internal, mặc định `checkout-service` |

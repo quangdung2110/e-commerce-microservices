@@ -55,6 +55,7 @@ func NewPublisher(cfg config.KafkaConfig, logger *zap.Logger) (*Publisher, error
 	if cfg.PublishTimeout > 0 {
 		saramaCfg.Producer.Timeout = cfg.PublishTimeout
 	}
+	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 
 	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)
 	if err != nil {

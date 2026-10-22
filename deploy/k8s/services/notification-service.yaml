@@ -67,6 +67,10 @@ spec:
           value: local-dev-redis-password
         - name: NOTIFICATION_KAFKA_BROKERS
           value: kafka:9092
+        - name: NOTIFICATION_KAFKA_SASL_USERNAME
+          value: notification-service
+        - name: NOTIFICATION_KAFKA_SASL_PASSWORD
+          value: notification-service-local-dev
         - name: NOTIFICATION_EMAIL_PROVIDER
           value: smtp
         - name: NOTIFICATION_EMAIL_SMTP_HOST

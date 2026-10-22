@@ -109,6 +109,10 @@ type KafkaConfig struct {
 	PublishMaxAttempts int           `mapstructure:"publish_max_attempts"`
 	PublishBackoff     time.Duration `mapstructure:"publish_backoff"`
 	PublishTimeout     time.Duration `mapstructure:"publish_timeout"`
+	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
+	// username keeps PLAINTEXT, for tests and a standalone broker.
+	SASLUsername string `mapstructure:"sasl_username"`
+	SASLPassword string `mapstructure:"sasl_password"`
 	// Enabled allows a local run without a broker. Publish failures are still
 	// logged and counted so the reconciliation gap of ADR-005 stays visible.
 	Enabled bool `mapstructure:"enabled"`
@@ -338,6 +342,9 @@ func (c *Config) Validate() error {
 	if c.JWT.Issuer == "" {
 		problems = append(problems, "jwt.issuer is required")
 	}
+	if c.Kafka.SASLUsername != "" && c.Kafka.SASLPassword == "" {
+		problems = append(problems, "kafka.sasl_password is required with kafka.sasl_username")
+	}
 	if c.JWT.Audience == "" {
 		problems = append(problems, "jwt.audience is required")
 	}
@@ -439,6 +446,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.publish_max_attempts", 3)
 	v.SetDefault("kafka.publish_backoff", "200ms")
 	v.SetDefault("kafka.publish_timeout", "5s")
+	v.SetDefault("kafka.sasl_username", "")
+	v.SetDefault("kafka.sasl_password", "")
 
 	v.SetDefault("jwt.issuer", "https://auth.ecommerce.local")
 	v.SetDefault("jwt.audience", "ecommerce-api")

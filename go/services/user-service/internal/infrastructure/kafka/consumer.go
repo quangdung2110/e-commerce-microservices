@@ -76,6 +76,7 @@ func NewConsumer(
 	if cfg.HeartbeatInterval > 0 {
 		saramaCfg.Consumer.Group.Heartbeat.Interval = cfg.HeartbeatInterval
 	}
+	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 
 	group, err := sarama.NewConsumerGroup(cfg.Brokers, cfg.ConsumerGroup, saramaCfg)
 	if err != nil {

@@ -75,6 +75,10 @@ spec:
           value: redis
         - name: USER_KAFKA_BROKERS
           value: kafka:9092
+        - name: USER_KAFKA_SASL_USERNAME
+          value: user-service
+        - name: USER_KAFKA_SASL_PASSWORD
+          value: user-service-local-dev
         - name: USER_KAFKA_CONSUMER_ENABLED
           value: 'true'
         - name: DB_PASSWORD

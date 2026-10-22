@@ -10,8 +10,11 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/redis/go-redis/v9 v9.5.1
 	github.com/spf13/viper v1.18.2
+	github.com/xdg-go/scram v1.1.2
 	github.com/zeebo/xxh3 v1.0.2
 	go.uber.org/zap v1.27.0
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
 	golang.org/x/sync v0.8.0
 	google.golang.org/grpc v1.59.0
 	google.golang.org/protobuf v1.33.0

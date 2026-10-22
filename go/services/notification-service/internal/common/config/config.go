@@ -170,6 +170,11 @@ type KafkaConfig struct {
 	ClientID string   `mapstructure:"client_id"`
 	Version  string   `mapstructure:"version"`
 
+	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
+	// username keeps PLAINTEXT, for tests and a standalone broker.
+	SASLUsername string `mapstructure:"sasl_username"`
+	SASLPassword string `mapstructure:"sasl_password"`
+
 	SessionTimeout    time.Duration `mapstructure:"session_timeout"`
 	HeartbeatInterval time.Duration `mapstructure:"heartbeat_interval"`
 	MaxProcessingTime time.Duration `mapstructure:"max_processing_time"`
@@ -537,6 +542,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("config: outbox.publisher %q is not debezium|poller", c.Outbox.Publisher)
 	}
+	if c.Kafka.SASLUsername != "" && c.Kafka.SASLPassword == "" {
+		return fmt.Errorf("config: kafka.sasl_password is required with kafka.sasl_username")
+	}
 	if c.IsProduction() {
 		if c.Email.Provider != "ses" {
 			return fmt.Errorf("config: production requires email.provider=ses")
@@ -640,6 +648,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.brokers", []string{"localhost:9092"})
 	v.SetDefault("kafka.client_id", "notification-service")
 	v.SetDefault("kafka.version", "3.5.0")
+	v.SetDefault("kafka.sasl_username", "")
+	v.SetDefault("kafka.sasl_password", "")
 	v.SetDefault("kafka.session_timeout", "30s")
 	v.SetDefault("kafka.heartbeat_interval", "3s")
 	v.SetDefault("kafka.max_processing_time", "60s")

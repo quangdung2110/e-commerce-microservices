@@ -18,7 +18,7 @@ foreach ($name in @('kafka-data.tar', 'zookeeper.tar')) {
     if ($expected.Count -ne 1 -or $actual.Hash -cne $expected[0].Hash) { throw "Missing or invalid archive: $name" }
 }
 function Get-TopicMetadata([string]$topic) {
-    $output = & docker run --rm --network ecommerce-network --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181 get "/brokers/topics/$topic"
+    $output = & docker run --rm --network kafka-metadata --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181 get "/brokers/topics/$topic"
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read ZooKeeper metadata.' }
     $lines = @($output | Where-Object { $_ -match '^\{"partitions"' })
     if ($lines.Count -ne 1) { throw 'Unexpected ZooKeeper response.' }
@@ -60,7 +60,7 @@ $rollback += 'quit'
 $restore | Set-Content (Join-Path $backup 'restore-commands.txt') -Encoding utf8
 $rollback | Set-Content (Join-Path $backup 'rollback-commands.txt') -Encoding utf8
 try {
-    $output = Get-Content (Join-Path $backup 'restore-commands.txt') -Raw | & docker run --rm -i --network ecommerce-network --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181
+    $output = Get-Content (Join-Path $backup 'restore-commands.txt') -Raw | & docker run --rm -i --network kafka-metadata --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181
     if ($LASTEXITCODE -ne 0 -or ($output -match 'Node does not exist|KeeperErrorCode|Exception')) { throw 'ZooKeeper set failed.' }
     foreach ($op in $operations) {
         $current = Get-TopicMetadata $op.topic
@@ -68,6 +68,6 @@ try {
         Write-Output "$($op.topic): restored disk Topic ID; assignment and logs preserved."
     }
 } catch {
-    $null = Get-Content (Join-Path $backup 'rollback-commands.txt') -Raw | & docker run --rm -i --network ecommerce-network --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181
+    $null = Get-Content (Join-Path $backup 'rollback-commands.txt') -Raw | & docker run --rm -i --network kafka-metadata --entrypoint zookeeper-shell confluentinc/cp-kafka:7.5.0 zookeeper:2181
     throw 'Restoration failed; rollback requested. Keep broker stopped and inspect backup/metadata before proceeding.'
 }

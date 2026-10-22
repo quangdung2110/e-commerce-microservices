@@ -231,3 +231,24 @@ func TestRedisPasswordComesFromTheEnvironment(t *testing.T) {
 		t.Fatalf("redis.password = %q, want the CART_REDIS_PASSWORD value", cfg.Redis.Password)
 	}
 }
+
+// Kafka requires SASL/SCRAM per service principal (mesh ADR-003); docker-compose
+// passes it as CART_KAFKA_SASL_*.
+func TestKafkaSASLPrincipalComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("CART_KAFKA_SASL_USERNAME", "cart-service")
+	t.Setenv("CART_KAFKA_SASL_PASSWORD", "kafka-secret-from-env")
+	path := filepath.Join("..", "..", "..", "configs", "application.yaml")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load the shipped configuration: %v", err)
+	}
+	if cfg.Kafka.SASLUsername != "cart-service" || cfg.Kafka.SASLPassword != "kafka-secret-from-env" {
+		t.Fatalf("kafka sasl = %q/%q, want the CART_KAFKA_SASL_* values", cfg.Kafka.SASLUsername, cfg.Kafka.SASLPassword)
+	}
+
+	t.Setenv("CART_KAFKA_SASL_PASSWORD", "")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "kafka.sasl_password") {
+		t.Fatalf("a username without a password must be rejected, got %v", err)
+	}
+}

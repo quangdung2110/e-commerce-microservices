@@ -3,6 +3,40 @@
 # REDIS_PASSWORD in .env. gateway-auth repeats the same default inside its redis:// URL.
 x-redis-password: &redis-password ${REDIS_PASSWORD:-local-dev-redis-password}
 
+# Kafka SASL/SCRAM-SHA-512 (mesh ADR-003): every client authenticates as its own principal and
+# infra/kafka/acls.txt grants each principal only its own topics and consumer groups. kafka-init
+# creates the users from SCRAM_PASSWORD_<PRINCIPAL>. Development values only; override with
+# KAFKA_<PRINCIPAL>_PASSWORD in .env, then `docker compose run --rm -e SCRAM_RESET=true kafka-init`.
+# A password must not contain , [ ] " or $ (kafka-configs and JAAS syntax).
+x-kafka-passwords:
+  kafka-broker: &kafka-pw-broker ${KAFKA_BROKER_PASSWORD:-kafka-broker-local-dev}
+  kafka-admin: &kafka-pw-admin ${KAFKA_ADMIN_PASSWORD:-kafka-admin-local-dev}
+  auth-service: &kafka-pw-auth ${KAFKA_AUTH_SERVICE_PASSWORD:-auth-service-local-dev}
+  user-service: &kafka-pw-user ${KAFKA_USER_SERVICE_PASSWORD:-user-service-local-dev}
+  cart-service: &kafka-pw-cart ${KAFKA_CART_SERVICE_PASSWORD:-cart-service-local-dev}
+  notification-service: &kafka-pw-notification ${KAFKA_NOTIFICATION_SERVICE_PASSWORD:-notification-service-local-dev}
+  order-service: &kafka-pw-order ${KAFKA_ORDER_SERVICE_PASSWORD:-order-service-local-dev}
+  payment-service: &kafka-pw-payment ${KAFKA_PAYMENT_SERVICE_PASSWORD:-payment-service-local-dev}
+  product-service: &kafka-pw-product ${KAFKA_PRODUCT_SERVICE_PASSWORD:-product-service-local-dev}
+  promotion-service: &kafka-pw-promotion ${KAFKA_PROMOTION_SERVICE_PASSWORD:-promotion-service-local-dev}
+  review-service: &kafka-pw-review ${KAFKA_REVIEW_SERVICE_PASSWORD:-review-service-local-dev}
+  search-service: &kafka-pw-search ${KAFKA_SEARCH_SERVICE_PASSWORD:-search-service-local-dev}
+  kafka-connect: &kafka-pw-connect ${KAFKA_CONNECT_PASSWORD:-kafka-connect-local-dev}
+  debezium-product: &kafka-pw-debezium-product ${KAFKA_DEBEZIUM_PRODUCT_PASSWORD:-debezium-product-local-dev}
+  debezium-promotion: &kafka-pw-debezium-promotion ${KAFKA_DEBEZIUM_PROMOTION_PASSWORD:-debezium-promotion-local-dev}
+  debezium-inventory: &kafka-pw-debezium-inventory ${KAFKA_DEBEZIUM_INVENTORY_PASSWORD:-debezium-inventory-local-dev}
+  debezium-order: &kafka-pw-debezium-order ${KAFKA_DEBEZIUM_ORDER_PASSWORD:-debezium-order-local-dev}
+  debezium-payment: &kafka-pw-debezium-payment ${KAFKA_DEBEZIUM_PAYMENT_PASSWORD:-debezium-payment-local-dev}
+  debezium-review: &kafka-pw-debezium-review ${KAFKA_DEBEZIUM_REVIEW_PASSWORD:-debezium-review-local-dev}
+  kafka-exporter: &kafka-pw-exporter ${KAFKA_EXPORTER_PASSWORD:-kafka-exporter-local-dev}
+
+# Spring Kafka of the Java services. The JAAS line reads each service's KAFKA_SASL_USERNAME and
+# KAFKA_SASL_PASSWORD through Spring placeholders ($$ stops Compose from interpolating them).
+x-kafka-sasl-java: &kafka-sasl-java
+  SPRING_KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+  SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: SCRAM-SHA-512
+  SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required username="$${KAFKA_SASL_USERNAME}" password="$${KAFKA_SASL_PASSWORD}";'
+
 # Host ports: every service, database and broker binds 127.0.0.1 only, so nothing but the gateway
 # (8088) and the frontend (3000) is reachable from another machine (mesh ADR-002). Services trust
 # X-User-* and X-Service-Identity headers without a mesh, so a reachable service port is a bypass.
@@ -37,8 +71,9 @@ services:
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
-    # No host port: ZooKeeper has no authentication and owns the Kafka metadata. Tools reach it
-    # on the Compose network (scripts/restore-auth-topic-ids.ps1).
+    # No host port: ZooKeeper has no authentication and owns the Kafka metadata, including the
+    # SCRAM credentials and ACLs (mesh ADR-003). Only the broker shares its network
+    # (kafka-metadata); tools reach it there (scripts/restore-auth-topic-ids.ps1).
     # Metadata must survive alongside Kafka log volumes. Existing stacks must
     # copy the old anonymous volumes before adopting these mounts; see runbook.
     volumes:
@@ -51,52 +86,95 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - ecommerce-network
+      - kafka-metadata
 
   # ── Kafka ──────────────────────────────────────────────────
+  # SASL/SCRAM-SHA-512 on both listeners and ACLs (mesh ADR-003): an unauthenticated connection
+  # is closed, and a principal reaches only what infra/kafka/acls.txt grants it. The entrypoint
+  # stores the SCRAM credentials of kafka-broker (inter-broker) and kafka-admin (kafka-init,
+  # tools) in ZooKeeper before the broker starts. Tools inside this container use
+  # /etc/kafka/admin.properties, e.g.
+  # `docker exec kafka kafka-topics --bootstrap-server localhost:9092 --command-config /etc/kafka/admin.properties --list`.
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
+    entrypoint: ["/bin/bash", "/scripts/broker-entrypoint.sh"]
     depends_on:
       zookeeper:
         condition: service_healthy
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      # Listener names without SASL_ in them: cp-kafka's configure step otherwise demands a
+      # KAFKA_OPTS JAAS file, while the JAAS lines here are per listener (broker-entrypoint.sh).
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SASL_PLAINTEXT,HOST:SASL_PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-512
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       # Topics are created explicitly by kafka-init (infra/kafka/topics.txt): a client must not
       # create a topic by producing to a name (mesh ADR-002).
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
-    # PLAINTEXT without SASL/ACL: only the Compose network and host loopback reach the broker.
-    # 9092 advertises kafka:9092 and is not published; host tools use localhost:29092.
+      SCRAM_BROKER_USERNAME: kafka-broker
+      SCRAM_BROKER_PASSWORD: *kafka-pw-broker
+      SCRAM_ADMIN_USERNAME: kafka-admin
+      SCRAM_ADMIN_PASSWORD: *kafka-pw-admin
+    # 9092 advertises kafka:9092 and is not published; host tools use localhost:29092 (SASL too).
     ports:
       - "127.0.0.1:29092:29092"
+    # A TCP check: a kafka-topics probe starts a JVM every 10 s. kafka-init waits for the broker
+    # to answer an authenticated request before any client starts.
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     volumes:
       - kafka-data:/var/lib/kafka/data
+      - ./infra/kafka/broker-entrypoint.sh:/scripts/broker-entrypoint.sh:ro
     networks:
       - ecommerce-network
+      - kafka-metadata
 
-  # Creates every topic of infra/kafka/topics.txt (one-shot, idempotent) now that the broker does
-  # not auto-create. Every Kafka client waits for it. Run again by hand:
-  # `docker compose up kafka-init`. A new topic is added to topics.txt, not produced into being.
+  # Brings the broker to infra/kafka/topics.txt and acls.txt (one-shot, idempotent): creates
+  # missing topics, the SCRAM user of every principal and its ACLs, and removes ACLs the file no
+  # longer lists (mesh ADR-002, ADR-003). Every Kafka client waits for it. Run again by hand:
+  # `docker compose up kafka-init`. A new topic or grant is a line in those files.
   kafka-init:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka-init
-    entrypoint: ["/bin/sh", "/scripts/create-topics.sh"]
+    entrypoint: ["/bin/sh", "/scripts/init.sh"]
     restart: "no"
     environment:
       BOOTSTRAP_SERVER: kafka:9092
       TOPICS_FILE: /scripts/topics.txt
+      ACLS_FILE: /scripts/acls.txt
+      SCRAM_ADMIN_USERNAME: kafka-admin
+      SCRAM_ADMIN_PASSWORD: *kafka-pw-admin
+      SCRAM_PASSWORD_AUTH_SERVICE: *kafka-pw-auth
+      SCRAM_PASSWORD_USER_SERVICE: *kafka-pw-user
+      SCRAM_PASSWORD_CART_SERVICE: *kafka-pw-cart
+      SCRAM_PASSWORD_NOTIFICATION_SERVICE: *kafka-pw-notification
+      SCRAM_PASSWORD_ORDER_SERVICE: *kafka-pw-order
+      SCRAM_PASSWORD_PAYMENT_SERVICE: *kafka-pw-payment
+      SCRAM_PASSWORD_PRODUCT_SERVICE: *kafka-pw-product
+      SCRAM_PASSWORD_PROMOTION_SERVICE: *kafka-pw-promotion
+      SCRAM_PASSWORD_REVIEW_SERVICE: *kafka-pw-review
+      SCRAM_PASSWORD_SEARCH_SERVICE: *kafka-pw-search
+      SCRAM_PASSWORD_KAFKA_CONNECT: *kafka-pw-connect
+      SCRAM_PASSWORD_DEBEZIUM_PRODUCT: *kafka-pw-debezium-product
+      SCRAM_PASSWORD_DEBEZIUM_PROMOTION: *kafka-pw-debezium-promotion
+      SCRAM_PASSWORD_DEBEZIUM_INVENTORY: *kafka-pw-debezium-inventory
+      SCRAM_PASSWORD_DEBEZIUM_ORDER: *kafka-pw-debezium-order
+      SCRAM_PASSWORD_DEBEZIUM_PAYMENT: *kafka-pw-debezium-payment
+      SCRAM_PASSWORD_DEBEZIUM_REVIEW: *kafka-pw-debezium-review
+      SCRAM_PASSWORD_KAFKA_EXPORTER: *kafka-pw-exporter
     volumes:
-      - ./infra/kafka/create-topics.sh:/scripts/create-topics.sh:ro
-      - ./infra/kafka/topics.txt:/scripts/topics.txt:ro
+      - ./infra/kafka:/scripts:ro
     depends_on:
       kafka:
         condition: service_healthy
@@ -107,6 +185,12 @@ services:
   kafka-connect:
     image: debezium/connect:3.0.0.Final
     container_name: kafka-connect
+    # The worker authenticates as kafka-connect (its group and three internal topics only). Its
+    # JAAS line is built here from SCRAM_PASSWORD_KAFKA_CONNECT so the password has one source.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - export CONNECT_SASL_JAAS_CONFIG="org.apache.kafka.common.security.scram.ScramLoginModule required username=\"kafka-connect\" password=\"$${SCRAM_PASSWORD_KAFKA_CONNECT}\";"; exec /docker-entrypoint.sh start
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: product-service-connect-cluster
@@ -117,9 +201,29 @@ services:
       VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_SASL_MECHANISM: SCRAM-SHA-512
       CONNECT_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
       CONNECT_PRODUCER_ACKS: all
+      # Source connectors produce as their own principal: each connector artifact sets
+      # producer.override.sasl.jaas.config (debezium-<service>), and the Principal policy lets a
+      # connector override only the SASL settings. A connector without it fails to authenticate.
+      CONNECT_PRODUCER_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_PRODUCER_SASL_MECHANISM: SCRAM-SHA-512
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: Principal
       CONNECT_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
+      # ${env:SCRAM_PASSWORD_DEBEZIUM_<SERVICE>} in a connector config reads these variables, so
+      # GET /connectors/<name>/config never returns a password. Nothing else is readable.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^SCRAM_PASSWORD_DEBEZIUM_[A-Z]+$$
+      SCRAM_PASSWORD_KAFKA_CONNECT: *kafka-pw-connect
+      SCRAM_PASSWORD_DEBEZIUM_PRODUCT: *kafka-pw-debezium-product
+      SCRAM_PASSWORD_DEBEZIUM_PROMOTION: *kafka-pw-debezium-promotion
+      SCRAM_PASSWORD_DEBEZIUM_INVENTORY: *kafka-pw-debezium-inventory
+      SCRAM_PASSWORD_DEBEZIUM_ORDER: *kafka-pw-debezium-order
+      SCRAM_PASSWORD_DEBEZIUM_PAYMENT: *kafka-pw-debezium-payment
+      SCRAM_PASSWORD_DEBEZIUM_REVIEW: *kafka-pw-debezium-review
       CONNECT_HEAP_MAX_SIZE: 512m
     # The Connect REST API has no authentication: it can read connector configs (database
     # credentials) and register new connectors. Loopback only.
@@ -161,6 +265,7 @@ services:
       - ./java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json:/connectors/order-outbox.json:ro
       - ./java/services/inventory-service/src/main/resources/kafka/debezium-connector-inventory-outbox.json:/connectors/inventory-outbox.json:ro
       - ./java/services/payment-service/src/main/resources/kafka/debezium-connector-payment-outbox.json:/connectors/payment-outbox.json:ro
+      - ./java/services/review-service/src/main/resources/debezium/review-postgres-connector.json:/connectors/review-outbox.json:ro
     depends_on:
       kafka-connect:
         condition: service_healthy
@@ -318,8 +423,11 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *kafka-sasl-java
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SASL_USERNAME: search-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-search
       SPRING_PROFILES_ACTIVE: dev
       # Same local CDN and placeholder as the Product Detail BFF, so a product card and
       # its detail page show the same file (docs/product-detail-bff ADR-005).
@@ -362,6 +470,7 @@ services:
       minio:
         condition: service_healthy
     environment:
+      <<: *kafka-sasl-java
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8080
 
@@ -370,6 +479,8 @@ services:
       DB_PASSWORD: postgres
 
       KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SASL_USERNAME: review-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-review
 
       # Both HMAC secrets are required and stable. Rotating the alias secret starts a
       # new pseudonym namespace; rotating the guard secret orphans every committed
@@ -439,6 +550,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *kafka-sasl-java
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8081
       GRPC_PORT: 9091
@@ -450,6 +562,8 @@ services:
 
       # Kafka: chỉ consume markdown snapshot của Promotion.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SASL_USERNAME: product-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-product
       MARKDOWN_TOPIC: t.promotion.markdown.events
       MARKDOWN_DLQ_TOPIC: t.promotion.markdown.events.dlq
 
@@ -557,6 +671,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *kafka-sasl-java
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8085
 
@@ -572,6 +687,8 @@ services:
 
       # Kafka: chi consume product-deleted.v1; outbound qua outbox + Debezium.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SASL_USERNAME: promotion-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-promotion
       PRODUCT_EVENTS_TOPIC: t.product.events
       PRODUCT_EVENTS_DLQ_TOPIC: t.product.events.promotion.dlq
 
@@ -729,11 +846,14 @@ services:
       temporal:
         condition: service_healthy
     environment:
+      <<: *kafka-sasl-java
       SERVER_PORT: 8080
       DB_URL: jdbc:postgresql://postgres:5432/order_service
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
       KAFKA_BROKERS: kafka:9092
+      KAFKA_SASL_USERNAME: order-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-order
       REDIS_HOST: redis
       REDIS_PASSWORD: *redis-password
       TEMPORAL_TARGET: temporal:7233
@@ -801,6 +921,8 @@ services:
 
       # Kafka: CART_ABANDONED out, ORDER_PAID in.
       CART_KAFKA_BROKERS: kafka:9092
+      CART_KAFKA_SASL_USERNAME: cart-service
+      CART_KAFKA_SASL_PASSWORD: *kafka-pw-cart
 
       # gRPC Product Service.
       CART_PRODUCT_ADDRESS: product-service:9091
@@ -855,6 +977,8 @@ services:
       AUTH_REDIS_PORT: "6379"
       REDIS_PASSWORD: *redis-password
       AUTH_KAFKA_BROKERS: kafka:9092
+      AUTH_KAFKA_SASL_USERNAME: auth-service
+      AUTH_KAFKA_SASL_PASSWORD: *kafka-pw-auth
       # AES-256-GCM key bao ve private JWT key trong auth.jwt_keys.
       # CHI danh cho development. Production phai lay tu secret manager.
       AUTH_KEYS_MASTER_KEY: "CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0="
@@ -943,6 +1067,8 @@ services:
       USER_DATABASE_NAME: user_service
       USER_REDIS_HOST: redis
       USER_KAFKA_BROKERS: kafka:9092
+      USER_KAFKA_SASL_USERNAME: user-service
+      USER_KAFKA_SASL_PASSWORD: *kafka-pw-user
       # Temporary triage switch only; buyer bootstrap requires the consumer enabled.
       USER_KAFKA_CONSUMER_ENABLED: ${USER_KAFKA_CONSUMER_ENABLED:-true}
       DB_PASSWORD: postgres
@@ -1039,6 +1165,8 @@ services:
       NOTIFICATION_REDIS_HOST: redis
       REDIS_PASSWORD: *redis-password
       NOTIFICATION_KAFKA_BROKERS: kafka:9092
+      NOTIFICATION_KAFKA_SASL_USERNAME: notification-service
+      NOTIFICATION_KAFKA_SASL_PASSWORD: *kafka-pw-notification
       NOTIFICATION_EMAIL_PROVIDER: smtp
       NOTIFICATION_EMAIL_SMTP_HOST: mailpit
       NOTIFICATION_EMAIL_SMTP_PORT: "1025"
@@ -1081,11 +1209,14 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *kafka-sasl-java
       SPRING_PROFILES_ACTIVE: dev
       PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
       PAYMENT_DATABASE_USERNAME: postgres
       DB_PASSWORD: postgres
       PAYMENT_KAFKA_BROKERS: kafka:9092
+      KAFKA_SASL_USERNAME: payment-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-payment
       PAYMENT_STRIPE_SECRET_KEY: ${PAYMENT_STRIPE_SECRET_KEY:-sk_test_local_change_me}
       PAYMENT_STRIPE_PUBLISHABLE_KEY: ${PAYMENT_STRIPE_PUBLISHABLE_KEY:-pk_test_local_change_me}
       PAYMENT_STRIPE_WEBHOOK_SECRETS: ${PAYMENT_STRIPE_WEBHOOK_SECRETS:-whsec_local_change_me}
@@ -1278,3 +1409,9 @@ networks:
   ecommerce-network:
     name: ecommerce-network
     driver: bridge
+  # ZooKeeper and the broker only: ZooKeeper has no authentication and holds the SCRAM
+  # credentials and ACLs, so no other container may reach it (mesh ADR-003).
+  kafka-metadata:
+    name: kafka-metadata
+    driver: bridge
+    internal: true

@@ -33,11 +33,16 @@ configMapGenerator:
   - name: postgres-init
     files:
       - init-db.sh=../../../init-db.sh
-  # Danh sách topic chung với kafka-init của docker-compose.
+  # Topic, principal và ACL chung với kafka-init của docker-compose (mesh ADR-002, ADR-003).
   - name: kafka-topics
     files:
-      - create-topics.sh=../../../infra/kafka/create-topics.sh
+      - init.sh=../../../infra/kafka/init.sh
+      - KafkaInit.java=../../../infra/kafka/KafkaInit.java
       - topics.txt=../../../infra/kafka/topics.txt
+      - acls.txt=../../../infra/kafka/acls.txt
+  - name: kafka-broker
+    files:
+      - broker-entrypoint.sh=../../../infra/kafka/broker-entrypoint.sh
   - name: minio-seed
     files:
       - product-media-read.json=../../../infra/minio/policies/product-media-read.json
@@ -57,3 +62,38 @@ secretGenerator:
   - name: redis-credentials
     literals:
       - REDIS_PASSWORD=local-dev-redis-password
+  # Mật khẩu SCRAM của Kafka, trùng x-kafka-passwords của docker-compose (service nhận phần của nó
+  # qua env do generate.py sinh). Job kafka-topics-init đọc hết để tạo user; broker chỉ đọc hai
+  # super user.
+  - name: kafka-credentials
+    literals:
+      - SCRAM_BROKER_PASSWORD=kafka-broker-local-dev
+      - SCRAM_ADMIN_PASSWORD=kafka-admin-local-dev
+      - SCRAM_PASSWORD_AUTH_SERVICE=auth-service-local-dev
+      - SCRAM_PASSWORD_USER_SERVICE=user-service-local-dev
+      - SCRAM_PASSWORD_CART_SERVICE=cart-service-local-dev
+      - SCRAM_PASSWORD_NOTIFICATION_SERVICE=notification-service-local-dev
+      - SCRAM_PASSWORD_ORDER_SERVICE=order-service-local-dev
+      - SCRAM_PASSWORD_PAYMENT_SERVICE=payment-service-local-dev
+      - SCRAM_PASSWORD_PRODUCT_SERVICE=product-service-local-dev
+      - SCRAM_PASSWORD_PROMOTION_SERVICE=promotion-service-local-dev
+      - SCRAM_PASSWORD_REVIEW_SERVICE=review-service-local-dev
+      - SCRAM_PASSWORD_SEARCH_SERVICE=search-service-local-dev
+      - SCRAM_PASSWORD_KAFKA_CONNECT=kafka-connect-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PRODUCT=debezium-product-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PROMOTION=debezium-promotion-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_INVENTORY=debezium-inventory-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_ORDER=debezium-order-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PAYMENT=debezium-payment-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_REVIEW=debezium-review-local-dev
+      - SCRAM_PASSWORD_KAFKA_EXPORTER=kafka-exporter-local-dev
+  # Kafka Connect: worker và sáu connector, không có mật khẩu của principal khác.
+  - name: kafka-connect-credentials
+    literals:
+      - SCRAM_PASSWORD_KAFKA_CONNECT=kafka-connect-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PRODUCT=debezium-product-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PROMOTION=debezium-promotion-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_INVENTORY=debezium-inventory-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_ORDER=debezium-order-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_PAYMENT=debezium-payment-local-dev
+      - SCRAM_PASSWORD_DEBEZIUM_REVIEW=debezium-review-local-dev

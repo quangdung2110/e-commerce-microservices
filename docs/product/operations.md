@@ -25,6 +25,7 @@ Giá trị mặc định lấy từ `application.yml`; profile `prod` chỉ đ�
 | `warmup.timeout` / `warmup.rounds` | `PRODUCT_WARMUP_TIMEOUT` / `PRODUCT_WARMUP_ROUNDS` | `30s` / `3` (1–10 vòng đọc khi startup) |
 | `spring.datasource.url` / `username` / `password` | `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` | `jdbc:postgresql://localhost:15432/product_service` / `postgres` / `postgres` (chỉ cho dev) |
 | `spring.kafka.bootstrap-servers` | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `spring.kafka.security.protocol` / `spring.kafka.properties.sasl.*` | `SPRING_KAFKA_SECURITY_PROTOCOL` / `SPRING_KAFKA_PROPERTIES_SASL_MECHANISM`, `SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG` (+ `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`) | PLAINTEXT; compose: SASL/SCRAM principal `product-service` — `READ` markdown + group, `WRITE` DLQ, `DESCRIBE` topic catalog cho export ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)) |
 | `admin.required-role` / `user-id-header` / `roles-header` | — | `ADMIN` / `X-User-Id` / `X-User-Roles` |
 | `internal.identity-header` | — | `X-Service-Identity` |
 | `internal.reindex-clients` | — | `search-service` (hai export) |

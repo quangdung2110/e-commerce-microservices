@@ -46,6 +46,25 @@ func TestShippedApplicationYAMLReadsTheRedisPassword(t *testing.T) {
 	}
 }
 
+// Kafka requires SASL/SCRAM per service principal (mesh ADR-003); docker-compose
+// sets the principal through NOTIFICATION_KAFKA_SASL_*.
+func TestKafkaSASLPrincipalFromEnv(t *testing.T) {
+	t.Setenv("NOTIFICATION_KAFKA_SASL_USERNAME", "notification-service")
+	t.Setenv("NOTIFICATION_KAFKA_SASL_PASSWORD", "kafka-secret-from-env")
+	cfg, err := Load("../../../configs/application.yaml")
+	if err != nil {
+		t.Fatalf("configs/application.yaml: %v", err)
+	}
+	if cfg.Kafka.SASLUsername != "notification-service" || cfg.Kafka.SASLPassword != "kafka-secret-from-env" {
+		t.Fatalf("kafka sasl = %q/%q, want the NOTIFICATION_KAFKA_SASL_* values", cfg.Kafka.SASLUsername, cfg.Kafka.SASLPassword)
+	}
+
+	t.Setenv("NOTIFICATION_KAFKA_SASL_PASSWORD", "")
+	if _, err := Load("../../../configs/application.yaml"); err == nil || !strings.Contains(err.Error(), "kafka.sasl_password") {
+		t.Fatalf("a username without a password must be rejected, got %v", err)
+	}
+}
+
 func TestValidateOrderingAndPrivacy(t *testing.T) {
 	base := func(t *testing.T) *Config {
 		t.Helper()

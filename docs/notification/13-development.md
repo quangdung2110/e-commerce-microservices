@@ -155,6 +155,8 @@ curl -X POST -H 'Content-Type: application/json' \
 #    infra/kafka/topics.txt (dev: 1 partition). Production tạo trước với số partition ở 01-lanes.md §5:
 #    t.notification.critical.v1 (3) · transactional.v1 (12) · bulk.v1 (24) · outcomes.v1 (12) · *.dlq
 #    Topic mới phải được thêm vào topics.txt rồi `docker compose up kafka-init`.
+#    Broker bắt SASL/SCRAM + ACL (mesh ADR-003): service dùng NOTIFICATION_KAFKA_SASL_USERNAME/PASSWORD
+#    (principal notification-service); topic/group mới cần thêm dòng trong infra/kafka/acls.txt.
 
 # 5. chạy (cách A: container trong compose; cách B: go run tại chỗ)
 docker compose --profile notification up -d notification-service

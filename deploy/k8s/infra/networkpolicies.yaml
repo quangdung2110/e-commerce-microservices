@@ -1,6 +1,7 @@
-# Hạ tầng dùng chung chỉ nhận kết nối từ namespace của dự án (mesh ADR-002). PostgreSQL, Kafka,
-# ZooKeeper, Kafka Connect, Elasticsearch, MinIO và Temporal không có xác thực mạnh ở local (Kafka
-# PLAINTEXT, ZooKeeper và REST của Connect không xác thực), nên pod ở namespace khác không được tới.
+# Hạ tầng dùng chung chỉ nhận kết nối từ namespace của dự án (mesh ADR-002). PostgreSQL, Kafka
+# Connect, Elasticsearch, MinIO và Temporal không có xác thực mạnh ở local (REST của Connect không
+# xác thực), nên pod ở namespace khác không được tới. Kafka xác thực SASL/SCRAM + ACL (mesh ADR-003);
+# ZooKeeper không xác thực mà giữ credential SCRAM và ACL của Kafka, nên chỉ broker tới được nó.
 # `kubectl port-forward` đi qua kubelet, không qua NetworkPolicy, nên công cụ local vẫn dùng được.
 # Chỉ có tác dụng khi CNI thực thi NetworkPolicy (Docker Desktop kubeadm thì không).
 apiVersion: networking.k8s.io/v1
@@ -17,7 +18,11 @@ kind: NetworkPolicy
 metadata:
   name: allow-project-namespaces
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: NotIn
+        values: [zookeeper]
   policyTypes:
     - Ingress
   ingress:
@@ -27,3 +32,21 @@ spec:
               - key: kubernetes.io/metadata.name
                 operator: In
                 values: [data, ecommerce, edge, observability]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zookeeper-from-kafka
+spec:
+  podSelector:
+    matchLabels:
+      app: zookeeper
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 2181

@@ -34,6 +34,7 @@ import (
 	_ "github.com/testcontainers/testcontainers-go/modules/postgres"
 	_ "github.com/testcontainers/testcontainers-go/modules/redis"
 	_ "github.com/testcontainers/testcontainers-go/wait"
+	_ "github.com/xdg-go/scram"
 	_ "go.uber.org/zap"
 	_ "gopkg.in/yaml.v3"
 )

@@ -3,6 +3,7 @@
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
+    "producer.override.sasl.jaas.config": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"debezium-payment\" password=\"${env:SCRAM_PASSWORD_DEBEZIUM_PAYMENT}\";",
     "database.hostname": "${DB_HOSTNAME:postgres}",
     "database.port": "${DB_PORT:5432}",
     "database.user": "${DB_USERNAME:postgres}",

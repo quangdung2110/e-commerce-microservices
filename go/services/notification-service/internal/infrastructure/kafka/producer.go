@@ -170,5 +170,6 @@ func baseConfig(cfg config.KafkaConfig) (*sarama.Config, error) {
 	if saramaCfg.ClientID == "" {
 		saramaCfg.ClientID = "notification-service"
 	}
+	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 	return saramaCfg, nil
 }

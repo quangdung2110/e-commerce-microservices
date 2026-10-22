@@ -132,7 +132,7 @@ Auth publish best-effort không outbox: retry 3 lần rồi bỏ ([README §4](.
 ### R-14 · Replay có chủ đích
 
 1. Bật replay mode với `ignore_events_older_than` phù hợp (ví dụ `P1D`): event cũ hơn bị `IGNORED (replay_too_old)`, không gửi lại thông báo lỗi thời.
-2. Reset offset consumer group của lane cần replay (`kafka-consumer-groups --reset-offsets --to-datetime ...`) khi consumer group **đang dừng**.
+2. Reset offset consumer group của lane cần replay (`kafka-consumer-groups --reset-offsets --to-datetime ...`, trên stack local thêm `--command-config /etc/kafka/admin.properties` vì broker bắt SASL — mesh ADR-003) khi consumer group **đang dừng**.
 3. Khởi động lại consumer; dedup lớp A chặn mọi event đã xử lý trong 30 ngày; chỉ event chưa từng thấy được xử lý.
 4. Tắt replay mode (hoặc để tự hết `ttl`). Kiểm tra `ingest_events_total{decision=IGNORED, reason_code=replay_too_old}` và `DUPLICATE` để xác nhận replay đúng phạm vi.
 
