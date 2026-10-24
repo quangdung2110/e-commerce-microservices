@@ -1,6 +1,7 @@
 "use client";
 
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
+import { useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { LoaderCircle } from "lucide-react";
@@ -26,7 +27,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
-import { VIETNAM_ADDRESS_DATA } from "@/lib/constants/address";
+import { findDistrict, findProvince, findWard, sameAdministrativeCode, VIETNAM_ADDRESS_DATA } from "@/lib/constants/address";
 import { toE164 } from "@/lib/format";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import type { Address, AddressWrite } from "@/lib/api/user";
@@ -43,21 +44,22 @@ const phoneSchema = z
     message: "Số điện thoại chưa hợp lệ. Ví dụ: 0912 345 678.",
   });
 
+const administrativeCode = z.string().trim().regex(/^[A-Za-z0-9_-]{1,20}$/, { message: "Mã địa chỉ gồm 1–20 chữ, số, dấu gạch ngang hoặc gạch dưới." });
 const schema = z.object({
   recipient_name: z
     .string()
     .trim()
     .min(1, { message: "Vui lòng nhập tên người nhận." })
-    .max(100, { message: "Tối đa 100 ký tự." }),
+    .refine(value => [...value].length <= 200, { message: "Tối đa 200 ký tự." }),
   recipient_phone: phoneSchema,
-  province_code: z.string().min(1, { message: "Vui lòng chọn tỉnh/thành phố." }),
-  district_code: z.string().min(1, { message: "Vui lòng chọn quận/huyện." }),
-  ward_code: z.string().min(1, { message: "Vui lòng chọn phường/xã." }),
+  province_code: administrativeCode,
+  district_code: administrativeCode,
+  ward_code: administrativeCode,
   address_line: z
     .string()
     .trim()
     .min(1, { message: "Vui lòng nhập số nhà và tên đường." })
-    .max(255, { message: "Tối đa 255 ký tự." }),
+    .refine(value => [...value].length <= 500, { message: "Tối đa 500 ký tự." }),
 });
 
 type AddressValues = z.infer<typeof schema>;
@@ -88,6 +90,7 @@ interface AddressFormProps {
 
 export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
   const error = useSubmitError();
+  const [manualCodes, setManualCodes] = useState(() => Boolean(address && !findWard(address.province_code, address.district_code, address.ward_code)));
 
   const form = useForm<AddressValues>({
     resolver: zodResolver(schema),
@@ -103,11 +106,10 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
       : EMPTY,
   });
 
-  const provinceCode = form.watch("province_code");
-  const districtCode = form.watch("district_code");
+  const [provinceCode, districtCode, wardCode] = useWatch({ control: form.control, name: ["province_code", "district_code", "ward_code"] });
 
-  const province = VIETNAM_ADDRESS_DATA.find((item) => item.id === provinceCode);
-  const district = province?.districts.find((item) => item.id === districtCode);
+  const province = findProvince(provinceCode);
+  const district = findDistrict(provinceCode, districtCode);
 
   async function handleSubmit(values: AddressValues) {
     error.reset();
@@ -180,7 +182,14 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
               />
             </div>
 
-            <div className="grid gap-5 sm:grid-cols-3">
+            <div className="space-y-3">
+              <p className="text-caption text-muted-foreground">Danh mục địa chỉ tỉnh–quận/huyện–phường/xã trước tháng 7/2025.</p>
+              <label className="flex min-h-11 items-center gap-3 text-[14px]"><input type="checkbox" checked={manualCodes} disabled={isSaving} onChange={event => setManualCodes(event.target.checked)} className="focus-ring size-4 accent-clay" />Nhập mã địa chỉ ngoài danh mục</label>
+              {manualCodes && <Alert variant="info">Giữ nguyên mã địa chỉ đã có hoặc nhập mã hành chính của nơi nhận. Ghi rõ tên tỉnh, quận/huyện và phường/xã trong địa chỉ cụ thể nếu danh mục chưa có.</Alert>}
+            </div>
+            {manualCodes ? <div className="grid gap-5 sm:grid-cols-3">{([
+              ["province_code", "Mã tỉnh/thành phố"], ["district_code", "Mã quận/huyện"], ["ward_code", "Mã phường/xã"],
+            ] as const).map(([name, label]) => <FormField key={name} control={form.control} name={name} render={({ field }) => <FormItem><FormLabel>{label}</FormLabel><FormControl><Input {...field} disabled={isSaving} maxLength={20} /></FormControl><FormMessage /></FormItem>} />)}</div> : <div className="grid gap-5 sm:grid-cols-3">
               <FormField
                 control={form.control}
                 name="province_code"
@@ -198,8 +207,9 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
                         }}
                       >
                         <option value="">Chọn tỉnh/thành</option>
+                        {provinceCode && !province && <option value={provinceCode}>Địa chỉ đã lưu: {provinceCode}</option>}
                         {VIETNAM_ADDRESS_DATA.map((item) => (
-                          <option key={item.id} value={item.id}>
+                          <option key={item.id} value={sameAdministrativeCode(item.id, provinceCode) ? provinceCode : item.id}>
                             {item.name}
                           </option>
                         ))}
@@ -228,8 +238,9 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
                         <option value="">
                           {province ? "Chọn quận/huyện" : "Chọn tỉnh trước"}
                         </option>
+                        {districtCode && !district && <option value={districtCode}>Địa chỉ đã lưu: {districtCode}</option>}
                         {province?.districts.map((item) => (
-                          <option key={item.id} value={item.id}>
+                          <option key={item.id} value={sameAdministrativeCode(item.id, districtCode) ? districtCode : item.id}>
                             {item.name}
                           </option>
                         ))}
@@ -251,8 +262,9 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
                         <option value="">
                           {district ? "Chọn phường/xã" : "Chọn quận trước"}
                         </option>
+                        {wardCode && !findWard(provinceCode, districtCode, wardCode) && <option value={wardCode}>Địa chỉ đã lưu: {wardCode}</option>}
                         {district?.wards.map((item) => (
-                          <option key={item.id} value={item.id}>
+                          <option key={item.id} value={sameAdministrativeCode(item.id, field.value) ? field.value : item.id}>
                             {item.name}
                           </option>
                         ))}
@@ -262,7 +274,8 @@ export function AddressForm({ address, onSubmit, onCancel }: AddressFormProps) {
                   </FormItem>
                 )}
               />
-            </div>
+              {district && district.wards.length === 0 && <p className="text-caption text-muted-foreground sm:col-span-3">Địa phương này chưa có phường/xã trong danh mục. Chọn “Nhập mã địa chỉ ngoài danh mục” để tiếp tục.</p>}
+            </div>}
 
             <FormField
               control={form.control}

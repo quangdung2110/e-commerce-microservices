@@ -41,9 +41,14 @@ const GENDER_LABELS: Record<Gender, string> = {
   UNKNOWN: "Không muốn tiết lộ",
 };
 
+// Match the backend's rune count instead of UTF-16 string length.
+const nameSchema = z.string().trim().refine((value) => [...value].length <= 100, {
+  message: "Tối đa 100 ký tự.",
+});
+
 const schema = z.object({
-  first_name: z.string().trim().max(100, { message: "Tối đa 100 ký tự." }),
-  last_name: z.string().trim().max(100, { message: "Tối đa 100 ký tự." }),
+  first_name: nameSchema,
+  last_name: nameSchema,
   date_of_birth: z
     .string()
     .refine((value) => value === "" || !Number.isNaN(Date.parse(value)), {
