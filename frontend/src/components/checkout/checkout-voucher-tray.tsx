@@ -23,21 +23,24 @@ export function CheckoutVoucherTray({ vouchers, disabled, expired, appliedId, no
   onRemove: () => void;
 }) {
   const { options, acquire, busy, unresolved } = vouchers;
+  const appliedOption = options.data?.items.find((item) => item.promotion_id === appliedId);
   const readRetryAfter = retryAfterSeconds(options.error);
   const readDelay = readRetryAfter ? Math.max(0, Math.ceil((options.errorUpdatedAt + readRetryAfter * 1_000 - now) / 1_000)) : 0;
   const acquisitionPending = acquire.isPending || unresolved;
   const claimDelay = Math.max(0, Math.ceil((vouchers.claimRetryAt - now) / 1_000));
   const acquireDelay = Math.max(acquire.retryDelaySeconds, claimDelay);
+  const savingOnly = acquire.variables?.saveOnly === true;
 
   return <Card>
     <CardHeader><CardTitle><h2>Voucher cho đơn hàng</h2></CardTitle></CardHeader>
     <CardContent className="space-y-5">
       <p className="text-caption text-muted-foreground">Chọn một voucher. Mức giảm dự kiến sẽ được xác nhận lại trong báo giá mới; lưu hoặc nhận voucher chưa giữ lượt sử dụng.</p>
       {appliedId && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-surface-2 p-4">
-        <p className="min-w-0 break-words text-[14px]">Đang áp dụng: {options.data?.items.find((item) => item.promotion_id === appliedId)?.name ?? "Voucher đã chọn"}</p>
+        <p className="min-w-0 break-words text-[14px]">Đang áp dụng: {appliedOption ? `${voucherDiscount(appliedOption)} · ${appliedOption.code}` : "Voucher đã chọn"}</p>
         <Button variant="outline" disabled={disabled || busy || expired} onClick={onRemove}>Bỏ voucher</Button>
       </div>}
-      {acquisitionPending && <Alert variant="info">{unresolved ? "Chưa xác nhận được kết quả lưu hoặc nhận voucher. Hãy tiếp tục kiểm tra cùng yêu cầu." : "Đang lưu hoặc nhận voucher. Báo giá sẽ được cập nhật sau khi hoàn tất."}</Alert>}
+      {acquisitionPending && <Alert variant="info">{unresolved ? "Chưa xác nhận được kết quả lưu hoặc nhận voucher. Hãy tiếp tục kiểm tra cùng yêu cầu." : savingOnly ? "Đang lưu voucher vào ví cho lần mua sau." : "Đang lưu hoặc nhận voucher. Báo giá sẽ được cập nhật sau khi hoàn tất."}</Alert>}
+      {acquire.isSuccess && savingOnly && <Alert variant="success">Đã lưu voucher vào ví. Báo giá và voucher đang áp dụng được giữ nguyên.</Alert>}
       {acquire.isError && <div className="space-y-3">
         {!(acquire.error instanceof PollTimeoutError) && <ErrorState error={acquire.error} />}
         {unresolved && <Button variant="outline" disabled={acquireDelay > 0 || disabled} onClick={() => acquire.variables && acquire.mutate(acquire.variables)}>{acquireDelay > 0 ? `Thử lại sau ${acquireDelay} giây` : "Tiếp tục kiểm tra voucher"}</Button>}
@@ -50,16 +53,19 @@ export function CheckoutVoucherTray({ vouchers, disabled, expired, appliedId, no
         {options.isPending ? <div className="space-y-4" aria-label="Đang tải voucher" aria-busy="true">{[0, 1].map((index) => <div key={index} className="space-y-3 rounded-lg border border-border p-4"><Skeleton className="h-5 w-2/3" /><Skeleton className="h-4 w-1/2" /><Skeleton className="h-11 w-36" /></div>)}</div>
           : options.data && !options.isError && options.data.items.length === 0 ? <EmptyState icon={Ticket} title="Chưa có voucher cho đơn này" description="Bạn có thể tiếp tục đặt hàng hoặc tải lại danh sách sau." action={<Button variant="outline" disabled={disabled || busy || options.isFetching} onClick={() => void options.refetch()}>Tải lại voucher</Button>} />
           : !options.isError && options.data ? <ul className="space-y-4" aria-busy={options.isFetching}>{options.data.items.map((option) => <li key={option.promotion_id} className="min-w-0 space-y-3 rounded-lg border border-border p-4">
-            <div className="space-y-1"><h3 className="break-words font-serif text-headline-5 font-normal">{option.name}</h3><p className="break-all text-caption text-muted-foreground">{option.code} · {option.source === "WALLET" ? "Đã có trong ví" : "Voucher công khai"}</p></div>
-            <p className="text-[15px] font-medium">{voucherDiscount(option)}</p>
-            {option.description && <p className="break-words text-[14px] text-muted-foreground">{option.description}</p>}
+            <div className="space-y-1"><h3 className="break-words font-serif text-headline-5 font-normal">{voucherDiscount(option)}</h3><p className="break-all text-caption text-muted-foreground">{option.code} · {option.source === "WALLET" ? "Đã có trong ví" : "Voucher công khai"}</p></div>
             <p className="text-caption text-muted-foreground">Đơn tối thiểu {formatVND(option.min_order_amount.amount_minor)}{option.valid_until ? ` · Hạn dùng ${formatDateTime(option.valid_until)}` : ""}</p>
             <p className="text-[14px] text-muted-foreground">{option.eligible ? `Dự kiến giảm ${formatVND(option.estimated_discount.amount_minor)}` : voucherReason(option.reason)}</p>
+            <div className="flex flex-wrap gap-3">
+            {option.source === "PUBLIC" && option.required_action === "SAVE" && !option.is_applied
+              && ["ELIGIBLE", "MIN_ORDER_NOT_MET", "CONDITIONS_NOT_MET", "BUDGET_EXHAUSTED"].includes(option.reason)
+              && (!option.valid_until || Date.parse(option.valid_until) > now) && <Button variant="outline" disabled={disabled || busy || options.isFetching} onClick={() => { acquire.reset(); acquire.mutate({ ...option, saveOnly: true }); }}>Lưu voucher</Button>}
             <Button variant="outline" className="w-full sm:w-auto" disabled={disabled || busy || options.isFetching || !option.eligible || option.is_applied} onClick={() => {
               acquire.reset();
               if (option.required_action === "NONE") onApply(option.promotion_id);
               else acquire.mutate(option);
             }}>{option.is_applied ? "Đã áp dụng" : option.required_action === "SAVE" ? "Lưu và áp dụng" : option.required_action === "CLAIM" ? "Nhận và áp dụng" : "Áp dụng voucher"}</Button>
+            </div>
           </li>)}</ul> : null}
         {options.data && !options.isError && options.data.items.length > 0 && <Button variant="ghost" disabled={disabled || busy || options.isFetching} onClick={() => void options.refetch()}>Tải lại voucher</Button>}
       </>}

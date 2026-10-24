@@ -1,16 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { walletKeys } from "@/hooks/use-voucher-wallet";
 import { useCommand } from "@/hooks/use-command";
 import { checkoutApi, type VoucherOption } from "@/lib/api/checkout";
 import { promotionApi } from "@/lib/api/promotion";
 import { PollTimeoutError, pollUntil } from "@/lib/api/operation";
-import { isRetryable } from "@/lib/api/problem";
+import { isRetryable, problemCode } from "@/lib/api/problem";
 import { isClaimCommitted } from "@/lib/checkout-voucher";
 import { useAuthStore } from "@/store/useAuthStore";
 
+export type VoucherAcquisition = VoucherOption & { saveOnly?: boolean };
+
 export function useCheckoutVouchers(token: string, enabled: boolean, onApply: (id: string) => void) {
+  const queryClient = useQueryClient();
   const accountId = useAuthStore((state) => state.claims?.sub);
   const controller = useRef<AbortController | null>(null);
   const [claimRetryAt, setClaimRetryAt] = useState(0);
@@ -26,7 +30,7 @@ export function useCheckoutVouchers(token: string, enabled: boolean, onApply: (i
     refetchOnWindowFocus: false,
   });
 
-  const acquire = useCommand<void, VoucherOption>({
+  const acquire = useCommand<void, VoucherAcquisition>({
     retry: false,
     mutationFn: async (option) => {
       controller.current?.abort();
@@ -57,10 +61,14 @@ export function useCheckoutVouchers(token: string, enabled: boolean, onApply: (i
       if (controller.current?.signal.aborted) return;
       // Re-read ownership/expiry even if the next quotation fails. Never use save evaluation for prices.
       void options.refetch();
-      onApply(option.promotion_id);
+      void queryClient.invalidateQueries({ queryKey: walletKeys.all(accountId) });
+      if (!option.saveOnly) onApply(option.promotion_id);
     },
   });
 
-  const unresolved = acquire.isError && (acquire.error instanceof PollTimeoutError || isRetryable(acquire.error));
+  // CLAIM_GATE_STALE is flagged retryable by the backend, but it is a definitive rejection of the revision held by the tray, not an
+  // unknown outcome: replaying it can never succeed, so the tray must stay free for the user to reload the options.
+  const unresolved = acquire.isError && problemCode(acquire.error) !== "CLAIM_GATE_STALE"
+    && (acquire.error instanceof PollTimeoutError || isRetryable(acquire.error));
   return { options, acquire, busy: acquire.isPending || unresolved, unresolved, claimRetryAt };
 }

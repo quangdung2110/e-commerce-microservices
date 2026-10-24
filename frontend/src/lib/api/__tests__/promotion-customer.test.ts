@@ -4,9 +4,16 @@ import { promotionApi } from "@/lib/api/promotion";
 import { isClaimCommitted, voucherDiscount, voucherReason } from "@/lib/checkout-voucher";
 import type { VoucherOption } from "@/lib/api/checkout";
 
-vi.mock("@/lib/api/client", () => ({ api: { post: vi.fn(), put: vi.fn() } }));
+vi.mock("@/lib/api/client", () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }));
 beforeEach(() => vi.resetAllMocks());
 describe("customer Promotion contract", () => {
+  it("reads only the authenticated wallet with filters and opaque cursor, without checkout context", async () => {
+    const signal = new AbortController().signal;
+    const data = { items: [], next_cursor: null, as_of: "2026-10-20T00:00:00Z" };
+    vi.mocked(api.get).mockResolvedValue({ data });
+    expect(await promotionApi.listMyWallet({ status: "USED", cursor: "opaque", limit: 20 }, signal)).toEqual(data);
+    expect(api.get).toHaveBeenCalledWith("/api/v1/me/promotion-vouchers", { params: { status: "USED", cursor: "opaque", limit: 20 }, signal });
+  });
   it("saves with an empty body and propagates cancellation, without sending identity or prices", async () => {
     const signal = new AbortController().signal;
     vi.mocked(api.put).mockResolvedValue({ data: { evaluation: null } });

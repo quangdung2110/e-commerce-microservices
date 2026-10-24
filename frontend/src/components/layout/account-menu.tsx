@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
   Star,
   User,
+  Ticket,
 } from "lucide-react";
 
 import {
@@ -29,6 +30,7 @@ import { cn } from "@/lib/utils";
 
 const LINKS = [
   { href: "/orders", label: "Đơn hàng của tôi", icon: ShoppingBag },
+  { href: "/vouchers", label: "Ví voucher", icon: Ticket },
   { href: "/reviews", label: "Đánh giá của tôi", icon: Star },
   { href: "/notifications", label: "Thông báo", icon: Bell },
   { href: "/profile", label: "Hồ sơ cá nhân", icon: User },
