@@ -5,6 +5,7 @@ import com.ecommerce.order.config.OrderProperties;
 import com.ecommerce.order.service.DispatchNudger;
 import com.ecommerce.order.store.WorkflowOutboxStore;
 import com.ecommerce.order.benchmark.baseline.Adr028WorkflowDispatcher;
+import com.ecommerce.order.benchmark.baseline.Adr029WorkflowDispatcher;
 import com.ecommerce.order.benchmark.baseline.LegacyWorkflowDispatcher;
 import com.ecommerce.order.benchmark.baseline.LegacyWorkflowOutboxStore;
 import com.ecommerce.order.worker.ClosedTargetResolver;
@@ -94,6 +95,8 @@ class WorkflowDispatcherBenchmarkTest {
     private final AtomicLong kindSequence = new AtomicLong();
     private final Map<String, AtomicInteger> activePerTarget = new ConcurrentHashMap<>();
     private final AtomicInteger maxActivePerTarget = new AtomicInteger();
+    private final AtomicInteger claimed = new AtomicInteger();
+    private final AtomicInteger maxClaimed = new AtomicInteger();
     private final List<String> targets = new ArrayList<>();
     private JdbcTemplate jdbc;
     private WorkflowOutboxStore rawStore;
@@ -105,6 +108,8 @@ class WorkflowDispatcherBenchmarkTest {
     private String scenario;
     private long origin;
     private Instant originUtc;
+    private boolean injectTail;
+    private final AtomicLong ordinal = new AtomicLong();
 
     @Test
     void benchmarkDispatcher() throws Exception {
@@ -141,7 +146,35 @@ class WorkflowDispatcherBenchmarkTest {
                 writeEnvironment();
                 if (PROFILE.equals("paired")) variant = "parallel";
                 runBurst("warmup", 500, false);
-                if (PROFILE.equals("paired")) {
+                if (PROFILE.startsWith("rolling")) {
+                    if (PROFILE.equals("rolling-paired")) {
+                        for (int round = 1; round <= 4; round++) {
+                            for (boolean tail : List.of(false, true)) {
+                                injectTail = tail;
+                                for (String v : round % 2 == 1 ? List.of("adr029", "parallel") : List.of("parallel", "adr029")) {
+                                    variant = v;
+                                    runSaturated("saturated-mixed-" + (tail ? "tail" : "healthy") + "-" + v + "-" + round, true);
+                                }
+                            }
+                        }
+                        injectTail = false;
+                        for (String v : List.of("adr029", "parallel")) {
+                            variant = v; runArrivals("arrival-mixed-healthy-160-" + v, 160, true);
+                        }
+                        injectTail = true;
+                        for (int rate : List.of(40, 80, 120, 160)) {
+                            for (String v : rate % 80 == 0 ? List.of("parallel", "adr029") : List.of("adr029", "parallel")) {
+                                variant = v; runArrivals("arrival-mixed-tail-" + rate + "-" + v, rate, true);
+                            }
+                        }
+                    } else {
+                        injectTail = false; runSaturated("saturated-mixed-healthy", true);
+                        injectTail = true; runSaturated("saturated-mixed-tail", true);
+                        injectTail = false; runArrivals("arrival-mixed-healthy-160", 160, true);
+                        injectTail = true;
+                        for (int rate : List.of(40, 80, 120, 160)) runArrivals("arrival-mixed-tail-" + rate, rate, true);
+                    }
+                } else if (PROFILE.equals("paired")) {
                     // ADR-029: old and new alternate window by window (ABBA) against the same JVM, Temporal
                     // and databases, so slow drift and transient stalls of the host hit both alike.
                     List<List<String>> rounds = List.of(List.of("adr028", "parallel"), List.of("parallel", "adr028"),
@@ -197,7 +230,9 @@ class WorkflowDispatcherBenchmarkTest {
         entries.clear(); transactions.clear(); dispatchThreads.clear();
         completed.set(0); maxActive.set(0); producerFailure.set(null);
         ackBatchSequence.set(0); kindSequence.set(0);
+        ordinal.set(0);
         activePerTarget.clear(); maxActivePerTarget.set(0);
+        claimed.set(0); maxClaimed.set(0);
         origin = System.nanoTime();
         originUtc = Instant.now();
     }
@@ -213,6 +248,8 @@ class WorkflowDispatcherBenchmarkTest {
                 mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
         if (adr028()) return new Adr028WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
                 mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
+        if (variant.equals("adr029")) return new Adr029WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
+                mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
         return new WorkflowDispatcher(measuredStore, beans.getBeanProvider(WorkflowGateway.class),
                 mock(ClosedTargetResolver.class), nudger, dispatchTx, json, props, new SimpleMeterRegistry());
     }
@@ -225,6 +262,7 @@ class WorkflowDispatcherBenchmarkTest {
         dispatcher.start();
         try {
             drain();
+            dispatcher.stop(); awaitStopped();
             long end = entries.values().stream().mapToLong(e -> e.acked).max().orElseThrow();
             if (report) finish(begin, end, end, 0, 0);
         } finally { dispatcher.stop(); awaitStopped(); }
@@ -251,6 +289,7 @@ class WorkflowDispatcherBenchmarkTest {
             assertThat(producerFailure.get()).isNull();
             long cpuEnd = cpuNanos();
             drain();
+            dispatcher.stop(); awaitStopped();
             return finish(begin, until, System.nanoTime(), 0, cpuEnd - cpuBegin);
         } finally { dispatcher.stop(); awaitStopped(); }
     }
@@ -273,6 +312,7 @@ class WorkflowDispatcherBenchmarkTest {
             long producerEnd = System.nanoTime();
             long cpuEnd = cpuNanos();
             drain();
+            dispatcher.stop(); awaitStopped();
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("producer_elapsed_s", (producerEnd - begin) / 1e9);
             extra.put("configured_arrival_rate_s", rate);
@@ -289,12 +329,18 @@ class WorkflowDispatcherBenchmarkTest {
         var batch = new ArrayList<Entry>();
         producerTx.executeWithoutResult(s -> {
             for (int i = 0; i < count; i++) {
-                UUID id = UUID.randomUUID();
+                long sequence = ordinal.getAndIncrement();
+                UUID id = PROFILE.startsWith("rolling")
+                        ? UUID.nameUUIDFromBytes((scenario + ":" + sequence).getBytes(StandardCharsets.UTF_8)) : UUID.randomUUID();
                 // Alternates across calls too, so one-row arrivals are also 50/50.
                 boolean message = mixed && kindSequence.getAndIncrement() % 2 == 1;
                 String key = message ? "bench-" + id : "order-checkout-" + id;
-                String target = message ? targets.get(Math.floorMod(id.hashCode(), targets.size())) : "";
+                String target = message ? targets.get(PROFILE.startsWith("rolling")
+                        ? (int) (sequence / 2 % targets.size()) : Math.floorMod(id.hashCode(), targets.size())) : "";
                 Entry e = new Entry(id, key, message ? "message" : "start", scheduled, target);
+                // Exactly 1%: one start and one message per 200 operations, deterministic 1/2/3s holds.
+                e.delayMs = injectTail && (sequence % 200 == 0 || sequence % 200 == 101)
+                        ? (1 + sequence / 200 % 3) * 1000 : 0;
                 entries.put(key, e); batch.add(e);
                 String input = json.write(Map.of("checkout_token", id.toString()));
                 String digest = json.digest(Map.of("checkout_token", id.toString()));
@@ -314,7 +360,7 @@ class WorkflowDispatcherBenchmarkTest {
     }
 
     private void drain() throws InterruptedException {
-        long deadline = System.nanoTime() + Duration.ofSeconds(120).toNanos();
+        long deadline = System.nanoTime() + Duration.ofSeconds(600).toNanos();
         while (completed.get() < entries.size() && System.nanoTime() < deadline) Thread.sleep(5);
         assertThat(producerFailure.get()).isNull();
         assertThat(completed.get()).isEqualTo(entries.size());
@@ -344,6 +390,8 @@ class WorkflowDispatcherBenchmarkTest {
         if (!legacy() && scenario.startsWith("saturated-starts-")) assertThat(maxActive.get()).isEqualTo(threads());
         // ADR-029 lanes: one in-flight message per target workflow (the baselines are sequential anyway).
         assertThat(maxActivePerTarget.get()).isLessThanOrEqualTo(1);
+        assertThat(maxClaimed.get()).isLessThanOrEqualTo(100);
+        assertThat(claimed.get()).isZero();
         if (!legacy() && !adr028() && scenario.startsWith("saturated-mixed-")) {
             assertThat(dispatchThreads).noneMatch(name -> name.equals("order-workflow-dispatcher"));
         }
@@ -369,10 +417,15 @@ class WorkflowDispatcherBenchmarkTest {
         row.put("completed_after_drain", completed.get()); row.put("nonterminal_or_retried", retries);
         row.put("max_concurrent_gateway_calls", maxActive.get()); row.put("gateway_threads", dispatchThreads);
         row.put("max_concurrent_messages_per_target", maxActivePerTarget.get());
+        row.put("max_claimed_unacknowledged", maxClaimed.get());
         row.put("message_targets", targets.size());
         row.put("jvm_cpu_seconds_in_window", cpu / 1e9);
         row.put("window", entryStats(window)); row.put("window_starts", entryStats(starts));
         row.put("window_messages", entryStats(messages)); row.put("all_including_drain", entryStats(all));
+        row.put("injected_delay_count", all.stream().filter(e -> e.delayMs > 0).count());
+        row.put("uninjected_including_drain", entryStats(all.stream().filter(e -> e.delayMs == 0).toList()));
+        row.put("rpc_slot_utilization", all.stream().mapToDouble(e ->
+                Math.max(0L, Math.min(e.rpcEnd, end) - Math.max(e.rpcBegin, begin))).sum() / ((end - begin) * (double) threads()));
         // A kind joined with '+' is one transaction carrying several statements (ADR-029 claim/ACK/renew).
         Map<String, Object> txStats = new LinkedHashMap<>();
         assertThat(transactions).allMatch(t -> t.kind != null);
@@ -429,10 +482,10 @@ class WorkflowDispatcherBenchmarkTest {
     private void writeSamples(List<Entry> all) throws Exception {
         try (var writer = new BufferedWriter(new OutputStreamWriter(new GZIPOutputStream(
                 Files.newOutputStream(output.resolve(scenario + ".csv.gz"))), StandardCharsets.UTF_8))) {
-            writer.write("id,kind,scheduled_ns,committed_ns,claimed_ns,rpc_begin_ns,rpc_end_ns,acked_ns,result,ack_batch,target\n");
+            writer.write("id,kind,scheduled_ns,committed_ns,claimed_ns,rpc_begin_ns,rpc_end_ns,acked_ns,result,ack_batch,target,injected_delay_ms\n");
             for (Entry e : all) writer.write(String.join(",", e.key, e.kind, relative(e.scheduled), relative(e.committed),
                     relative(e.claimed), relative(e.rpcBegin), relative(e.rpcEnd), relative(e.acked), e.result,
-                    Long.toString(e.ackBatch), e.target) + "\n");
+                    Long.toString(e.ackBatch), e.target, Long.toString(e.delayMs)) + "\n");
         }
     }
 
@@ -454,6 +507,7 @@ class WorkflowDispatcherBenchmarkTest {
         data.put("dispatch_interval_ms", 200); data.put("hikari_max", 24); data.put("hikari_min_idle", 4);
         data.put("window_seconds", SECONDS); data.put("saturated_backlog_target", BACKLOG);
         data.put("temporal_workers", 0); data.put("temporal_sdk", "1.25.1");
+        data.put("tail_injection", PROFILE.startsWith("rolling") ? "1% of operations, balanced start/message, deterministic rotating 1000/2000/3000ms before real SDK call" : "none");
         mapper.writerWithDefaultPrettyPrinter().writeValue(output.resolve("environment.json").toFile(), data);
     }
 
@@ -476,7 +530,7 @@ class WorkflowDispatcherBenchmarkTest {
 
     private static class Entry {
         final UUID id; final String key; final String kind; final long scheduled; final String target;
-        volatile long committed, claimed, rpcBegin, rpcEnd, acked, ackBatch;
+        volatile long committed, claimed, rpcBegin, rpcEnd, acked, ackBatch, delayMs;
         volatile String result;
         Entry(UUID id, String key, String kind, long scheduled, String target) {
             this.id = id; this.key = key; this.kind = kind; this.scheduled = scheduled; this.target = target;
@@ -509,13 +563,21 @@ class WorkflowDispatcherBenchmarkTest {
     private class MeasuredStore extends LegacyWorkflowOutboxStore {
         MeasuredStore(NamedParameterJdbcTemplate jdbc) { super(jdbc); }
         @Override public List<DispatchRow> claimDispatches(String owner, int limit, Duration lease) {
-            kind("claim_start"); var rows = super.claimDispatches(owner, limit, lease);
-            afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.workflowId()).claimed = now); });
+            return claimDispatches(owner, limit, lease, List.of());
+        }
+        @Override public List<DispatchRow> claimDispatches(String owner, int limit, Duration lease, List<UUID> excluded) {
+            kind("claim_start"); var rows = super.claimDispatches(owner, limit, lease, excluded);
+            afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.workflowId()).claimed = now);
+                maxClaimed.accumulateAndGet(claimed.addAndGet(rows.size()), Math::max); });
             return rows;
         }
         @Override public List<MessageRow> claimMessages(String owner, int limit, Duration lease) {
-            kind("claim_message"); var rows = super.claimMessages(owner, limit, lease);
-            afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.messageId()).claimed = now); });
+            return claimMessages(owner, limit, lease, List.of());
+        }
+        @Override public List<MessageRow> claimMessages(String owner, int limit, Duration lease, List<String> excluded) {
+            kind("claim_message"); var rows = super.claimMessages(owner, limit, lease, excluded);
+            afterCommit(() -> { long now = System.nanoTime(); rows.forEach(r -> entries.get(r.messageId()).claimed = now);
+                maxClaimed.accumulateAndGet(claimed.addAndGet(rows.size()), Math::max); });
             return rows;
         }
         @Override public void dispatchStarted(UUID id) {
@@ -545,12 +607,14 @@ class WorkflowDispatcherBenchmarkTest {
         }
         private void ack(Entry entry) {
             afterCommit(() -> { entry.ackBatch = ackBatchSequence.incrementAndGet();
-                entry.acked = System.nanoTime(); completed.incrementAndGet(); });
+                entry.acked = System.nanoTime(); claimed.decrementAndGet(); completed.incrementAndGet(); });
         }
         private void ackBatch(List<Entry> applied) {
             afterCommit(() -> {
                 long now = System.nanoTime(); long batchId = ackBatchSequence.incrementAndGet();
-                for (Entry entry : applied) { entry.ackBatch = batchId; entry.acked = now; completed.incrementAndGet(); }
+                for (Entry entry : applied) { entry.ackBatch = batchId; entry.acked = now; }
+                claimed.addAndGet(-applied.size());
+                completed.addAndGet(applied.size());
             });
         }
     }
@@ -558,7 +622,7 @@ class WorkflowDispatcherBenchmarkTest {
     private class MeasuredGateway implements WorkflowGateway {
         @Override public Result start(String id, String type, String queue, WorkflowInput input) {
             Entry e = entries.get(id); before(e);
-            try { Result r = realGateway.start(id, type, queue, input); e.result = r.name(); return r; }
+            try { hold(e); Result r = realGateway.start(id, type, queue, input); e.result = r.name(); return r; }
             finally { after(e); }
         }
         @Override public Result signalWithStart(String id, String type, String queue, WorkflowInput input, WorkflowMessage message) {
@@ -566,12 +630,21 @@ class WorkflowDispatcherBenchmarkTest {
             AtomicInteger perTarget = activePerTarget.computeIfAbsent(id, t -> new AtomicInteger());
             maxActivePerTarget.accumulateAndGet(perTarget.incrementAndGet(), Math::max);
             before(e);
-            try { Result r = realGateway.signalWithStart(id, type, queue, input, message); e.result = r.name(); return r; }
+            try { hold(e); Result r = realGateway.signalWithStart(id, type, queue, input, message); e.result = r.name(); return r; }
             finally { after(e); perTarget.decrementAndGet(); }
         }
         private void before(Entry e) {
             dispatchThreads.add(Thread.currentThread().getName());
             maxActive.accumulateAndGet(active.incrementAndGet(), Math::max); e.rpcBegin = System.nanoTime();
+        }
+        private void hold(Entry e) {
+            if (e.delayMs > 0) {
+                long until = System.nanoTime() + Duration.ofMillis(e.delayMs).toNanos();
+                while (System.nanoTime() < until) {
+                    if (Thread.currentThread().isInterrupted()) throw new IllegalStateException("Injected hold interrupted");
+                    LockSupport.parkNanos(until - System.nanoTime());
+                }
+            }
         }
         private void after(Entry e) { e.rpcEnd = System.nanoTime(); active.decrementAndGet(); }
     }

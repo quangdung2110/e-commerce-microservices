@@ -276,6 +276,31 @@ class WorkflowDispatchStoreIT {
         assertThat(abandoned).allSatisfy(r -> assertThat(messageStatus(r.messageId())).isEqualTo("DELIVERED"));
     }
 
+    @Test void rollingClaimsExcludeOwnedAndRetryingTargetsIncludingExpiredLeases() {
+        insertMessages("blocked", 3); insertMessages("other", 2);
+        List<MessageRow> others = tx.execute(s -> store.claimMessages("A", 50, Duration.ofSeconds(30), List.of("blocked")));
+        assertThat(others).hasSize(2).allMatch(r -> r.targetWorkflowId().equals("other"));
+        List<MessageRow> blocked = claimMessages("A", 50);
+        assertThat(blocked).hasSize(3).allMatch(r -> r.targetWorkflowId().equals("blocked"));
+        expireMessages();
+        List<MessageRow> reclaimed = tx.execute(s -> store.claimMessages("B", 50, Duration.ofSeconds(30), List.of("blocked")));
+        assertThat(reclaimed).hasSize(2).allMatch(r -> r.targetWorkflowId().equals("other"));
+        assertThat(claimMessages("B", 50)).hasSize(3).allMatch(r -> r.targetWorkflowId().equals("blocked"));
+    }
+
+    @Test void rollingStartClaimsCannotReclaimAnExcludedRpcAfterItsLeaseExpires() {
+        insert(3);
+        List<DispatchRow> current = claim("A", 1);
+        expire();
+        List<DispatchRow> others = tx.execute(s -> store.claimDispatches("A", 50, Duration.ofSeconds(30),
+                List.of(current.getFirst().dispatchId())));
+        assertThat(others).hasSize(2).noneMatch(r -> r.dispatchId().equals(current.getFirst().dispatchId()));
+        assertThat(claim("B", 50)).singleElement().satisfies(r -> {
+            assertThat(r.dispatchId()).isEqualTo(current.getFirst().dispatchId());
+            assertThat(r.attempts()).isEqualTo(2);
+        });
+    }
+
     private WorkflowDispatcher dispatcher(String owner, WorkflowGateway gateway) {
         var workers = new OrderProperties.Workers(true, owner, Duration.ofMillis(200), 5,
                 Duration.ofSeconds(30), Duration.ofSeconds(30), 4, 50, Duration.ofMillis(20));

@@ -226,6 +226,10 @@ Mặc định một process chạy tất cả vai trò dưới đây; cờ `TEMP
   ([ADR-020](./decisions/ADR-020-release-1-implementation-clarifications.md)).
 - Workflow-message dispatcher, prerequisite-proof replayer và completion convergence
   worker; mọi worker claim row bằng `FOR UPDATE SKIP LOCKED` và lease/attempt metrics.
+  Dispatcher bổ sung công việc khi cửa sổ còn không quá nửa dung lượng, trong lúc RPC cũ
+  còn chạy; tối đa 50 row chưa ACK mỗi loại và tổng 8 RPC mặc định. ID/target đang theo dõi
+  và target đang backoff được loại khỏi claim; lane/ACK/renew giữ fencing
+  ([ADR-030](./decisions/ADR-030-bounded-rolling-workflow-dispatch.md)).
 - Refund scope finalization recovery uses `order-refund-queue`; the finalization
   reconciler finds pending/recovery/conflict work independently of financial case status.
 - PostgreSQL và tùy chọn Redis request-replay cache.

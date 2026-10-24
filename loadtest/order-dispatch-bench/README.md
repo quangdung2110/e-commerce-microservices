@@ -1,4 +1,4 @@
-# Order dispatcher benchmark: legacy, ADR-028 and production (ADR-029)
+# Order dispatcher benchmark: legacy, ADR-028, ADR-029 and production (ADR-030)
 
 Run from PowerShell with Docker Desktop, Java 21 and Maven 3.9:
 
@@ -8,6 +8,11 @@ Run from PowerShell with Docker Desktop, Java 21 and Maven 3.9:
 # ADR-029 pair: frozen ADR-028 dispatcher vs production, start-only and 50/50 mixed ceilings
 ./scripts/ci/order-dispatch-bench.ps1 -Variant adr028 -Profile mixed
 ./scripts/ci/order-dispatch-bench.ps1 -Variant parallel -Profile mixed
+# ADR-030: both variants alternate in one JVM/stack, including deterministic slow RPCs
+./scripts/ci/order-dispatch-bench.ps1 -Seconds 20 -Profile rolling-paired
+# One variant, healthy/tail saturation and fixed arrivals
+./scripts/ci/order-dispatch-bench.ps1 -Seconds 30 -Variant adr029 -Profile rolling
+./scripts/ci/order-dispatch-bench.ps1 -Seconds 30 -Variant parallel -Profile rolling
 # Optional: longer measurement windows (default 15 seconds per sustained scenario)
 ./scripts/ci/order-dispatch-bench.ps1 -Seconds 30 -JavaHome C:/path/to/jdk-21 -Maven C:/path/to/mvn.cmd
 ```
@@ -24,21 +29,26 @@ in `finally`; it does not start/stop services in the shared project.
 The opt-in JUnit harness calls the dispatcher `start()` lifecycle, real outbox SQL,
 production `TemporalWorkflowGateway`, and SDK 1.25.1. Variants:
 
-- `parallel` (default): the production implementation. Eight RPC workers shared by starts and messages,
-  claim batch 50 per queue, ACK batches up to 50/20ms with claim generation fencing, at most one
-  in-flight message per target workflow (ADR-028 + ADR-029). Pool threads are `order-workflow-rpc-N`.
+- `parallel` (default): production ADR-030, 8 shared RPC workers, rolling claim up to 50 unacknowledged
+  rows per queue (100 total), half-window refill, 50/20ms fenced ACK, per-target lanes across claims,
+  local backoff holds and 200ms empty/partial polling. Pool threads are `order-workflow-rpc-N`.
+- `adr029`: frozen pre-ADR-030 dispatcher. Eight shared RPC workers and fenced ACK/renew, but the next
+  claim waits for the slowest RPC of the current batch. The fixture has no Spring component annotation.
 - `adr028`: the test-only frozen ADR-028 dispatcher in `src/test/java/com/ecommerce/order/benchmark/baseline`.
   Eight start workers with fenced batch ACK, then sequential `SignalWithStart` and per-row, unfenced
   message ACK on the coordinator. Pool threads are `order-workflow-start-N`.
 - `legacy`: the frozen pre-optimization dispatcher, one thread and one ACK transaction per row.
 
-All use the same claim SQL, 30s leases, 200ms idle polling, Hikari 24/4, workload, instrumentation and
+All use the same base lease/claim semantics, 30s leases, 200ms idle polling, Hikari 24/4, workload, instrumentation and
 Temporal gateway. Subclasses/wrappers record monotonic timestamps without changing RPC results.
+Production rolling claims add bounded exclusion lists for locally tracked start IDs/message targets and retry lanes;
+the frozen baselines use the original three-argument claim without exclusions.
 Flyway applies the real service migrations. The test refuses any database not named `order_dispatch_bench`.
 
 This isolates dispatch, not checkout completion: there are no business workers, activities, HTTP,
 Inventory, Promotion, Payment, Kafka or Redis. Temporal persists starts and signals in real PostgreSQL;
-the workflows stay pending. There is no artificial RPC latency or in-memory Temporal server.
+the workflows stay pending. There is no in-memory Temporal server. The original profiles add no
+artificial RPC latency; `rolling` and `rolling-paired` explicitly add controlled holds in their tail scenarios.
 The closed-target resolver is mocked and must never be reached (only successful starts/signals).
 
 Profiles, after 500 warmup starts:
@@ -54,6 +64,19 @@ Profiles, after 500 warmup starts:
 - `mixed` (ADR-029): three start-only and three 50/50 backlogged windows, alternating
   (`saturated-starts-N`, `saturated-mixed-50-50-N`) so drift affects both alike, then fixed-interval
   50/50 arrivals at 80/s, 120/s and 160/s (`arrival-mixed-R`).
+- `rolling`: healthy and tail 50/50 saturation, healthy 160 ops/s, tail 40/80/120/160 ops/s.
+- `rolling-paired`: four adjacent baseline/production pairs for each healthy/tail saturation,
+  alternating order ABBA, then healthy 160 ops/s and tail 40/80/120/160 ops/s for both variants.
+  The same JVM, SDK and databases are used throughout. Each window has `-Seconds` duration;
+  drain is outside throughput measurement, allowed up to 600s to retain overloaded requests in latency.
+
+Tail injection: ordinal 0 and 101 of each 200 operations (one start and one message), with
+deterministic rotating 1000/2000/3000ms holds **before the real SDK call**, while occupying an RPC
+slot. All calls still reach real Temporal. This models isolated stragglers; it does not inject transport
+failure or prove behavior when every Temporal call stalls. Message targets rotate round-robin in
+these profiles. The CSV records `injected_delay_ms`; summaries include uninjected-request latency,
+slot utilization and peak claimed-but-unacknowledged rows. `environment.variant` is the initial CLI
+selection; each summary row's `variant` identifies the dispatcher actually used in paired profiles.
 
 Messages use `SignalWithStart` on existing pending workflows, with 100 targets pre-started outside
 measurement; each message picks a target by hash, so several messages share a target. No worker consumes them.
@@ -65,6 +88,8 @@ resource samples and before/after container inventory. Verify the export indepen
 ```text
 python loadtest/order-dispatch-bench/analyze.py loadtest/order-dispatch-bench/results/<timestamp>
 python loadtest/order-dispatch-bench/compare.py <old-results> <new-results>
+# Paired rolling profile: additional comparison and idle-slot time derived from raw timestamps
+python loadtest/order-dispatch-bench/rolling_compare.py <results>
 ```
 
 Every measured run verifies the gateway concurrency limit (one or eight), permitted RPC thread names, all rows terminal,
@@ -86,5 +111,9 @@ Latency boundaries:
 - `intended_arrival_to_ack_ms`: scheduled arrival to ACK, including producer/DB enqueue delay.
 
 The timestamp callbacks execute just after JDBC commit returns, not at the server's internal WAL timestamp.
+`analyze.py` also independently verifies injected/uninjected counts and percentiles, slot utilization,
+and the 100-row window bound from claim/ACK timestamps. `rolling_compare.py` integrates intervals with
+committed work that has not begun its RPC and fewer than eight occupied slots; SQL, lane waits and batch
+barriers can all contribute, so this metric does not attribute every idle nanosecond to a straggler.
 Throughput counts acknowledged operations within the window. It is not workflow execution throughput,
 `PAYMENT_READY` latency or production capacity.

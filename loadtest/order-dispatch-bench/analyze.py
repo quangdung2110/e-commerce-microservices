@@ -53,6 +53,18 @@ def main(directory):
             assert times == sorted(times), r
             assert r["result"] == ("STARTED" if r["kind"] == "start" else "SIGNALLED"), r
         verify_entry_stats(rows, run["all_including_drain"])
+        if "injected_delay_count" in run:
+            uninjected = [r for r in rows if int(r["injected_delay_ms"]) == 0]
+            assert len(rows) - len(uninjected) == run["injected_delay_count"]
+            verify_entry_stats(uninjected, run["uninjected_including_drain"])
+        if "max_claimed_unacknowledged" in run:
+            lease_events = sorted((int(r[k]), delta) for r in rows
+                                  for k, delta in (("claimed_ns", 1), ("acked_ns", -1)))
+            claimed = max_claimed = 0
+            for _, delta in lease_events:
+                claimed += delta
+                max_claimed = max(max_claimed, claimed)
+            assert claimed == 0 and max_claimed == run["max_claimed_unacknowledged"] <= 100
         assert run["nonterminal_or_retried"] == 0
         threads = run.get("dispatcher_threads", 1)
         assert 1 <= run["max_concurrent_gateway_calls"] <= threads
@@ -82,6 +94,9 @@ def main(directory):
                 assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans
         if "window_begin_ns" in run:
             begin, end = run["window_begin_ns"], run["window_end_ns"]
+            if "rpc_slot_utilization" in run:
+                busy = sum(max(0, min(int(r["rpc_end_ns"]), end) - max(int(r["rpc_begin_ns"]), begin)) for r in rows)
+                assert math.isclose(busy / ((end - begin) * threads), run["rpc_slot_utilization"], rel_tol=1e-9)
             window = [r for r in rows if begin <= int(r["acked_ns"]) <= end]
             assert len(window) == run["completed_in_window"]
             assert math.isclose(run["throughput_s"], len(window) / ((end - begin) / 1e9))
@@ -145,7 +160,13 @@ def main(directory):
         line += f"; {variant or 'run'}:"
         if rates:
             line += f" saturated median={statistics.median(rates):.2f} start/s"
-        if mixed:
+        modes = {mode: [r["throughput_s"] for r in runs if r["scenario"].startswith("saturated-mixed-" + mode + "-")]
+                 for mode in ("healthy", "tail")}
+        if any(modes.values()):
+            for mode, values in modes.items():
+                if values:
+                    line += f" {mode} mixed median={statistics.median(values):.2f} ops/s"
+        elif mixed:
             line += f" mixed median={statistics.median(mixed):.2f} ops/s"
     print(line)
 

@@ -20,6 +20,10 @@ evidence:
 
 # ADR-029 — Message workflow song song theo lane từng target, ACK theo lô có fencing
 
+> Cập nhật 21/10/2026: [ADR-030](./ADR-030-bounded-rolling-workflow-dispatch.md) thay giới hạn
+> chờ hết lượt bằng rolling claim có giới hạn và exclusion cho work đang theo dõi/backoff.
+> Các số benchmark dưới đây giữ nguyên phạm vi implementation ADR-029 lúc được đo.
+
 ## Bối cảnh
 
 [ADR-028](./ADR-028-parallel-workflow-starts-and-batched-ack.md) đưa start Temporal lên 8 worker và

@@ -1,7 +1,7 @@
 param(
     [int]$Seconds = 15,
-    [ValidateSet("legacy", "adr028", "parallel")][string]$Variant = "parallel",
-    [ValidateSet("full", "mixed", "paired")][string]$Profile = "full",
+    [ValidateSet("legacy", "adr028", "adr029", "parallel")][string]$Variant = "parallel",
+    [ValidateSet("full", "mixed", "paired", "rolling", "rolling-paired")][string]$Profile = "full",
     [string]$JavaHome = $env:JAVA_HOME,
     [string]$Maven = "mvn.cmd"
 )
@@ -41,6 +41,7 @@ try {
         (Join-Path $repo "java/services/order-service/src/main/java/com/ecommerce/order/config/OrderProperties.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/LegacyWorkflowDispatcher.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/Adr028WorkflowDispatcher.java"),
+        (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/Adr029WorkflowDispatcher.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/baseline/LegacyWorkflowOutboxStore.java"),
         (Join-Path $repo "java/services/order-service/src/test/java/com/ecommerce/order/benchmark/WorkflowDispatcherBenchmarkTest.java") |
         Select-Object Path,Hash | ConvertTo-Json | Set-Content (Join-Path $output "source-hashes.json")

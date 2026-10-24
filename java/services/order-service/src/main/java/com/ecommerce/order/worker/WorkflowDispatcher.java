@@ -41,7 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Rows are leased with {@code FOR UPDATE SKIP LOCKED}; Temporal unavailability always
  * returns a row to RETRY, never to a terminal loss. Only invariant corruption quarantines.
  * Starts (ADR-028) and messages (ADR-029) share one bounded RPC pool; a target workflow has at
- * most one message in flight, sent in {@code created_at} order. Only the coordinator touches the DB.
+ * most one message in flight, sent in {@code created_at} order. ADR-030 replenishes bounded windows
+ * while earlier RPCs are outstanding. Only the coordinator touches the DB.
  */
 @Component
 public class WorkflowDispatcher implements SmartLifecycle {
@@ -62,6 +63,9 @@ public class WorkflowDispatcher implements SmartLifecycle {
     private Thread thread;
     private final Object lifecycle = new Object();
     private volatile ThreadPoolExecutor executor;
+    /** Bounded by the message window; survives an idle pass, so later claims cannot bypass a local retry head. */
+    private final Map<String, Long> retryLanes = new HashMap<>();
+    private volatile int claimedRows;
 
     public WorkflowDispatcher(WorkflowOutboxStore store, ObjectProvider<WorkflowGateway> gateway,
                               ClosedTargetResolver resolver, DispatchNudger nudger, TransactionTemplate tx, Json json,
@@ -76,20 +80,16 @@ public class WorkflowDispatcher implements SmartLifecycle {
         this.meters = meters;
         meters.gauge("order.workflow.dispatch.active", this,
                 d -> d.executor == null ? 0 : d.executor.getActiveCount());
+        meters.gauge("order.workflow.dispatch.claimed", this, d -> d.claimedRows);
     }
 
-    /** One pass over due rows; returns the number of rows handled. Public for tests. */
+    /** Drains currently available work with bounded rolling claims; returns total rows claimed. Public for tests. */
     public synchronized int dispatchOnce() {
         WorkflowGateway target = gateway.getIfAvailable();
         if (target == null) {
             return 0;
         }
-        Claim claim = tx.execute(s -> new Claim(
-                store.claimDispatches(config.instanceId(), config.dispatchBatchSize(), config.lease()),
-                store.claimMessages(config.instanceId(), config.dispatchBatchSize(), config.lease())));
-        if (claim.starts().isEmpty() && claim.messages().isEmpty()) return 0;
-        new Pass(target, claim).run();
-        return claim.starts().size() + claim.messages().size();
+        return new Pass(target).run();
     }
 
     private record Claim(List<DispatchRow> starts, List<MessageRow> messages) { }
@@ -99,14 +99,14 @@ public class WorkflowDispatcher implements SmartLifecycle {
     private record Acked(List<UUID> starts, List<String> messages) { }
 
     /**
-     * One claimed group of starts and messages. RPC workers never hold JDBC connections/transactions;
+     * One rolling drain of starts and messages. RPC workers never hold JDBC connections/transactions;
      * closed-target resolution, ACK, renewal and every other DB call run on the coordinator thread.
      */
     private final class Pass {
         private final WorkflowGateway target;
         private final ExecutorCompletionService<Object> completions = new ExecutorCompletionService<>(executor());
         private final Map<Future<Object>, Object> inFlight = new HashMap<>();
-        private final ArrayDeque<DispatchRow> starts;
+        private final ArrayDeque<DispatchRow> starts = new ArrayDeque<>();
         /** Unsent messages per target workflow; a lane is ready only while none of its messages is in flight. */
         private final Map<String, ArrayDeque<MessageRow>> lanes = new HashMap<>();
         private final ArrayDeque<String> readyLanes = new ArrayDeque<>();
@@ -116,10 +116,17 @@ public class WorkflowDispatcher implements SmartLifecycle {
         private final List<MessageCompletion> readyMessages = new ArrayList<>();
         private boolean messageTurn;
         private long flushAt = Long.MAX_VALUE;
+        private long startPollAt;
+        private long messagePollAt;
+        private int totalClaimed;
 
-        Pass(WorkflowGateway target, Claim claim) {
+        Pass(WorkflowGateway target) {
             this.target = target;
-            this.starts = new ArrayDeque<>(claim.starts());
+        }
+
+        private void add(Claim claim) {
+            totalClaimed += claim.starts().size() + claim.messages().size();
+            starts.addAll(claim.starts());
             claim.starts().forEach(row -> outstandingStarts.put(row.dispatchId(), row));
             // UPDATE ... RETURNING has no defined order; lanes follow created_at, ties by message ID.
             claim.messages().stream().sorted(CLAIM_ORDER).forEach(row -> {
@@ -129,14 +136,15 @@ public class WorkflowDispatcher implements SmartLifecycle {
                     return new ArrayDeque<>();
                 }).addLast(row);
             });
+            claimedRows = outstandingStarts.size() + outstandingMessages.size();
         }
 
-        void run() {
+        int run() {
             long renewEvery = config.lease().dividedBy(3).toNanos();
             long renewAt = System.nanoTime() + renewEvery;
             try {
-                refill();
-                while (!inFlight.isEmpty()) {
+                while (true) {
+                    if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
                     long now = System.nanoTime();
                     if (pending() > 0 && (pending() >= config.dispatchAckBatchSize() || now >= flushAt)) {
                         flush();
@@ -147,15 +155,22 @@ public class WorkflowDispatcher implements SmartLifecycle {
                         renewAt = System.nanoTime() + renewEvery;
                         now = System.nanoTime();
                     }
-                    long wait = Math.max(1, Math.min(renewAt, flushAt) - now);
+                    claimMore();
+                    refill();
+                    if (inFlight.isEmpty()) {
+                        flush();
+                        return totalClaimed;
+                    }
+                    now = System.nanoTime();
+                    // Poll even when a slow RPC is the only completion left: newly committed rows may arrive meanwhile.
+                    long wait = Math.max(1, Math.min(Math.min(renewAt, flushAt),
+                            now + config.dispatchInterval().toNanos()) - now);
                     Future<Object> done = completions.poll(wait, TimeUnit.NANOSECONDS);
                     if (done == null) continue;
                     do {
                         complete(done);
                     } while ((done = completions.poll()) != null);
-                    refill();
                 }
-                flush();
             } catch (InterruptedException interrupted) {
                 // Already acknowledged RPCs can still be persisted; unknown/cancelled/unsent rows remain leased for replay.
                 try { flush(); }
@@ -163,7 +178,33 @@ public class WorkflowDispatcher implements SmartLifecycle {
                 throw new IllegalStateException("Workflow dispatch interrupted", interrupted);
             } finally {
                 inFlight.keySet().forEach(future -> future.cancel(true));
+                claimedRows = 0;
             }
+        }
+
+        /** Each queue owns at most batchSize rows including in-flight RPCs and unflushed ACKs. */
+        private void claimMore() {
+            long now = System.nanoTime();
+            retryLanes.values().removeIf(until -> until <= now);
+            int capacity = config.dispatchBatchSize();
+            int startLimit = outstandingStarts.size() <= capacity / 2 && now >= startPollAt
+                    ? capacity - outstandingStarts.size() : 0;
+            int messageUsed = outstandingMessages.size() + retryLanes.size();
+            int messageLimit = messageUsed <= capacity / 2 && now >= messagePollAt ? capacity - messageUsed : 0;
+            if (startLimit == 0 && messageLimit == 0) return;
+            var excluded = new HashSet<>(retryLanes.keySet());
+            outstandingMessages.values().forEach(row -> excluded.add(row.targetWorkflowId()));
+            Claim claim = tx.execute(s -> new Claim(
+                    startLimit == 0 ? List.of() : outstandingStarts.isEmpty()
+                            ? store.claimDispatches(config.instanceId(), startLimit, config.lease())
+                            : store.claimDispatches(config.instanceId(), startLimit, config.lease(), List.copyOf(outstandingStarts.keySet())),
+                    messageLimit == 0 ? List.of() : excluded.isEmpty()
+                            ? store.claimMessages(config.instanceId(), messageLimit, config.lease())
+                            : store.claimMessages(config.instanceId(), messageLimit, config.lease(), List.copyOf(excluded))));
+            long idlePollAt = System.nanoTime() + config.dispatchInterval().toNanos();
+            if (startLimit > 0) startPollAt = claim.starts().size() < startLimit ? idlePollAt : 0;
+            if (messageLimit > 0) messagePollAt = claim.messages().size() < messageLimit ? idlePollAt : 0;
+            add(claim);
         }
 
         /** Alternates between the two queues so neither kind waits for the other's whole group. */
@@ -220,15 +261,18 @@ public class WorkflowDispatcher implements SmartLifecycle {
         }
 
         private void complete(Future<Object> done) throws InterruptedException {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
             Object row = inFlight.remove(done);
             Object result;
             try {
                 result = done.get();
             } catch (ExecutionException e) {
+                if (e.getCause() instanceof InterruptedException interrupted) throw interrupted;
                 result = row instanceof DispatchRow start
                         ? DispatchCompletion.retry(start, e.getCause().toString(), retryDelay(start.attempts()))
                         : new Signal((MessageRow) row, WorkflowGateway.Result.RETRY, e.getCause().toString());
             }
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
             if (result instanceof DispatchCompletion start) {
                 meters.counter("order.workflow.dispatch", "result", start.started() ? "STARTED" : "RETRY").increment();
                 ready(start);
@@ -250,6 +294,10 @@ public class WorkflowDispatcher implements SmartLifecycle {
             ready(completion);
             ArrayDeque<MessageRow> queued = lanes.get(row.targetWorkflowId());
             if (completion.retrying()) {
+                // Keep the target excluded until its retry ACK commits. On an ACK failure this conservative
+                // deadline also covers lease expiry; a subsequent successful ACK shortens it to the real backoff.
+                retryLanes.put(row.targetWorkflowId(), System.nanoTime() + config.lease().toNanos()
+                        + completion.backoff().toNanos());
                 // Successors never overtake a head that will be retried: release them unsent, due together with it.
                 for (MessageRow next : queued) {
                     meters.counter("order.workflow.message", "type", next.messageType(), "result", "DEFERRED")
@@ -312,10 +360,16 @@ public class WorkflowDispatcher implements SmartLifecycle {
                             .increment(messageBatch.size() - acked.messages().size());
                 }
             }
+            long acknowledgedAt = System.nanoTime();
+            var acknowledgedMessages = new HashSet<>(acked.messages());
+            messageBatch.stream().filter(result -> result.retrying() && acknowledgedMessages.contains(result.messageId()))
+                    .forEach(result -> retryLanes.put(outstandingMessages.get(result.messageId()).targetWorkflowId(),
+                            acknowledgedAt + result.backoff().toNanos()));
             startBatch.forEach(result -> outstandingStarts.remove(result.dispatchId()));
             messageBatch.forEach(result -> outstandingMessages.remove(result.messageId()));
             readyStarts.clear();
             readyMessages.clear();
+            claimedRows = outstandingStarts.size() + outstandingMessages.size();
             flushAt = Long.MAX_VALUE;
         }
 
@@ -329,10 +383,19 @@ public class WorkflowDispatcher implements SmartLifecycle {
             // Do not send queued work that another claim generation now owns.
             var ownedStarts = new HashSet<>(owned.starts());
             starts.removeIf(row -> !ownedStarts.contains(row.dispatchId()));
-            outstandingStarts.keySet().retainAll(ownedStarts);
             var ownedMessages = new HashSet<>(owned.messages());
             lanes.values().forEach(queued -> queued.removeIf(row -> !ownedMessages.contains(row.messageId())));
+            // Keep already-sent/unflushed rows in the bounded window and excluded from new claims even
+            // after losing ownership. Their late ACK is fenced; unsent rows alone can be discarded now.
+            inFlight.values().forEach(row -> {
+                if (row instanceof DispatchRow start) ownedStarts.add(start.dispatchId());
+                else ownedMessages.add(((MessageRow) row).messageId());
+            });
+            readyStarts.forEach(result -> ownedStarts.add(result.dispatchId()));
+            readyMessages.forEach(result -> ownedMessages.add(result.messageId()));
+            outstandingStarts.keySet().retainAll(ownedStarts);
             outstandingMessages.keySet().retainAll(ownedMessages);
+            claimedRows = outstandingStarts.size() + outstandingMessages.size();
         }
     }
 

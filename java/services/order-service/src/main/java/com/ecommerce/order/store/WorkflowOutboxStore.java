@@ -108,31 +108,45 @@ public class WorkflowOutboxStore {
     }
 
     public List<DispatchRow> claimDispatches(String owner, int limit, Duration lease) {
+        return claimDispatches(owner, limit, lease, List.of());
+    }
+
+    /** A locally outstanding RPC must not be reclaimed even if its lease/ownership was lost meanwhile. */
+    public List<DispatchRow> claimDispatches(String owner, int limit, Duration lease, List<UUID> excludedIds) {
+        String exclusion = excludedIds.isEmpty() ? "" : "AND dispatch_id NOT IN (:excluded)";
         return jdbc.query("""
                 UPDATE order_workflow_dispatches d SET status = 'IN_FLIGHT', lease_owner = :owner,
                     lease_until = NOW() + CAST(:lease AS interval), attempts = d.attempts + 1, updated_at = NOW()
                 WHERE d.dispatch_id IN (
                     SELECT dispatch_id FROM order_workflow_dispatches
-                    WHERE (status IN ('PENDING', 'RETRY') AND available_at <= NOW())
-                       OR (status = 'IN_FLIGHT' AND lease_until < NOW())
+                    WHERE ((status IN ('PENDING', 'RETRY') AND available_at <= NOW())
+                       OR (status = 'IN_FLIGHT' AND lease_until < NOW()))
+                    %s
                     ORDER BY created_at LIMIT :limit FOR UPDATE SKIP LOCKED)
                 RETURNING d.*
-                """, new MapSqlParameterSource().addValue("owner", owner).addValue("limit", limit)
-                .addValue("lease", lease.toSeconds() + " seconds"), DISPATCH);
+                """.formatted(exclusion), new MapSqlParameterSource().addValue("owner", owner).addValue("limit", limit)
+                .addValue("excluded", excludedIds).addValue("lease", lease.toSeconds() + " seconds"), DISPATCH);
     }
 
     public List<MessageRow> claimMessages(String owner, int limit, Duration lease) {
+        return claimMessages(owner, limit, lease, List.of());
+    }
+
+    /** Skip this coordinator's owned/backing-off lanes without preventing other targets from progressing. */
+    public List<MessageRow> claimMessages(String owner, int limit, Duration lease, List<String> excludedTargets) {
+        String exclusion = excludedTargets.isEmpty() ? "" : "AND target_workflow_id NOT IN (:excluded)";
         return jdbc.query("""
                 UPDATE order_workflow_messages m SET status = 'IN_FLIGHT', lease_owner = :owner,
                     lease_until = NOW() + CAST(:lease AS interval), attempts = m.attempts + 1, updated_at = NOW()
                 WHERE m.message_id IN (
                     SELECT message_id FROM order_workflow_messages
-                    WHERE (status IN ('PENDING', 'RETRY') AND available_at <= NOW())
-                       OR (status = 'IN_FLIGHT' AND lease_until < NOW())
+                    WHERE ((status IN ('PENDING', 'RETRY') AND available_at <= NOW())
+                       OR (status = 'IN_FLIGHT' AND lease_until < NOW()))
+                    %s
                     ORDER BY created_at LIMIT :limit FOR UPDATE SKIP LOCKED)
                 RETURNING m.*
-                """, new MapSqlParameterSource().addValue("owner", owner).addValue("limit", limit)
-                .addValue("lease", lease.toSeconds() + " seconds"), MESSAGE);
+                """.formatted(exclusion), new MapSqlParameterSource().addValue("owner", owner).addValue("limit", limit)
+                .addValue("excluded", excludedTargets).addValue("lease", lease.toSeconds() + " seconds"), MESSAGE);
     }
 
     /** One SQL statement/transaction for mixed successes and retries; late owners cannot overwrite a newer claim. */

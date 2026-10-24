@@ -70,6 +70,16 @@ một message đang bay, gửi theo `created_at`; head bị `RETRY` thì message
 backoff (`last_error` = `Deferred behind message ...`). Closed-target resolution vẫn chạy trên coordinator.
 Thread RPC tên `order-workflow-rpc-N`.
 
+[ADR-030](./decisions/ADR-030-bounded-rolling-workflow-dispatch.md) thay ranh giới giữa các lượt:
+coordinator refill khi cửa sổ còn không quá nửa dung lượng, trong lúc RPC cũ vẫn chạy. Tối đa
+`dispatch-batch-size` row chưa ACK mỗi loại (50 + 50 mặc định), tổng RPC vẫn 8. Claim loại
+ID/target đang theo dõi, kể cả RPC mất lease chưa trả; target retry tiếp tục bị loại qua idle
+pass tới hết backoff sau ACK. Target backoff dùng chung budget message window, tránh RAM tăng
+không giới hạn khi Temporal lỗi. Empty/partial claim được thử lại sau `dispatch-interval`.
+Theo dõi `order.workflow.dispatch.claimed` (cap `2 * dispatch-batch-size`) cùng active và tuổi
+backlog DB. Gauge này là state local, trở về 0 khi pass dừng; row chưa ACK có thể vẫn giữ lease
+trong DB để replay. Trần này không giới hạn tổng accepted backlog hoặc thay thế admission control.
+
 Coordinator renew row start và message chưa ACK mỗi lease/3; ACK/renew của cả hai bảng kiểm tra owner +
 `attempts` để từ chối kết quả stale sau reclaim. Theo dõi `order.workflow.dispatch.active` (RPC đang chạy, cả hai loại),
 distribution summary `order.workflow.dispatch.ack.batch`/`order.workflow.message.ack.batch`, counter
