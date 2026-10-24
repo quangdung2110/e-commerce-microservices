@@ -28,8 +28,8 @@ import (
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	"github.com/ecommerce/notification-service/internal/common/config"
-	"github.com/ecommerce/notification-service/internal/common/pii"
 	apperr "github.com/ecommerce/notification-service/internal/common/errors"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/infrastructure/postgres"

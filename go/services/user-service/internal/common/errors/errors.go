@@ -122,12 +122,12 @@ var (
 	// ErrAddressNotFound is returned both for an unknown address and for an
 	// address owned by somebody else, so ownership is never disclosed
 	// (USER-BR-001).
-	ErrAddressNotFound                = newError(CodeAddressNotFound, "Address không tồn tại.")
-	ErrDefaultAddressCannotBeDeleted  = newError(CodeDefaultAddressCannotBeDeleted, "Hãy đặt address khác làm default trước.")
-	ErrDefaultAddressConflict         = newError(CodeDefaultAddressConflict, "Address default của user đang xung đột.")
-	ErrInvalidProfileField            = newError(CodeInvalidProfileField, "Một hoặc nhiều field profile không hợp lệ.")
-	ErrInvalidAddress                 = newError(CodeInvalidAddress, "Address, recipient phone hoặc mã địa giới không hợp lệ.")
-	ErrInvalidPreference              = newError(CodeInvalidPreference, "Notification preferences không hợp lệ.")
+	ErrAddressNotFound               = newError(CodeAddressNotFound, "Address không tồn tại.")
+	ErrDefaultAddressCannotBeDeleted = newError(CodeDefaultAddressCannotBeDeleted, "Hãy đặt address khác làm default trước.")
+	ErrDefaultAddressConflict        = newError(CodeDefaultAddressConflict, "Address default của user đang xung đột.")
+	ErrInvalidProfileField           = newError(CodeInvalidProfileField, "Một hoặc nhiều field profile không hợp lệ.")
+	ErrInvalidAddress                = newError(CodeInvalidAddress, "Address, recipient phone hoặc mã địa giới không hợp lệ.")
+	ErrInvalidPreference             = newError(CodeInvalidPreference, "Notification preferences không hợp lệ.")
 	// ErrDeletionAlreadyProcessed is a consumer-side no-op, never an HTTP error.
 	ErrDeletionAlreadyProcessed = newError(CodeDeletionAlreadyProcessed, "Deletion đã được xử lý.")
 	// ErrRetentionNotExpired stops the purge worker from deleting before the
