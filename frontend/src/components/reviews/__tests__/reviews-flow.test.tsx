@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
@@ -27,6 +27,7 @@ import { ToastProvider } from "@/components/ui/toast";
 import { httpError, problem } from "@/lib/api/__tests__/helpers";
 import { reviewApi, type OwnerReview, type PendingEligibility } from "@/lib/api/review";
 import { useAuthStore } from "@/store/useAuthStore";
+import { formatDateTime } from "@/lib/format";
 
 const pending = (overrides: Partial<PendingEligibility> = {}): PendingEligibility => ({
   eligibility_id: "e-1",
@@ -57,6 +58,7 @@ const owner = (overrides: Partial<OwnerReview> = {}): OwnerReview => ({
   edit_count: 0,
   created_at: "2026-10-06T00:00:00Z",
   updated_at: "2026-10-06T00:00:00Z",
+  content_edited_at: null,
   ...overrides,
 });
 
@@ -178,6 +180,56 @@ describe("/reviews/new", () => {
     await waitFor(() => expect(reviewApi.create).toHaveBeenCalledWith({ eligibility_id: "e-1", rating: 5 }));
   });
 
+  it("hiện toast và điều hướng dù refetch entitlement trả CLAIMED ngay sau create", async () => {
+    vi.mocked(reviewApi.create).mockImplementation(async () => {
+      vi.mocked(reviewApi.eligibilityStatus).mockResolvedValue({ ...pendingStatus, status: "CLAIMED", review_id: "r-new" });
+      // Leave another invalidation in flight so the parent has time to remove the form.
+      vi.mocked(reviewApi.listPending).mockImplementation(() => new Promise(resolve =>
+        setTimeout(() => resolve({ items: [], next_cursor: null }), 30)));
+      return owner({ review_id: "r-new" });
+    });
+    renderWithClient(<ReviewCreateContent eligibilityId="e-1" />);
+    await screen.findByText("Áo thun cổ tròn Terra");
+    fireEvent.click(screen.getByRole("radio", { name: "5 sao, Rất tốt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gửi đánh giá" }));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledExactlyOnceWith("/reviews/r-new"));
+    expect(await screen.findByText("Đã gửi đánh giá")).toBeTruthy();
+    await screen.findByText("Bạn đã đánh giá sản phẩm này");
+    expect(reviewApi.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("không điều hướng hoặc toast khi đã rời form trước response create", async () => {
+    let resolve!: (saved: OwnerReview) => void;
+    vi.mocked(reviewApi.create).mockReturnValue(new Promise(r => { resolve = r; }));
+    const view = renderWithClient(<ReviewCreateContent eligibilityId="e-1" />);
+    await screen.findByText("Áo thun cổ tròn Terra");
+    fireEvent.click(screen.getByRole("radio", { name: "5 sao, Rất tốt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gửi đánh giá" }));
+    await waitFor(() => expect(reviewApi.create).toHaveBeenCalledTimes(1));
+    view.unmount();
+    resolve(owner());
+    await new Promise(r => setTimeout(r, 40));
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it("response của account trước không điều hướng hoặc toast cho account mới", async () => {
+    let resolve!: (saved: OwnerReview) => void;
+    vi.mocked(reviewApi.create).mockReturnValue(new Promise(r => { resolve = r; }));
+    renderWithClient(<ReviewCreateContent eligibilityId="e-1" />);
+    await screen.findByText("Áo thun cổ tròn Terra");
+    fireEvent.click(screen.getByRole("radio", { name: "5 sao, Rất tốt" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gửi đánh giá" }));
+    await waitFor(() => expect(reviewApi.create).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      useAuthStore.getState().setSession(`e30.${btoa(JSON.stringify({ sub: "buyer-b", roles: ["USER"] }))}.test`);
+      await new Promise(r => setTimeout(r, 0));
+      resolve(owner());
+      await new Promise(r => setTimeout(r, 40));
+    });
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(screen.queryByText("Đã gửi đánh giá")).toBeNull();
+  });
+
   it("eligibility đã CLAIMED thì không hiện form mà dẫn tới review đã viết", async () => {
     vi.mocked(reviewApi.eligibilityStatus).mockResolvedValue({ ...pendingStatus, status: "CLAIMED", review_id: "r-9" });
     renderWithClient(<ReviewCreateContent eligibilityId="e-1" />);
@@ -203,6 +255,24 @@ describe("/reviews/new", () => {
 });
 
 describe("/reviews/[id]", () => {
+  it("giữ đúng thời gian tác giả sửa khi moderation thay updated_at", async () => {
+    const editedAt = "2026-10-13T14:38:27Z";
+    vi.mocked(reviewApi.mine).mockResolvedValue(owner({
+      edit_count: 1, content_edited_at: editedAt,
+      updated_at: "2026-10-14T04:17:11Z", visibility_status: "REMOVED",
+    }));
+    renderWithClient(<ReviewDetailContent reviewId="r-1" />);
+    expect(await screen.findByText(new RegExp(`Đã chỉnh sửa lúc ${formatDateTime(editedAt)}`))).toBeTruthy();
+    expect(screen.queryByText(new RegExp(`Đã chỉnh sửa lúc ${formatDateTime("2026-10-14T04:17:11Z")}`))).toBeNull();
+  });
+
+  it.each([null, undefined])("review cũ thiếu giờ sửa (%s) không lấy updated_at thay thế", async (timestamp) => {
+    vi.mocked(reviewApi.mine).mockResolvedValue(owner({ edit_count: 1, content_edited_at: timestamp }));
+    renderWithClient(<ReviewDetailContent reviewId="r-1" />);
+    expect(await screen.findByText(/Đã chỉnh sửa/)).toBeTruthy();
+    expect(screen.queryByText(/Đã chỉnh sửa lúc/)).toBeNull();
+  });
+
   it("review còn sửa được hiện nút chỉnh sửa và số lượt còn lại", async () => {
     vi.mocked(reviewApi.mine).mockResolvedValue(owner());
     renderWithClient(<ReviewDetailContent reviewId="r-1" />);
@@ -259,7 +329,7 @@ describe("/reviews/[id]", () => {
   it("review của người khác (403) không có nút thử lại", async () => {
     vi.mocked(reviewApi.mine).mockRejectedValue(httpError(403, problem("NOT_REVIEW_OWNER", 403)));
     renderWithClient(<ReviewDetailContent reviewId="r-1" />);
-    expect(await screen.findByText("Bạn không có quyền sửa đánh giá này.")).toBeTruthy();
+    expect(await screen.findByText("Bạn không có quyền xem đánh giá này.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Thử lại/ })).toBeNull();
   });
 });

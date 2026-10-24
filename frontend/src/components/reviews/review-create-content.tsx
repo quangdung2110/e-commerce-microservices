@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowLeft, LoaderCircle } from "lucide-react";
 
 import { MediaUploader } from "@/components/reviews/media-uploader";
@@ -64,7 +64,7 @@ export function ReviewCreateContent({ eligibilityId }: { eligibilityId: string }
           Sản phẩm này không còn nhận đánh giá nữa.
         </Alert>
       ) : (
-        <CreateForm eligibilityId={eligibilityId} expiresAt={status.data.expires_at} />
+        <CreateForm key={eligibilityId} eligibilityId={eligibilityId} expiresAt={status.data.expires_at} />
       )}
     </main>
   );
@@ -73,7 +73,16 @@ export function ReviewCreateContent({ eligibilityId }: { eligibilityId: string }
 function CreateForm({ eligibilityId, expiresAt }: { eligibilityId: string; expiresAt: string }) {
   const router = useRouter();
   const { addToast } = useToast();
-  const create = useCreateReview();
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+  const create = useCreateReview((saved) => {
+    if (!active.current) return;
+    addToast({ type: "success", title: "Đã gửi đánh giá", message: "Cảm ơn bạn đã chia sẻ trải nghiệm." });
+    router.replace(`/reviews/${encodeURIComponent(saved.review_id)}`);
+  });
   const uploader = useReviewMediaUploader();
 
   // Tên và ảnh sản phẩm chỉ có trong danh sách chờ; quét tối đa vài trang để tìm đúng mục.
@@ -126,12 +135,6 @@ function CreateForm({ eligibilityId, expiresAt }: { eligibilityId: string; expir
         rating,
         ...(normalized ? { content: normalized } : {}),
         ...(uploader.assetIds.length ? { media_asset_ids: uploader.assetIds } : {}),
-      },
-      {
-        onSuccess: (saved) => {
-          addToast({ type: "success", title: "Đã gửi đánh giá", message: "Cảm ơn bạn đã chia sẻ trải nghiệm." });
-          router.replace(`/reviews/${encodeURIComponent(saved.review_id)}`);
-        },
       }
     );
   }

@@ -115,13 +115,19 @@ function useInvalidateReviews() {
   };
 }
 
-export function useCreateReview() {
+export function useCreateReview(onSuccess?: (saved: OwnerReview) => void) {
   const invalidate = useInvalidateReviews();
   const client = useQueryClient();
   const accountId = useAuthStore((state) => state.claims?.sub);
-  return useMutation<OwnerReview, unknown, CreateReviewRequest>({
+  return useMutation<OwnerReview, unknown, CreateReviewRequest, { accountId: string | undefined }>({
     mutationFn: createReviewWithRecovery,
-    onSettled: async (saved, _error, variables) => {
+    onMutate: () => ({ accountId }),
+    // Run feedback before eligibility invalidation can remove the create form.
+    onSuccess: (saved, _variables, context) => {
+      if (context?.accountId === useAuthStore.getState().claims?.sub) onSuccess?.(saved);
+    },
+    onSettled: async (saved, _error, variables, context) => {
+      if (context?.accountId !== useAuthStore.getState().claims?.sub) return;
       await Promise.all([
         invalidate(saved),
         client.invalidateQueries({ queryKey: reviewKeys.eligibility(accountId, variables.eligibility_id) }),

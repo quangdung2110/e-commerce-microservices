@@ -27,7 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { useReviewMediaUploader } from "@/hooks/use-review-media-uploader";
 import { useMyReview, usePatchReview } from "@/hooks/use-reviews";
-import { problemStatus } from "@/lib/api/problem";
+import { problemCode, problemStatus } from "@/lib/api/problem";
 import type { OwnerReview, PatchReviewRequest } from "@/lib/api/review";
 import { formatDateTime } from "@/lib/format";
 import { REVIEW_VISIBILITY_LABELS, REVIEW_VISIBILITY_NOTES } from "@/lib/labels/review";
@@ -56,6 +56,7 @@ export function ReviewDetailContent({ reviewId }: { reviewId: string }) {
       ) : query.isError && !query.data ? (
         <ErrorState
           error={query.error}
+          message={problemCode(query.error) === "NOT_REVIEW_OWNER" ? "Bạn không có quyền xem đánh giá này." : undefined}
           onRetry={[403, 404].includes(problemStatus(query.error) ?? 0) ? undefined : () => void query.refetch()}
         />
       ) : query.data ? (
@@ -90,7 +91,11 @@ function ReviewView({
           <h1 className="font-serif text-headline-2 font-normal">Đánh giá của bạn</h1>
           <p className="text-[15px] text-muted-foreground">
             Gửi lúc {formatDateTime(review.created_at)}
-            {review.edit_count > 0 ? ` · Đã chỉnh sửa lúc ${formatDateTime(review.updated_at)}` : ""}
+            {review.edit_count > 0
+              ? review.content_edited_at
+                ? ` · Đã chỉnh sửa lúc ${formatDateTime(review.content_edited_at)}`
+                : " · Đã chỉnh sửa"
+              : ""}
           </p>
         </div>
         <StatusBadge value={review.visibility_status} labels={REVIEW_VISIBILITY_LABELS} />

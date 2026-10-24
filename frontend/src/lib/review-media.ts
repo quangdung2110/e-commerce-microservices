@@ -62,7 +62,13 @@ export function uploadToStorage(
   options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) {
+      reject(new DOMException("Upload aborted", "AbortError"));
+      return;
+    }
     const xhr = new XMLHttpRequest();
+    const abort = () => xhr.abort();
+    const cleanup = () => options.signal?.removeEventListener("abort", abort);
     xhr.open(instruction.method, instruction.url);
     for (const [name, value] of Object.entries(instruction.headers)) {
       // Content-Length do trình duyệt đặt và bị cấm đặt thủ công.
@@ -73,6 +79,7 @@ export function uploadToStorage(
       if (event.lengthComputable) options.onProgress?.(event.loaded / event.total);
     };
     xhr.onload = () => {
+      cleanup();
       if (xhr.status >= 200 && xhr.status < 300) {
         options.onProgress?.(1);
         resolve();
@@ -80,11 +87,15 @@ export function uploadToStorage(
         reject(new StorageUploadError(xhr.status));
       }
     };
-    xhr.onerror = () => reject(new StorageUploadError(null));
-    xhr.ontimeout = () => reject(new StorageUploadError(null));
-    xhr.onabort = () => reject(new DOMException("Upload aborted", "AbortError"));
+    xhr.onerror = xhr.ontimeout = () => { cleanup(); reject(new StorageUploadError(null)); };
+    xhr.onabort = () => { cleanup(); reject(new DOMException("Upload aborted", "AbortError")); };
 
-    options.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) {
+      cleanup();
+      reject(new DOMException("Upload aborted", "AbortError"));
+      return;
+    }
     xhr.send(file);
   });
 }

@@ -30,6 +30,7 @@ const owner = (overrides: Partial<OwnerReview> = {}): OwnerReview => ({
   edit_count: 0,
   created_at: "2026-10-01T00:00:00Z",
   updated_at: "2026-10-01T00:00:00Z",
+  content_edited_at: null,
   ...overrides,
 });
 
@@ -61,7 +62,7 @@ describe("reviewApi / notificationApi", () => {
 
     expect(api.post).toHaveBeenNthCalledWith(1, "/api/v1/reviews", { eligibility_id: eligibilityId, rating: 4 });
     expect(api.patch).toHaveBeenCalledWith(`/api/v1/reviews/${reviewId}`, { content: null });
-    expect(api.post).toHaveBeenNthCalledWith(2, "/api/v1/reviews/media/upload-urls", { media_type: "IMAGE", content_type: "image/png", byte_size: 1024 });
+    expect(api.post).toHaveBeenNthCalledWith(2, "/api/v1/reviews/media/upload-urls", { media_type: "IMAGE", content_type: "image/png", byte_size: 1024 }, { signal: undefined });
   });
 
   it("hộp thư dùng đúng verb và đường dẫn", async () => {

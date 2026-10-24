@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { problemCode, problemMessage, retryAfterSeconds } from "@/lib/api/problem";
 import { reviewApi, type ReviewMediaType } from "@/lib/api/review";
 import { classifyReviewFile, REVIEW_MEDIA_RULES, StorageUploadError, uploadToStorage } from "@/lib/review-media";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export type MediaItemStatus = "uploading" | "ready" | "error";
 
@@ -35,6 +36,7 @@ const nextKey = () => `media-${Date.now()}-${keySeed++}`;
  * vì nhận `MEDIA_NOT_VERIFIED` sau khi bấm gửi.
  */
 export function useReviewMediaUploader() {
+  const accountId = useAuthStore((state) => state.claims?.sub);
   const [items, setItems] = useState<MediaItem[]>([]);
   const itemsRef = useRef<MediaItem[]>([]);
   const controllers = useRef(new Map<string, AbortController>());
@@ -60,11 +62,13 @@ export function useReviewMediaUploader() {
           media_type: item.mediaType,
           content_type: item.file.type,
           byte_size: item.file.size,
-        });
+        }, controller.signal);
+        if (controller.signal.aborted) return;
         await uploadToStorage(issued.upload, item.file, {
           signal: controller.signal,
           onProgress: (fraction) => patch(item.key, { progress: fraction }),
         });
+        if (controller.signal.aborted) return;
         patch(item.key, {
           status: "ready",
           progress: 1,
@@ -75,7 +79,7 @@ export function useReviewMediaUploader() {
         if (controller.signal.aborted) return;
         patch(item.key, { status: "error", error: uploadErrorMessage(error) });
       } finally {
-        controllers.current.delete(item.key);
+        if (controllers.current.get(item.key) === controller) controllers.current.delete(item.key);
       }
     },
     [patch]
@@ -159,11 +163,14 @@ export function useReviewMediaUploader() {
 
   useEffect(() => {
     const pending = controllers.current;
+    setItems(itemsRef.current);
     return () => {
       pending.forEach((controller) => controller.abort());
+      pending.clear();
       itemsRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      itemsRef.current = [];
     };
-  }, []);
+  }, [accountId]);
 
   const isUploading = items.some((item) => item.status === "uploading");
   const hasError = items.some((item) => item.status === "error");
