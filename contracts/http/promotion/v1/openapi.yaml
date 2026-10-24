@@ -200,6 +200,8 @@ paths:
         Transition hợp lệ: DRAFT->PUBLISHED, PUBLISHED->PAUSED|CANCELLED và
         PAUSED->CANCELLED. PUBLISHED business definition là immutable. Transition tăng
         revision; markdown effective-state event được ghi transactional outbox khi cần.
+        Pause/cancel đóng claim gate Redis trước khi commit; không đóng được thì trả 503
+        `PROMOTION_UNAVAILABLE` (retryable) và campaign không đổi.
       security: [{ gatewayUserIdentity: [], gatewayAdminRoles: [] }]
       parameters:
         - $ref: '#/components/parameters/CampaignId'
@@ -479,6 +481,46 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '412': { $ref: '#/components/responses/RevisionMismatch' }
         '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/me/promotion-vouchers:
+    get:
+      tags: [Customer promotions]
+      operationId: listMyPromotionVouchers
+      summary: Đọc toàn bộ ví voucher của tài khoản, không cần checkout context
+      description: >-
+        Chỉ đọc ví của authenticated user; không nhận user_id. Bao gồm SAVED, USED,
+        EXPIRED và mọi distribution mode. status lọc trạng thái hiệu lực tại as_of:
+        SAVED có expired_at <= as_of được xem là EXPIRED; USED luôn là USED.
+        wallet.status và updated_at giữ nguyên giá trị đã persist; GET không ghi lazy expiry,
+        không reserve, grant, evaluate hay đọc cart/Redis. Campaign pause/cancel/end không
+        thu hồi voucher đã sở hữu. is_enabled chỉ phản ánh definition, không phải eligibility.
+        Sắp xếp wallet_id giảm dần; keyset cursor gắn user và status, không phải snapshot
+        xuyên trang (expiry/redemption có thể thay đổi giữa các lần đọc).
+        Không cung cấp audience UUID/raw rule AST hoặc dữ liệu budget quản trị.
+      security: [{ gatewayUserIdentity: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+        - in: query
+          name: status
+          schema: { type: string, enum: [SAVED, USED, EXPIRED] }
+          description: Bỏ trống để đọc mọi trạng thái hiệu lực.
+        - in: query
+          name: cursor
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Trang ví voucher, mới lưu/cấp trước.
+          headers:
+            Cache-Control: { $ref: '#/components/headers/NoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WalletPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /api/v1/me/promotion-voucher-suggestions:
@@ -1418,6 +1460,31 @@ components:
         context:
           allOf: [{ $ref: '#/components/schemas/CheckoutContext' }]
           description: Optional (Promotion ADR-018); omitted means save only and evaluation=null.
+    WalletPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor, as_of]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/WalletEntry' }
+        next_cursor: { type: [string, 'null'], maxLength: 256 }
+        as_of: { type: string, format: date-time }
+    WalletEntry:
+      type: object
+      additionalProperties: false
+      required: [wallet, effective_status, code, discount, min_order_amount, conditions_summary, is_enabled]
+      properties:
+        wallet: { $ref: '#/components/schemas/WalletVoucher' }
+        effective_status: { type: string, enum: [SAVED, USED, EXPIRED] }
+        code: { type: string, minLength: 1, maxLength: 80 }
+        discount: { $ref: '#/components/schemas/Discount' }
+        min_order_amount: { $ref: '#/components/schemas/VndMoney' }
+        conditions_summary:
+          type: string
+          description: Mô tả điều kiện tiếng Việt; không chứa danh sách audience UUID/raw rule fields. Điều kiện giỏ và ngân sách được kiểm tra tại checkout.
+        is_enabled: { type: boolean }
     WalletVoucher:
       type: object
       additionalProperties: false

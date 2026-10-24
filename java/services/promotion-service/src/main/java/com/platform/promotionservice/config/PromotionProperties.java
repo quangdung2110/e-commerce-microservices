@@ -30,6 +30,7 @@ public class PromotionProperties {
     private Claim claim = new Claim();
     private Reservation reservation = new Reservation();
     private Finalizer finalizer = new Finalizer();
+    @Valid
     private Schedule schedule = new Schedule();
     private Reconciliation reconciliation = new Reconciliation();
     private Retention outbox = new Retention(Duration.ofDays(14), Duration.ofHours(1));
@@ -127,6 +128,9 @@ public class PromotionProperties {
         private Duration fallbackInterval = Duration.ofSeconds(15);
         private int batchSize = 100;
         private Duration fallbackLookback = Duration.ofDays(1);
+        /** Số markdown rule (product) mỗi transaction khi phát snapshot START/END; không phải trần số product (ADR-021). */
+        @Min(1)
+        private int emitBatchSize = 200;
     }
 
     @Getter

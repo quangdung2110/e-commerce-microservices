@@ -303,10 +303,15 @@ Outbox dedup chỉ bảo vệ một outbound business event; nó không thay
 và có retention riêng.
 
 Markdown `source_revision` lấy từ PostgreSQL sequence `markdown_source_revision_seq` (toàn cục, không theo product;
-đơn điệu tăng theo product vì lấy sau advisory lock; cause trùng dedup cũng tiêu thụ một giá trị nên có khoảng
-trống). Transaction acquire advisory lock
+đơn điệu tăng theo product vì lấy sau advisory lock; hai worker thật sự tranh nhau cùng cause/product cũng
+tiêu thụ một giá trị nên có khoảng trống). Transaction acquire advisory lock
 theo `product_id`, tính current-state snapshot hiện hành, cấp revision rồi insert outbox; Product
 chỉ apply revision mới hơn.
+
+Đường scheduler START/END kiểm `dedup_key` của cả lô bằng một query (`dedup_key IN (...)`, unique index)
+**trước** khi lock/tính/cấp revision, nên retry hoặc worker chạy trùng không còn tiêu sequence cho product
+đã phát (ADR-021). Query này là bộ lọc không khoá; tính duy nhất vẫn do unique `dedup_key` +
+`ON CONFLICT DO NOTHING` bảo đảm.
 
 ## 4. Index và query pattern
 
@@ -339,7 +344,13 @@ chỉ apply revision mới hơn.
 acquire product advisory lock và reject nếu `catalog_product_tombstones` đã có row, rồi
 mutate campaign/child và tăng `campaigns.revision`. Published definition không update
 in-place. Publish/pause/cancel tăng revision, tạo outbox nếu cần, commit; sau commit
-invalidate cache/ZADD schedule. Fallback scanner sửa side effect mất.
+invalidate cache/ZADD schedule. Fallback scanner sửa side effect mất. Snapshot PUBLISH/PAUSE/CANCEL nằm
+trong transaction của lệnh admin (nguyên tử với đổi trạng thái campaign, không chia lô).
+- Scheduler START/END (ADR-021): không có transition ghi DB. Với mỗi member, worker duyệt rule bằng keyset
+`id > afterId` theo `promotion.schedule.emit-batch-size` và chạy **mỗi lô một transaction**: đọc lại campaign
+(`revision`/`publication_status` phải khớp member, nếu không dừng và coi member lỗi thời), lọc product đã
+có dedup key, rồi với từng product còn lại lấy advisory lock, tính snapshot, cấp `source_revision`, insert
+outbox. Lô lỗi rollback riêng lô đó; các lô sau vẫn chạy. `ZREM` chỉ chạy sau khi không còn lô lỗi.
 - Claim persistence path: API hoặc pending worker validate immutable pending identity,
 `acquired_at_ms` và revision-at-acquisition, rồi guarded claim + wallet insert + claimed
 counter trong một transaction; API chỉ trả success và pending chỉ bị xóa sau commit.
@@ -382,8 +393,8 @@ source of truth, có thể rebuild/reconcile như mô tả ở phần 8.
 | Snapshot             | `promo:{promotion_id}:snapshot`               | STRING JSON    | 3600s                            | metadata + AST + campaign revision                                                                        |
 | Snapshot             | `promo:rules:version`                         | STRING counter | none                             | cache version fence                                                                                       |
 | Claim/budget runtime | `promo:{promotion_id}:runtime`                | HASH scalar    | rebuild từ PostgreSQL; không TTL | total/reserved/used quantity + VND, cùng `claim_enabled`, `claim_revision`, `opens_at_ms`, `closes_at_ms` |
-| Claim                | `promo:{promotion_id}:claim_pool`             | SET            | campaign lifecycle               | `SPOP` claim IDs                                                                                          |
-| Claim                | `promo:{promotion_id}:claimed_users`          | HASH           | promotion lifecycle              | user → claim ID                                                                                           |
+| Claim                | `promo:{promotion_id}:claim_pool`             | SET            | không TTL; chưa có cleanup (§8)  | `SPOP` claim IDs                                                                                          |
+| Claim                | `promo:{promotion_id}:claimed_users`          | HASH           | không TTL; chưa có cleanup (§8)  | user → claim ID                                                                                           |
 | Claim                | `promo:{promotion_id}:pending_claims:data`    | HASH           | đến DB ack                       | claim payload                                                                                             |
 | Claim                | `promo:{promotion_id}:pending_claims:index`   | ZSET           | đến DB ack                       | stale deadline → claim ID                                                                                 |
 | Reservation          | `promo:{promotion_id}:reservation:{order_id}` | STRING         | 15m + grace                      | reservation payload                                                                                       |
@@ -416,8 +427,10 @@ Claim API truyền expected campaign revision nhưng Lua quyết định bằng 
 hiện hành trong `runtime` và Redis server time, không dùng application timestamp. Gate
 mismatch trả `CLAIM_GATE_STALE`; ngoài interval trả `CAMPAIGN_NOT_ACTIVE`. Public save
 không dùng gate này mà kiểm phase bằng PostgreSQL clock trong transaction.
-Redis–PostgreSQL clock drift có metric/alert; startup/recovery rebuild runtime claim fields
-và claim pool từ current PostgreSQL definition/claim rows.
+Redis–PostgreSQL clock drift chưa có metric/alert tự động (so `TIME` Redis với `now()` PostgreSQL thủ công theo
+RB-03A, xem `operations.md`); startup/recovery rebuild runtime claim fields và claim pool từ current PostgreSQL
+definition/claim rows. Rebuild nạp pool **trước** rồi mới ghi claim-gate fields: Lua kiểm gate trước `SPOP` nên
+pool đang nạp dở không bị claim và request đầu không nhận `OUT_OF_STOCK` oan.
 
 Campaign schedule member là
 `{campaign_id}:{campaign_revision}:{START|END}`, score là epoch milliseconds. Schedule
@@ -442,7 +455,10 @@ durable duy nhất cho replay final command; Redis không cần applied marker h
 lock riêng. Script bounded, trả structured result và reserve phải rollback các mutation đã
 áp dụng nếu command giữa chừng lỗi.
 
-Script versioned trong `src/main/resources/lua/` với result code cụ thể:
+Script versioned trong `src/main/resources/lua/` với result code cụ thể. `LuaScripts` đọc mỗi file đúng một lần lúc
+khởi động và tạo `DefaultRedisScript` từ chuỗi; không dùng script dựa trên `Resource`, vì nó stat file/jar bên trong
+khối `synchronized` toàn cục ở mỗi lần thực thi và làm mọi claim xếp hàng sau một I/O (đo 12,7 s so với 0,12 s cho
+1000 claim đồng thời):
 
 | Script | File | Result codes |
 |---|---|---|
@@ -466,6 +482,9 @@ NULL` là durable trigger để finalizer/repair chạy lại sau crash. Outbox 
 markdown snapshot.
 - Campaign ZSET rebuild lúc startup/failover và được DB fallback scan bổ sung.
 - Pending claim không trả lại pool; API success chỉ sau DB commit và cleanup chỉ sau commit.
+- Known gap: `claim_pool`, `claimed_users` và `runtime` không có TTL và chưa có job dọn sau khi campaign kết thúc;
+  chỉ pending (`pending_claims:data/index`) được dọn sau DB ack. `claimed_users` cố ý giữ sau ack để chặn claim
+  lần hai. Cleanup tự động cần chốt retention/audit window riêng trước khi triển khai.
 - Claim worker persist theo `acquired_at_ms`/revision-at-acquisition đã ghi atomically với
 SPOP; xử lý sau campaign end hoặc pause/cancel không biến acquisition hợp lệ thành failure.
 - Runtime claim fields/pool rebuild khi Redis loss; stale gate revision không được fail-open.

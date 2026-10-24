@@ -270,13 +270,24 @@ public class CampaignAdminService {
             }
         } else {
             // Đóng claim gate bảo thủ trước khi DB commit; rollback thì rebuild từ DB (WF-PROMO-001).
-            for (PromotionEntity promotion : children) {
-                if (promotion.getDistributionMode() == DistributionMode.LIMITED_CLAIM) {
-                    try {
-                        runtime.closeClaimGate(promotion.getId());
-                    } catch (RuntimeException e) {
-                        log.warn("Could not close claim gate for promotion {}: {}", promotion.getId(), e.getMessage());
-                    }
+            List<Long> limitedClaimIds = children.stream()
+                    .filter(p -> p.getDistributionMode() == DistributionMode.LIMITED_CLAIM)
+                    .map(PromotionEntity::getId)
+                    .toList();
+            if (!limitedClaimIds.isEmpty()) {
+                // Đăng ký trước vòng đóng: nếu một gate đóng được rồi gate sau lỗi, rollback vẫn mở lại các gate đã đóng.
+                AdminSupport.afterRollback(() -> reopenGates(campaign.getId(), limitedClaimIds));
+            }
+            for (Long promotionId : limitedClaimIds) {
+                try {
+                    runtime.closeClaimGate(promotionId);
+                } catch (RuntimeException e) {
+                    // Không đóng được gate thì không được pause/cancel: claim vẫn có thể được cấp sau khi admin
+                    // tưởng đã dừng. Redis lỗi là tạm thời nên 503 retryable; DB chưa đổi gì.
+                    log.warn("Could not close claim gate for promotion {}; aborting {}: {}", promotionId, to,
+                            e.getMessage());
+                    throw new DomainException(ErrorCode.PROMOTION_UNAVAILABLE,
+                            "Claim gate of promotion " + promotionId + " could not be closed; campaign not " + to);
                 }
             }
         }
@@ -298,6 +309,18 @@ public class CampaignAdminService {
         List<Long> promotionIds = children.stream().map(PromotionEntity::getId).toList();
         AdminSupport.afterCommit(() -> afterTransition(campaign.getId(), promotionIds, revision, now));
         return campaign;
+    }
+
+    /** Pause/cancel rollback: DB vẫn ở trạng thái cũ nên mở lại gate từ PostgreSQL; lỗi Redis chỉ log (không fail-open). */
+    private void reopenGates(long campaignId, List<Long> promotionIds) {
+        for (Long promotionId : promotionIds) {
+            try {
+                runtimeRebuild.reopenAfterRollback(promotionId);
+            } catch (RuntimeException e) {
+                log.warn("Could not reopen claim gate after rollback for promotion {} (campaign {}): {}",
+                        promotionId, campaignId, e.getMessage());
+            }
+        }
     }
 
     private void afterTransition(long campaignId, List<Long> promotionIds, long revision, Instant now) {

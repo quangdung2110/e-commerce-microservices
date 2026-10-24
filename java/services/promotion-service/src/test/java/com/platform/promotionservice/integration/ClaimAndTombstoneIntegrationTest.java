@@ -17,12 +17,22 @@ import com.platform.promotionservice.web.dto.MarkdownDtos;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,6 +50,8 @@ class ClaimAndTombstoneIntegrationTest extends AbstractPromotionIntegrationTest 
     RuntimeRebuildService runtimeRebuild;
     @Autowired
     ProductTombstoneService tombstones;
+    @Autowired
+    PlatformTransactionManager txManager;
 
     @Test
     @DisplayName("limited claim: pool pre-generated at publish, gate revision fence, DB commit before success, replay")
@@ -97,6 +109,74 @@ class ClaimAndTombstoneIntegrationTest extends AbstractPromotionIntegrationTest 
         assertThatThrownBy(() -> claims.claim(dave, promotion.getId(), revision + 1))
                 .isInstanceOf(DomainException.class)
                 .extracting(e -> ((DomainException) e).errorCode()).isEqualTo(ErrorCode.CAMPAIGN_NOT_ACTIVE);
+    }
+
+    @Test
+    @DisplayName("pause rolled back after the gate was closed: gate reopens from PostgreSQL, claims resume")
+    void rolledBackPauseReopensGate() {
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.LIMITED_CLAIM, 2L);
+        CampaignEntity published = publish(campaign);
+        long revision = published.getRevision();
+
+        // transition() joins the outer transaction: the gate is closed in Redis, then the whole unit rolls back.
+        new TransactionTemplate(txManager).executeWithoutResult(status -> {
+            transition(published, PublicationStatus.PAUSED);
+            assertThat(runtime.read(promotion.getId()).orElseThrow().claimEnabled()).isFalse();
+            status.setRollbackOnly();
+        });
+
+        assertThat(jdbcTemplate.queryForObject("SELECT publication_status FROM campaigns WHERE id = ?", String.class,
+                campaign.getId())).isEqualTo("PUBLISHED");
+        assertThat(currentRevision(campaign.getId())).isEqualTo(revision);
+        RuntimeStore.RuntimeState gate = runtime.read(promotion.getId()).orElseThrow();
+        assertThat(gate.claimEnabled()).isTrue();
+        assertThat(gate.claimRevision()).isEqualTo(revision);
+        assertThat(claims.claim(UUID.randomUUID(), promotion.getId(), revision)).isInstanceOf(ClaimService.Committed.class);
+    }
+
+    @Test
+    @DisplayName("same user claiming concurrently: every request returns the one committed wallet, none reports an inconsistent state")
+    void concurrentClaimsOfOneUser() throws Exception {
+        int rounds = 20;
+        int threads = 6;
+        CampaignEntity campaign = givenActiveWindowCampaign(Duration.ofHours(2));
+        PromotionEntity promotion = givenPromotion(campaign, DistributionMode.LIMITED_CLAIM, (long) rounds);
+        long revision = publish(campaign).getRevision();
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 0; round < rounds; round++) {
+                UUID user = UUID.randomUUID();
+                CyclicBarrier barrier = new CyclicBarrier(threads);
+                List<Future<ClaimService.Outcome>> results = new ArrayList<>();
+                for (int i = 0; i < threads; i++) {
+                    results.add(pool.submit(() -> {
+                        barrier.await();
+                        return claims.claim(user, promotion.getId(), revision);
+                    }));
+                }
+                Set<String> claimIds = new HashSet<>();
+                int created = 0;
+                for (Future<ClaimService.Outcome> result : results) {
+                    ClaimService.Outcome outcome = result.get(30, TimeUnit.SECONDS);
+                    assertThat(outcome).isInstanceOf(ClaimService.Committed.class);
+                    ClaimService.Committed committed = (ClaimService.Committed) outcome;
+                    claimIds.add(committed.response().claimId());
+                    if (committed.created()) {
+                        created++;
+                    }
+                }
+                assertThat(claimIds).hasSize(1);
+                assertThat(created).isEqualTo(1);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        Map<String, Object> rows = jdbcTemplate.queryForMap("""
+                SELECT (SELECT count(*) FROM user_coupon_wallets WHERE promotion_id = ?) AS wallets,
+                       (SELECT claimed_quantity FROM promotion_budgets WHERE promotion_id = ?) AS counter
+                """, promotion.getId(), promotion.getId());
+        assertThat(rows).containsEntry("wallets", (long) rounds).containsEntry("counter", (long) rounds);
     }
 
     @Test

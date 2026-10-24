@@ -82,6 +82,7 @@ Danh mục mã lỗi đầy đủ (code, HTTP, `retryable`) ở [domain.md §10]
 
 | Method và path | Dùng khi nào | Side effect |
 |---|---|---|
+| `GET /api/v1/me/promotion-vouchers` | Ví độc lập của authenticated user; mọi distribution mode, SAVED/USED/EXPIRED, status hiệu lực và keyset giảm dần wallet ID. Không cần cart/address/context | Pure DB read, không lazy-write expiry/evaluate/reserve; `Cache-Control: no-store`; [ADR-023](./decisions/ADR-023-independent-buyer-wallet-read.md) |
 | `POST /api/v1/me/promotion-voucher-suggestions` | Client tự có checkout context; chỉ xếp hạng voucher `SAVED` trong wallet. Trang checkout không dùng | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
 | `POST /api/v1/promotion-discovery` | Client tự có checkout context, tìm cả wallet và public `ACTIVE` chưa lưu. Trang checkout không dùng | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
 | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; body là tùy chọn (không body và `{}` đều hợp lệ), trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |

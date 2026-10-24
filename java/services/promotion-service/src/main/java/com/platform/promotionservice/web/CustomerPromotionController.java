@@ -6,6 +6,9 @@ import com.platform.promotionservice.config.PromotionProperties;
 import com.platform.promotionservice.service.ClaimService;
 import com.platform.promotionservice.service.DiscoveryService;
 import com.platform.promotionservice.service.WalletService;
+import com.platform.promotionservice.service.WalletReadService;
+import com.platform.promotionservice.domain.enums.WalletStatus;
+import com.platform.promotionservice.web.dto.WalletDtos;
 import com.platform.promotionservice.web.dto.CheckoutDtos;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +21,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import java.net.URI;
 import java.time.Clock;
@@ -36,6 +41,15 @@ public class CustomerPromotionController {
     private final ClaimService claims;
     private final PromotionProperties properties;
     private final Clock clock;
+    private final WalletReadService walletReader;
+
+    @GetMapping("/api/v1/me/promotion-vouchers")
+    public ResponseEntity<WalletDtos.WalletPage> listWallet(
+            @RequestParam(required = false) WalletStatus status,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer limit) {
+        return noStore().body(walletReader.list(CallerContext.requireUserId(), status, cursor, limit));
+    }
 
     @PostMapping("/api/v1/me/promotion-voucher-suggestions")
     public ResponseEntity<CheckoutDtos.VoucherSuggestionResponse> suggest(

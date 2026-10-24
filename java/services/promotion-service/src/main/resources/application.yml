@@ -38,6 +38,8 @@ spring:
       write-dates-as-timestamps: false
     deserialization:
       fail-on-unknown-properties: false
+      # Reject decimal JSON for VND, basis points and quantities, including treeToValue PATCHes.
+      accept-float-as-int: false
 
   data:
     redis:
@@ -118,6 +120,7 @@ promotion:
     fallback-interval: PT15S
     batch-size: 100
     fallback-lookback: 1d
+    emit-batch-size: ${PROMOTION_SCHEDULE_EMIT_BATCH_SIZE:200}
   reconciliation:
     interval: PT5M
     recent-window: 15m
@@ -160,6 +163,9 @@ management:
       show-details: when_authorized
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,promotionRuntime,voucherReadWarmup
   health:
     readinessstate:
       enabled: true

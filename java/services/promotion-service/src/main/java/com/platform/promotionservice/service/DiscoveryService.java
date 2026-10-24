@@ -116,12 +116,40 @@ public class DiscoveryService {
      */
     @Transactional
     public CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request) {
+        return options(request, true);
+    }
+
+    /** Same query/evaluation/DTO path, without lazy wallet mutations. Startup only, no HTTP route. */
+    @Transactional(readOnly = true)
+    public CheckoutDtos.VoucherOptionList warmupOptions(CheckoutDtos.VoucherOptionRequest request) {
+        // Also prime pipeline/projection on an empty catalog or a completely warm snapshot cache.
+        snapshots.findAll(List.of(-1L));
+        CheckoutDtos.VoucherOptionList response = options(request, false);
+        // An in-memory candidate primes AST, budget reads, display and money DTOs even with no campaigns.
+        // Negative IDs never allocate a promotion, wallet, claim or reservation.
+        Instant now = clock.instant();
+        PromotionView sample = new PromotionView(-1, -1, 1, "Startup voucher", null,
+                com.platform.promotionservice.domain.enums.PublicationStatus.PUBLISHED,
+                now.minusSeconds(60), now.plusSeconds(60), "STARTUP",
+                com.platform.promotionservice.domain.enums.DistributionMode.PUBLIC_SAVE,
+                com.platform.promotionservice.domain.enums.DiscountType.PERCENTAGE, 1000, 50000L, 0,
+                "{\"node_type\":\"CONDITION\",\"operator\":\"GREATER_THAN_OR_EQUAL\",\"field\":\"cart.total_amount\",\"value\":0}",
+                1, com.platform.promotionservice.domain.enums.ValidityMode.CAMPAIGN_END, null, null, true, 0);
+        var evaluation = evaluator.evaluateAll(List.of(new VoucherEvaluationService.Candidate(sample, null)),
+                RuleFactsBuilder.build(request.context(), request.userId(), request.userTier()), now).get(0);
+        Ranked ranked = new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), -1, sample, sample.endTime());
+        List<CheckoutDtos.VoucherOption> items = new ArrayList<>(response.items());
+        items.add(new CheckoutDtos.VoucherOption(ranked.dto(), display(ranked)));
+        return new CheckoutDtos.VoucherOptionList(items, response.evaluatedAt());
+    }
+
+    private CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request, boolean normalizeWallet) {
         RuleFactsBuilder.requireCheckoutChannel(request.context());
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
         TopK ranked = new TopK(request.limit() == null ? OPTIONS_DEFAULT_LIMIT : request.limit(),
                 !Boolean.FALSE.equals(request.includeIneligible()));
-        evaluateWallet(ranked, request.userId(), context, now);
+        evaluateWallet(ranked, request.userId(), context, now, normalizeWallet);
         if (!Boolean.FALSE.equals(request.includePublic())) {
             addPublic(ranked, request.userId(), context, now);
         }
@@ -198,7 +226,14 @@ public class DiscoveryService {
 
     /** Lazy-normalize SAVED đã hết hạn rồi evaluate từng voucher SAVED còn lại. */
     private void evaluateWallet(TopK ranked, UUID userId, RuleFactsBuilder.Context context, Instant now) {
-        jdbc.lazyExpireWallets(userId, now);
+        evaluateWallet(ranked, userId, context, now, true);
+    }
+
+    private void evaluateWallet(TopK ranked, UUID userId, RuleFactsBuilder.Context context, Instant now,
+                                boolean normalizeWallet) {
+        if (normalizeWallet) {
+            jdbc.lazyExpireWallets(userId, now);
+        }
         long afterId = 0;
         int batchSize = properties.getDiscovery().getBatchSize();
         while (true) {

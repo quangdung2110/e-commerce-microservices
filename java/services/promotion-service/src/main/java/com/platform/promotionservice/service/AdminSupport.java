@@ -132,4 +132,21 @@ public final class AdminSupport {
             action.run();
         }
     }
+
+    /**
+     * Chạy {@code action} khi transaction hiện tại bị rollback. Dùng để hoàn tác side effect Redis đã áp dụng
+     * <em>trước</em> commit (đóng claim gate của pause/cancel). Không transaction thì không có gì để rollback.
+     */
+    public static void afterRollback(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (status == STATUS_ROLLED_BACK) {
+                        action.run();
+                    }
+                }
+            });
+        }
+    }
 }

@@ -130,6 +130,17 @@ idempotent. Business/outbox commit trước `ZREM`; nếu crash sau commit, retr
 key chặn. Nếu START được xử lý sau `end_time`, worker chỉ phát trạng thái hội tụ `INACTIVE`,
 không phát `ACTIVE` muộn.
 
+Với một member, worker không phát cả campaign trong một transaction
+([ADR-021](./decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md)): rule được duyệt bằng
+keyset theo `promotion.schedule.emit-batch-size` (mặc định 200), **mỗi lô một transaction** nên advisory
+lock product chỉ giữ trong lô. Mỗi lô kiểm lại `revision`/`publication_status` của campaign rồi lọc
+trước các product đã có dedup key bằng một query (không lock, không tính winner, không tiêu
+`source_revision`); `ON CONFLICT DO NOTHING` vẫn là hàng rào chính xác. Lô lỗi chỉ rollback chính nó, các lô
+sau vẫn chạy và member **chỉ bị `ZREM` khi không còn lô lỗi**; vòng sau chạy lại, phần đã commit bị bỏ qua.
+Vì vậy START/END của một campaign không còn nguyên tử: một số product có thể đổi trạng thái trước số khác
+trong khoảng ngắn, và downstream chỉ dựa vào `source_revision` theo từng product. Đường admin
+(publish/pause/cancel) vẫn chạy trong transaction của lệnh admin, không chia lô.
+
 DB fallback 10–30 giây và startup/failover rebuild ngăn ZSET bị thiếu vĩnh viễn. Đây là
 bounded eventual propagation, không phải hard real-time 0 ms; API eligibility luôn tự
 kiểm tra DB time nên không kích hoạt voucher sớm vì worker lag. Limited claim không dựa
@@ -200,5 +211,7 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   Checkout, lưu voucher không cần context.
 - [ADR-019](./decisions/ADR-019-post-implementation-audit-corrections.md): sửa sau audit (guard legacy,
   channel `CHECKOUT`, final command trùng đồng thời, `EXPIRED→USED` ở Confirm, route lạ là lỗi client).
+- [ADR-021](./decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md): phát snapshot START/END
+  theo lô nhỏ (mỗi lô một transaction), kiểm dedup key trước khi lock, cô lập lô lỗi.
 
 ADR-001, ADR-003..008 và ADR-010..012 đã được supersede.

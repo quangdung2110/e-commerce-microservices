@@ -194,7 +194,7 @@ Winner khi nhiều campaign ACTIVE cùng product: `priority` giảm dần rồi 
 | `PROMO-INV-006` | Customer refund không mutate Promotion. | Không API/consumer/refund script |
 | `PROMO-INV-007` | Deprecated legacy cleanup không làm mất voucher còn hạn; active post-capture flow cannot invoke it. | Guarded wallet transition + caller policy/contract test |
 | `PROMO-INV-008` | Redis schedule/counter không sửa ngược DB. | Worker policy/test |
-| `PROMO-INV-009` | Stale campaign revision không phát state cũ. | Schedule member + DB revision check |
+| `PROMO-INV-009` | Stale campaign revision không phát state cũ. | Schedule member + DB revision check (kiểm lại ở đầu mỗi lô) |
 | `PROMO-INV-010` | Markdown event ordering tăng theo product source revision. | Advisory lock + sequence |
 | `PROMO-INV-011` | Rule evaluation chỉ phụ thuộc AST + input context. | Unit/property tests |
 | `PROMO-INV-012` | Mỗi final command/order/promotion có tối đa một completed receipt và một stored response. | Unique command receipt + request hash |
@@ -205,6 +205,7 @@ Winner khi nhiều campaign ACTIVE cùng product: `priority` giảm dần rồi 
 | `PROMO-INV-016` | Published business definition không mutate in-place. | Admin guards + clone workflow |
 | `PROMO-INV-017` | Hai causal markdown transition khác nhau không dùng cùng outbox dedup key. | Full causal unique key |
 | `PROMO-INV-018` | Product hard delete không để lại hoặc cho tạo mới dangling markdown rule. | Tombstone watermark + shared product advisory lock + guarded invalidation |
+| `PROMO-INV-020` | START/END của campaign hội tụ cho mọi product dù một số lô lỗi: lô đã commit không bị phát lại, member chỉ bị `ZREM` khi không còn lô lỗi. | Mỗi lô một transaction + causal dedup key/`ON CONFLICT` + dedup pre-check + `ZREM` sau lô cuối (ADR-021) |
 
 ## 8. Rule AST
 
@@ -283,7 +284,7 @@ tồn tại: reservation/counter lệch được sửa nền bằng reconciliati
 | `INVALID_RULE` | 422 | false | AST/operator/field/config không hợp lệ; `LIMITED_CLAIM` thiếu `total_claim_quantity` hoặc vượt pool tối đa |
 | `PRODUCT_TOMBSTONED` | 422 | false | Markdown mutation cho Product đã có tombstone watermark |
 | `INTERNAL_ERROR` | 500 | false | Lỗi không lường trước (log stack trace); không dùng cho lỗi của client |
-| `PROMOTION_UNAVAILABLE` | 503 | true | PostgreSQL/Redis tạm thời lỗi, lock timeout, Product validation không gọi được |
+| `PROMOTION_UNAVAILABLE` | 503 | true | PostgreSQL/Redis tạm thời lỗi, lock timeout, Product validation không gọi được, pause/cancel không đóng được claim gate |
 | `RUNTIME_NOT_READY` | 503 | true | Redis runtime của promotion đang rebuild sau Redis loss |
 
 `CLAIM_PENDING` không phải `ErrorCode`: là body của `202` (`code=CLAIM_PENDING`, `retryable=true`) khi Redis

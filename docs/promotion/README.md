@@ -233,5 +233,9 @@ ký các fact đó; thêm sau là thay đổi additive theo
   kích thước batch, không giới hạn số promotion được xét. Snapshot/budget đọc bằng pipeline và heap giữ
   top `limit` toàn cục ([ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md)). Latency vẫn
   tăng theo số candidate; chưa có load test xác nhận SLO khi cardinality lớn.
+- START/END của campaign phát snapshot markdown theo lô `promotion.schedule.emit-batch-size=200` rule, mỗi lô
+  một transaction, dedup key được kiểm trước khi lock ([ADR-021](./decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md)).
+  Vì vậy START/END không nguyên tử theo campaign (một số product đổi trước số khác trong khoảng ngắn); lô lỗi
+  giữ member trong ZSET và được chạy lại. Publish/pause/cancel vẫn nguyên tử trong transaction của lệnh admin.
 - `RuleEngineDemo.java` chỉ minh họa AST; implementation production là
   `domain/rule/RuleEvaluator` + `RuleValidator` trong service.
