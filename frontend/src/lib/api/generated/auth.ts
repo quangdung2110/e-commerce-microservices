@@ -32,7 +32,7 @@ export interface paths {
         put?: never;
         /**
          * Gửi lại OTP xác minh email
-         * @description Luôn trả cùng phản hồi thành công để không tiết lộ email có account chờ xác minh hay không.
+         * @description Luôn trả cùng phản hồi thành công để không tiết lộ email có account chờ xác minh hay không. Mỗi account chỉ được gửi lại 3 lần trong 15 phút; vượt ngân sách đó Auth không gửi nữa nhưng vẫn trả `202`, vì một `429` chỉ xuất hiện với địa chỉ có account chờ xác minh sẽ là chính điều cần giấu. `429` ở đây chỉ đến từ rate limit theo IP.
          */
         post: operations["requestEmailVerification"];
         delete?: never;
@@ -108,11 +108,14 @@ export interface paths {
         /** Liệt kê session đang có hiệu lực của account hiện tại */
         get: operations["listSessions"];
         put?: never;
-        /** Đăng nhập và tạo session mới */
+        /**
+         * Đăng nhập và tạo session mới
+         * @description Mật khẩu được kiểm trước trạng thái account. Sai mật khẩu luôn là `401 INVALID_CREDENTIALS` (email không tồn tại, account chờ xác minh, đang bị khóa hay đang hoạt động đều giống nhau); chỉ người đúng mật khẩu mới thấy `403 ACCOUNT_NOT_VERIFIED` hoặc `423 ACCOUNT_LOCKED`. Lần sai chạm ngưỡng khóa trả `423` kèm `Retry-After`. Đăng nhập đúng sau khi lock hết hạn tự mở khóa account.
+         */
         post: operations["login"];
         /**
          * Thu hồi toàn bộ session của account hiện tại
-         * @description Thu hồi toàn bộ refresh token và đặt mốc `revoked_before`; Gateway phải từ chối access token được phát hành trước hoặc đúng mốc này.
+         * @description Thu hồi toàn bộ refresh token và đặt mốc `revoked_before`; Gateway phải từ chối access token được phát hành trước hoặc đúng mốc này. Mốc và `iat` đều có độ phân giải một giây nên token cấp trong cùng giây với lần thu hồi cũng bị từ chối; đây là chủ ý, và client phải đăng nhập lại sau thao tác này.
          */
         delete: operations["revokeAllSessions"];
         options?: never;
@@ -188,7 +191,7 @@ export interface paths {
         put?: never;
         /**
          * Yêu cầu email có opaque reset-token link
-         * @description Luôn trả cùng phản hồi thành công dù email có tồn tại hay không. Reset token là opaque, single-use, có TTL và không xuất hiện trong response.
+         * @description Luôn trả cùng phản hồi thành công dù email có tồn tại hay không. Reset token là opaque, single-use, có TTL và không xuất hiện trong response. Mỗi account chỉ được yêu cầu 5 lần trong 15 phút; vượt ngân sách đó Auth không gửi nữa nhưng vẫn trả `202` (một `429` theo account sẽ lộ account tồn tại). `429` ở đây chỉ đến từ rate limit theo IP. Một yêu cầu mới thay thế link cũ.
          */
         post: operations["requestPasswordReset"];
         delete?: never;
@@ -488,7 +491,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Account đang ở trạng thái không cho phép thao tác. */
+        /** @description Account đang ở trạng thái không cho phép thao tác (`ACCOUNT_NOT_ACTIVE`), gồm cả yêu cầu xóa account đã bị xóa. */
         AccountStateConflict: {
             headers: {
                 [name: string]: unknown;
@@ -552,7 +555,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Lỗi không mong đợi. */
+        /** @description Lỗi không mong đợi (`INTERNAL_ERROR`), hoặc lỗi retryable: `DEPENDENCY_UNAVAILABLE` khi Redis không trả lời (Auth fail closed; contract chưa định nghĩa `503`) và `CONCURRENT_UPDATE` khi account bị ghi đè liên tục. Với đổi mật khẩu, đổi email và xóa account, thay đổi đã commit trước khi lỗi Redis xảy ra; event vẫn được phát và client có thể gọi `DELETE /api/v1/auth/sessions` để ghi lại mốc thu hồi. */
         InternalError: {
             headers: {
                 [name: string]: unknown;
@@ -741,6 +744,7 @@ export interface operations {
                     "application/json": components["schemas"]["SessionList"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             500: components["responses"]["InternalError"];
         };
@@ -850,6 +854,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["SessionNotFound"];
             500: components["responses"]["InternalError"];
@@ -959,6 +964,7 @@ export interface operations {
                     "application/json": components["schemas"]["AccountDeletionAccepted"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["InvalidCredentials"];
             409: components["responses"]["AccountStateConflict"];
             500: components["responses"]["InternalError"];
@@ -986,6 +992,7 @@ export interface operations {
                     "application/json": components["schemas"]["AccountDeletionAccepted"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["AccountNotFound"];

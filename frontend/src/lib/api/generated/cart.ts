@@ -57,7 +57,8 @@ export interface paths {
         };
         /**
          * Resolve the authoritative Cart quantity snapshot for Checkout
-         * @description CHECKOUT only. Reads the same Redis source of truth as the public Cart API but returns only identifiers and quantities. It does not call Product, expose Redis keys, refresh TTL, or mutate cart lifecycle state. Redis miss returns an empty items array.
+         * @description CHECKOUT only. Reads the same Redis source of truth as the public Cart API but returns only identifiers and quantities. It does not call Product, expose Redis keys, refresh TTL, or mutate cart lifecycle state. Redis miss returns an empty items array. Items are ordered by sku_id. The internal route is not rate limited.
+         *     The mesh authenticates the workload principal; Cart additionally requires `X-Service-Identity` to be on its allowlist (`cart.internal_callers`, default `checkout-service`) as defence in depth: a missing header is 401, any other service is 403, a non-UUID `user_id` is 400.
          */
         get: operations["getCheckoutCartSnapshot"];
         put?: never;
@@ -107,11 +108,13 @@ export interface components {
             variant_attributes?: {
                 [key: string]: string;
             };
+            /** @description Product-resolved Vietnamese display text (attribute names and display values). CURRENT uses the current Product read; DEGRADED or unavailable SKU falls back to the stored display snapshot. GET never persists that refresh. Optional for legacy carts/providers. Consumers without a label display raw values only, not attribute codes. Display only; variant_attributes remains unchanged. */
+            variant_name?: string;
             /**
              * Format: uri
              * @description Absolute CDN URL built by Cart from the Product image storage key, or the configured placeholder when the SKU has no image. Never a storage key.
              */
-            image_url?: string;
+            image_url: string;
             quantity: number;
             unit_price_at_add: components["schemas"]["money.schema"];
             /** @description Null khi Product Service không trả được giá hiện tại. */
@@ -169,7 +172,7 @@ export interface components {
         };
     };
     responses: {
-        /** @description Request không hợp lệ. */
+        /** @description Request không hợp lệ (`code` = `VALIDATION_FAILED`, kèm `errors[]` theo field): thiếu hoặc sai `Idempotency-Key`, body sai schema, `delta` bằng 0 hoặc ngoài -100..100, `sku_ids` rỗng/trùng/quá 100, hoặc `user_id` của route nội bộ không phải UUID. */
         BadRequest: {
             headers: {
                 [name: string]: unknown;
@@ -178,7 +181,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Thiếu trusted identity. */
+        /** @description Thiếu trusted identity (`X-User-Id` ở route public, `X-Service-Identity` ở route nội bộ); `code` = `UNAUTHENTICATED`. */
         Unauthorized: {
             headers: {
                 [name: string]: unknown;
@@ -187,7 +190,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Authenticated workload is not Checkout Service. */
+        /** @description `X-Service-Identity` không nằm trong allowlist `cart.internal_callers` (`code` = `FORBIDDEN`). */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
@@ -196,18 +199,16 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Key dùng với payload khác hoặc request cùng key đang xử lý. */
+        /** @description `IDEMPOTENCY_CONFLICT`: cùng `Idempotency-Key` đã được dùng với payload khác. Ghi của Cart chạy nguyên tử trong Redis Lua nên không có trạng thái "đang xử lý": cùng key và cùng payload luôn trả lại kết quả đã lưu, không bao giờ trả 409. */
         IdempotencyConflict: {
             headers: {
-                /** @description Có khi request cùng key đang xử lý. */
-                "Retry-After"?: number;
                 [name: string]: unknown;
             };
             content: {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Rule Cart hoặc Product validation không thỏa. */
+        /** @description Rule Cart hoặc Product validation không thỏa. `code` là một trong `CART_FULL` (SKU mới vượt 50 SKU), `PRODUCT_NOT_AVAILABLE` (Product/SKU không active hoặc không tồn tại), `QUANTITY_INVALID` (delta làm quantity không còn dương; dùng DELETE), `ITEM_NOT_FOUND` (delta âm cho SKU không có trong cart). */
         Unprocessable: {
             headers: {
                 [name: string]: unknown;
@@ -216,7 +217,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Vượt rate limit theo user. */
+        /** @description Vượt rate limit theo user (`code` = `RATE_LIMITED`, `retryable` = true). */
         RateLimited: {
             headers: {
                 "Retry-After"?: number;
@@ -226,18 +227,20 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Redis Cart source of truth không khả dụng. */
+        /** @description Redis Cart source of truth không khả dụng (`code` = `CART_STORE_UNAVAILABLE`, `retryable` = true). */
         CartStoreUnavailable: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description Redis hoặc Product dependency cần cho write không khả dụng. */
+        /** @description Redis hoặc Product dependency cần cho write không khả dụng (`code` = `CART_STORE_UNAVAILABLE` hoặc `PRODUCT_UNAVAILABLE`, `retryable` = true). */
         WriteDependencyUnavailable: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
@@ -248,10 +251,15 @@ export interface components {
     parameters: {
         RequestId: string;
         IdempotencyKey: string;
+        /** @description Calling service identity. Must be in the Cart allowlist (`cart.internal_callers`, default `checkout-service`); a missing header is 401 and any other value is 403. */
+        ServiceIdentity: string;
         UserId: string;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Seconds to wait before repeating the request. Present on every 429 and on every 503 with retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -278,6 +286,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
             503: components["responses"]["CartStoreUnavailable"];
         };
     };
@@ -358,8 +367,10 @@ export interface operations {
     getCheckoutCartSnapshot: {
         parameters: {
             query?: never;
-            header?: {
+            header: {
                 "X-Request-Id"?: components["parameters"]["RequestId"];
+                /** @description Calling service identity. Must be in the Cart allowlist (`cart.internal_callers`, default `checkout-service`); a missing header is 401 and any other value is 403. */
+                "X-Service-Identity": components["parameters"]["ServiceIdentity"];
             };
             path: {
                 user_id: components["parameters"]["UserId"];
@@ -378,6 +389,7 @@ export interface operations {
                     "application/json": components["schemas"]["CheckoutCartSnapshot"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             503: components["responses"]["CartStoreUnavailable"];

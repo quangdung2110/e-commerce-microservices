@@ -292,6 +292,7 @@ export interface components {
         Uuid: string;
         ProductId: string;
         SkuId: string;
+        /** @description JSON integer token from 1 to 5. Decimal tokens (including 1.0) and numeric strings are rejected with 400 INVALID_REQUEST without consuming eligibility or edit quota. */
         Rating: number;
         /** @enum {string} */
         ReviewVisibilityStatus: "APPROVED" | "HIDDEN_BY_REPORT" | "REMOVED";
@@ -361,8 +362,16 @@ export interface components {
             edit_count: number;
             /** Format: date-time */
             created_at: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Last record update, including moderation/privacy; not the author edit time.
+             */
             updated_at: string;
+            /**
+             * Format: date-time
+             * @description Transaction time of the author's accepted PATCH (rating, content or media). Null before any edit or for legacy edited reviews whose original edit event is no longer available or unambiguous. Reporting, moderation, official replies and privacy processing never change it. Never infer it from updated_at.
+             */
+            readonly content_edited_at?: string | null;
         };
         PublicReviewPage: {
             items: components["schemas"]["PublicReview"][];
@@ -428,7 +437,7 @@ export interface components {
             content_type: string;
             /**
              * Format: int64
-             * @description Declared object size in bytes; the object that is uploaded must have exactly this size. Above the configured limit for `media_type` (default 10 MiB for IMAGE, 100 MiB for VIDEO) is `400 INVALID_REQUEST`.
+             * @description Declared object size in bytes; the object that is uploaded must have exactly this size. Must be a JSON integer token; decimal tokens and numeric strings are rejected with 400 INVALID_REQUEST without issuing an asset or consuming quota. Above the configured limit for `media_type` (default 10 MiB for IMAGE, 100 MiB for VIDEO) is `400 INVALID_REQUEST`.
              */
             byte_size: number;
             /** @description Optional. Compared, case-insensitively, with the storage ETag of the uploaded object when the asset is attached, so it must be the hex MD5 digest of the body for a single-part upload (what S3-compatible storage reports as the ETag). A mismatch makes the asset `MEDIA_NOT_VERIFIED`. */
@@ -439,7 +448,7 @@ export interface components {
             method: "PUT";
             /** Format: uri */
             url: string;
-            /** @description Required storage headers. Client must not add a different object key or overwrite target. */
+            /** @description Required storage headers, including signed If-None-Match '*'. Client must preserve signed headers (Content-Length is set by the browser). Storage rejects subsequent PUTs to the same object with 412 without changing bytes, including after attachment. Removing the conditional header invalidates the signature. Client must not add a different object key or overwrite target. */
             headers: {
                 [key: string]: string;
             };

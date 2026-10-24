@@ -365,6 +365,7 @@ export interface components {
         /** @description Gateway hoặc service tạm giới hạn request. */
         RateLimited: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
@@ -388,6 +389,8 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description Seconds to wait before repeating the request. Present on every 429 and on every 503 with retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it. */
+        RetryAfter: number;
         /** @description Response chứa PII không được browser hoặc proxy cache. */
         PrivateNoStore: "private, no-store";
         /** @description URI của address mới tạo. */

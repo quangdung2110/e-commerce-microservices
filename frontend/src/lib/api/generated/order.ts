@@ -547,6 +547,7 @@ export interface components {
             created_at: string;
             refund_request_id: components["schemas"]["OpaqueId"];
         };
+        /** @description Public projection of an asynchronous command. MANUAL_REVIEW_REQUIRED means the outcome is waiting for a person (for example Finance after a failed refund), not that the client should retry; its failure problem code is REFUND_MANUAL_REVIEW_REQUIRED for refund and return commands, and the client must not send a new command for the same intent. */
         OrderOperation: {
             /** Format: uuid */
             operation_id: string;

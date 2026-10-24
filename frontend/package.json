@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gen:api": "node scripts/gen-api-types.mjs"
+    "gen:api": "node scripts/gen-api-types.mjs",
+    "gen:api:check": "node scripts/gen-api-types.mjs --check"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

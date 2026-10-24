@@ -77,7 +77,7 @@ export interface paths {
         put?: never;
         /**
          * Publish, pause hoặc cancel campaign
-         * @description Transition hợp lệ: DRAFT->PUBLISHED, PUBLISHED->PAUSED|CANCELLED và PAUSED->CANCELLED. PUBLISHED business definition là immutable. Transition tăng revision; markdown effective-state event được ghi transactional outbox khi cần.
+         * @description Transition hợp lệ: DRAFT->PUBLISHED, PUBLISHED->PAUSED|CANCELLED và PAUSED->CANCELLED. PUBLISHED business definition là immutable. Transition tăng revision; markdown effective-state event được ghi transactional outbox khi cần. Pause/cancel đóng claim gate Redis trước khi commit; không đóng được thì trả 503 `PROMOTION_UNAVAILABLE` (retryable) và campaign không đổi.
          */
         post: operations["transitionPromotionCampaign"];
         delete?: never;
@@ -185,6 +185,26 @@ export interface paths {
          * @description If-Match là revision của parent campaign.
          */
         patch: operations["updateDraftMarkdownRule"];
+        trace?: never;
+    };
+    "/api/v1/me/promotion-vouchers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Đọc toàn bộ ví voucher của tài khoản, không cần checkout context
+         * @description Chỉ đọc ví của authenticated user; không nhận user_id. Bao gồm SAVED, USED, EXPIRED và mọi distribution mode. status lọc trạng thái hiệu lực tại as_of: SAVED có expired_at <= as_of được xem là EXPIRED; USED luôn là USED. wallet.status và updated_at giữ nguyên giá trị đã persist; GET không ghi lazy expiry, không reserve, grant, evaluate hay đọc cart/Redis. Campaign pause/cancel/end không thu hồi voucher đã sở hữu. is_enabled chỉ phản ánh definition, không phải eligibility. Sắp xếp wallet_id giảm dần; keyset cursor gắn user và status, không phải snapshot xuyên trang (expiry/redemption có thể thay đổi giữa các lần đọc). Không cung cấp audience UUID/raw rule AST hoặc dữ liệu budget quản trị.
+         */
+        get: operations["listMyPromotionVouchers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/me/promotion-voucher-suggestions": {
@@ -729,6 +749,23 @@ export interface components {
             context?: components["schemas"]["CheckoutContext"];
         } & {
             [key: string]: unknown;
+        };
+        WalletPage: {
+            items: components["schemas"]["WalletEntry"][];
+            next_cursor: string | null;
+            /** Format: date-time */
+            as_of: string;
+        };
+        WalletEntry: {
+            wallet: components["schemas"]["WalletVoucher"];
+            /** @enum {string} */
+            effective_status: "SAVED" | "USED" | "EXPIRED";
+            code: string;
+            discount: components["schemas"]["Discount"];
+            min_order_amount: components["schemas"]["VndMoney"];
+            /** @description Mô tả điều kiện tiếng Việt; không chứa danh sách audience UUID/raw rule fields. Điều kiện giỏ và ngân sách được kiểm tra tại checkout. */
+            conditions_summary: string;
+            is_enabled: boolean;
         };
         WalletVoucher: {
             wallet_id: components["schemas"]["OpaqueId"];
@@ -1612,6 +1649,37 @@ export interface operations {
             409: components["responses"]["Conflict"];
             412: components["responses"]["RevisionMismatch"];
             422: components["responses"]["Unprocessable"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listMyPromotionVouchers: {
+        parameters: {
+            query?: {
+                /** @description Bỏ trống để đọc mọi trạng thái hiệu lực. */
+                status?: "SAVED" | "USED" | "EXPIRED";
+                cursor?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trang ví voucher, mới lưu/cấp trước. */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["NoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WalletPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
             503: components["responses"]["Unavailable"];
         };
     };

@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * Search và browse Product catalog đang hiển thị
-         * @description Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài giây so với Product/Inventory. Không dùng response này để reserve, chốt giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break; cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó. Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp, newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp. Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu.
+         * @description Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài giây so với Product/Inventory. Không dùng response này để reserve, chốt giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break; cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó. Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp, newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp. Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu. Request mới đọc projection product_cards; projection chưa sẵn sàng trả 503 ELASTICSEARCH_UNAVAILABLE với Retry-After: 2, không tự quét toàn bộ SKU. Full reindex/rollback chuẩn bị cards trước rồi chuyển alias cùng SKU/Category.
          */
         get: operations["searchProducts"];
         put?: never;
@@ -99,7 +99,7 @@ export interface paths {
         put?: never;
         /**
          * Trigger full reindex bất đồng bộ
-         * @description Chỉ ADMIN qua Gateway. Server lấy actor từ trusted identity header, không tin actor do body tự khai. Một reindex chưa kết thúc sẽ chặn trigger mới (REINDEX_ALREADY_RUNNING). Một run mà process sở hữu nó đã chết được xử lý trước (resume hoặc đánh dấu bị bỏ rơi) nên không chặn trigger mãi mãi. Cluster red hoặc thiếu dung lượng đĩa cho một index thứ hai bị từ chối bằng 409 REINDEX_PRECONDITION_FAILED; cluster yellow vẫn được nhận. Search cũng tự tạo run (actor `system:catalog-control`) khi Product phát catalog-reindex-requested; run đó xuất hiện ở listReindexRuns.
+         * @description Chỉ ADMIN qua Gateway. Server lấy actor từ trusted identity header, không tin actor do body tự khai. Một reindex chưa kết thúc sẽ chặn trigger mới (REINDEX_ALREADY_RUNNING). Một run mà process sở hữu nó đã chết được xử lý trước (resume hoặc đánh dấu bị bỏ rơi) nên không chặn trigger mãi mãi. Cluster red hoặc thiếu dung lượng đĩa cho một index thứ hai bị từ chối bằng 409 REINDEX_PRECONDITION_FAILED; cluster yellow vẫn được nhận. Search cũng tự tạo run (actor `system:catalog-control`) khi Product phát catalog-reindex-requested; run đó xuất hiện ở listReindexRuns. Build và VERIFY bảo toàn tombstone Product/SKU và Category từ index đang phục vụ, giữ nguyên revision và deleted_at để event cũ không hồi sinh document sau cutover. Count drift so SKU document is_deleted=false (mọi status/stock), không tính tombstone; không phải total_products của storefront. Scan/copy tombstone không đầy đủ hoặc count shard lỗi làm run FAILED, không chuyển alias.
          */
         post: operations["createReindexRun"];
         delete?: never;
@@ -238,6 +238,7 @@ export interface components {
             product_count_updated_at: string | null;
             children: components["schemas"]["CategoryNode"][];
         };
+        /** @description Facet groups advertised by the configured storefront discovery policy, in editorial order. Unscoped searches advertise common groups; category searches may add category-specific groups. This is not an exhaustive list of all indexed attributes. Discovery exclusions apply before results and counts are calculated. Option values remain opaque and must be returned unchanged. */
         FacetSet: {
             /** @constant */
             count_semantics: "DISTINCT_PRODUCT";
@@ -263,7 +264,7 @@ export interface components {
             reason: string;
         };
         /**
-         * @description STARTED, BUILDING, CATCHING_UP và CUTOVER là các trạng thái chưa kết thúc; một run chưa kết thúc giữ slot singleton. CUTOVER gồm bước kiểm tra index mới (số document, sample diff, smoke query) và lệnh chuyển alias. COMPLETED, FAILED, ROLLED_BACK, SUPERSEDED và CANCELLED là trạng thái kết thúc. SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc run đang chạy; run bị bỏ, alias giữ nguyên và request vẫn được lưu để một run mới được khởi chạy. CANCELLED nghĩa là admin đã hủy (failure.code RUN_CANCELLED). ROLLED_BACK nghĩa là các alias đã được trả về index cũ sau khi COMPLETED.
+         * @description STARTED, BUILDING, CATCHING_UP và CUTOVER là các trạng thái chưa kết thúc; một run chưa kết thúc giữ slot singleton. CUTOVER gồm copy bổ sung tombstone và kiểm tra index mới (số SKU document chưa xóa, sample diff, smoke query) và lệnh chuyển alias. COMPLETED, FAILED, ROLLED_BACK, SUPERSEDED và CANCELLED là trạng thái kết thúc. SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc run đang chạy; run bị bỏ, alias giữ nguyên và request vẫn được lưu để một run mới được khởi chạy. CANCELLED nghĩa là admin đã hủy (failure.code RUN_CANCELLED). ROLLED_BACK nghĩa là các alias đã được trả về index cũ sau khi COMPLETED.
          * @enum {string}
          */
         ReindexRunStatus: "STARTED" | "BUILDING" | "CATCHING_UP" | "CUTOVER" | "COMPLETED" | "FAILED" | "ROLLED_BACK" | "SUPERSEDED" | "CANCELLED";
@@ -406,6 +407,7 @@ export interface components {
         /** @description ELASTICSEARCH_UNAVAILABLE; retryable infrastructure failure. */
         ElasticsearchUnavailable: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
@@ -455,7 +457,10 @@ export interface components {
         ReindexRunId: components["schemas"]["Uuid"];
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Seconds to wait before repeating the request. Present on every 429 and on every 503 with retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
