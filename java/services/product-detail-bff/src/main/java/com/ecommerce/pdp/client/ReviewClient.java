@@ -19,9 +19,11 @@ public class ReviewClient {
     private final ObjectMapper objectMapper;
     private final int previewLimit;
 
-    public ReviewClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "review", properties.review().asUpstream());
+    public ReviewClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "review", properties.review().asUpstream());
         this.objectMapper = objectMapper;
+        objectMapper.readerFor(ReviewPayload.class);
         this.previewLimit = properties.review().previewLimit();
     }
 

@@ -3,13 +3,31 @@ package com.platform.productservice.infrastructure.persistence;
 import com.platform.productservice.domain.entity.SkuEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
+import jakarta.persistence.QueryHint;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public interface SkuRepository extends JpaRepository<SkuEntity, UUID> {
+
+    interface WarmupTarget {
+        UUID getSkuId();
+        String getSlug();
+    }
+
+    /** One bounded read-only sample; no fixture or aggregate materialization is needed. */
+    @Query(value = """
+            SELECT s.sku_id AS "skuId", p.slug AS "slug"
+            FROM product_skus s JOIN products p ON p.product_id = s.product_id
+            WHERE s.status = 'ACTIVE' AND p.status = 'ACTIVE'
+            ORDER BY s.sku_id LIMIT 1
+            """, nativeQuery = true)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
+    Optional<WarmupTarget> findWarmupTarget();
 
     List<SkuEntity> findByProductIdOrderBySkuCodeAsc(UUID productId);
 

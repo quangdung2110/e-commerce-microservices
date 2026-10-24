@@ -5,7 +5,6 @@ import com.ecommerce.pdp.resilience.ContractViolationException;
 import com.ecommerce.pdp.resilience.DependencyGuard;
 import com.ecommerce.pdp.resilience.UpstreamStatusException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.netty.channel.ChannelOption;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -38,12 +37,12 @@ final class UpstreamHttp {
      * @param builder builder do Spring cấu hình, mang observation để {@code traceparent}
      *                được truyền đi
      */
-    static WebClient build(WebClient.Builder builder, String name, PdpProperties.Upstream settings) {
+    static WebClient build(WebClient.Builder builder, ClientTransports transports, String name, PdpProperties.Upstream settings) {
         ConnectionProvider pool = ConnectionProvider.builder("pdp-" + name)
                 .maxConnections(settings.bulkhead())
+                .metrics(true)
                 .build();
-        HttpClient httpClient = HttpClient.create(pool)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) settings.timeout().toMillis());
+        HttpClient httpClient = transports.register(name, pool, (int) settings.timeout().toMillis(), settings.baseUrl());
         WebClient.Builder configured = builder.clone()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .defaultHeader(SERVICE_IDENTITY_HEADER, SERVICE_IDENTITY)
@@ -51,7 +50,9 @@ final class UpstreamHttp {
         if (settings.baseUrl() != null && !settings.baseUrl().isBlank()) {
             configured.baseUrl(settings.baseUrl());
         }
-        return configured.build();
+        WebClient client = configured.build();
+        transports.registerProbe(name, client);
+        return client;
     }
 
     /**
@@ -81,10 +82,14 @@ final class UpstreamHttp {
         return response.bodyToMono(byte[].class)
                 .switchIfEmpty(Mono.error(() -> new ContractViolationException(type.getSimpleName() + ": empty body")))
                 .map(bytes -> {
+                    long started = System.nanoTime();
                     try {
                         return objectMapper.readValue(bytes, type);
                     } catch (IOException e) {
                         throw new ContractViolationException(type.getSimpleName() + ": unreadable body", e);
+                    } finally {
+                        io.micrometer.core.instrument.Metrics.timer("pdp.client.decode", "type", type.getSimpleName())
+                                .record(System.nanoTime() - started, java.util.concurrent.TimeUnit.NANOSECONDS);
                     }
                 });
     }

@@ -50,7 +50,9 @@ operations của mình; hiện là known gap):
 - `/health/live`: chỉ process.
 - `/health/ready`: Redis trả lời, Lua scripts đã `SCRIPT LOAD`, và cấu hình bắt buộc ở
   [Cấu hình](#cấu-hình) hợp lệ (khoá HMAC/mã hoá, base URL, CDN và placeholder). Không fan-out
-  tới downstream; circuit mở không làm mất readiness.
+  tới downstream; circuit mở không làm mất readiness. Spring Boot chỉ quảng bá trạng thái
+  sẵn sàng sau khi warm-up startup bên dưới hoàn tất; orchestrator phải tôn trọng readiness.
+  Lỗi downstream sau đó không chạy lại warm-up.
 
 | Điều kiện | Hành vi công khai | Tính vào circuit breaker | Owner xử lý |
 |---|---|---|---|
@@ -178,6 +180,7 @@ không commit.
 | `CHECKOUT_REDIS_URL` | none | Có | Redis riêng `noeviction`, ví dụ `redis://checkout-redis:6379/0`; TLS và auth ngoài local |
 | `CHECKOUT_TOKEN_HMAC_KEYS`, `CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION` | none | Có | Secret, dạng `v1:<base64>,v2:<base64>` (≥ 32 byte mỗi khoá); giữ version cũ tới khi mọi record dùng nó hết TTL (≥ 24 giờ) |
 | `CHECKOUT_ENCRYPTION_KEYS`, `CHECKOUT_ENCRYPTION_ACTIVE_VERSION` | none | Có | Secret, cùng định dạng, đúng 32 byte mỗi khoá (AES-256); envelope encryption; xoay vòng như HMAC |
+| (guard secret) | profile khác `dev`/`local`/`test` | — | `StartupSecretGuard` dừng service khi một phiên bản khoá HMAC/AES là khoá dev của docker-compose hoặc có dấu hiệu placeholder (kể cả sau khi giải mã base64) ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)); docker-compose chạy profile `local` |
 | `CHECKOUT_CART_BASE_URL` | none | Có | Ví dụ `http://cart-service:8080` |
 | `CHECKOUT_USER_BASE_URL` | none | Có | Cổng internal, ví dụ `http://user-service:8083` |
 | `CHECKOUT_PRODUCT_GRPC_TARGET` | none | Có | Ví dụ `product-service:9091` |
@@ -203,6 +206,45 @@ Submit, cửa sổ retry > 20 giây) cũng được kiểm lúc khởi động. 
 probe ở `/health/live` và `/health/ready`.
 
 ## Runbook
+
+### Startup và điều tra timeout client
+
+- `CHECKOUT_CLIENT_WARMUP_TIMEOUT` mặc định `30s`, `CHECKOUT_CLIENT_WARMUP_ROUNDS` mặc định `3`
+  (hợp lệ 1–10). Một `ApplicationRunner` khởi tạo Reactor Netty và thực hiện GET chỉ đọc
+  Cart/User bằng UUID zero cùng `GetBatchSkus` UUID zero, trên chính pool/channel dùng bởi
+  request thật. GET Cart/User chấp nhận 200/404 và gRPC phải trả batch hợp lệ. Promotion phải
+  trả 200 ở readiness; khi voucher options bật, warm-up gọi chính `PromotionClient.options()`
+  bằng UUID/context kỹ thuật mới để làm nóng request encoder, response tree và contract decoder.
+  POST này chỉ là truy vấn voucher; lazy expiry cho UUID không có ví cập nhật 0 dòng. Không tạo
+  cart, quote, ví, claim, reservation, promotion hay order.
+- Mỗi read tối đa 5 giây, connect HTTP startup tối đa 1 giây, retry backoff
+  100–500 ms trong budget startup (không còn trần hai lần retry); tổng bị chặn bởi timeout startup. Đây là retry riêng lúc startup,
+  không đi qua circuit/bulkhead business và không thay đổi deadline hay retry của request.
+  Thất bại làm startup thất bại; orchestrator phải chờ readiness và retry rollout theo backoff.
+  Local Compose chờ Cart/User/Product healthy. Sau startup, readiness vẫn chỉ kiểm tra local/Redis.
+- Một runner Redis riêng `CHECKOUT_REDIS_WARMUP_TIMEOUT=30s`, `CHECKOUT_REDIS_WARMUP_ROUNDS=3`
+  nạp các script rồi chạy thật `peek_preview` qua `EVALSHA`/MULTI decoder ba lần, trên namespace
+  `checkout:warmup:{UUID}:*` không tồn tại, không tạo key. Startup retry read/load trong budget;
+  nếu không hoàn tất thì app không nhận traffic. `SCRIPT LOAD`/`SCRIPT EXISTS` không thay cho
+  bước này. `checkout_redis_startup_warmup_seconds{outcome}` ghi thời gian/kết quả startup.
+  Timeout Redis nghiệp vụ vẫn 200 ms; deadline Preview/voucher và circuit/bulkhead không đổi.
+- Probe đi qua chính WebClient/byte-array codec và observation của request thật; các reader
+  Jackson Cart/User được resolve lúc tạo client. Không chỉ gọi low-level `HttpClient.warmup()`:
+  hàm này chưa khởi tạo đầy đủ WebClient pipeline và chưa tạo kết nối tới provider.
+- `checkout_client_startup_warmup_seconds{outcome}` đo startup. HTTP transport xuất
+  `reactor_netty_http_client_*` cho DNS, connect, response và `reactor_netty_connection_provider_*`
+  cho pool/pending acquire. URI label chỉ là tên dependency; `checkout_client_decode_seconds{type}`
+  đo Jackson parse riêng. Không dùng ID/token/slug làm metric label.
+- Log `dependency call failed` có dependency, outcome, duration_ms, budget_ms, request_id,
+  trace_id. Log `Product RPC completed` có grpc_status, duration_ms và headers_ms; `-1` nghĩa là
+  chưa nhận headers. Đối chiếu với log `Product RPC handled` và metric
+  `product_grpc_server_handling_seconds` phía Product bằng request_id. Thời gian tới headers
+  gồm cả kết nối/hàng chờ/mạng/server, không được diễn giải là riêng DNS hoặc DB.
+- Nếu sau idle vẫn timeout: giữ trace/log cả hai phía, kiểm tra DNS/connect/pool, GC/CPU và
+  provider handling trước khi đổi budget. Warm-up giảm chi phí khởi tạo; không chứng minh mọi
+  timeout trước đây là cold start và không bảo đảm kết nối tồn tại qua mọi khoảng idle.
+- Regression phải có request đầu tiên không pre-warm từ fixture, empty/valid Preview, địa chỉ
+  đổi, thiếu tồn, CART_CHANGED và token superseded; outage thật vẫn fail closed.
 
 **`CHECKOUT_UNAVAILABLE` tăng:** xem `checkout_dependency_calls_seconds` theo `dependency`,
 `outcome` và circuit state để biết dependency nào; chuyển on-call owner. Không bật degraded

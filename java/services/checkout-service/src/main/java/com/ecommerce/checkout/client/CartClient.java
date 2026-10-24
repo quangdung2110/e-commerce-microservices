@@ -24,10 +24,12 @@ public class CartClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public CartClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "cart", properties.endpoints().cartBaseUrl(),
+    public CartClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "cart", properties.endpoints().cartBaseUrl(),
                 properties.bulkheads().cart());
         this.objectMapper = objectMapper;
+        objectMapper.readerFor(Snapshot.class); // Resolve the real DTO reader before serving the first request.
     }
 
     public record Line(String productId, String skuId, int quantity) {

@@ -29,8 +29,9 @@ public class InventoryClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public InventoryClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "inventory", properties.endpoints().inventoryBaseUrl(),
+    public InventoryClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "inventory", properties.endpoints().inventoryBaseUrl(),
                 properties.bulkheads().inventory());
         this.objectMapper = objectMapper;
     }

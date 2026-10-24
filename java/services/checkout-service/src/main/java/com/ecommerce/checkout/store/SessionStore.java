@@ -198,12 +198,16 @@ public class SessionStore {
         hasher.idempotencyRefs(idempotencyKey).forEach(ref -> keys.add(idemKey(userId, ref)));
         return run("peek_preview", () -> redis.execute(peekPreview, keys,
                 List.of(SESSION_PREFIX, PAYLOAD_PREFIX, fingerprint)).next())
-                .map(result -> switch (text(result, 0)) {
-                    case "REPLAY" -> new Peek.Replay(text(result, 1));
-                    case "MISMATCH" -> new Peek.Mismatch();
-                    case "IN_FLIGHT" -> new Peek.InFlight(text(result, 1));
-                    default -> new Peek.Proceed();
-                });
+                .map(SessionStore::peek);
+    }
+
+    private static Peek peek(List<?> result) {
+        return switch (text(result, 0)) {
+            case "REPLAY" -> new Peek.Replay(text(result, 1));
+            case "MISMATCH" -> new Peek.Mismatch();
+            case "IN_FLIGHT" -> new Peek.InFlight(text(result, 1));
+            default -> new Peek.Proceed();
+        };
     }
 
     /**
@@ -341,6 +345,20 @@ public class SessionStore {
                         .concatMap(script -> connection.scriptingCommands().scriptLoad(
                                 ByteBuffer.wrap(script.getScriptAsString().getBytes(StandardCharsets.UTF_8)))))
                 .then();
+    }
+
+    /** Execute the real read-only script and MULTI decoder without touching workflow keys.
+     * The caller supplies a startup budget; the production command timeout remains unchanged. */
+    public Mono<Void> warmupReadPath() {
+        return Mono.defer(() -> {
+            String prefix = "checkout:warmup:{" + java.util.UUID.randomUUID() + "}:";
+            return redis.execute(peekPreview, List.of(prefix + "active", prefix + "idem"),
+                            List.of(prefix + "session:", prefix + "payload:", "warmup"))
+                    .next().map(SessionStore::peek)
+                    .switchIfEmpty(Mono.error(new IllegalStateException("Warm-up Lua returned no result")))
+                    .flatMap(result -> result instanceof Peek.Proceed ? Mono.<Void>empty()
+                            : Mono.error(new IllegalStateException("Unexpected warm-up Lua result")));
+        });
     }
 
     private List<RedisScript<?>> allScripts() {

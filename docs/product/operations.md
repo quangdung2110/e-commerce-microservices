@@ -31,7 +31,7 @@ Giá trị mặc định lấy từ `application.yml`; profile `prod` chỉ đ�
 | `internal.reindex-clients` | — | `search-service` (hai export) |
 | `internal.snapshot-clients` | — | `search-service`, `promotion-service` (snapshot một Product) |
 | `internal.buyer-read-clients` | — | `product-detail-bff` |
-| `export.cursor-secret` | `EXPORT_CURSOR_SECRET` | giá trị dev; môi trường thật lấy từ secret manager |
+| `export.cursor-secret` | `EXPORT_CURSOR_SECRET` | không có mặc định trong `application.yml`; profile `dev` và docker-compose đặt giá trị dev. Ngoài profile `dev`/`local`/`test`, `StartupSecretGuard` dừng service nếu secret trống, ngắn hơn 32 ký tự, là giá trị dev đã commit hoặc chứa dấu hiệu placeholder ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)). docker-compose chạy profile `prod,local` |
 | `export.cursor-ttl` / `default-limit` / `max-limit` | — | `30m` / `200` / `500` |
 | `export.product-topic` / `category-topic` | `PRODUCT_EVENTS_TOPIC` / `CATEGORY_EVENTS_TOPIC` | `t.product.events` / `t.category.events` |
 | `export.offset-timeout` | — | `5s` (quá hạn là `503 CATALOG_UNAVAILABLE`) |
@@ -57,7 +57,28 @@ latency/error của Inventory Availability Read API. Cả hai không phải cons
 
 ## Health và degraded behavior
 
-Readiness fail khi PostgreSQL không truy cập được. Consumer readiness phản ánh Kafka.
+Readiness của đường catalog fail khi PostgreSQL không truy cập được hoặc warm-up chưa
+hoàn tất. Tình trạng consumer Kafka được theo dõi bằng metric/log.
+
+Product chạy warm-up **chỉ đọc, một lần khi startup**, trước khi Spring chuyển sang
+`ACCEPTING_TRAFFIC`: chọn một SKU/product `ACTIVE` từ DB, gọi GetSku và GetBatchSkus qua
+gRPC loopback, rồi buyer-read qua HTTP loopback (giữ identity filter với một caller trong
+allowlist cấu hình). Các vòng đọc làm nóng transport, protobuf, ORM và HTTP serialization;
+không tạo dữ liệu mẫu, cache, event hay sửa revision. Catalog rỗng dùng UUID/slug không tồn
+tại và chấp nhận 404; khi chưa có catalog thì không thể làm nóng toàn bộ mapping entity
+thực tế. Mock/non-network test context không chạy transport warm-up.
+
+`catalogWarmup` health indicator giữ DOWN cho đến khi toàn bộ vòng đọc hoàn tất. Endpoint
+`/actuator/health/readiness` gồm `readinessState`, `db`, `catalogWarmup`; Compose và health
+check của router Product dùng endpoint này. Liveness giữ riêng, không gọi catalog. Budget
+warm-up bao gồm tìm mẫu DB và các request; timeout hoặc lỗi transport/HTTP (trừ 404) làm
+startup thất bại và không báo ready. Xem log `Catalog warm-up completed in ... ms` để xác
+nhận hoàn tất. Caller đi thẳng vào port vẫn cần tôn trọng readiness; lúc service đang
+restart, Cart/PDP tiếp tục dùng chính sách dependency unavailable hiện hành.
+
+Warm-up giảm chi phí lần gọi đầu sau readiness, không thay thế load test p95/p99 hoặc
+bảo đảm latency của mọi category/media trong catalog. Không tăng deadline Cart/PDP để
+che độ chậm; tiếp tục theo dõi latency sau idle và dưới tải.
 Kafka/Debezium lỗi không làm mất catalog write đã commit vì event nằm trong outbox, nhưng
 làm Search/Promotion trễ và có nguy cơ WAL tăng; alert connector/slot lag là critical.
 
@@ -98,7 +119,25 @@ Runbook export cho Search phải kiểm tra Kafka chụp đủ mọi partition v
 trong cả export session. Kafka lỗi, export session mất nhất quán hoặc Debezium/outbox lag
 không hội tụ là điều kiện thất bại reindex; Search giữ alias cũ và không cutover.
 
+## Đối chiếu timeout GetBatchSkus với Checkout
+
+Interceptor `ProductRpcTiming` ghi `Product RPC handled` cho `GetBatchSkus` với request_id,
+trace_id, grpc_status và duration_ms; metric `product_grpc_server_handling_seconds{method,status}`
+đo từ lúc server interceptor nhận call tới lúc handler close call. Không log SKU/body và
+không dùng request/trace ID làm metric label. Đối chiếu với `Product RPC completed` phía
+Checkout cùng request ID. Client duration còn gồm queue/connect/network/deserialization;
+server handling không bao gồm thời gian trước khi call tới server, và status close là
+status handler gửi (cancellation trên transport vẫn phải xem metric gRPC server chuẩn).
+Không kết luận DB chậm hoặc cold start chỉ bằng chênh lệch hai timer. Contract gRPC và
+startup warm-up Product không thay đổi.
+
 ## Deploy và rollback
+
+### Nội dung catalog trình diễn local
+
+Bộ lọc được cải thiện tiếp theo bằng [chuyển thông số SKU seed](../frontend/catalog-filter-fix-2026-10-17.md): 28 Product/84 SKU giữ ID/code, giá và status, chỉ thay `variant_attributes` từ Cấu hình gộp sang thuộc tính có nghĩa và thêm mapping tùy chọn qua API admin/ETag. Product revision/timestamp và outbox tăng như cập nhật metadata thông thường; Inventory vẫn sở hữu tồn kho. Script `frontend/scripts/prepare-catalog-filters.mjs` hỗ trợ dry-run, `--apply`, `--verify`, `--restore`; snapshot nằm trong evidence của runbook. Không ghi SQL/ES, không viết lại snapshot Order, không xóa mapping legacy cần cho rollback. Fixture QA được tách ở Search discovery bằng cấu hình ID; không đổi trạng thái Product/SKU QA.
+
+Ngày 17/10/2026 bổ sung script biên tập 8 Product seed: mô tả và media minh họa SVG namespace `showcase-v1/` trong MinIO. Script sử dụng API admin/ETag và CDC bình thường; không đổi schema, giá, SKU, tồn kho hoặc xóa fixture. Xem [hướng dẫn chạy lại, snapshot và hoàn nguyên](../frontend/storefront-ux-fix-2026-10-17.md#chuẩn-bị-hoặc-chạy-lại-nội-dung-local). Chỉ dùng cho môi trường local; ảnh được ghi rõ là minh họa, cần thay bằng nội dung SKU đã xác nhận trước triển khai thương mại.
 
 Migration phải additive và tương thích rollback trong ít nhất một chu kỳ deploy. Rollout
 contract theo thứ tự: consumer chấp nhận schema mới → producer phát song song → chuyển

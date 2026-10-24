@@ -24,6 +24,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.MetadataUtils;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -64,10 +65,11 @@ public class ProductClient implements DisposableBean {
     private final ManagedChannel channel;
     private final ProductServiceGrpc.ProductServiceFutureStub stub;
     private final Duration ceiling;
+    private final MeterRegistry meters;
 
     @Autowired
-    public ProductClient(CheckoutProperties properties, io.opentelemetry.api.OpenTelemetry telemetry) {
-        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product(), telemetry);
+    public ProductClient(CheckoutProperties properties, MeterRegistry meters, io.opentelemetry.api.OpenTelemetry telemetry) {
+        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product(), meters, telemetry);
     }
 
     /** Pings an active connection after this long without traffic (contracts ADR-007). Product permits one every 20 s. */
@@ -91,18 +93,19 @@ public class ProductClient implements DisposableBean {
                 .build();
     }
 
-    ProductClient(ManagedChannel channel, Duration ceiling) {
-        this(channel, ceiling, null);
+    ProductClient(ManagedChannel channel, Duration ceiling, MeterRegistry meters) {
+        this(channel, ceiling, meters, null);
     }
 
-    private ProductClient(ManagedChannel channel, Duration ceiling, io.opentelemetry.api.OpenTelemetry telemetry) {
+    private ProductClient(ManagedChannel channel, Duration ceiling, MeterRegistry meters, io.opentelemetry.api.OpenTelemetry telemetry) {
         this.telemetry = telemetry;
         this.channel = channel;
         this.stub = telemetry == null ? ProductServiceGrpc.newFutureStub(channel)
                 : ProductServiceGrpc.newFutureStub(channel).withInterceptors(
                         io.opentelemetry.instrumentation.grpc.v1_6.GrpcTelemetry.create(telemetry).newClientInterceptor());
         this.ceiling = ceiling;
-        // Connect now: the first request after startup must not pay for name resolution and the handshake.
+        this.meters = meters;
+        // Begin connecting; ClientTransports also awaits a real RPC before readiness.
         channel.getState(true);
     }
 
@@ -127,6 +130,18 @@ public class ProductClient implements DisposableBean {
     }
 
     public Mono<Batch> fetch(Collection<String> skuIds, RequestContext context) {
+        return fetch(skuIds, context, ceiling);
+    }
+
+    /** A bounded startup read on the same channel/stub; never creates a quote or calls Inventory/Order. */
+    Mono<Void> warmup(Duration timeout) {
+        String requestId = UUID.randomUUID().toString();
+        RequestContext context = new RequestContext(requestId, "", null, null,
+                com.ecommerce.checkout.resilience.Deadline.startingNow(timeout));
+        return fetch(List.of("00000000-0000-0000-0000-000000000000"), context, timeout).then();
+    }
+
+    private Mono<Batch> fetch(Collection<String> skuIds, RequestContext context, Duration timeout) {
         List<String> requested = skuIds.stream().distinct().toList();
         GetBatchSkusRequest request = GetBatchSkusRequest.newBuilder().addAllSkuIds(requested).build();
         return Mono.<GetBatchSkusResponse>create(sink -> {
@@ -138,13 +153,13 @@ public class ProductClient implements DisposableBean {
             }
             // contracts ADR-003: the gRPC deadline is the timeout the guard runs this call under, never more
             // than the ceiling; Product then sees the real deadline instead of a fixed one.
-            Duration effective = sink.contextView().getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, ceiling);
-            Duration deadline = effective.compareTo(ceiling) < 0 ? effective : ceiling;
+            Duration effective = sink.contextView().getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, timeout);
+            Duration deadline = effective.compareTo(timeout) < 0 ? effective : timeout;
             ListenableFuture<GetBatchSkusResponse> future;
             // Reactor does not hold a thread-local span across hops. Scope only the immediate RPC start.
             try (io.opentelemetry.context.Scope ignored = parent(context, sink.contextView()).makeCurrent()) {
                 future = stub
-                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
+                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers), new ProductCallTiming(meters, context))
                     .withDeadlineAfter(Math.max(1, deadline.toMillis()), TimeUnit.MILLISECONDS)
                     .getBatchSkus(request);
             }

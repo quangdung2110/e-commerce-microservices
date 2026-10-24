@@ -58,10 +58,13 @@ public class RequestContextFilter implements WebFilter {
             HttpHeaders headers = exchange.getRequest().getHeaders();
             String traceId = RequestIds.traceId(reactorContext, headers);
             exchange.getResponse().getHeaders().set("X-Request-Id", RequestIds.requestId(headers, traceId));
-            exchange.getAttributes().put(CONTEXT_ATTRIBUTE, new RequestContext(
+            RequestContext requestContext = new RequestContext(
                     RequestIds.requestId(headers, traceId), traceId,
-                    RequestIds.traceparent(reactorContext, headers), null, deadline));
-            return chain.filter(exchange);
+                    RequestIds.traceparent(reactorContext, headers), null, deadline);
+            exchange.getAttributes().put(CONTEXT_ATTRIBUTE, requestContext);
+            return chain.filter(exchange).contextWrite(context -> context
+                    .put(com.ecommerce.checkout.resilience.DependencyGuard.REQUEST_ID_KEY, requestContext.requestId())
+                    .put(com.ecommerce.checkout.resilience.DependencyGuard.TRACE_ID_KEY, traceId));
         }).doFinally(signal -> accessLog(exchange, startedAt));
     }
 

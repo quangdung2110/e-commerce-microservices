@@ -5,7 +5,6 @@ import com.ecommerce.checkout.resilience.DependencyGuard;
 import com.ecommerce.checkout.resilience.UpstreamStatusException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.netty.channel.ChannelOption;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -39,18 +38,20 @@ final class UpstreamHttp {
      *
      * @param builder Spring's builder, which carries the observation that propagates {@code traceparent}
      */
-    static WebClient build(WebClient.Builder builder, String name, String baseUrl, int bulkhead) {
+    static WebClient build(WebClient.Builder builder, ClientTransports transports, String name, String baseUrl, int bulkhead) {
         ConnectionProvider pool = ConnectionProvider.builder("checkout-" + name)
                 .maxConnections(bulkhead)
+                .metrics(true)
                 .build();
-        HttpClient httpClient = HttpClient.create(pool)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MILLIS);
-        return builder.clone()
+        HttpClient httpClient = transports.register(name, pool, CONNECT_TIMEOUT_MILLIS, baseUrl);
+        WebClient client = builder.clone()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .defaultHeader(SERVICE_IDENTITY_HEADER, SERVICE_IDENTITY)
                 .filter(timeoutHeader())
                 .baseUrl(baseUrl)
                 .build();
+        transports.registerProbe(name, client);
+        return client;
     }
 
     /**
@@ -89,10 +90,14 @@ final class UpstreamHttp {
         return response.bodyToMono(byte[].class)
                 .switchIfEmpty(Mono.error(() -> new ContractViolationException(type.getSimpleName() + ": empty body")))
                 .map(bytes -> {
+                    long started = System.nanoTime();
                     try {
                         return objectMapper.readValue(bytes, type);
                     } catch (IOException e) {
                         throw new ContractViolationException(type.getSimpleName() + ": unreadable body", e);
+                    } finally {
+                        io.micrometer.core.instrument.Metrics.timer("checkout.client.decode", "type", type.getSimpleName())
+                                .record(System.nanoTime() - started, java.util.concurrent.TimeUnit.NANOSECONDS);
                     }
                 });
     }
@@ -101,10 +106,14 @@ final class UpstreamHttp {
         return response.bodyToMono(byte[].class)
                 .switchIfEmpty(Mono.error(() -> new ContractViolationException("empty body")))
                 .map(bytes -> {
+                    long started = System.nanoTime();
                     try {
                         return objectMapper.readTree(bytes);
                     } catch (IOException e) {
                         throw new ContractViolationException("unreadable body", e);
+                    } finally {
+                        io.micrometer.core.instrument.Metrics.timer("checkout.client.decode", "type", "json")
+                                .record(System.nanoTime() - started, java.util.concurrent.TimeUnit.NANOSECONDS);
                     }
                 });
     }

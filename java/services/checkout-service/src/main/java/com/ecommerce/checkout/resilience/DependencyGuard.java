@@ -41,8 +41,10 @@ import java.util.function.Supplier;
 @Component
 public class DependencyGuard {
 
+    public static final String REQUEST_ID_KEY = "checkout.request-id";
     /** Reactor context key holding the {@link Duration} a dependency call runs under (contracts ADR-003). */
     public static final String EFFECTIVE_TIMEOUT_KEY = "checkout.effective-timeout";
+    public static final String TRACE_ID_KEY = "checkout.trace-id";
 
     private static final Logger log = LoggerFactory.getLogger(DependencyGuard.class);
 
@@ -144,7 +146,7 @@ public class DependencyGuard {
             return Mono.just(recorded(dependency, CallResult.failure(Outcome.BUDGET_SKIPPED), Duration.ZERO));
         }
 
-        Mono<CallResult<T>> guardedCall = Mono.defer(() -> {
+        Mono<CallResult<T>> guardedCall = Mono.deferContextual(context -> {
             long startedAt = System.nanoTime();
             return Mono.defer(request)
                     .switchIfEmpty(Mono.error(() -> new ContractViolationException("empty response")))
@@ -158,7 +160,19 @@ public class DependencyGuard {
                     // contracts ADR-003: the clients read the timeout this call actually runs under, to send it to
                     // the provider (X-Request-Timeout-Ms for HTTP, the deadline for gRPC).
                     .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
-                    .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
+                    .map(result -> {
+                        Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+                        if (result.outcome() != Outcome.SUCCESS && result.outcome() != Outcome.BUSINESS_REJECT) {
+                            log.warn("dependency call failed",
+                                    net.logstash.logback.argument.StructuredArguments.kv("dependency", dependency.tag()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("outcome", result.outcome().tag()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("duration_ms", elapsed.toMillis()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("budget_ms", timeout.toMillis()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("request_id", context.getOrDefault(REQUEST_ID_KEY, "-")),
+                                    net.logstash.logback.argument.StructuredArguments.kv("trace_id", context.getOrDefault(TRACE_ID_KEY, "-")));
+                        }
+                        return recorded(dependency, result, elapsed);
+                    });
         });
         // A call that is not sent (budget, above) has no span; the metric records it with zero duration.
         return spans.in("checkout.dependency",

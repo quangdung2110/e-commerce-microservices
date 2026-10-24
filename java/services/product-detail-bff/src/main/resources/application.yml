@@ -21,6 +21,9 @@ server:
 # Số mặc định là giá trị khởi điểm của ADR-004/ADR-007; load test có thể hiệu chỉnh nhưng
 # giá trị production phải qua ADR và giữ timeout BFF < mesh, deadline < gateway - 1 giây.
 pdp:
+  client-warmup:
+    timeout: ${PDP_CLIENT_WARMUP_TIMEOUT:30s}
+    rounds: ${PDP_CLIENT_WARMUP_ROUNDS:3}
   deadline: ${PDP_DEADLINE_MS:1000}ms
   phase-min-remaining: 100ms
   compose-reserve: 50ms

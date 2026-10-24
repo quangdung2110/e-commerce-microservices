@@ -20,9 +20,11 @@ public class InventoryClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public InventoryClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "inventory", properties.inventory());
+    public InventoryClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "inventory", properties.inventory());
         this.objectMapper = objectMapper;
+        objectMapper.readerFor(InventoryPayload.class);
     }
 
     /** @param skuIds 1..500 SKU unique, theo đúng contract Inventory */

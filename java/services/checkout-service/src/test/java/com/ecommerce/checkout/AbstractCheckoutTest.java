@@ -90,6 +90,13 @@ public abstract class AbstractCheckoutTest {
 
     static {
         UPSTREAMS.start();
+        UPSTREAMS.stubFor(get(urlEqualTo("/actuator/health/readiness"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"status\":\"UP\"}")));
+        UPSTREAMS.stubFor(post(urlEqualTo(PROMOTION_OPTIONS_PATH)).willReturn(json(200, Fixtures.voucherOptions(List.of()))));
+        // Cart's real contract returns an empty snapshot for an absent user. Exercise the
+        // response/templating path of this fake during startup too, rather than its default 404.
+        UPSTREAMS.stubFor(get(urlEqualTo("/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{\"items\":[]}")));
         REDIS.start();
     }
 
@@ -100,7 +107,7 @@ public abstract class AbstractCheckoutTest {
         registry.add("checkout.endpoints.cart-base-url", () -> http);
         registry.add("checkout.endpoints.user-base-url", () -> http);
         registry.add("checkout.endpoints.inventory-base-url", () -> http);
-        registry.add("checkout.endpoints.promotion-base-url", () -> http);
+        registry.add("checkout.endpoints.promotion-base-url", () -> System.getProperty("p1.live-promotion-url", http));
         registry.add("checkout.endpoints.order-base-url", () -> http);
         registry.add("checkout.endpoints.product-grpc-target", () -> "localhost:" + PRODUCT.port());
     }
@@ -142,6 +149,7 @@ public abstract class AbstractCheckoutTest {
     @BeforeEach
     void resetWorld() {
         UPSTREAMS.resetAll();
+        stubPromotionReadiness();
         PRODUCT.reset();
         clock.reset();
         for (Dependency dependency : Dependency.values()) {
@@ -161,6 +169,12 @@ public abstract class AbstractCheckoutTest {
     }
 
     // ------------------------------------------------------------------ stubs
+
+    protected static void stubPromotionReadiness() {
+        UPSTREAMS.stubFor(get(urlEqualTo("/actuator/health/readiness"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"status\":\"UP\"}")));
+        UPSTREAMS.stubFor(post(urlEqualTo(PROMOTION_OPTIONS_PATH)).willReturn(json(200, Fixtures.voucherOptions(List.of()))));
+    }
 
     /** Every provider healthy, the default cart and a PAYMENT_READY Order. */
     protected void stubHealthy() {

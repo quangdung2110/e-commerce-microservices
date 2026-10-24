@@ -137,7 +137,15 @@ public class DependencyGuard {
                     .onErrorResume(error -> Mono.just(classify(dependency, guarded, error, correlation)))
                     // contracts ADR-003: clients read the timeout this call runs under and send it to the provider.
                     .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
-                    .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
+                    .map(result -> {
+                        Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+                        if (result.outcome() != Outcome.SUCCESS) {
+                            log.warn("dependency call failed", kv("dependency", dependency.tag()),
+                                    kv("outcome", result.outcome().tag()), kv("duration_ms", elapsed.toMillis()),
+                                    kv("budget_ms", timeout.toMillis()), correlation[0], correlation[1]);
+                        }
+                        return recorded(dependency, result, elapsed);
+                    });
         });
     }
 

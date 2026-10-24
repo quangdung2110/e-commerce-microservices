@@ -104,6 +104,21 @@ data design.
 
 ## Verification
 
+### Bổ sung 2026-10-12: warm-up startup có giới hạn
+
+Các timeout client trong đợt E2E cho thấy cần tách chi phí khởi tạo kết nối khỏi budget
+business. Cold start/idle chưa được chứng minh là nguyên nhân duy nhất. Chọn một startup
+runner với ngân sách riêng 30 giây, ba round read-only trên pool HTTP Cart/User và channel
+gRPC Product thật; mỗi read tối đa 5 giây, tối đa hai retry backoff mỗi round. Không probe
+POST và không tạo dữ liệu nghiệp vụ. Chỉ quảng bá readiness sau thành công; thất bại dừng
+startup. Các replica đang chạy không mất readiness do downstream outage.
+
+Giữ nguyên toàn bộ bảng deadline/timeout, circuit, bulkhead và no-retry trong request ở ADR
+này. Thêm metric DNS/connect/pool/decode cùng log client/server có request ID để điều tra
+timeout còn lại; chỉ thay budget khi có đo latency đại diện. Verification bổ sung:
+first-request test không pre-warm, startup failure bị chặn thời gian, probe không ghi dữ
+liệu, HTTP 404 vẫn là business outcome và Product timeout vẫn fail closed.
+
 Test resilience ở [development.md](../development.md#test-bắt-buộc); load test xác nhận SLO; dashboard
 `checkout_dependency_calls_seconds` không có `timeout` do mesh cắt trước Checkout.
 
