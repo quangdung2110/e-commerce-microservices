@@ -10,6 +10,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { specificationNames, specificationsFor, structuredVariant } from './catalog-specifications.mjs';
 const gateway = process.env.GATEWAY ?? 'http://localhost:8088';
 if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(gateway).hostname)) {
   throw new Error('This development seed only accepts a local gateway.');
@@ -66,7 +67,7 @@ const existing = [
   ['laptop','laptop-nova-air-13','Laptop Nova Air 13','Nova',24990000,['16GB / 512GB','16GB / 1TB','32GB / 1TB'],['Bạc','Xám','Đen'],'Laptop Nova Air 13 mỏng nhẹ cho công việc và di chuyển.'],
   ['am-thanh','tai-nghe-terra-buds','Tai nghe không dây Terra Buds','Terra',1990000,['Tiêu chuẩn','Tiêu chuẩn','Sạc không dây'],['Trắng','Đen','Xanh'],'Tai nghe Bluetooth Terra Buds với hộp sạc và nhiều màu lựa chọn.'],
 ];
-const attributeSpecs = [['thuong-hieu','Thương hiệu',false],['mau-sac','Màu sắc',true],['cau-hinh','Cấu hình',true]];
+const attributeSpecs = [['thuong-hieu','Thương hiệu',false],['mau-sac','Màu sắc',true],['cau-hinh','Cấu hình',true],...Object.entries(specificationNames).map(([code,name])=>[code,name,true])];
 const stats = { categories_created: 0, products_created: 0, skus_added: 0 };
 
 async function replayOutbox(categoryMap) {
@@ -136,7 +137,9 @@ async function main() {
       stats.categories_created++;
     }
     const category = categoryMap.get(slug);
+    const usedCodes = new Set([...existing,...products].filter(p=>p[0]===slug).flatMap(p=>p[5].flatMap(config=>Object.keys(specificationsFor(p[1],config)))));
     for (const [code,,variant] of attributeSpecs) {
+      if (Object.hasOwn(specificationNames,code) && !usedCodes.has(code)) continue;
       const id = attributeMap.get(code).attribute_id;
       const mapping = category.attributes?.find(a => a.attribute_id === id);
       if (mapping && (mapping.is_variant !== variant || mapping.is_required)) throw new Error(`Incompatible category mapping: ${slug}/${code}`);
@@ -154,7 +157,7 @@ async function main() {
   for (const spec of [...existing,...products]) {
     const [categorySlug,slug,name,brand,base,configs,colors,description] = spec;
     const category_id = categoryMap.get(categorySlug).category_id;
-    const skus = configs.map((config,i) => ({sku_code:`DEV-${slug.toUpperCase()}-${i+1}`,base_price_vnd:base+i*Math.max(100000,Math.round(base*0.07/10000)*10000),status:'ACTIVE',variant_attributes:{'mau-sac':colors[i],'cau-hinh':config}}));
+    const skus = configs.map((config,i) => ({sku_code:`DEV-${slug.toUpperCase()}-${i+1}`,base_price_vnd:base+i*Math.max(100000,Math.round(base*0.07/10000)*10000),status:'ACTIVE',variant_attributes:structuredVariant(slug,{'mau-sac':colors[i],'cau-hinh':config})}));
     const summary = summaries.get(slug);
     let current;
     if (!summary) {
@@ -168,8 +171,8 @@ async function main() {
       // Preserve the original SKU code/price and add attributes to the first old SKU.
       const original = current.data.skus.find(s => !s.sku_code.startsWith('DEV-'));
       if (original) {
-        if (!original.variant_attributes['mau-sac'] || !original.variant_attributes['cau-hinh']) {
-          await request(`/api/v1/products/${id}/skus/${original.sku_id}`,{method:'PUT',etag:current.etag,body:{sku_code:original.sku_code,base_price_vnd:original.base_price_vnd,status:original.status,variant_attributes:{...original.variant_attributes,...skus[0].variant_attributes}}});
+        if (!original.variant_attributes['mau-sac'] || Object.hasOwn(original.variant_attributes,'cau-hinh')) {
+          await request(`/api/v1/products/${id}/skus/${original.sku_id}`,{method:'PUT',etag:current.etag,body:{sku_code:original.sku_code,base_price_vnd:original.base_price_vnd,status:original.status,variant_attributes:structuredVariant(slug,{...original.variant_attributes,...skus[0].variant_attributes})}});
           current = await request(`/api/v1/products/${id}`);
         }
         skus.shift();

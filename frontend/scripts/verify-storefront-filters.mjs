@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
+const gateway=process.env.GATEWAY??'http://localhost:8088';
+if(!['localhost','127.0.0.1','[::1]'].includes(new URL(gateway).hostname))throw new Error('Local gateway required.');
+async function get(route){const response=await fetch(gateway+route,{signal:AbortSignal.timeout(20000)});assert.equal(response.status,200,route);return response.json();}
+const evidence=fileURLToPath(new URL('../../docs/frontend/catalog-filter-fix-evidence-2026-10-17/',import.meta.url));
+const all=await get('/api/v2/search/products?in_stock=false&size=100');
+assert.equal(all.total_products,28);
+assert.deepEqual(all.facets.filters.map(f=>f.code),['thuong-hieu','mau-sac']);
+assert.ok(all.items.every(item=>!item.name.startsWith('QA ')));
+const seen=new Set();let cursor;let pages=0;
+do {const page=await get('/api/v2/search/products?'+new URLSearchParams({in_stock:'false',size:'5',...(cursor?{cursor}:{})}));assert.equal(page.total_products,28);for(const item of page.items){assert.ok(!seen.has(item.product_id));seen.add(item.product_id);}cursor=page.next_cursor;pages++;assert.ok(pages<20);}while(cursor);
+assert.equal(seen.size,all.total_products);
+const laptops=await get('/api/v2/search/products?category=laptop&in_stock=false&size=100');
+assert.deepEqual(laptops.facets.filters.map(f=>f.code),['thuong-hieu','mau-sac','ram','o-cung']);
+const ram=laptops.facets.filters.find(f=>f.code==='ram').options.find(o=>o.label==='16GB');
+const disk=laptops.facets.filters.find(f=>f.code==='o-cung').options.find(o=>o.label==='512GB');
+assert.ok(ram&&disk);
+const query=new URLSearchParams({category:'laptop',in_stock:'false',size:'100'});query.append('filter',ram.value);query.append('filter',disk.value);
+const selected=await get('/api/v2/search/products?'+query);
+assert.ok(selected.items.length>0);
+for(const item of selected.items){const product=await get('/api/v1/storefront/products/'+item.product_slug);const sku=product.skus.find(s=>s.sku_id===item.sku_id);assert.equal(sku.variant_attributes.ram,'16GB');assert.equal(sku.variant_attributes['o-cung'],'512GB');}
+const tree=await get('/api/v2/search/categories');
+assert.ok(tree.categories.every(c=>!c.slug.startsWith('qa-')));
+const smart=await get('/api/v2/search/products?category=nha-thong-minh&in_stock=false&size=100');
+assert.ok(smart.facets.filters.every(f=>!['ram','o-cung','cau-hinh'].includes(f.code)));
+assert.ok(smart.facets.filters.some(f=>f.code==='do-phan-giai'));
+const result={products:all.total_products,paginated_products:seen.size,pages,qa_products_in_public_search:0,all_product_facets:all.facets.filters.map(f=>({code:f.code,options:f.options.length})),laptop_facets:laptops.facets.filters.map(f=>f.code),laptop_combined_filter_matches:selected.items.length,all_combined_filter_representatives_verified:true,smart_home_facets:smart.facets.filters.map(f=>f.code),qa_categories_in_tree:0};
+fs.mkdirSync(evidence,{recursive:true});fs.writeFileSync(evidence+'public-api-verification.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));

@@ -1,21 +1,7 @@
 import Link from "next/link";
 
 import { Logo } from "@/components/layout/logo";
-
-const COLUMNS = [
-  {
-    title: "Về chúng tôi",
-    links: ["Giới thiệu", "Tuyển dụng", "Tin tức", "Liên hệ"],
-  },
-  {
-    title: "Hỗ trợ khách hàng",
-    links: ["Trung tâm trợ giúp", "Chính sách đổi trả", "Bảo hành", "Vận chuyển"],
-  },
-  {
-    title: "Chính sách",
-    links: ["Điều khoản sử dụng", "Chính sách bảo mật", "Chính sách cookie"],
-  },
-];
+import { footerColumns } from "@/lib/help-content";
 
 export function Footer() {
   return (
@@ -25,22 +11,22 @@ export function Footer() {
           <div className="space-y-4">
             <Logo />
             <p className="max-w-prose-narrow text-[14px] leading-relaxed text-muted-foreground">
-              Nền tảng thương mại điện tử cho sản phẩm công nghệ chính hãng, với
-              giá minh bạch và giao hàng nhanh.
+              Khám phá công nghệ phù hợp với bạn. Thông tin sản phẩm, giá và
+              đơn hàng rõ ràng ở từng bước mua sắm.
             </p>
           </div>
 
-          {COLUMNS.map((column) => (
+          {footerColumns.map((column) => (
             <div key={column.title} className="space-y-3">
               <h2 className="text-caption font-medium uppercase tracking-wide text-muted-foreground">
                 {column.title}
               </h2>
               <ul className="space-y-2">
-                {column.links.map((label) => (
-                  <li key={label}>
+                {column.links.map(({ label, href }) => (
+                  <li key={href}>
                     <Link
-                      href="/"
-                      className="focus-ring rounded-sm text-[14px] text-foreground-secondary transition-colors hover:text-clay-strong"
+                      href={href}
+                      className="focus-ring inline-flex min-h-11 items-center rounded-sm text-[14px] text-foreground-secondary transition-colors hover:text-clay-strong"
                     >
                       {label}
                     </Link>
@@ -53,7 +39,7 @@ export function Footer() {
 
         <div className="mt-12 flex flex-col items-center justify-between gap-3 border-t border-border pt-6 text-caption text-muted-foreground md:flex-row">
           <p>© {new Date().getFullYear()} TechNova. Bảo lưu mọi quyền.</p>
-          <p>Đã đăng ký với Bộ Công Thương</p>
+          <Link href="/help" className="focus-ring inline-flex min-h-11 items-center rounded-sm underline underline-offset-4">Hướng dẫn mua sắm và hỗ trợ</Link>
         </div>
       </div>
     </footer>

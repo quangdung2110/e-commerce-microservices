@@ -28,6 +28,17 @@ function price(value: string | undefined): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined;
 }
 
+export function searchPriceErrors(raw: PageSearchParams): string[] {
+  const errors: string[] = [];
+  for (const [key, label] of [["price_min", "Giá tối thiểu"], ["price_max", "Giá tối đa"]] as const) {
+    const value = firstParam(raw[key]);
+    if (value && price(value) === undefined) errors.push(`${label} phải là số nguyên không âm không vượt quá ${Number.MAX_SAFE_INTEGER}.`);
+  }
+  const min = price(firstParam(raw.price_min)), max = price(firstParam(raw.price_max));
+  if (min !== undefined && max !== undefined && min > max) errors.push("Giá tối đa phải lớn hơn hoặc bằng giá tối thiểu.");
+  return errors;
+}
+
 /** Cursor chỉ nằm trong React Query và luôn reset khi URL filter đổi. */
 export function parseSearchParams(raw: PageSearchParams, category?: string): SearchParams {
   const sort = firstParam(raw.sort);
@@ -46,4 +57,15 @@ export function parseSearchParams(raw: PageSearchParams, category?: string): Sea
 
 export function flattenCategories(nodes: CategoryNode[], depth = 0): (CategoryNode & { depth: number })[] {
   return nodes.flatMap((node) => [{ ...node, depth }, ...flattenCategories(node.children, depth + 1)]);
+}
+
+/** Return the complete route from the root, including the selected node. */
+export function categoryPath(nodes: CategoryNode[], category?: string): CategoryNode[] {
+  if (!category) return [];
+  for (const node of nodes) {
+    if (node.slug === category || node.category_id === category) return [node];
+    const children = categoryPath(node.children, category);
+    if (children.length) return [node, ...children];
+  }
+  return [];
 }

@@ -1,0 +1,13 @@
+{
+  "navigationCategorySlugs": ["dien-thoai", "laptop", "am-thanh", "may-tinh-bang", "dong-ho-thong-minh", "phu-kien", "gaming", "nha-thong-minh"],
+  "products": [
+    { "slug": "dien-thoai-terra-x1", "illustration": "phone", "copy": "Điện thoại Terra X1 với các lựa chọn màu sắc và dung lượng lưu trữ. Chọn phân loại để kiểm tra mức giá tương ứng." },
+    { "slug": "laptop-nova-air-13", "illustration": "laptop", "copy": "Laptop Nova Air 13 dành cho góc làm việc và nhu cầu di chuyển. So sánh các lựa chọn bộ nhớ và ổ lưu trữ trước khi thêm vào giỏ." },
+    { "slug": "tai-nghe-terra-buds", "illustration": "earbuds", "copy": "Tai nghe Terra Buds với hộp sạc và nhiều lựa chọn màu sắc. Chọn đúng phân loại để xem giá và tình trạng hàng hiện tại." },
+    { "slug": "may-tinh-bang-nova-pad-11", "illustration": "tablet", "copy": "Máy tính bảng Nova Pad 11 với nhiều lựa chọn dung lượng và kết nối. Kiểm tra phân loại để chọn cấu hình phù hợp với nhu cầu của bạn." },
+    { "slug": "dong-ho-terra-watch-fit", "illustration": "watch", "copy": "Đồng hồ Terra Watch Fit với nhiều lựa chọn kích thước và màu sắc. Xem đầy đủ thông tin phân loại và giá trước khi chọn mua." },
+    { "slug": "cu-sac-nova-gan", "illustration": "charger", "copy": "Củ sạc Nova GaN với các lựa chọn công suất và số cổng. Đối chiếu phân loại với nhu cầu kết nối của thiết bị trước khi thêm vào giỏ." },
+    { "slug": "ban-phim-co-vortex-k75", "illustration": "keyboard", "copy": "Bàn phím Vortex K75 với các lựa chọn switch và màu sắc. Chọn phân loại để kiểm tra giá của đúng phiên bản bạn quan tâm." },
+    { "slug": "camera-luma-home", "illustration": "camera", "copy": "Camera Luma Home với nhiều lựa chọn cấu hình và dung lượng. Xem phân loại để đối chiếu giá và khả năng kết nối phù hợp." }
+  ]
+}
