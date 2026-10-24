@@ -44,6 +44,13 @@ Layout: `app/(site)/layout.tsx` (header + footer).
 | `/c/[slug]` | Trang danh mục với facet lọc thuộc tính | `GET /api/v2/search/products?category={slug}`, `GET /api/v2/search/categories/{category_id}/facets` | Công khai | 4 | có |
 | `/products/[slug]` | Chi tiết sản phẩm: gallery, chọn biến thể, giá, tình trạng hàng, tóm tắt đánh giá, thêm vào giỏ | `GET /api/v1/storefront/products/{slug}` (Product Detail BFF) | Công khai | 4 | có — PDP BFF, UNKNOWN degrade độc lập |
 | `/products/[slug]/reviews` | Toàn bộ đánh giá đã duyệt, lọc theo sao/SKU/có ảnh | `GET /api/v1/reviews/products/{product_id}`, `GET …/aggregate` | Công khai | 4 | có |
+| `/help` | Trung tâm trợ giúp và lối tắt đơn hàng/tài khoản | Nội dung tĩnh trong `lib/help-content.ts` | Công khai | UI 17/10/2026 | có |
+| `/help/[slug]` | Giới thiệu, liên hệ, trả hàng, bảo hành, vận chuyển, điều khoản, quyền riêng tư, cookie | Nội dung đối chiếu backend; không gọi API, 8 bài dựng tĩnh, slug lạ trả 404 | Công khai | UI 17/10/2026 | có |
+
+Từ 17/10/2026, trang chủ có ảnh lifestyle lưu local với attribution, hiển thị sản phẩm mới
+trước danh mục; dữ liệu Search tải trong Suspense để không chặn hero. Search/category
+giữ sidebar từ `lg`, dưới `lg` dùng Sheet có số bộ lọc; xóa bộ lọc giữ từ khóa và route
+danh mục, trả về `in_stock=false`. Xem [báo cáo UI](./storefront-ui-update-2026-10-17.md).
 
 ## 2. Xác thực
 
@@ -81,7 +88,7 @@ Layout: `app/(site)/(protected)/layout.tsx` (bọc `RequireAuth`).
 | `/reviews/new?eligibility=` | Viết đánh giá, tải ảnh/video | `POST /api/v1/reviews/media/upload-urls`, `PUT` thẳng storage, `POST /api/v1/reviews`, `GET /api/v1/reviews/me/eligibilities/{id}` (đọc phục hồi) | Đăng nhập | 9 | có — không idempotency key, phục hồi theo eligibility |
 | `/reviews/[reviewId]` | Xem đánh giá của mình (kể cả khi bị ẩn/gỡ) và sửa đúng một lần khi còn `APPROVED` | `GET /api/v1/reviews/me/{id}`, `PATCH /api/v1/reviews/{id}` | Đăng nhập | 9 | có — PATCH chỉ gửi trường đổi; media là thay toàn bộ |
 | `/notifications?filter=unread` | Hộp thông báo: đánh dấu đã đọc/chưa đọc, ẩn, đọc tất cả; mở thông báo chỉ theo link cùng origin | `GET /api/v1/notifications/inbox`, `PATCH/DELETE …/inbox/{id}`, `POST …/mark-all-read` | Đăng nhập | 9 | có |
-| `/vouchers` | Ví voucher của tôi | — | Đăng nhập | — | chờ API |
+| `/vouchers` | Ví voucher của tôi: tất cả/chưa dùng/đã dùng/hết hạn, điều kiện, hạn dùng và đơn đã dùng | `GET /api/v1/me/promotion-vouchers` | Đăng nhập | B01 | có — API đọc ví độc lập, phân trang cursor, trạng thái hiệu lực; xem [báo cáo](./voucher-wallet-2026-10-20.md) |
 
 Nút báo cáo đánh giá (`POST /api/v1/reviews/{id}/reports`) nằm ngay trong danh sách đánh
 giá ở PDP, không có route riêng. Chuông thông báo trên header dùng
@@ -206,7 +213,7 @@ lộ trình.
 
 | Khoảng trống | Route bị ảnh hưởng | Cần gì |
 |---|---|---|
-| Không có API liệt kê voucher trong ví của người dùng | `/vouchers` | Endpoint đọc wallet không cần checkout context |
+| Đã bổ sung API liệt kê ví (20/10/2026) | `/vouchers` | `GET /api/v1/me/promotion-vouchers`, không cần checkout context; B01 đã triển khai |
 | User build lỗi thiếu checksum `golang.org/x/crypto`; Cart/Promotion cùng publish host 8085 | `/checkout` và live bước 6 | Đồng bộ module graph User và cổng Compose; bằng chứng tái hiện ở [step-6-verification](./step-6-verification.md) |
 | Payment README module còn nói chưa có runtime, trong khi code/Gate 3 đã hiện thực | `/checkout`, Stripe | Đồng bộ README; Sandbox E2E cần Stripe test keys và webhook thật, chưa có bằng chứng live |
 | MFA cho `ADMIN` là production gate; Auth chưa có MFA | Toàn bộ `/admin/inventory/**` (production) | ADR Auth/gateway phát hành và chuyển tiếp MFA assertion; dev/local chạy với role `ADMIN` |

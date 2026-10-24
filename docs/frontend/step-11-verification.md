@@ -1,5 +1,7 @@
 # Bước 11 — Voucher trong checkout
 
+> **Cập nhật live 11/10/2026:** xem [báo cáo bổ sung](./live-local-2026-10-11.md) và checkbox hiện hành trong implementation-plan. Các kết quả bên dưới là lịch sử kiểm chứng; blocker Stripe/CDC và một số mutation đã được kiểm tra lại.
+
 Ngày **10/10/2026**. Kế hoạch ở [implementation-plan §13](./implementation-plan.md#13-bước-11--voucher-trong-checkout).
 Contract nguồn: [Checkout v1](../../contracts/http/checkout/v1/openapi.yaml),
 [Promotion v1](../../contracts/http/promotion/v1/openapi.yaml).
