@@ -1,0 +1,13 @@
+**
+!contracts/
+!contracts/**
+!scripts/
+!scripts/cd/
+!scripts/cd/checks.py
+!scripts/cd/e2e.py
+!deploy/
+!deploy/checks/
+!deploy/checks/requirements.txt
+**/node_modules/
+**/.env*
+**/__pycache__/
