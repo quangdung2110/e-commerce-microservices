@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "argo_rollouts": {
+    "version": "v1.10.1",
+    "manifest_url": "https://github.com/argoproj/argo-rollouts/releases/download/v1.10.1/install.yaml",
+    "manifest_sha256": "149148429a6f8258b789003ffb9bc6698a526d611ecb1b185624217cf51bae7f",
+    "image": "quay.io/argoproj/argo-rollouts:v1.10.1@sha256:fbcc4cf0a29da25d86230992b1dfdeadf30b6f1baa74ea7c9c98e3e580769396"
+  }
+}

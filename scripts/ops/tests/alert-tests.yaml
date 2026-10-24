@@ -1,0 +1,64 @@
+rule_files: [alerts.rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: healthy requests do not page
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",status="200"}'
+        values: '0+100x370'
+      - series: 'http_server_requests_seconds_count{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",status="500"}'
+        values: '0+0x370'
+      - series: 'http_server_requests_seconds_bucket{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",le="1.0"}'
+        values: '0+100x370'
+      - series: 'http_server_requests_seconds_bucket{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",le="+Inf"}'
+        values: '0+100x370'
+      - series: 'up{namespace="ecommerce-staging",service="product-detail-bff"}'
+        values: '1+0x370'
+    alert_rule_test:
+      - eval_time: 6h2m
+        alertname: BffSloFastBurn
+        exp_alerts: []
+      - eval_time: 6h2m
+        alertname: BffSloSlowBurn
+        exp_alerts: []
+      - eval_time: 6h2m
+        alertname: BffSloTelemetryMissing
+        exp_alerts: []
+  - name: sustained server errors exhaust availability budget
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",status="200"}'
+        values: '0+97x370'
+      - series: 'http_server_requests_seconds_count{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",status="500"}'
+        values: '0+3x370'
+      - series: 'http_server_requests_seconds_bucket{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",le="1.0"}'
+        values: '0+100x370'
+      - series: 'http_server_requests_seconds_bucket{namespace="ecommerce-staging",service="product-detail-bff",uri="/api/v1/storefront/products/{slug}",le="+Inf"}'
+        values: '0+100x370'
+      - series: 'up{namespace="ecommerce-staging",service="product-detail-bff"}'
+        values: '1+0x370'
+    alert_rule_test:
+      - eval_time: 6h2m
+        alertname: BffSloFastBurn
+        exp_alerts:
+          - exp_labels: {severity: critical, owner: platform, slo: availability, namespace: ecommerce-staging, service: product-detail-bff}
+            exp_annotations:
+              summary: Product Detail BFF consumes its availability error budget
+              runbook_url: https://github.com/quangdung2110/e-commerce-microservices/blob/main/docs/cicd/phase-3.md#slo
+      - eval_time: 6h2m
+        alertname: BffSloSlowBurn
+        exp_alerts:
+          - exp_labels: {severity: warning, owner: platform, slo: availability, namespace: ecommerce-staging, service: product-detail-bff}
+            exp_annotations:
+              summary: Product Detail BFF consumes its availability error budget
+              runbook_url: https://github.com/quangdung2110/e-commerce-microservices/blob/main/docs/cicd/phase-3.md#slo
+  - name: missing telemetry pages instead of reporting health
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BffSloTelemetryMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, owner: platform, namespace: ecommerce-staging, service: product-detail-bff}
+            exp_annotations:
+              summary: BFF SLO telemetry is absent, down or stale

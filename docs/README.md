@@ -11,6 +11,16 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
+## CI/CD
+
+- [Đợt 1 — CI và phát hành container](./cicd/phase-1.md): required gate, test matrix,
+  frontend, security scan, SBOM, attestation, GHCR và manifest image theo digest.
+- [Đợt 2 — GitOps và bootstrap staging/production](./cicd/phase-2.md): cấu hình hạ tầng,
+  secret, migration, E2E staging, promotion và rollback qua PR.
+- [Đợt 3 — Vận hành](./cicd/phase-3.md): canary BFF, SLO, hiệu năng định kỳ và diễn tập phục hồi.
+
+---
+
 ## 0. Legacy Contract Documents — `docs/_contracts/`
 
 | File | Mô tả |
