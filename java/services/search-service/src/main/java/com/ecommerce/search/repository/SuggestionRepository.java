@@ -27,11 +27,19 @@ public class SuggestionRepository {
     private final ElasticsearchClient client;
     private final SearchProperties properties;
     private final SearchMetrics metrics;
+    private final com.ecommerce.search.config.StorefrontProperties storefront;
 
     public SuggestionRepository(ElasticsearchClient client, SearchProperties properties, SearchMetrics metrics) {
+        this(client, properties, metrics, new com.ecommerce.search.config.StorefrontProperties());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SuggestionRepository(ElasticsearchClient client, SearchProperties properties, SearchMetrics metrics,
+                                com.ecommerce.search.config.StorefrontProperties storefront) {
         this.client = client;
         this.properties = properties;
         this.metrics = metrics;
+        this.storefront = storefront;
     }
 
     public List<SuggestionDocument> suggest(String prefix, int limit) throws IOException {
@@ -49,7 +57,7 @@ public class SuggestionRepository {
                 .index(index)
                 .size(limit)
                 .trackTotalHits(track -> track.enabled(false))
-                .query(matchPrefix(prefix))
+                .query(publicQuery(prefix))
                 .sort(sort -> sort.field(f -> f.field("weight").order(SortOrder.Desc)))
                 .sort(sort -> sort.field(f -> f.field("text.keyword").order(SortOrder.Asc)))
                 .allowPartialSearchResults(false)
@@ -66,5 +74,16 @@ public class SuggestionRepository {
      */
     private static Query matchPrefix(String prefix) {
         return Query.of(q -> q.match(match -> match.field("text").query(prefix)));
+    }
+
+    Query publicQuery(String prefix) {
+        return Query.of(q -> q.bool(b -> {
+            b.must(matchPrefix(prefix));
+            if (!storefront.getExcludedProductIds().isEmpty()) b.mustNot(n -> n.terms(t -> t.field("product_id")
+                    .terms(v -> v.value(storefront.getExcludedProductIds().stream().map(co.elastic.clients.elasticsearch._types.FieldValue::of).toList()))));
+            if (!storefront.getExcludedCategoryIds().isEmpty()) b.mustNot(n -> n.terms(t -> t.field("category_id")
+                    .terms(v -> v.value(storefront.getExcludedCategoryIds().stream().map(co.elastic.clients.elasticsearch._types.FieldValue::of).toList()))));
+            return b;
+        }));
     }
 }

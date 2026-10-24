@@ -26,17 +26,19 @@ public class CategoryFacetService {
     private final ProductQueryBuilder queryBuilder;
     private final FacetAssembler facetAssembler;
     private final FacetLabelResolver facetLabels;
+    private final StorefrontFacetPolicy facetPolicy;
 
     public CategoryFacetService(ProductSearchRepository repository,
                                 CategoryRepository categoryRepository,
                                 ProductQueryBuilder queryBuilder,
                                 FacetAssembler facetAssembler,
-                                FacetLabelResolver facetLabels) {
+                                FacetLabelResolver facetLabels, StorefrontFacetPolicy facetPolicy) {
         this.repository = repository;
         this.categoryRepository = categoryRepository;
         this.queryBuilder = queryBuilder;
         this.facetAssembler = facetAssembler;
         this.facetLabels = facetLabels;
+        this.facetPolicy = facetPolicy;
     }
 
     public SearchDtos.FacetSet facetsOf(String categoryId) throws IOException {
@@ -51,7 +53,7 @@ public class CategoryFacetService {
         }));
 
         var response = repository.aggregate(query, queryBuilder.facetAggregations(), "category_facets");
-        return facetAssembler.assemble(response.aggregations().get(ProductQueryBuilder.FACET_AGG),
-                facetLabels.labels(Optional.of(categoryId)));
+        return facetPolicy.apply(facetAssembler.assemble(response.aggregations().get(ProductQueryBuilder.FACET_AGG),
+                facetLabels.labels(Optional.of(categoryId))), Optional.of(categoryId));
     }
 }

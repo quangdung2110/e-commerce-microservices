@@ -52,3 +52,7 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-023](./ADR-023-request-correlation-and-caller-deadline.md) | Request ID, trace ID, deadline của caller và timeout export 25 giây (nhỏ hơn mesh 30 giây) | Accepted | 2026-10-15 | Làm rõ ADR-022 |
 | [ADR-024](./ADR-024-drop-review-bearer-and-outbound-metrics.md) | Bỏ bearer token Review; timer `search.outbound.http` theo dependency và outcome | Accepted | 2026-10-15 | Bổ sung ADR-023 |
 | [ADR-025](./ADR-025-retry-after-on-elasticsearch-unavailable.md) | `Retry-After: 2` trên `ELASTICSEARCH_UNAVAILABLE` | Accepted | 2026-10-15 | — |
+| [ADR-026](./ADR-026-reindex-preserves-tombstones.md) | Giữ tombstone Product/Category qua reindex; count drift chỉ so catalog chưa xóa | Accepted | 2026-10-16 | Mở rộng ADR-011/022 |
+| [ADR-027](./ADR-027-product-card-projection.md) | Projection cấp Product `product_cards` (SKU `nested`) dựng từ index SKU, truy vấn storefront một trang mỗi request | Accepted; rollout/lifecycle được ADR-029 thay | 2026-10-16 | Mở rộng ADR-020 |
+| [ADR-028](./ADR-028-storefront-facet-discovery-policy.md) | Facet theo danh mục, thứ tự biên tập và loại fixture khỏi public discovery trước query/count/pagination | Accepted | 2026-10-17 | Mở rộng ADR-020/027 |
+| [ADR-029](./ADR-029-required-product-card-read-model.md) | `product_cards` bắt buộc; không fallback request mới; chuẩn bị projection và chuyển năm alias cùng lúc; giữ PIT qua cutover | Accepted | 2026-10-19 | Thay chính sách pilot/fallback và lifecycle của ADR-027 |

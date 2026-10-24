@@ -10,6 +10,7 @@ import com.ecommerce.search.repository.JobStateRepository;
 import com.ecommerce.search.repository.es.IndexAdmin;
 import com.ecommerce.search.worker.job.FullReindexJob;
 import com.ecommerce.search.worker.job.ReindexRecovery;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +52,10 @@ class ReindexRunServiceTest {
         preconditions = mock(ReindexPreconditions.class);
         recovery = mock(ReindexRecovery.class);
         indexAdmin = mock(IndexAdmin.class);
+        ProductCardProjector cards = mock(ProductCardProjector.class);
+        var prepared = mock(ProductCardProjector.PreparedGeneration.class);
+        when(prepared.index()).thenReturn("product_cards_v3");
+        when(cards.prepareForCutover(anyString(), any())).thenReturn(prepared);
         SearchProperties properties = mock(SearchProperties.class);
         when(properties.aliases()).thenReturn(new SearchProperties.Aliases(
                 "products", "products_write", "categories", "categories_write", "search_suggestions", "search_jobs"));
@@ -59,7 +64,7 @@ class ReindexRunServiceTest {
                 true, true, 1.5, Duration.ofHours(24), "0 15 * * * *", true));
         when(recovery.settleAbandoned()).thenReturn(ReindexRecovery.Outcome.NOTHING_ACTIVE);
         service = new ReindexRunService(runs, job, preconditions, recovery, indexAdmin, properties,
-                new SearchMetrics(new SimpleMeterRegistry()));
+                new SearchMetrics(new SimpleMeterRegistry()), cards);
     }
 
     // ------------------------------------------------------------------ trigger
@@ -234,7 +239,7 @@ class ReindexRunServiceTest {
         @SuppressWarnings("unchecked")
         org.mockito.ArgumentCaptor<Map<String, List<String>>> targets = org.mockito.ArgumentCaptor.forClass(Map.class);
         verify(indexAdmin).swapAliasesAtomically(targets.capture());
-        assertThat(targets.getValue()).containsOnlyKeys("products_v1", "categories_v1");
+        assertThat(targets.getValue()).containsOnlyKeys("products_v1", "categories_v1", "product_cards_v3");
         assertThat(targets.getValue().get("products_v1")).containsExactlyInAnyOrder("products", "products_write");
         org.mockito.ArgumentCaptor<ReindexRunDocument> saved = org.mockito.ArgumentCaptor.forClass(ReindexRunDocument.class);
         verify(runs).saveRun(saved.capture());

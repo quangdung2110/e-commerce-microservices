@@ -13,6 +13,13 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 search:
+  product-index:
+    enabled: true
+    poll-interval: 1h
+    readiness-refresh: 0s
+  # Integration fixtures use these generic canonical attribute codes.
+  storefront:
+    common-facets: [brand, color, size, material, screen_size]
   consumer-group: search-indexer-test
   bootstrap-indices: true
   cors:

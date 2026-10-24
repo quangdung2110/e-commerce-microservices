@@ -7,6 +7,8 @@ import com.ecommerce.search.domain.document.ReindexRunDocument;
 import com.ecommerce.search.repository.JobStateRepository;
 import com.ecommerce.search.repository.es.IndexAdmin;
 import com.ecommerce.search.repository.es.IndexTemplates;
+import com.ecommerce.search.repository.es.ProductCardIndex;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -14,6 +16,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -52,6 +55,12 @@ public class IndexCleanupJob {
     private final JobStateRepository runs;
     private final SearchProperties properties;
     private final SearchMetrics metrics;
+    private Duration productPitKeepAlive = Duration.ofMinutes(2);
+
+    @org.springframework.beans.factory.annotation.Value("${search.pagination.pit-keep-alive:2m}")
+    void productPitKeepAlive(String value) {
+        productPitKeepAlive = org.springframework.boot.convert.DurationStyle.detectAndParse(value);
+    }
 
     public IndexCleanupJob(IndexAdmin indexAdmin, JobStateRepository runs, SearchProperties properties,
                            SearchMetrics metrics) {
@@ -90,6 +99,11 @@ public class IndexCleanupJob {
                     false, inUse, retired, now);
             deleted += clean(IndexTemplates.CATEGORIES, List.of(properties.aliases().categories()),
                     false, inUse, retired, now);
+            // Also covers a long private build before its completed target is checkpointed.
+            if (runs.readLease(ProductCardProjector.LEASE).filter(held -> !held.expired(now)).isEmpty()) {
+                deleted += clean(IndexTemplates.PRODUCT_CARDS, List.of(ProductCardIndex.ALIAS),
+                        false, inUse, retired, now);
+            }
             deleted += clean(IndexTemplates.SEARCH_SUGGESTIONS, List.of(properties.aliases().searchSuggestions()),
                     true, inUse, retired, now);
             forgetDeleted(retired);
@@ -133,9 +147,13 @@ public class IndexCleanupJob {
                 continue;
             }
             Instant retiredAt = retired.get(index);
-            if (!alreadyKnown.contains(index) || retiredAt.plus(properties.lifecycle().oldIndexRetention()).isAfter(now)) {
+            Duration retention = properties.lifecycle().oldIndexRetention();
+            if (IndexTemplates.PRODUCT_CARDS.equals(template) && retention.compareTo(productPitKeepAlive) < 0)
+                retention = productPitKeepAlive;
+            if (!alreadyKnown.contains(index) || retiredAt.plus(retention).isAfter(now)) {
                 continue;
             }
+            if (IndexTemplates.PRODUCT_CARDS.equals(template) && indexAdmin.hasOpenSearchContexts(index)) continue;
             indexAdmin.deleteIndex(index);
             runs.clearIndexRetired(index);
             metrics.indexCleaned(template);
@@ -156,6 +174,7 @@ public class IndexCleanupJob {
             if (state.categoriesIndex() != null) {
                 indices.add(state.categoriesIndex());
             }
+            if (state.productCardsIndex() != null) indices.add(state.productCardsIndex());
             if (active.get().targetIndex() != null) {
                 indices.add(active.get().targetIndex());
             }

@@ -13,6 +13,27 @@ evidence:
 
 # Search Service — Vận hành
 
+## Chính sách bộ lọc/discovery storefront (17/10/2026)
+
+[ADR-028](./decisions/ADR-028-storefront-facet-discovery-policy.md) bổ sung `search.storefront` trong `application.yml`:
+
+```yaml
+search:
+  storefront:
+    common-facets: [thuong-hieu, mau-sac]
+    category-facets:
+      laptop: [ram, o-cung]
+      nha-thong-minh: [do-phan-giai, dung-luong-luu-tru, cong-suat, anh-sang, tram-sac]
+    excluded-product-ids: []
+    excluded-category-ids: []
+```
+
+Đây là đoạn cấu hình minh họa; file runtime có đủ 8 nhóm danh mục. Common đứng trước, rồi các mã riêng theo đúng thứ tự. Category con thừa kế policy tổ tiên gần nhất nếu chưa có cấu hình riêng. Category lookup lỗi chỉ trả facet chung. Việc không quảng bá một facet không chặn opaque token hợp lệ từ URL cũ.
+
+Hai biến `SEARCH_STOREFRONT_EXCLUDED_PRODUCT_IDS` / `SEARCH_STOREFRONT_EXCLUDED_CATEGORY_IDS` nhận danh sách ID cách nhau bằng dấu phẩy. Service mặc định không loại ID nào; compose local khai báo các fixture đã kiểm chứng của workspace này. Với catalog mới phải cập nhật ID của môi trường, không sao chép ID local sang production. Fixture mới phải được đăng ký tường minh. Muốn thử discovery QA, dùng compose override đặt hai biến thành chuỗi trống; không sửa/xóa fixture. Đây không phải hàng rào phân quyền: chi tiết trực tiếp/admin/gRPC/history vẫn đọc canonical data.
+
+Rollout cấu hình cùng giá trị trên mọi replica, bắt đầu lượt tìm kiếm mới. Không cần migration hay reindex cho policy. Category count hội tụ ở lần job tiếp theo; nguồn Product của suggestion rebuild dùng cùng visibility filters, và đọc suggestion đã có cũng loại ID nguồn trước limit. Khi loại cả nhánh category, thêm cả ID category con vào danh sách để loại category suggestion đã build từ trước. Thay thông số seed dùng Product API/ETag/CDC theo [runbook](../frontend/catalog-filter-fix-2026-10-17.md#chạy-lại-và-hoàn-nguyên).
+
 > File này trả lời: “Search hỏng thì phát hiện và xử lý thế nào?”
 
 ## 1. SLO và SLI
@@ -38,8 +59,7 @@ client của Search: 5s cho truy vấn sản phẩm, 2s cho suggest, và mức d
 
 - **Liveness:** tiến trình còn sống. Không kiểm tra dependency, để một sự cố
   Elasticsearch không gây restart hàng loạt.
-- **Readiness:** chỉ `UP` khi kết nối Elasticsearch dùng được và consumer đã
-  subscribe xong. Elasticsearch không dùng được nghĩa là instance không phục vụ
+- **Readiness:** chỉ `UP` khi Elasticsearch dùng được, Kafka listener đang chạy và `product_cards` khớp SKU generation (ADR-029). Elasticsearch không dùng được nghĩa là instance không phục vụ
   được truy vấn nào, nên phải bị rút khỏi traffic.
 - **Startup:** cho phép thời gian khởi động dài hơn khi cluster đang khởi động
   cùng lúc.
@@ -208,6 +228,12 @@ Ngưỡng cụ thể là `TBD` cho tới khi có nền số liệu.
 
 ## 10. Runbooks
 
+Reindex count drift ([ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md)): so `_count` với query
+`{"term":{"is_deleted":false}}` trên current/candidate, không dùng tổng có tombstone làm catalog coverage.
+Kiểm riêng deletion guard của cả Product/Category được chuyển nguyên revision/`deleted_at` vào candidate.
+Scan timeout/shard lỗi, item failure hoặc live revision mâu thuẫn tombstone làm run fail; đọc log job
+`reindex-tombstones` và giữ alias cũ. Không tăng ngưỡng 2% hoặc purge tombstone để ép cutover.
+
 Mỗi runbook cần: triệu chứng, bước chẩn đoán chỉ đọc, cách khắc phục, cách xác
 nhận đã phục hồi và người escalate. Bộ runbook bắt buộc:
 
@@ -254,7 +280,48 @@ Mỗi request scan toàn tập Product khớp; mặc định product-scan-batch-
 
 Cursor PIT keep-alive=2m, renew theo request; trang cuối/lỗi đóng context, bỏ dở tự expire. Theo dõi heap, open PIT, es_query_duration_seconds query_type=product_groups và latency/throughput. Benchmark trước khi tăng cap hoặc rollout catalog lớn. Không có result cache ứng dụng.
 
+Benchmark đầu tiên ([docs/performance/search-scale-benchmark.md](../performance/search-scale-benchmark.md), `scripts/ci/search-bench.sh`) đo khoảng 0,1 ms cho mỗi Product khớp: ngân sách 5 giây hết ở khoảng 45 000 Product khớp khi rảnh, tức trước cap 50 000, và chỉ vài nghìn khi có tải đồng thời. Elasticsearch bão hoà CPU từ catalog 10 000 Product. Trang chủ storefront (hai truy vấn `in_stock=false` không bộ lọc, quét toàn catalog) lỗi 100% với 16 người xem đồng thời từ 10 000 Product. Vì đường đọc buyer đặt `allow_partial_search_results=false`, shard lỗi (thường gặp nhất là hết ngân sách giữa pha query, `query_phase_execution_exception` "Time exceeded") không tới dưới dạng `200` có `timed_out`/`_shards.failed` mà là Elasticsearch `500` `search_phase_execution_exception` "all shards failed". `ProblemExceptionHandler` map cả hai dạng (`IncompleteResultsException` và `500` đó) thành `504 SEARCH_TIMEOUT`, không phải `503 ELASTICSEARCH_UNAVAILABLE`. Đặt ngưỡng cảnh báo p99 và quyết định rollout catalog lớn theo các số này.
+
 Cấu hình SEARCH_CURSOR_SECRET tối thiểu 32 ký tự bằng secret deployment, giống nhau trên mọi replica. Giá trị mặc định chỉ dành cho dev; đổi secret làm cursor cũ invalid. Rollout backend/frontend/contracts pilot cùng đợt vì total_skus thành total_products và cursor generation 2. Rollback phải rollback cả consumer và reset pagination; không cần đổi index/alias.
+
+## Product card projection rollout (ADR-029)
+
+`product_cards` bắt buộc cho request mới ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)).
+`SEARCH_PRODUCT_INDEX_ENABLED` mặc định **true**. Tắt cờ dừng projector; request mới trả retryable 503.
+Projection mismatch/mất cũng trả `ELASTICSEARCH_UNAVAILABLE` + `Retry-After: 2`, không quay về grouping.
+
+**Cấu hình** (`search.product-index.*`):
+
+| Tham số | Mặc định | Ý nghĩa |
+|---|---|---|
+| `poll-interval` | `1s` | Chu kỳ đọc change feed |
+| `lookback` | `10s` | Khoảng đọc lại phía trước vị trí change feed |
+| `scan-page-size` | `2000` | Số document SKU mỗi trang khi quét |
+| `rebuild-batch` | `500` | Số Product mỗi bulk khi dựng lại |
+| `readiness-refresh` | `5s` | Thời gian cache kết quả kiểm tra projection đã khớp |
+| `lease-duration` | `30s` | Thời hạn lease của projector |
+
+**Vận hành:**
+
+- Chỉ một replica giữ lease `product-cards-projector` trong `search_jobs`.
+- Bootstrap/repair dựng toàn bộ khi `product_cards._meta.source_index` khác SKU index hiện hành. Chưa có projection hợp lệ thì readiness DOWN và request mới trả 503 nhanh.
+- Full reindex/rollback dựng cards từ SKU index đích trước, ghi progress vào generation riêng rồi chuyển `products`, `products_write`, `categories`, `categories_write`, `product_cards` trong cùng `_aliases` request. Cards cũ vẫn phục vụ lúc dựng; propagation tạm dừng trong khoảng giữ lease này.
+- Projector nhả lease sau mỗi pass; cutover và projector dùng chung lease, kiểm owner trước publish, ghi physical index. Renew/release dùng CAS để owner cũ không ghi/xóa lease mới.
+- Vị trí change feed lưu ở `_meta.changes_through` mỗi 15 giây, nên restart hay đổi replica không bỏ sót thay đổi.
+- Giữ cards cũ bằng retirement retention 24h mặc định, ít nhất PIT keep-alive. Cleanup không xóa index có search context/PIT còn mở và bỏ qua cards khi projector lease đang sống. Dự trù đĩa cho bản sao cards và generation đang giữ; disk precondition đã tính cả cards.
+
+**Theo dõi:**
+
+- `search_product_cards_ready`: 1 khi request mới đọc projection.
+- `search_product_cards_lag_seconds`: tuổi của thay đổi SKU mới nhất đã áp dụng; catalog không đổi cũng làm số này tăng, không dùng một mình làm freshness SLO.
+- `es_query_duration_seconds{query_type="product_cards"}`.
+- Log `product cards ... prepared` (số Product và thời gian dựng); đây chưa phải xác nhận alias đã chuyển.
+
+**Trước khi nhận traffic:** chờ projection sẵn sàng. Chạy `scripts/ci/search-read-model-bench.ps1` và `ProductCardLifecycleIT`/`ReindexLifecycleIT`; đối chiếu với jar baseline lịch sử. Harness `search-bench.sh` so grouping/cards chỉ áp dụng cho jar lịch sử. Đổi SKU alias ngoài luồng bằng `projection_check.py` không còn có cam kết 200 liên tục; dùng paired cutover để kiểm production lifecycle.
+
+Hoàn tất nâng cấp/drain projector phiên bản cũ trước khi chạy reindex/rollback mới; bản cũ giữ lease xuyên nhiều pass nên có thể chặn cutover mới tới khi pod cũ dừng hoặc lease hết hạn. Chưa benchmark mixed-version rolling deployment.
+
+**Rollback:** endpoint rollback dựng cards phù hợp với SKU thế hệ cũ rồi chuyển cả năm alias. Tắt cờ không phải rollback về grouping. Cursor v2/v3 đã phát tiếp tục snapshot của nó trong thời gian index/PIT được giữ. Đổi alias SKU thủ công có thể gây 503 tới khi projector sửa xong.
 
 ## Request ID, trace ID và deadline của caller
 

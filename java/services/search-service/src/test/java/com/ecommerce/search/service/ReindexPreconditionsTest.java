@@ -43,6 +43,7 @@ class ReindexPreconditionsTest {
                 "products", "products_write", "categories", "categories_write", "search_suggestions", "search_jobs"));
         when(indexAdmin.primaryStoreBytes("products")).thenReturn(800L);
         when(indexAdmin.primaryStoreBytes("categories")).thenReturn(200L);
+        when(indexAdmin.primaryStoreBytes("product_cards")).thenReturn(800L);
         givenLifecycle(true);
     }
 
@@ -83,7 +84,7 @@ class ReindexPreconditionsTest {
     void aYellowClusterWithRoomForAFullCopyIsAccepted() throws IOException {
         // Yellow is what a single-node cluster permanently reports; it still serves.
         when(client.cluster().health().status()).thenReturn(HealthStatus.Yellow);
-        givenFreeDisk(1_500L);
+        givenFreeDisk(2_700L);
 
         assertThatCode(() -> preconditions().check()).doesNotThrowAnyException();
     }
@@ -91,21 +92,21 @@ class ReindexPreconditionsTest {
     @Test
     void freeDiskBelowTheRatioTimesTheCurrentPrimaryStoreIsRefused() throws IOException {
         when(client.cluster().health().status()).thenReturn(HealthStatus.Green);
-        // Primary store is 800 + 200 = 1000 bytes; 1.5 x that is 1500.
+        // SKU + Category + cards = 800 + 200 + 800 = 1800; 1.5 x that is 2700.
         givenFreeDisk(700L, 700L);
 
         assertThatThrownBy(() -> preconditions().check())
                 .isInstanceOfSatisfying(SearchException.class, e -> {
                     assertThat(e.code()).isEqualTo(ErrorCode.REINDEX_PRECONDITION_FAILED);
                     assertThat(e.code().retryable()).isTrue();
-                    assertThat(e.getMessage()).contains("1400").contains("1500");
+                    assertThat(e.getMessage()).contains("1400").contains("2700");
                 });
     }
 
     @Test
     void theDiskIsSummedOverEveryNodeThatHoldsData() throws IOException {
         when(client.cluster().health().status()).thenReturn(HealthStatus.Green);
-        givenFreeDisk(800L, 800L);
+        givenFreeDisk(1_400L, 1_400L);
 
         assertThatCode(() -> preconditions().check()).doesNotThrowAnyException();
     }

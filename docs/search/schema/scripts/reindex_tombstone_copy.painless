@@ -1,0 +1,17 @@
+// Only full reindex may upsert an already established deletion guard.
+// Preserve the original deletion time; replay/resume must not extend the purge window.
+if (params.fields.is_deleted != true || params.fields[params.revision_field] == null
+    || params.fields.deleted_at == null) {
+  throw new IllegalArgumentException('invalid reindex tombstone');
+}
+def incoming = params.fields[params.revision_field];
+def current = ctx._source[params.revision_field];
+if (ctx._source.is_deleted == true && current != null && current >= incoming) {
+  ctx.op = 'none';
+  return;
+}
+if (current != null && current > incoming) {
+  throw new IllegalArgumentException('live revision is newer than terminal tombstone');
+}
+ctx._source.clear();
+ctx._source.putAll(params.fields);

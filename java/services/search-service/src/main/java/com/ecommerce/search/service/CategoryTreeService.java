@@ -34,14 +34,25 @@ public class CategoryTreeService {
 
     private final CategoryRepository repository;
     private final SearchMetrics metrics;
+    private final com.ecommerce.search.config.StorefrontProperties storefront;
 
     public CategoryTreeService(CategoryRepository repository, SearchMetrics metrics) {
+        this(repository, metrics, new com.ecommerce.search.config.StorefrontProperties());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CategoryTreeService(CategoryRepository repository, SearchMetrics metrics,
+                               com.ecommerce.search.config.StorefrontProperties storefront) {
         this.repository = repository;
         this.metrics = metrics;
+        this.storefront = storefront;
     }
 
     public SearchDtos.CategoryTree tree() throws IOException {
-        List<CategoryDocument> documents = repository.findAllVisible();
+        List<CategoryDocument> documents = repository.findAllVisible().stream()
+                .filter(doc -> !storefront.getExcludedCategoryIds().contains(doc.categoryId()))
+                .filter(doc -> doc.ancestorIds() == null || doc.ancestorIds().stream().noneMatch(storefront.getExcludedCategoryIds()::contains))
+                .toList();
 
         Map<String, CategoryDocument> byId = new HashMap<>();
         documents.forEach(doc -> byId.put(doc.categoryId(), doc));

@@ -53,9 +53,10 @@ import static org.awaitility.Awaitility.await;
  */
 @TestPropertySource(properties = {
         "search.reindex.catch-up-zero-lag-polls=1",
+        "search.reindex.export-page-size=1",
         "search.reindex.catch-up-poll-timeout=1s",
         "search.reindex.catch-up-deadline=2m",
-        "search.lifecycle.lease-duration=6s",
+        "search.lifecycle.lease-duration=30s",
         "search.lifecycle.lease-renew-interval=2s",
         "search.lifecycle.watchdog-interval=1s",
         "search.lifecycle.control-debounce=2s",
@@ -122,6 +123,72 @@ class ReindexLifecycleIT extends AbstractSearchIntegrationTest {
     }
 
     // ------------------------------------------------------------------ full pipeline
+
+    @Test
+    void reindexPreservesHistoricalAndDuringBuildTombstonesAndOldEventsCannotResurrectThem() throws Exception {
+        seedCurrentIndex(1L, 28_000_000L);
+        String historical = "44444444-4444-4444-8444-444444444444";
+        String late = "55555555-5555-4555-8555-555555555555";
+        String category = "66666666-6666-4666-8666-666666666666";
+        String deletedAt = Instant.now().minus(Duration.ofDays(2)).toString();
+        Map<String, Object> deleted = Map.of("sku_id", historical, "product_id", historical,
+                "is_deleted", true, "catalog_revision", 9L, "deleted_at", deletedAt);
+        client.index(b -> b.index(properties.aliases().productsWrite()).id(historical).document(deleted));
+        client.index(b -> b.index(properties.aliases().productsWrite()).id(late).document(Map.of(
+                "sku_id", late, "product_id", late, "is_deleted", false, "catalog_revision", 1L)));
+        client.index(b -> b.index(properties.aliases().categoriesWrite()).id(category).document(Map.of(
+                "category_id", category, "is_deleted", true, "category_revision", 7L, "deleted_at", deletedAt)));
+        refreshAll();
+
+        STUB.holdCategoryExport();
+        ResponseEntity<String> started = post("/api/v2/search/reindex-runs", "{\"reason\":\"tombstone preservation regression\"}");
+        String runId = JSON.readTree(started.getBody()).path("run_id").asText();
+        try {
+            assertThat(STUB.awaitCategoryExportEntered(30)).isTrue();
+            EventBatch deletion = new EventBatch(properties.aliases().productsWrite());
+            deletion.add(writer.catalogTombstone(deletion.targetIndex(), late, 3L, deletedAt,
+                    Timestamps.nowIso(), "delete-during-build"));
+            executor.execute(properties.topics().product(), deletion);
+            refreshAll();
+        } finally {
+            STUB.releaseCategoryExport();
+        }
+        ReindexRunDocument done = awaitStatus(runId, "COMPLETED");
+        assertThat(read(done.targetIndex(), historical).orElseThrow().isDeleted()).isTrue();
+        assertThat(read(done.targetIndex(), historical).orElseThrow().catalogRevision()).isEqualTo(9L);
+        assertThat(read(done.targetIndex(), historical).orElseThrow().deletedAt()).isEqualTo(Instant.parse(deletedAt));
+        assertThat(read(done.targetIndex(), late).orElseThrow().isDeleted()).isTrue();
+        var copiedCategory = client.get(b -> b.index(properties.aliases().categories()).id(category), CategoryDocument.class).source();
+        assertThat(copiedCategory).isNotNull();
+        assertThat(copiedCategory.isDeleted()).isTrue();
+        assertThat(copiedCategory.categoryRevision()).isEqualTo(7L);
+
+        EventBatch repeatedCopy = new EventBatch(properties.aliases().productsWrite());
+        repeatedCopy.add(writer.preserveTombstone(repeatedCopy.targetIndex(), historical, deleted, "catalog_revision"));
+        repeatedCopy.add(writer.preserveTombstone(repeatedCopy.targetIndex(), historical,
+                Map.of("sku_id", historical, "is_deleted", true, "catalog_revision", 8L, "deleted_at", Instant.now().toString()),
+                "catalog_revision"));
+        executor.execute(properties.topics().product(), repeatedCopy);
+        assertThat(read(done.targetIndex(), historical).orElseThrow().catalogRevision()).isEqualTo(9L);
+        assertThat(read(done.targetIndex(), historical).orElseThrow().deletedAt()).isEqualTo(Instant.parse(deletedAt));
+
+        // The ordinary live-writer path must still be blocked after aliases have moved.
+        EventBatch oldEvents = new EventBatch(properties.aliases().productsWrite());
+        for (String id : List.of(historical, late)) {
+            oldEvents.add(writer.catalogUpsert(oldEvents.targetIndex(), id,
+                    Map.of("sku_id", id, "product_id", id, "product_status", "ACTIVE", "sku_status", "ACTIVE"),
+                    2L, Timestamps.nowIso(), "old-active-" + id));
+        }
+        executor.execute(properties.topics().product(), oldEvents);
+        assertThat(read(done.targetIndex(), historical).orElseThrow().isDeleted()).isTrue();
+        assertThat(read(done.targetIndex(), late).orElseThrow().isDeleted()).isTrue();
+        EventBatch oldCategory = new EventBatch(properties.aliases().categoriesWrite());
+        oldCategory.add(writer.categoryUpsert(oldCategory.targetIndex(), category, Map.of("name", "Old category"),
+                2L, Timestamps.nowIso(), "old-category"));
+        executor.execute(properties.topics().category(), oldCategory);
+        assertThat(client.get(b -> b.index(properties.aliases().categories()).id(category), CategoryDocument.class).source().isDeleted()).isTrue();
+        assertThat(indexAdmin.countNonDeletedDocuments(done.targetIndex())).isEqualTo(1L);
+    }
 
     @Test
     void aFullReindexBuildsVerifiesAndCutsOverAtomicallyAndCanBeRolledBack() throws Exception {

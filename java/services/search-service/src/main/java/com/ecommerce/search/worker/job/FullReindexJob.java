@@ -23,6 +23,8 @@ import com.ecommerce.search.worker.handler.BatchExecutor;
 import com.ecommerce.search.worker.handler.CatalogProjection;
 import com.ecommerce.search.worker.handler.EventBatch;
 import com.ecommerce.search.worker.job.ReindexProgressState.Stage;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
+import com.ecommerce.search.repository.es.ProductCardIndex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -43,7 +45,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * {@code WF-SEARCH-009} — the three-phase full reindex.
  *
- * <p>Build imports every snapshot into a new versioned index; Catch-up replays each topic
+ * <p>Build preserves deletion guards and imports every snapshot into a new versioned index; Catch-up replays each topic
  * from the offsets the owning services captured, writing <em>directly</em> into that index
  * rather than through the write alias; Cutover verifies the new index and moves every alias in
  * a single atomic {@code _aliases} call. Rollback is the reverse swap (ADR-006, ADR-022).
@@ -82,6 +84,8 @@ public class FullReindexJob {
     private final BatchExecutor executor;
     private final SearchMetrics metrics;
     private final ReindexVerifier verifier;
+    private final ReindexTombstoneTransfer tombstones;
+    private final ProductCardProjector productCards;
 
     public FullReindexJob(SearchProperties properties,
                           SnapshotExportClient exports,
@@ -94,7 +98,8 @@ public class FullReindexJob {
                           AvailabilityEventHandler availabilityHandler,
                           BatchExecutor executor,
                           SearchMetrics metrics,
-                          ReindexVerifier verifier) {
+                          ReindexVerifier verifier,
+                          ReindexTombstoneTransfer tombstones, ProductCardProjector productCards) {
         this.properties = properties;
         this.exports = exports;
         this.indexAdmin = indexAdmin;
@@ -107,6 +112,8 @@ public class FullReindexJob {
         this.executor = executor;
         this.metrics = metrics;
         this.verifier = verifier;
+        this.tombstones = tombstones;
+        this.productCards = productCards;
     }
 
     // ------------------------------------------------------------------ one run
@@ -207,6 +214,7 @@ public class FullReindexJob {
             advance(run, Stage.BUILD_CATEGORIES);
         }
         if (p.stage() == Stage.BUILD_CATEGORIES) {
+            tombstones.preserve(p.productsIndex(), p.categoriesIndex(), run.deadline, run::check);
             buildCategories(run);
             advance(run, Stage.BUILD_CATALOG);
         }
@@ -234,6 +242,8 @@ public class FullReindexJob {
         }
         if (p.stage() == Stage.VERIFY) {
             failIfSuperseded(run);
+            // Also collect deletes applied to the serving generation during build/catch-up.
+            tombstones.preserve(p.productsIndex(), p.categoriesIndex(), run.deadline, run::check);
             verifier.verify(indexAdmin.resolveAlias(properties.aliases().products()), p.productsIndex(),
                     p.catchUpEndedAt());
             advance(run, Stage.CUTOVER);
@@ -708,7 +718,20 @@ public class FullReindexJob {
                     List.of(properties.aliases().products(), properties.aliases().productsWrite()));
             targets.put(p.categoriesIndex(),
                     List.of(properties.aliases().categories(), properties.aliases().categoriesWrite()));
-            indexAdmin.swapAliasesAtomically(targets);
+            // Build against the PRIVATE verified SKU index. Keep the live projector out
+            // until the paired aliases have moved and the resume checkpoint is durable.
+            Optional<String> previousCards = indexAdmin.resolveAlias(ProductCardIndex.ALIAS);
+            try (var prepared = productCards.prepareForCutover(p.productsIndex(), run::check)) {
+                p.recordProductCardsIndex(prepared.index());
+                persist(run);
+                targets.put(prepared.index(), List.of(ProductCardIndex.ALIAS));
+                prepared.checkOwnership();
+                run.check();
+                if (!runs.holdsLease(run.lease)) throw new LeaseLostException();
+                indexAdmin.swapAliasesAtomically(targets);
+                prepared.published();
+            }
+            if (previousCards.isPresent()) runs.markIndexRetired(previousCards.get(), run.runId, Instant.now());
         } else {
             log.info("run {} resumed after its aliases had already moved; finishing the bookkeeping", run.runId);
         }
@@ -831,13 +854,14 @@ public class FullReindexJob {
 
     /** Deletes the indices a run built, unless an alias already serves them. */
     public void discard(ReindexProgressState p) {
-        for (String index : new String[]{p.productsIndex(), p.categoriesIndex()}) {
+        for (String index : new String[]{p.productsIndex(), p.categoriesIndex(), p.productCardsIndex()}) {
             if (index == null) {
                 continue;
             }
             try {
                 boolean serving = indexAdmin.resolveAlias(properties.aliases().products()).filter(index::equals).isPresent()
-                        || indexAdmin.resolveAlias(properties.aliases().categories()).filter(index::equals).isPresent();
+                        || indexAdmin.resolveAlias(properties.aliases().categories()).filter(index::equals).isPresent()
+                        || indexAdmin.resolveAlias(ProductCardIndex.ALIAS).filter(index::equals).isPresent();
                 if (!serving) {
                     indexAdmin.deleteIndex(index);
                 }

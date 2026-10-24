@@ -16,6 +16,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class FacetAssemblerTest {
+    @Test
+    void formatsUnitsWithoutChangingOpaqueValues() {
+        var result = assembler.assembleCounts(List.of(Map.entry("ram:s:16gb", 2L), Map.entry("ket-noi:s:wi-fi", 1L)), Map.of());
+        assertThat(facet(result, "ram").options().getFirst()).isEqualTo(new SearchDtos.FacetOption("ram:s:16gb", "16GB", 2));
+        assertThat(facet(result, "ket-noi").options().getFirst().label()).isEqualTo("Wi-Fi");
+    }
 
     private final FacetAssembler assembler = new FacetAssembler(properties());
 

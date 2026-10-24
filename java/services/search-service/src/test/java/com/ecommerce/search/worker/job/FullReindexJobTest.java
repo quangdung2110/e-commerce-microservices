@@ -16,6 +16,7 @@ import com.ecommerce.search.worker.client.RatingExportSessionException;
 import com.ecommerce.search.worker.client.SnapshotExportClient;
 import com.ecommerce.search.worker.handler.AvailabilityEventHandler;
 import com.ecommerce.search.worker.handler.BatchExecutor;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,10 @@ class FullReindexJobTest {
     private IndexAdmin indexAdmin;
     private ReindexCatchUp catchUp;
     private ReindexVerifier verifier;
+    private ReindexTombstoneTransfer tombstones;
     private FullReindexJob job;
+    private ProductCardProjector cards;
+    private ProductCardProjector.PreparedGeneration prepared;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -94,6 +98,11 @@ class FullReindexJobTest {
         when(control.supersedePending(any())).thenReturn(false);
         catchUp = mock(ReindexCatchUp.class);
         verifier = mock(ReindexVerifier.class);
+        tombstones = mock(ReindexTombstoneTransfer.class);
+        cards = mock(ProductCardProjector.class);
+        prepared = mock(ProductCardProjector.PreparedGeneration.class);
+        when(prepared.index()).thenReturn("product_cards_v2");
+        when(cards.prepareForCutover(anyString(), any())).thenReturn(prepared);
 
         // Catalog, category and rating exports are not what these cases are about: they
         // return one empty page carrying the replay boundary the run insists on.
@@ -106,11 +115,45 @@ class FullReindexJobTest {
 
         job = new FullReindexJob(properties, exports, indexAdmin, mock(ProjectionWriter.class), bulkWriter,
                 runs, catchUp, control, mock(AvailabilityEventHandler.class),
-                mock(BatchExecutor.class), new SearchMetrics(new SimpleMeterRegistry()), verifier);
+                mock(BatchExecutor.class), new SearchMetrics(new SimpleMeterRegistry()), verifier, tombstones, cards);
+    }
+
+    @Test
+    void cardBuildFailureLeavesAllServingAliasesAlone() throws IOException {
+        givenAvailabilityCompletes();
+        when(cards.prepareForCutover(anyString(), any())).thenThrow(new IOException("card build failed"));
+        run();
+        assertThat(finalStatus()).isEqualTo("FAILED");
+        verify(indexAdmin, never()).swapAliasesAtomically(any());
+    }
+
+    @Test
+    void losingTheRunLeaseAfterPreparingCardsPreventsTheAliasSwap() throws IOException {
+        givenAvailabilityCompletes();
+        when(cards.prepareForCutover(anyString(), any())).thenAnswer(invocation -> {
+            when(runs.holdsLease(any())).thenReturn(false);
+            return prepared;
+        });
+        run();
+        verify(indexAdmin, never()).swapAliasesAtomically(any());
+        verify(prepared).close();
+        verify(prepared, never()).published();
     }
 
     private void run() {
         job.run(RUN, "test", "admin", lease(), null);
+    }
+
+    @Test
+    void incompleteTombstoneTransferFailsWithoutMovingAliases() throws IOException {
+        org.mockito.Mockito.doThrow(new IOException("incomplete tombstone scan"))
+                .when(tombstones).preserve(anyString(), anyString(), any(), any());
+        run();
+        assertThat(finalStatus()).isEqualTo("FAILED");
+        assertThat(finalFailureMessage()).contains("incomplete tombstone scan");
+        verify(verifier, never()).verify(any(), anyString(), any());
+        verify(indexAdmin, never()).swapAliasesAtomically(any());
+        verify(indexAdmin).deleteIndex(PRODUCTS);
     }
 
     @Test
@@ -269,7 +312,9 @@ class FullReindexJobTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, List<String>>> targets = ArgumentCaptor.forClass(Map.class);
         verify(indexAdmin, times(1)).swapAliasesAtomically(targets.capture());
-        assertThat(targets.getValue()).containsOnlyKeys(PRODUCTS, CATEGORIES);
+        assertThat(targets.getValue()).containsOnlyKeys(PRODUCTS, CATEGORIES, "product_cards_v2");
+        assertThat(targets.getValue().get("product_cards_v2")).containsExactly("product_cards");
+        verify(prepared).published();
         assertThat(targets.getValue().get(PRODUCTS)).containsExactlyInAnyOrder("products", "products_write");
         assertThat(targets.getValue().get(CATEGORIES)).containsExactlyInAnyOrder("categories", "categories_write");
         // The way back is recorded, and the cleanup clock for the replaced indices starts.

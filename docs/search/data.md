@@ -124,6 +124,15 @@ Quan hệ chỉ là quan hệ logic bằng identifier: Elasticsearch không có 
 thiết kế cố tình tránh `nested`/`join` field
 ([ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md)). Index vẫn chứa SKU; API nhóm product_id và chọn SKU giá thấp nhất thỏa bộ lọc. Không nested/join, không index mới, không cần mapping migration hay reindex.
 
+Projection đọc bắt buộc là `product_cards` ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)), mặc định bật. Tắt projector không bật lại grouping cho request mới:
+
+- Mỗi document là một Product: `product_id`, `source_version` (= `indexed_at` lớn nhất của mọi SKU, dùng làm external version) và
+  `skus` dạng `nested` chứa nguyên văn các document SKU còn sống.
+- Mapping `skus` trùng mapping `products` ([schema/product_cards.index.json](./schema/product_cards.index.json), sinh từ `products.index.json`).
+- Physical index `product_cards_v<N>` nằm sau alias `product_cards`; `_meta.source_index` là generation `products` nó phản chiếu, `_meta.changes_through` là vị trí change feed đã áp dụng.
+- Index SKU vẫn là nơi ghi duy nhất. `product_cards` dựng lại được hoàn toàn từ index SKU nên không cần backup hay reindex từ upstream.
+- Full reindex checkpoint lưu `product_cards_index`; metadata `changes_through` được ghi vào generation riêng trước paired cutover. Mọi write/progress của projector pin physical index. Generation cũ thuộc retirement cleanup (mặc định 24h, ít nhất PIT keep-alive), không bị xóa ngay sau publish.
+
 ## 3. Schema sources
 
 | Artifact | Vai trò |
@@ -132,6 +141,7 @@ thiết kế cố tình tránh `nested`/`join` field
 | [`schema/categories.index.json`](./schema/categories.index.json) | Settings và mapping của `categories_v{N}` |
 | [`schema/search_suggestions.index.json`](./schema/search_suggestions.index.json) | Settings và mapping của `search_suggestions_v{N}` |
 | [`schema/search_jobs.index.json`](./schema/search_jobs.index.json) | Settings và mapping của `search_jobs_v{N}`, index nội bộ cho reindex run, suggestion build và lease lock |
+| [`schema/product_cards.index.json`](./schema/product_cards.index.json) | Settings và mapping của `product_cards_v{N}` (ADR-027), sinh từ `products.index.json`; `ProductCardSchemaTest` chặn lệch |
 | [`schema/scripts/`](./schema/scripts/README.md) | Painless script chuẩn cho write path; thay đổi cùng mapping, workflow và contract liên quan |
 
 Index vật lý luôn có hậu tố version (`products_v1`); ứng dụng chỉ được cấu hình
@@ -207,6 +217,7 @@ Elasticsearch không có khóa ngoại hay unique constraint, nên các ràng bu
 | Document tồn tại trước khi apply availability | Search đăng ký readiness chỉ sau catalog write; Inventory không publish/export trước readiness; script không `upsert`, missing document là contract violation và không ACK |
 | Document tồn tại trước khi apply review | Không dùng `scripted_upsert`; missing document là no-op có metric |
 | Document tombstone không nhận update | Guard `is_deleted` đứng đầu mọi script ghi lên document đang sống. Hai script tombstone không mang guard này vì chính chúng đặt `is_deleted = true`; guard revision đã làm chúng idempotent |
+| Reindex không làm mất deletion guard | Copy tombstone SKU/Category trước build và tại VERIFY bằng `reindex_tombstone_copy`, giữ revision và `deleted_at`; event delete thông thường vẫn không upsert. Count drift chỉ so `is_deleted=false` ([ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md)) |
 | Field lạ không được index | `dynamic: strict` |
 | Không có hai index cùng nhận một write alias | Cutover bằng đúng một lệnh `_aliases` atomic |
 

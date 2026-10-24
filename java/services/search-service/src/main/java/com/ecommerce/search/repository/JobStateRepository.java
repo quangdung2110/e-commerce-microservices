@@ -330,22 +330,30 @@ public class JobStateRepository {
      * the owner must then abort, because a later run may already be cutting over.
      */
     public boolean renewLease(LeaseLockDocument lease, Instant now, Instant expiresAt) throws IOException {
-        Optional<LeaseLockDocument> current = readLease(lease.lockName());
-        if (current.isEmpty()
-                || !lease.ownerRunId().equals(current.get().ownerRunId())
-                || !lease.fencingToken().equals(current.get().fencingToken())) {
+        var response = client.get(b -> b.index(index()).id("lock:" + lease.lockName()), LeaseLockDocument.class);
+        LeaseLockDocument current = response.source();
+        if (!response.found() || current == null || current.expired(now)
+                || !lease.ownerRunId().equals(current.ownerRunId())
+                || !lease.fencingToken().equals(current.fencingToken())) {
             return false;
         }
         LeaseLockDocument renewed = new LeaseLockDocument(
                 LeaseLockDocument.DOC_KIND, lease.lockName(), lease.ownerRunId(),
                 expiresAt, lease.fencingToken(), now);
-        client.index(builder -> builder.index(index()).id("lock:" + lease.lockName()).document(renewed));
-        return true;
+        try {
+            client.index(builder -> builder.index(index()).id("lock:" + lease.lockName()).document(renewed)
+                    .ifSeqNo(response.seqNo()).ifPrimaryTerm(response.primaryTerm()));
+            return true;
+        } catch (ElasticsearchException e) {
+            if (e.status() == 409 || e.status() == 404) return false;
+            throw e;
+        }
     }
 
     /** True when the caller still owns the lease; every alias swap must check this. */
     public boolean holdsLease(LeaseLockDocument lease) throws IOException {
         return readLease(lease.lockName())
+                .filter(current -> !current.expired(Instant.now()))
                 .filter(current -> lease.ownerRunId().equals(current.ownerRunId()))
                 .filter(current -> lease.fencingToken().equals(current.fencingToken()))
                 .isPresent();
@@ -353,13 +361,20 @@ public class JobStateRepository {
 
     /** Releases a lease, but only if the caller is still its owner. */
     public void releaseLease(LeaseLockDocument lease) throws IOException {
-        if (!holdsLease(lease)) {
+        var response = client.get(b -> b.index(index()).id("lock:" + lease.lockName()), LeaseLockDocument.class);
+        LeaseLockDocument current = response.source();
+        if (!response.found() || current == null || !lease.ownerRunId().equals(current.ownerRunId())
+                || !lease.fencingToken().equals(current.fencingToken())) {
             return;
         }
-        client.delete(builder -> builder
+        try { client.delete(builder -> builder
                 .index(index())
                 .id("lock:" + lease.lockName())
+                .ifSeqNo(response.seqNo()).ifPrimaryTerm(response.primaryTerm())
                 .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+        } catch (ElasticsearchException e) {
+            if (e.status() != 409 && e.status() != 404) throw e;
+        }
     }
 
     public Optional<LeaseLockDocument> readLease(String lockName) throws IOException {

@@ -6,6 +6,7 @@ import com.ecommerce.search.common.ErrorCode;
 import com.ecommerce.search.common.SearchException;
 import com.ecommerce.search.config.SearchProperties;
 import com.ecommerce.search.repository.es.IndexAdmin;
+import com.ecommerce.search.repository.es.ProductCardIndex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -56,6 +57,9 @@ public class ReindexPreconditions {
 
         long currentStore = indexAdmin.primaryStoreBytes(properties.aliases().products())
                 + indexAdmin.primaryStoreBytes(properties.aliases().categories());
+        long cards = indexAdmin.primaryStoreBytes(ProductCardIndex.ALIAS);
+        // The first upgrade has no cards alias yet. Reserve space for that copy too.
+        currentStore += cards > 0 ? cards : indexAdmin.primaryStoreBytes(properties.aliases().products());
         long free = freeDiskBytes();
         long required = (long) Math.ceil(currentStore * properties.lifecycle().minFreeDiskRatio());
         log.info("reindex precondition: cluster {}, free disk {} bytes, required {} bytes", status, free, required);

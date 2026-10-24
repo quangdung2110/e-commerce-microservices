@@ -226,6 +226,20 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 
 Chạy riêng một IT: thêm `-Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=ReindexLifecycleIT`.
 
+## Full reindex deletion guards (ADR-026)
+
+Full reindex regression sau [ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md): chạy `ReindexLifecycleIT`
+và `ReindexVerifierTest`. Chuỗi deletion trước watermark + deletion trong build phải cutover thành công,
+giữ SKU/Category tombstone và `deleted_at`, chặn upsert cũ sau cutover, copy lặp/older revision là no-op.
+Count gate vẫn chặn thiếu SKU chưa xóa. `CanonicalSchemaVerbatimTest` kiểm byte của script copy với classpath.
+
 ## Product-card verification (ADR-020)
+
+> [ADR-029](./decisions/ADR-029-required-product-card-read-model.md): request mới bắt buộc đọc `product_cards`.
+> Thêm `ProductCardLifecycleIT`, `ProductCardProjectorTest`, `ProductSearchServiceRoutingTest` và paired
+> alias assertions trong `FullReindexJobTest`/`ReindexRunServiceTest`. Integration fixtures dựng projection
+> đồng bộ sau các lần ghi ES trực tiếp, không dựa vào timing poll. Full suite: `mvn verify -DargLine=-Dapi.version=1.44`.
+> Native Docker client cũng cần API override này với Docker Desktop hiện tại. Benchmark có nguồn jar/fixture
+> riêng và hướng dẫn tại `loadtest/search-bench/README.md`; không dùng stack chia sẻ để seed hoặc clone index.
 
 Chạy SearchCursorTest, ProductQueryBuilderTest và ProductSearchApiIT trên ES ICU thật. Test scan batch=2 để đi qua nhiều batch; kiểm tra minimum khi lọc, price_desc, snapshot mutation và no duplicate product_id. Contract/frontend cần total_products, sinh lại Search types. Seed 28 Product/84 SKU phải hiển thị 28 card; tai nghe 3 card, giữ UNKNOWN stock. Không cần reindex.

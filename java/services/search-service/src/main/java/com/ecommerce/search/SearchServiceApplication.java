@@ -1,5 +1,6 @@
 package com.ecommerce.search;
 
+import com.ecommerce.search.config.ProductIndexProperties;
 import com.ecommerce.search.config.SearchProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -15,7 +16,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  */
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties(SearchProperties.class)
+@EnableConfigurationProperties({SearchProperties.class, ProductIndexProperties.class})
 public class SearchServiceApplication {
 
     public static void main(String[] args) {

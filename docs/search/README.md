@@ -124,7 +124,7 @@ cho projection, không đưa nó vào đường reserve/stock authoritative.
 | `SEARCH-INV-004` | Event cũ hơn state hiện tại của document không được ghi đè state đó; guard theo từng nguồn dữ liệu. |
 | `SEARCH-INV-005` | Event availability hoặc rating không được tạo document mới; chỉ Product được tạo document. Search phải đăng ký readiness sau khi document đã tồn tại; Inventory không được publish/export availability trước mốc đó. Missing document khi apply availability là contract violation, không ACK (batch được `nack` và giao lại) và tuyệt đối không upsert. |
 | `SEARCH-INV-006` | Document đã tombstone không được sống lại bởi event đến trễ trước khi bị purge. |
-| `SEARCH-INV-007` | Mọi lệnh ghi index đi qua write alias; không ghi trực tiếp vào index versioned trừ pha catch-up (và tail replay) của reindex. |
+| `SEARCH-INV-007` | Mọi lệnh ghi index đi qua write alias; không ghi trực tiếp vào index versioned trừ pha catch-up (và tail replay) của reindex, và full build của `product_cards` vào generation mới trước khi đổi alias (ADR-027). |
 
 Giải thích và nơi enforcement ở [Domain](./domain.md).
 
@@ -184,4 +184,8 @@ Giải thích và nơi enforcement ở [Domain](./domain.md).
 
 ## Product cards (2026-09-30)
 
+Storefront filter policy bổ sung ngày 17/10/2026: [ADR-028](./decisions/ADR-028-storefront-facet-discovery-policy.md), [cấu hình vận hành](./operations.md#chính-sách-bộ-lọcdiscovery-storefront-17102026) và [kết quả triển khai/rollback](../frontend/catalog-filter-fix-2026-10-17.md). Facet quảng bá theo danh mục; exclusions ID được áp dụng trước query/count/pagination, không xóa fixture canonical.
+
 [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md) thay kết quả SKU bằng Product duy nhất và SKU đại diện giá thấp nhất thỏa bộ lọc. Store giữ nguyên SKU document, không cần reindex hay thay Product event. `total_products` chính xác; query grouping có cap/time budget và cần benchmark catalog lớn.
+
+[Benchmark](../performance/search-scale-benchmark.md) cho thấy chi phí grouping tăng tuyến tính theo số Product khớp. [ADR-027](./decisions/ADR-027-product-card-projection.md) thêm `product_cards` (một document mỗi Product, SKU `nested`, dựng từ index SKU). [ADR-029](./decisions/ADR-029-required-product-card-read-model.md) đưa nó thành đường đọc bắt buộc cho request mới, mặc định bật. Projection chưa sẵn sàng trả retryable 503; không fallback grouping. Full reindex/rollback chuẩn bị cards trước rồi chuyển alias cùng SKU/Category; giữ index cũ cho PIT đang mở. Chỉ cursor v2 đã phát còn dùng ADR-020 trong thời gian chuyển tiếp.

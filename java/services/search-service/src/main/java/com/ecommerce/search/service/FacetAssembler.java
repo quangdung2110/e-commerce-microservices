@@ -46,13 +46,26 @@ public class FacetAssembler {
         if (aggregate == null || !aggregate.isSterms()) {
             return SearchDtos.FacetSet.of(List.of());
         }
+        List<Map.Entry<String, Long>> counts = new ArrayList<>();
+        for (StringTermsBucket bucket : aggregate.sterms().buckets().array()) {
+            counts.add(Map.entry(bucket.key().stringValue(), distinctProducts(bucket)));
+        }
+        return assembleCounts(counts, groupLabels);
+    }
+
+    /**
+     * Same grouping from distinct-Product counts per token, in bucket order. The Product-level
+     * projection (ADR-027) counts them exactly with {@code reverse_nested}, so it does not carry a
+     * {@code cardinality} sub-aggregation.
+     */
+    public SearchDtos.FacetSet assembleCounts(List<Map.Entry<String, Long>> tokenCounts, Map<String, String> groupLabels) {
         Map<String, List<SearchDtos.FacetOption>> byCode = new LinkedHashMap<>();
         Map<String, Long> codeWeight = new LinkedHashMap<>();
 
-        for (StringTermsBucket bucket : aggregate.sterms().buckets().array()) {
-            String token = bucket.key().stringValue();
+        for (Map.Entry<String, Long> tokenCount : tokenCounts) {
+            String token = tokenCount.getKey();
             AttributeToken.decode(token).ifPresent(decoded -> {
-                long count = distinctProducts(bucket);
+                long count = tokenCount.getValue();
                 if (count == 0) {
                     return;
                 }
@@ -99,6 +112,14 @@ public class FacetAssembler {
             out.append(startOfWord ? Character.toUpperCase(c) : c);
             startOfWord = Character.isWhitespace(c);
         }
-        return out.toString().toLowerCase(Locale.ROOT).isEmpty() ? "-" : out.toString();
+        String label = out.toString();
+        for (String unit : List.of("gb", "tb", "w", "k", "g")) {
+            label = label.replaceAll("(?i)(\\d+)" + unit + "\\b", "$1" + unit.toUpperCase(Locale.ROOT));
+        }
+        label = label.replaceAll("(?i)(\\d+)mah\\b", "$1mAh");
+        for (String term : List.of("gps", "lte", "rgb", "anc", "usb")) {
+            label = label.replaceAll("(?i)\\b" + term + "\\b", term.toUpperCase(Locale.ROOT));
+        }
+        return label.replaceAll("(?i)\\bwi fi\\b", "Wi-Fi").replaceAll("\\bUSB C\\b", "USB-C");
     }
 }

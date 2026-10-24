@@ -100,7 +100,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-014` | Suggestion dedupe theo `(type, scope, language, text_normalized)`; `PRODUCT` và `CATEGORY` cùng text không hợp nhất | Rebuild suggestion | Dropdown mất phân loại hoặc lặp term cùng loại |
 | `SEARCH-BR-015` | Weight suggestion tính sau dedupe; nhóm Product trùng tên lấy điểm cao nhất, không cộng dồn theo số Product/SKU | Rebuild suggestion | Nhiều entity trùng tên làm lệch ranking |
 | `SEARCH-BR-016` | Câu trả lời của Elasticsearch có `timed_out` hoặc shard lỗi không bao giờ được trả cho buyer hay ghi vào `product_count`; nó là `SEARCH_TIMEOUT` | Mọi truy vấn và job tổng hợp | Facet/số đếm thiếu trông như đầy đủ |
-| `SEARCH-BR-017` | Index mới chỉ được nhận alias sau khi qua kiểm tra: số document, sample diff, smoke query; bốn alias chuyển trong một lệnh | Cutover reindex | Cutover index thiếu hoặc lùi dữ liệu; hai thế hệ lẫn nhau giữa `products` và `categories` |
+| `SEARCH-BR-017` | Index mới nhận alias sau count/sample/smoke verification và chuẩn bị cards; năm alias chuyển trong một lệnh (ADR-029) | Cutover reindex | Cutover thiếu dữ liệu hoặc lẫn thế hệ SKU/Category/cards |
 | `SEARCH-BR-018` | Một run chưa kết thúc có đúng một owner sống (lease); owner chết thì run được resume hoặc đánh dấu bỏ rơi, không chặn trigger vĩnh viễn | Reindex | Hai run song song, hoặc `REINDEX_ALREADY_RUNNING` mãi mãi |
 | `SEARCH-BR-019` | Một `catalog-reindex-requested` đến sau khi run bắt đầu làm run `SUPERSEDED`; request chỉ bị xóa bởi run `COMPLETED` bắt đầu sau nó | Reindex | Cutover index mang category path cũ, hoặc mất một thay đổi cây |
 
@@ -140,7 +140,7 @@ Trạng thái hiển thị của một document `INDEXED` phụ thuộc `product
 ### Reindex run
 
 `STARTED` → `BUILDING` → `CATCHING_UP` → `CUTOVER` → `COMPLETED`. `CUTOVER` gồm bước kiểm tra index mới
-(số document, sample diff, smoke query) rồi lệnh chuyển bốn alias. Từ `BUILDING` hoặc `CATCHING_UP`
+(số document, sample diff, smoke query), chuẩn bị cards rồi chuyển năm alias (ADR-029). Từ `BUILDING` hoặc `CATCHING_UP`
 có thể sang `SUPERSEDED` khi một `catalog-reindex-requested` mới tới sau khi run bắt đầu (cũng được kiểm
 ngay trước khi swap), sang `CANCELLED` khi admin hủy, và từ bất kỳ pha nào sang `FAILED` (lỗi,
 kiểm tra không đạt, hết hạn, hoặc `RUN_ABANDONED` khi owner chết và hết lượt resume). `COMPLETED` có thể

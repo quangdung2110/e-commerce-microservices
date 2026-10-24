@@ -32,9 +32,16 @@ public class ProductQueryBuilder {
     public static final String DISTINCT_PRODUCTS_AGG = "distinct_products";
 
     private final SearchProperties properties;
+    private final com.ecommerce.search.config.StorefrontProperties storefront;
 
     public ProductQueryBuilder(SearchProperties properties) {
+        this(properties, new com.ecommerce.search.config.StorefrontProperties());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProductQueryBuilder(SearchProperties properties, com.ecommerce.search.config.StorefrontProperties storefront) {
         this.properties = properties;
+        this.storefront = storefront;
     }
 
     /**
@@ -42,21 +49,30 @@ public class ProductQueryBuilder {
      * present, a fuzzy {@code multi_match} over the Vietnamese-analysed fields.
      */
     public Query build(SearchQuery query, Optional<String> resolvedCategoryId) {
+        return build(query, resolvedCategoryId, "");
+    }
+
+    /**
+     * The same query over SKU fields that live under {@code fieldPrefix}: {@code "skus."} for the
+     * SKU documents nested in a {@code product_cards} document (ADR-027), so one SKU still has to
+     * satisfy every condition at once.
+     */
+    public Query build(SearchQuery query, Optional<String> resolvedCategoryId, String fieldPrefix) {
         BoolQuery.Builder bool = new BoolQuery.Builder();
-        visibilityFilters(query.inStock()).forEach(bool::filter);
+        visibilityFilters(query.inStock(), fieldPrefix).forEach(bool::filter);
 
         resolvedCategoryId.ifPresent(categoryId ->
-                bool.filter(term("category_ancestor_ids", categoryId)));
+                bool.filter(term(fieldPrefix + "category_ancestor_ids", categoryId)));
 
-        attributeFilters(query.filterTokens()).forEach(bool::filter);
+        attributeFilters(query.filterTokens(), fieldPrefix).forEach(bool::filter);
 
         if (query.priceMin().isPresent() || query.priceMax().isPresent()) {
-            bool.filter(priceRange(query.priceMin(), query.priceMax()));
+            bool.filter(priceRange(query.priceMin(), query.priceMax(), fieldPrefix));
         }
         query.hasPromotion().ifPresent(flag ->
-                bool.filter(Query.of(q -> q.term(t -> t.field("has_promotion").value(flag)))));
+                bool.filter(Query.of(q -> q.term(t -> t.field(fieldPrefix + "has_promotion").value(flag)))));
 
-        query.q().ifPresent(text -> bool.must(fullText(text)));
+        query.q().ifPresent(text -> bool.must(fullText(text, fieldPrefix)));
 
         return Query.of(q -> q.bool(bool.build()));
     }
@@ -66,12 +82,24 @@ public class ProductQueryBuilder {
      * stock filter which defaults to on and the buyer may disable ({@code SEARCH-BR-002}).
      */
     public List<Query> visibilityFilters(boolean inStockOnly) {
+        return visibilityFilters(inStockOnly, "");
+    }
+
+    private List<Query> visibilityFilters(boolean inStockOnly, String fieldPrefix) {
         List<Query> filters = new ArrayList<>(List.of(
-                Query.of(q -> q.term(t -> t.field("is_deleted").value(false))),
-                term("product_status", "ACTIVE"),
-                term("sku_status", "ACTIVE")));
+                Query.of(q -> q.term(t -> t.field(fieldPrefix + "is_deleted").value(false))),
+                term(fieldPrefix + "product_status", "ACTIVE"),
+                term(fieldPrefix + "sku_status", "ACTIVE")));
         if (inStockOnly) {
-            filters.add(Query.of(q -> q.term(t -> t.field("is_in_stock").value(true))));
+            filters.add(Query.of(q -> q.term(t -> t.field(fieldPrefix + "is_in_stock").value(true))));
+        }
+        if (!storefront.getExcludedProductIds().isEmpty()) {
+            filters.add(Query.of(q -> q.bool(b -> b.mustNot(n -> n.terms(t -> t
+                    .field(fieldPrefix + "product_id").terms(v -> v.value(storefront.getExcludedProductIds().stream().map(FieldValue::of).toList())))))));
+        }
+        if (!storefront.getExcludedCategoryIds().isEmpty()) {
+            filters.add(Query.of(q -> q.bool(b -> b.mustNot(n -> n.terms(t -> t
+                    .field(fieldPrefix + "category_ancestor_ids").terms(v -> v.value(storefront.getExcludedCategoryIds().stream().map(FieldValue::of).toList())))))));
         }
         return filters;
     }
@@ -80,7 +108,7 @@ public class ProductQueryBuilder {
      * Attribute filters: OR between values of the same attribute code, AND between
      * different codes ({@code WF-SEARCH-001} step 3).
      */
-    private List<Query> attributeFilters(List<String> filterTokens) {
+    private List<Query> attributeFilters(List<String> filterTokens, String fieldPrefix) {
         Map<String, List<String>> byCode = new LinkedHashMap<>();
         for (String token : filterTokens) {
             String code = AttributeToken.decode(token).map(AttributeToken.Decoded::code).orElse(null);
@@ -90,14 +118,14 @@ public class ProductQueryBuilder {
         }
         List<Query> filters = new ArrayList<>();
         byCode.values().forEach(tokens -> filters.add(Query.of(q -> q.terms(t -> t
-                .field("filter_tokens")
+                .field(fieldPrefix + "filter_tokens")
                 .terms(values -> values.value(tokens.stream().map(FieldValue::of).toList()))))));
         return filters;
     }
 
-    private Query priceRange(Optional<Long> min, Optional<Long> max) {
+    private Query priceRange(Optional<Long> min, Optional<Long> max, String fieldPrefix) {
         return Query.of(q -> q.range(range -> {
-            range.field("selling_price_vnd");
+            range.field(fieldPrefix + "selling_price_vnd");
             min.ifPresent(value -> range.gte(co.elastic.clients.json.JsonData.of(value)));
             max.ifPresent(value -> range.lte(co.elastic.clients.json.JsonData.of(value)));
             return range;
@@ -109,11 +137,11 @@ public class ProductQueryBuilder {
      * matches (ADR-003). {@code name.autocomplete} is the prefix fallback, weighted below
      * the analysed name so it never outranks a real term match.
      */
-    private Query fullText(String text) {
+    private Query fullText(String text, String fieldPrefix) {
         return Query.of(q -> q.multiMatch(match -> match
                 .query(text)
                 .type(TextQueryType.BestFields)
-                .fields("name^4", "name.autocomplete^2", "description")
+                .fields(fieldPrefix + "name^4", fieldPrefix + "name.autocomplete^2", fieldPrefix + "description")
                 .fuzziness("AUTO")
                 .operator(co.elastic.clients.elasticsearch._types.query_dsl.Operator.And)));
     }

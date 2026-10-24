@@ -1,0 +1,56 @@
+name: search-read-model-bench
+services:
+  elasticsearch:
+    image: search-read-model-es-icu:8.11.0
+    build:
+      context: .
+      dockerfile: Dockerfile.es
+    cpus: 4
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - read-model-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+  search:
+    image: eclipse-temurin:21-jre-alpine
+    cpus: 2
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    entrypoint:
+      - java
+      - -Xms512m
+      - -Xmx512m
+      - -Dloader.main=com.ecommerce.search.benchmark.ReadModelBenchMain
+      - -Dloader.path=/app/fixture.jar
+      - -cp
+      - /app/search.jar
+      - org.springframework.boot.loader.launch.PropertiesLauncher
+      - --spring.profiles.active=read-model-benchmark
+      - --search.bootstrap-indices=false
+      - --search.tombstone.product-count-cron=-
+      - --search.tombstone.purge-cron=-
+      - --search.suggestions.rebuild-enabled=false
+      - --search.suggestions.rebuild-cron=-
+      - --search.lifecycle.cleanup-cron=-
+      - --search.lifecycle.watchdog-interval=1h
+      - --search.lifecycle.control-auto-start=false
+      - --logging.level.org.apache.kafka=ERROR
+      - --management.tracing.sampling.probability=0
+    environment:
+      ES_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: 127.0.0.1:9
+      CDN_BASE_URL: http://localhost:8088/media
+      THUMBNAIL_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      SPRING_APPLICATION_JSON: ${BENCH_CONFIG:-{}}
+    volumes:
+      - ${SEARCH_JAR:?set SEARCH_JAR}:/app/search.jar:ro
+      - ${SEARCH_FIXTURE:?set SEARCH_FIXTURE}:/app/fixture.jar:ro
+volumes:
+  read-model-data:

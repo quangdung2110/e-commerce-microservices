@@ -18,6 +18,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** DSL construction rules from {@code WF-SEARCH-001} and ADR-020. */
 class ProductQueryBuilderTest {
+    @Test
+    void excludedQaIdsStayOutsideBothSkuAndNestedProductQueriesEvenWhenStockIsDisabled() {
+        var policy = new com.ecommerce.search.config.StorefrontProperties();
+        policy.setExcludedProductIds(List.of("qa-fixture-id"));
+        policy.setExcludedCategoryIds(List.of("qa-category-id"));
+        var configured = new ProductQueryBuilder(properties(), policy);
+        assertThat(configured.build(query(false, List.of()), Optional.empty()).toString())
+                .contains("must_not", "qa-fixture-id", "qa-category-id", "product_id", "category_ancestor_ids");
+        assertThat(configured.build(query(false, List.of()), Optional.empty(), "skus.").toString())
+                .contains("skus.product_id", "skus.category_ancestor_ids", "qa-fixture-id");
+    }
 
     private final ProductQueryBuilder builder = new ProductQueryBuilder(properties());
 

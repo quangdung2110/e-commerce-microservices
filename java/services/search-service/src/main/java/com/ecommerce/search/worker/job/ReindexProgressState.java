@@ -46,6 +46,7 @@ public final class ReindexProgressState {
     private volatile Stage stage = Stage.CREATE_INDICES;
     private volatile String productsIndex;
     private volatile String categoriesIndex;
+    private volatile String productCardsIndex;
     private volatile String categoriesCursor;
     private volatile String productsCursor;
     private volatile int resumeAttempts;
@@ -105,6 +106,9 @@ public final class ReindexProgressState {
     public String categoriesIndex() {
         return categoriesIndex;
     }
+
+    public String productCardsIndex() { return productCardsIndex; }
+    public void recordProductCardsIndex(String index) { this.productCardsIndex = index; }
 
     public void recordIndices(String productsIndex, String categoriesIndex) {
         this.productsIndex = productsIndex;
@@ -351,6 +355,7 @@ public final class ReindexProgressState {
         checkpoint.put("stage", stage.name());
         checkpoint.put("products_index", productsIndex);
         checkpoint.put("categories_index", categoriesIndex);
+        checkpoint.put("product_cards_index", productCardsIndex);
         checkpoint.put("categories_cursor", categoriesCursor);
         checkpoint.put("products_cursor", productsCursor);
         checkpoint.put("resume_attempts", resumeAttempts);
@@ -422,6 +427,7 @@ public final class ReindexProgressState {
         }
         state.productsIndex = asString(checkpoint.get("products_index"));
         state.categoriesIndex = asString(checkpoint.get("categories_index"));
+        state.productCardsIndex = asString(checkpoint.get("product_cards_index"));
         state.categoriesCursor = asString(checkpoint.get("categories_cursor"));
         state.productsCursor = asString(checkpoint.get("products_cursor"));
         state.resumeAttempts = (int) asLong(checkpoint.get("resume_attempts"));

@@ -47,15 +47,28 @@ evidence:
 1. Validate/chuẩn hóa q, size và category (giới hạn độ dài, tối đa 50 `filter`, mỗi token phải decode được; mọi vi phạm trả
    cùng lúc là `400`), resolve `category` (không khớp là `400`); decode/kiểm tra chữ ký cursor trước khi mở PIT.
 2. Build SKU query với visibility, full text, category, filter attribute (OR cùng code, AND khác code), giá, stock và promotion.
-3. Mở PIT hoặc dùng PIT cursor. Composite scan mọi Product bucket theo product_id; top_hits chọn selling_price_vnd asc rồi sku_id asc. Facet cùng snapshot chỉ cần tính trong batch đầu.
-4. Sort Product theo lựa chọn, tie product_id asc; cắt trang theo offset. total_products là số bucket chính xác. SKU đại diện không đổi theo lựa chọn sort.
+3. Request mới kiểm readiness của `product_cards`; chưa sẵn sàng trả retryable 503 + Retry-After: 2. Mở PIT trên cards hoặc tiếp tục PIT cursor v3.
+4. Một truy vấn nested chọn SKU rẻ nhất thỏa bộ lọc, sort/page bằng search_after; ES tính tổng và facet cùng snapshot. SKU đại diện không đổi theo lựa chọn sort.
 5. Response từ cùng SKU đại diện; cursor ký mang PIT mới nhất và vị trí tiếp theo. Đóng PIT khi kết thúc hoặc lỗi; bỏ dở tự hết hạn.
+
+**Đường bắt buộc `product_cards` ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)).** Áp dụng cho mọi request mới và cursor thế hệ 3:
+
+- Bước 2 build cùng SKU query nhưng trên trường `skus.*`.
+- Bước 3 mở PIT trên `product_cards` và chạy **một** truy vấn `nested` cỡ trang:
+  - `inner_hits` cho SKU đại diện;
+  - sort nested `mode: min`/`max` lọc bằng chính SKU query, tie `product_id asc`;
+  - `search_after` lấy từ cursor;
+  - `track_total_hits`;
+  - facet `nested → filter → terms → reverse_nested`.
+- Bước 4 không còn cắt trang trong Search.
+
+Cursor thế hệ 2 đã phát tiếp tục composite scan mọi Product bucket rồi sort/cắt offset (ADR-020). Không phát cursor thế hệ 2 cho request mới. Full reindex/rollback dựng cards đích trước khi chuyển cả năm alias; PIT cũ tiếp tục trên index cũ được giữ trong retention.
 
 **Consistency.** Giá, catalog và SKU eligibility đóng băng trong PIT cho toàn bộ pagination. Mutation hoặc alias cutover không thêm/lặp/mất Product của snapshot cũ. Category id đã resolve dùng trong query; khi danh mục không còn hiển thị, tải lại trang đầu.
 
 **Failure/retry.** INVALID_CURSOR cho token cũ/tamper/đổi filter/sort/PIT hết hạn; tải lại trang đầu. Ngân sách grouping 5 giây toàn request; timeout/shard failure/over-cap không trả partial. Client quyết định retry, server không retry. Kết quả rỗng là HTTP 200.
 
-**Cost.** O(P) nhớ và O(P log P) sort cho mỗi trang; batch 500, cap 50000 Product khớp. Xem [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md) và operations trước khi scale.
+**Cost.** Request mới chạy một truy vấn cỡ trang, không gom toàn bộ kết quả về JVM; ES vẫn chịu chi phí lọc/count/facet. Chỉ cursor legacy v2 còn O(P) nhớ và O(P log P) sort mỗi trang, batch 500, cap 50000. Xem [benchmark](../performance/search-required-read-model-benchmark-2026-10-19.md).
 
 **Test.** Nhiều SKU cùng Product chỉ một card; minimum/tie; lọc màu/giá/stock; price_desc theo minimum; mọi sort; composite nhiều batch; không lặp Product qua trang; mutation sau trang đầu; exact total và final full page; cursor cũ/tamper/hết hạn; visibility và facet DISTINCT.
 
@@ -373,7 +386,9 @@ và offsets được ghi vào document run ở mỗi trang, **sau khi** trang đ
 đều có guard revision; một run bị bỏ rơi được resume từ stage đã lưu.
 
 **Happy path.**
-1. **Build catalog.** Tạo `products_v{N+1}` và `categories_v{N+1}` từ mapping mới (ghi vào checkpoint ngay). Export Category
+1. **Build catalog.** Tạo `products_v{N+1}` và `categories_v{N+1}` từ mapping mới (ghi vào checkpoint ngay).
+   Trước export, copy tombstone Product/Category từ các index đang phục vụ vào candidate, giữ ID/revision/`deleted_at`;
+   copy lại an toàn khi resume, không tự purge hoặc đổi tuổi tombstone ([ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md)). Export Category
    trước, import toàn bộ Category snapshot và lưu `replay_from_offsets` của `t.category.events`; rồi keyset export Product
    theo chunk, lưu `replay_from_offsets` của `t.product.events`. Mỗi chunk import ghi bằng `_bulk`, bị chặn đồng thời bởi
    `bulk_max_actions` và `bulk_max_bytes`; không tạo bulk request vượt hai ngưỡng này. Cursor export của Product là stateless và mang
@@ -402,18 +417,22 @@ và offsets được ghi vào document run ở mỗi trang, **sau khi** trang đ
    đọc/apply lại sau Product catch-up. Guard giữ nguyên như luồng thường. Kết thúc khi không còn deferred SKU và poll rỗng
    `catch-up-zero-lag-polls` lần liên tiếp. Một batch mà index không nhận được **không bị bỏ qua**: consumer seek lại và áp dụng
    lại với backoff, quá `bulk.max-retries` thì run `FAILED`. Khi hội tụ, run ghi vị trí kết thúc mỗi partition và thời điểm hội tụ.
-5. **Verify** (status `CUTOVER`). Kiểm tra supersede lần nữa rồi chạy ba kiểm tra trên index mới; một kiểm tra không đạt là
+5. **Verify** (status `CUTOVER`). Kiểm tra supersede lần nữa, copy bổ sung tombstone từ current để thu deletion trong lúc build/catch-up,
+   rồi chạy ba kiểm tra trên index mới; scan timeout/shard lỗi hoặc bulk item failure đều chặn cutover. Một kiểm tra không đạt là
    `FAILED`, index mới bị xóa, alias giữ nguyên:
-   - *Số document* lệch không quá `max-doc-count-drift-ratio` so với index đang phục vụ (bỏ qua ở lần build đầu tiên).
+   - *Số SKU document chưa xóa* (`is_deleted=false`, không lọc status/stock) lệch không quá `max-doc-count-drift-ratio`
+     so với index đang phục vụ (bỏ qua ở lần build đầu tiên). Không tính tombstone vào count; việc giữ deletion guard là bước riêng,
+     không được bỏ bước copy để chỉ vượt count gate. Count response shard lỗi làm run fail.
    - *Sample diff*: `2 × sample-size-per-bucket` (200) SKU từ index đang phục vụ — 100 có `updated_at` mới nhất, 100 có
      `product_rating_count` lớn nhất, đều `is_deleted = false` — được fetch từ index mới. Sai khi SKU thiếu, khi
      `catalog_revision`/`availability_revision`/`review_revision` thấp hơn index đang phục vụ, hoặc khi cùng `catalog_revision`
      mà giá hoặc trạng thái khác. SKU mà live indexer đã đổi sau thời điểm catch-up hội tụ không tính (tail replay lo phần đó).
    - *Smoke query*: truy vấn hiển thị mặc định (`in_stock=false`, mọi SKU hiển thị) và aggregation facet chạy được trên index mới,
      và mỗi `hot-queries` cấu hình có hit trên index mới nếu index đang phục vụ có.
-6. **Cutover.** Ghi hai index sắp bị thay vào checkpoint, kiểm tra run vẫn giữ lease và không bị supersede, rồi chuyển **bốn**
-   alias (`products`, `products_write`, `categories`, `categories_write`) sang index mới bằng **một** lệnh `_aliases` atomic. Hai
-   index bị thay nhận marker `INDEX_RETIRED` để job dọn index tính 24 giờ. Run chuyển `COMPLETED`.
+6. **Cutover.** Ghi SKU/Category sắp bị thay vào checkpoint, kiểm tra lease và supersede. Giành shared projector lease,
+   dựng/refresh cards từ physical SKU index đích và lưu `product_cards_index` cùng feed position trước publish. Chuyển **năm**
+   alias (`products`, `products_write`, `categories`, `categories_write`, `product_cards`) bằng **một** lệnh `_aliases` atomic.
+   Cards cũ vẫn phục vụ lúc dựng; các generation bị thay nhận retirement marker. Run chuyển `COMPLETED` (ADR-029).
 7. **Tail replay.** Live indexer vẫn ghi vào index cũ cho tới khi alias đổi, nên những gì nó áp dụng giữa lúc catch-up hội tụ và
    lúc swap không có trong index mới. Run đọc lại từ vị trí kết thúc catch-up (offsets từng partition và change feed Inventory)
    vào index mới, rồi xóa control request đến trước lúc run bắt đầu. Đọc không hết thì ghi `checkpoint.tail_replay = INCOMPLETE`
@@ -677,7 +696,7 @@ vụ không bao giờ bị xóa (`ReindexLifecycleIT`).
    index trước đó phải còn tồn tại. Nếu không `409 REINDEX_ROLLBACK_UNAVAILABLE` (lý do trong `detail`).
 2. Search giữ lease `full-reindex` (owner `rollback:<run_id>`) để không chạy cùng một run khác hay tail replay; không lấy được lease
    → `409`.
-3. Một lệnh `_aliases` trả bốn alias về hai index cũ; marker retired của hai index cũ bị xóa, hai index mới nhận marker `now`;
+3. Dựng cards từ SKU cũ dưới shared projector lease; một lệnh `_aliases` chuyển năm alias về SKU/Category cũ và cards mới dựng. Marker retired của SKU/Category cũ bị xóa; các index bị thay nhận marker `now` (ADR-029);
    run chuyển `ROLLED_BACK`.
 4. Dữ liệu ghi vào index mới sau cutover không có trong index cũ; vận hành trigger reindex mới để hội tụ.
 

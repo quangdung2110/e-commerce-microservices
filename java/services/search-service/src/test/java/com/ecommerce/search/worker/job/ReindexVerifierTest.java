@@ -9,6 +9,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReindexVerifierTest {
 
     @Test
+    void countGuardStillRejectsLossOfNonDeletedDocuments() throws Exception {
+        var client = org.mockito.Mockito.mock(co.elastic.clients.elasticsearch.ElasticsearchClient.class);
+        var indices = org.mockito.Mockito.mock(com.ecommerce.search.repository.es.IndexAdmin.class);
+        org.mockito.Mockito.when(indices.countNonDeletedDocuments("old")).thenReturn(100L);
+        org.mockito.Mockito.when(indices.countNonDeletedDocuments("new")).thenReturn(90L);
+        var properties = org.mockito.Mockito.mock(com.ecommerce.search.config.SearchProperties.class,
+                org.mockito.Mockito.RETURNS_DEEP_STUBS);
+        org.mockito.Mockito.when(properties.reindex().maxDocCountDriftRatio()).thenReturn(0.02);
+        var verifier = new ReindexVerifier(client, indices, null, properties,
+                new com.ecommerce.search.common.SearchMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> verifier.verify(java.util.Optional.of("old"), "new", java.time.Instant.now()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("100 -> 90");
+    }
+
+    @Test
     void anIdenticalDocumentIsFine() {
         assertThat(ReindexVerifier.compare(doc(5L, 3L, 2L, 100L, "ACTIVE"), doc(5L, 3L, 2L, 100L, "ACTIVE"))).isNull();
     }

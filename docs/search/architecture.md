@@ -62,9 +62,10 @@ flowchart LR
 |---|---|---|---|---|
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
 | Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
-| Query layer | Build SKU filters, PIT composite grouping, chọn cheapest eligible SKU, sort/page Product, ký cursor | Ghi catalog/index hoặc suy luận stock | Elasticsearch read alias | `service`, `repository` |
+| Query layer | Build SKU filters, cheapest eligible SKU, sort/page và ký cursor: request mới bắt buộc đọc `product_cards`; chưa sẵn sàng trả 503. Grouping chỉ cho cursor v2 đã phát (ADR-029) | Ghi catalog/index, suy luận stock hoặc tự fallback grouping cho request mới | Elasticsearch read alias | `service`, `repository` |
+| Product card projector | Giữ `product_cards`: bootstrap/repair khi source mismatch, bình thường đọc change feed theo `indexed_at`; dựng generation riêng từ SKU đích cho reindex/rollback trước paired swap (ADR-029); ghi `external_gte` | Ghi index SKU, đọc Kafka, ghi khi không giữ lease; background poll chỉ chạy khi `search.product-index.enabled` | Elasticsearch, lease `product-cards-projector` | `worker/productcards` |
 | Indexing worker | Consume snapshot catalog/category/availability/review, transform event thành lệnh ghi, apply guard; đăng ký readiness sau catalog create; lưu bền control event; `nack` batch không áp dụng được | Bỏ qua guard hoặc upsert document từ Availability; coi "không ACK" là đủ để retry | Kafka, write alias, Inventory readiness API, `search_jobs` | `worker` |
-| Reindex job | Build index mới theo stage có checkpoint, import catalog/per-SKU availability/rating snapshot, catch-up, kiểm tra, cutover bốn alias trong một lệnh, tail replay | Tạo index availability riêng hoặc tự chụp catalog watermark; ghi state khi đã mất lease | Elasticsearch, Kafka, Product/Inventory/Review export API, lease `full-reindex` | `worker/job` |
+| Reindex job | Build index mới, import snapshot, catch-up, verify, dựng cards từ SKU đích rồi chuyển năm alias trong một lệnh; tail replay (ADR-029) | Tạo index availability riêng hoặc tự chụp catalog watermark; ghi state khi đã mất lease | Elasticsearch, Kafka, Product/Inventory/Review export API, lease `full-reindex` và `product-cards-projector` | `worker/job` |
 | Reindex verifier | Kiểm tra index mới trước cutover: số document, sample diff, smoke query | Sửa bất kỳ index nào | Elasticsearch | `worker/job` |
 | Reindex watchdog | Tìm run chưa kết thúc mà lease đã hết hạn; resume hoặc đánh dấu `RUN_ABANDONED` | Chạy song song với owner còn sống | `search_jobs`, Reindex job | `worker/job` |
 | Reindex auto starter | Biến request `catalog-reindex-requested` đã gộp thành một run sau debounce | Chạy khi đã có run đang chạy | `search_jobs`, Reindex job | `worker` |
@@ -75,7 +76,7 @@ flowchart LR
 
 ## 3. Processing model
 
-Đường đọc synchronous: request → validate → PIT → composite scan Product + top_hits cheapest eligible SKU → sort/page → response. [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md). Không ghi projection; chỉ mở/gia hạn/đóng PIT. Không có cache tầng ứng dụng; Search
+Đường đọc synchronous: request → validate → kiểm readiness → PIT → **một** truy vấn `nested` cỡ trang trên `product_cards` → response (sort `mode: min/max` có `nested.filter`, `inner_hits`, `search_after`, `track_total_hits`). Request mới không bao giờ gom toàn bộ SKU về JVM; chưa sẵn sàng trả `503 ELASTICSEARCH_UNAVAILABLE` + `Retry-After: 2`. Cursor v2 đã phát tiếp tục grouping và cursor v3 tiếp tục PIT cards của nó ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)). Full reindex dựng cards đích trước rồi chuyển cả năm alias nguyên tử; live projector và cutover serialize qua cùng lease. Đường đọc không ghi projection; chỉ mở/gia hạn/đóng PIT. Không có cache tầng ứng dụng; Search
 dựa vào filter cache và request cache của Elasticsearch
 ([ADR-001](./decisions/ADR-001-elasticsearch-only-store.md)). Một câu trả lời của Elasticsearch
 có `timed_out` hoặc shard lỗi không bao giờ được trả cho buyer hay ghi vào `product_count`: nó là

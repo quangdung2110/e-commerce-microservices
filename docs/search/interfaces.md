@@ -18,6 +18,10 @@ evidence:
 
 # Search Service — Giao diện tích hợp
 
+Từ 17/10/2026, [ADR-028](./decisions/ADR-028-storefront-facet-discovery-policy.md) giới hạn **nhóm facet được quảng bá** theo policy chung/danh mục, có thứ tự biên tập. Không mặc định mọi token đều phải xuất hiện trong `facets.filters`. `value` vẫn opaque; frontend giữ giá trị đã chọn kể cả khi không còn trong facet hiện tại và cho phép bỏ rõ ràng. Nhãn đơn vị hiển thị như `16GB`, `Wi-Fi`; không dùng nhãn để dựng token.
+
+Exclusions Product/category ID là phạm vi discovery trước kết quả, total, facet và cursor; không phải lớp phân quyền Product. Search/suggestion/category tree không quảng bá fixture đã cấu hình; admin/export/gRPC/history và URL PDP trực tiếp giữ hành vi riêng. Không thay shape HTTP hoặc event. Xem [vận hành policy](./operations.md#chính-sách-bộ-lọcdiscovery-storefront-17102026).
+
 > OpenAPI canonical cho HTTP v2 nằm tại
 > [`contracts/http/search/v2/openapi.yaml`](../../contracts/http/search/v2/openapi.yaml).
 > File này giải thích semantics, projection boundary và lộ trình tương thích; khi
@@ -84,12 +88,12 @@ Truy vấn cốt lõi: trang kết quả tìm kiếm và mọi trang danh sách 
   (mọi vi phạm cùng lúc) — token lạ không bị bỏ qua. `cursor` quá dài là `INVALID_CURSOR`.
 - **Sort:** relevance (max SKU score), price_asc/price_desc (giá SKU đại diện), newest (max updated_at), rating (max rating), luôn product_id asc khi bằng điểm.
 - **Đơn vị kết quả:** một Product duy nhất trên toàn bộ snapshot; sku_id, giá, ảnh, giảm giá và tồn kho thuộc SKU có selling_price_vnd thấp nhất THỎA TẤT CẢ bộ lọc, tie sku_id asc. Lọc màu đen không lấy giá SKU trắng rẻ hơn.
-- **Pagination:** signed cursor generation 2 mang PIT + vị trí Product + resolved category id + query chuẩn hóa (trừ size). PIT gia hạn 2 phút mỗi request. Đổi query/filter/sort, token sửa tay/cũ/hết hạn trả INVALID_CURSOR. Trang cuối next_cursor=null và đóng PIT; tải lại trang đầu để nhận dữ liệu mới.
+- **Pagination:** signed cursor generation 2 mang PIT + vị trí Product + resolved category id + query chuẩn hóa (trừ size); generation 3 (projection `product_cards`, ADR-027) mang thêm giá trị `search_after` của Product cuối. Cursor luôn tiếp tục trên đường đã phát ra nó; client không phân biệt hai thế hệ. PIT gia hạn 2 phút mỗi request. Đổi query/filter/sort, token sửa tay/cũ/hết hạn trả INVALID_CURSOR. Trang cuối next_cursor=null và đóng PIT; tải lại trang đầu để nhận dữ liệu mới.
 - **Total:** total_products đếm chính xác Product trong snapshot. Thay total_skus là breaking change cho consumer pilot: rollout backend/frontend/types đồng bộ, không dùng cursor cũ.
-- **Facet:** DISTINCT_PRODUCT, APPROXIMATE; aggregation trên toàn bộ SKU khớp cùng PIT, không chỉ SKU đại diện hoặc trang đang tải.
+- **Facet:** DISTINCT_PRODUCT, APPROXIMATE; aggregation trên toàn bộ SKU khớp cùng PIT, không chỉ SKU đại diện hoặc trang đang tải. Đường `product_cards` (ADR-027) đếm chính xác bằng `reverse_nested`; `count_accuracy` vẫn khai báo `APPROXIMATE` vì client không biết request đi đường nào.
 - **Lọc bắt buộc:** is_deleted=false, product_status=ACTIVE, sku_status=ACTIVE. in_stock=true mặc định; thiếu stock không khớp true.
-- **Giới hạn:** size tối đa 100, toàn bộ grouping 5 giây, mặc định tối đa 50000 Product khớp. Không trả tổng/trang thiếu khi timeout, shard failure hay vượt cap. Không ghi catalog/index, chỉ quản lý context PIT.
-- **Triển khai:** composite scan + top_hits trước sort/paging, [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md). Product Service không đổi event/export hay ownership.
+- **Giới hạn:** size tối đa 100, toàn bộ grouping 5 giây, mặc định tối đa 50000 Product khớp. Không trả tổng/trang thiếu khi timeout, shard failure hay vượt cap. Không ghi catalog/index, chỉ quản lý context PIT. Cap 50000 chỉ áp dụng cho đường grouping; đường `product_cards` không quét toàn tập khớp nên không có cap.
+- **Triển khai:** request mới bắt buộc chạy một truy vấn `nested` cỡ trang trên `product_cards` ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)). Projection chưa sẵn sàng trả `503 ELASTICSEARCH_UNAVAILABLE`, retryable, `Retry-After: 2`; không fallback grouping. Cursor v2 đã phát tiếp tục ADR-020. Hai đường giữ quy tắc SKU đại diện và giá; riêng `relevance` khi có `q` có thể khác thứ tự. Product Service không đổi event/export hay ownership.
 
 ### 3.2 `GET /api/v2/search/suggestions`
 
@@ -184,7 +188,7 @@ client đọc lại run (§3.6) để thấy `CANCELLED`. Run không còn owner 
 
 ### 3.9 `POST /api/v2/search/reindex-runs/{run_id}/rollback`
 
-Trả bốn alias về hai index mà một run `COMPLETED` đã thay, trong một lệnh `_aliases` atomic, và đặt run `ROLLED_BACK`.
+Dựng cards từ SKU index mà run `COMPLETED` đã thay, rồi chuyển cả năm alias về cặp SKU/Category cũ và cards vừa dựng trong một lệnh `_aliases` atomic; đặt run `ROLLED_BACK` (ADR-029).
 Đồng bộ nên trả `200` kèm run. Chỉ cutover mới nhất được rollback, chỉ khi index trước đó chưa bị job dọn xóa (giữ tối thiểu
 24 giờ sau cutover) và không có run khác đang chạy; ngược lại `409 REINDEX_ROLLBACK_UNAVAILABLE` (lý do trong `detail`).
 Dữ liệu ghi vào index mới sau cutover không có trong index cũ: chạy reindex mới để hội tụ. Rollback của suggestion

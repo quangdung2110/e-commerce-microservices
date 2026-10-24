@@ -12,6 +12,8 @@ import com.ecommerce.search.repository.es.IndexAdmin;
 import com.ecommerce.search.worker.job.FullReindexJob;
 import com.ecommerce.search.worker.job.ReindexProgressState;
 import com.ecommerce.search.worker.job.ReindexRecovery;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
+import com.ecommerce.search.repository.es.ProductCardIndex;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -42,10 +44,11 @@ public class ReindexRunService {
     private final IndexAdmin indexAdmin;
     private final SearchProperties properties;
     private final SearchMetrics metrics;
+    private final ProductCardProjector productCards;
 
     public ReindexRunService(JobStateRepository runs, FullReindexJob job, ReindexPreconditions preconditions,
                              ReindexRecovery recovery, IndexAdmin indexAdmin, SearchProperties properties,
-                             SearchMetrics metrics) {
+                             SearchMetrics metrics, ProductCardProjector productCards) {
         this.runs = runs;
         this.job = job;
         this.preconditions = preconditions;
@@ -53,6 +56,7 @@ public class ReindexRunService {
         this.indexAdmin = indexAdmin;
         this.properties = properties;
         this.metrics = metrics;
+        this.productCards = productCards;
     }
 
     /** @param actor taken from the trusted gateway identity, never from the request body */
@@ -149,7 +153,21 @@ public class ReindexRunService {
                     List.of(properties.aliases().products(), properties.aliases().productsWrite()));
             targets.put(state.previousCategoriesIndex(),
                     List.of(properties.aliases().categories(), properties.aliases().categoriesWrite()));
-            indexAdmin.swapAliasesAtomically(targets);
+            Optional<String> previousCards = indexAdmin.resolveAlias(ProductCardIndex.ALIAS);
+            try (var prepared = productCards.prepareForCutover(state.previousProductsIndex(), () -> {
+                try {
+                    if (!runs.renewLease(lease.get(), Instant.now(),
+                            Instant.now().plus(properties.lifecycle().leaseDuration())))
+                        throw unavailable("rollback lost its lease");
+                } catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+            })) {
+                targets.put(prepared.index(), List.of(ProductCardIndex.ALIAS));
+                requireStillTheLatestCutover(state);
+                prepared.checkOwnership();
+                indexAdmin.swapAliasesAtomically(targets);
+                prepared.published();
+            }
+            if (previousCards.isPresent()) runs.markIndexRetired(previousCards.get(), runId, Instant.now());
 
             runs.clearIndexRetired(state.previousProductsIndex());
             runs.clearIndexRetired(state.previousCategoriesIndex());

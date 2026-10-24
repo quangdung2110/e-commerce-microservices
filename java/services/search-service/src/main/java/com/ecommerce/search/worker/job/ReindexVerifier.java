@@ -32,7 +32,7 @@ import java.util.Set;
  * be at least as complete as the one it replaces, and it must answer the queries buyers send.
  *
  * <ul>
- *   <li><b>Count drift.</b> The visible-document count may not move by more than
+ *   <li><b>Count drift.</b> The non-deleted catalog-document count may not move by more than
  *       {@code reindex.max-doc-count-drift-ratio}.
  *   <li><b>Sample diff.</b> {@code 2 x sample-size-per-bucket} SKUs are read from the current
  *       index — the most recently updated and the most reviewed — and fetched from the new
@@ -90,8 +90,8 @@ public class ReindexVerifier {
     // ------------------------------------------------------------------ count drift
 
     private void countDrift(String current, String candidate) throws IOException {
-        long before = indexAdmin.countDocuments(current);
-        long after = indexAdmin.countDocuments(candidate);
+        long before = indexAdmin.countNonDeletedDocuments(current);
+        long after = indexAdmin.countNonDeletedDocuments(candidate);
         double drift = before == 0 ? 0 : Math.abs(after - before) / (double) before;
         if (drift > properties.reindex().maxDocCountDriftRatio()) {
             metrics.cutoverCheck("count_drift", "fail");

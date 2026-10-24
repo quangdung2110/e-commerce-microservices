@@ -188,4 +188,21 @@ public class IndexAdmin {
     public long countDocuments(String indexOrAlias) throws IOException {
         return client.count(builder -> builder.index(indexOrAlias)).count();
     }
+
+    /** A retired cards generation must outlive PITs that buyers are still renewing. */
+    public boolean hasOpenSearchContexts(String index) throws IOException {
+        var stats = client.indices().stats(b -> b.index(index).metric("search"));
+        if (stats.shards().failed().intValue() > 0) throw new IOException("incomplete search-context stats for " + index);
+        var total = stats.all().total();
+        return total == null || total.search() == null || total.search().openContexts() == null
+                || total.search().openContexts() > 0;
+    }
+
+    /** Compare catalog coverage independently of retained/purged deletion guards. */
+    public long countNonDeletedDocuments(String index) throws IOException {
+        var response = client.count(b -> b.index(index)
+                .query(q -> q.term(t -> t.field("is_deleted").value(false))));
+        if (response.shards().failed().intValue() != 0) throw new IOException("incomplete catalog count on " + index);
+        return response.count();
+    }
 }

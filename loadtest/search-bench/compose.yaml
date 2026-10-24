@@ -1,0 +1,86 @@
+# Isolated stack for the Search scale benchmark (docs/performance/search-scale-benchmark.md).
+#
+# Own project, network and volume: nothing here touches the shared compose stack's Elasticsearch, Kafka or
+# Search. Driven by scripts/ci/search-bench.sh; it is not meant to stay up.
+#
+#   SEARCH_JAR    jar to run (the script copies the built jar so a rebuild during the run cannot swap it)
+#   SEARCH_HEAP   -Xmx of Search (default 512m, the same as the local QA stack)
+name: search-bench
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    command: >
+      bash -c "bin/elasticsearch-plugin install --batch analysis-icu || true;
+      /bin/tini -- /usr/local/bin/docker-entrypoint.sh eswrapper"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    volumes:
+      - es-bench-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  search-service:
+    image: eclipse-temurin:21-jre-alpine
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    # Kafka points at a closed local port: the consumers retry quietly and never join the real
+    # search-indexer group. The scheduled jobs are switched off so only benchmark queries reach Elasticsearch.
+    entrypoint:
+      - java
+      - -Xmx${SEARCH_HEAP:-512m}
+      - -jar
+      - /app/search.jar
+      - --search.bootstrap-indices=false
+      - --search.tombstone.product-count-enabled=false
+      - --search.tombstone.product-count-cron=-
+      - --search.tombstone.purge-cron=-
+      - --search.suggestions.rebuild-enabled=false
+      - --search.suggestions.rebuild-cron=-
+      - --search.lifecycle.cleanup-cron=-
+      - --logging.level.org.apache.kafka=ERROR
+    environment:
+      ES_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: 127.0.0.1:9
+      CDN_BASE_URL: http://localhost:8088/media
+      THUMBNAIL_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+    volumes:
+      - ${SEARCH_JAR:?set SEARCH_JAR}:/app/search.jar:ro
+
+  # Same jar with the product_cards projection on (ADR-027): it builds the projection from the seeded
+  # SKU index and serves product searches from it, so both implementations answer from the same data.
+  search-service-cards:
+    image: eclipse-temurin:21-jre-alpine
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    entrypoint:
+      - java
+      - -Xmx${SEARCH_HEAP:-512m}
+      - -jar
+      - /app/search.jar
+      - --search.bootstrap-indices=false
+      - --search.tombstone.product-count-enabled=false
+      - --search.tombstone.product-count-cron=-
+      - --search.tombstone.purge-cron=-
+      - --search.suggestions.rebuild-enabled=false
+      - --search.suggestions.rebuild-cron=-
+      - --search.lifecycle.cleanup-cron=-
+      - --search.product-index.enabled=true
+      - --logging.level.org.apache.kafka=ERROR
+    environment:
+      ES_URIS: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP: 127.0.0.1:9
+      CDN_BASE_URL: http://localhost:8088/media
+      THUMBNAIL_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+    volumes:
+      - ${SEARCH_JAR:?set SEARCH_JAR}:/app/search.jar:ro
+
+volumes:
+  es-bench-data:

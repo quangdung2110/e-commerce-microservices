@@ -103,6 +103,32 @@ search:
     facet-max-options: 50
     facet-max-attributes: 100
 
+  # Discovery policy: only useful facets are advertised. This is not authorization.
+  storefront:
+    common-facets: [thuong-hieu, mau-sac]
+    excluded-product-ids: ${SEARCH_STOREFRONT_EXCLUDED_PRODUCT_IDS:}
+    excluded-category-ids: ${SEARCH_STOREFRONT_EXCLUDED_CATEGORY_IDS:}
+    category-facets:
+      dien-thoai: [dung-luong-luu-tru]
+      laptop: [ram, o-cung]
+      am-thanh: [ket-noi, tinh-nang-am-thanh, kieu-hop-sac, cong-suat]
+      may-tinh-bang: [dung-luong-luu-tru, ket-noi]
+      dong-ho-thong-minh: [kich-thuoc-mat, ket-noi, chat-lieu-day]
+      phu-kien: [cong-suat, dung-luong-pin, so-cong, so-chuc-nang]
+      gaming: [loai-switch, ket-noi]
+      nha-thong-minh: [do-phan-giai, dung-luong-luu-tru, cong-suat, anh-sang, tram-sac]
+
+  # Required storefront read model (ADR-029). Disabling the projector suspends new searches
+  # with a retryable 503; it never enables the unbounded SKU grouping fallback.
+  product-index:
+    enabled: ${SEARCH_PRODUCT_INDEX_ENABLED:true}
+    poll-interval: 1s
+    lookback: 10s
+    scan-page-size: 2000
+    rebuild-batch: 500
+    readiness-refresh: 5s
+    lease-duration: 30s
+
   pagination:
     default-size: 20
     max-size: 100
