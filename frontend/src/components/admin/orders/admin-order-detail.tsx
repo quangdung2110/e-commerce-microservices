@@ -32,7 +32,6 @@ import {
   useAdminOrderCommand,
   type AdminOrderCommandResult,
 } from "@/hooks/use-admin-orders";
-import { problemMessage } from "@/lib/api/problem";
 import { formatDateTime, formatPhone, formatVND } from "@/lib/format";
 import { REFUND_STATUS_LABELS } from "@/lib/labels/order";
 import {
@@ -41,6 +40,9 @@ import {
   canAdminConfirmDelivery,
   canAdminRefundBeforeDispatch,
   dispatchedLines,
+  isManualReviewOperation,
+  isUnresolvedOrderResult,
+  operationFailureMessage,
 } from "@/lib/order";
 
 type AdminAction = "cancel" | "refund";
@@ -124,10 +126,12 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
   const canRefund = canAdminRefundBeforeDispatch(data);
   const canConfirmDelivery = canAdminConfirmDelivery(data);
   const operation = command.data?.operation;
-  const actionFailure = operation?.failure
-    ? problemMessage({ problem: operation.failure })
-    : operation && operation.status !== "SUCCEEDED" && operation.status !== "ACCEPTED" && operation.status !== "RUNNING"
-      ? "Lệnh không thể hoàn tất ở trạng thái hiện tại."
+  const manualReview = isManualReviewOperation(operation);
+  // Lệnh trước đã được nhận nhưng chưa có kết quả cuối: không mở ý định mới cho tới khi tải lại.
+  const outcomeUnresolved = Boolean(command.data && isUnresolvedOrderResult(command.data));
+  const actionFailure =
+    operation && operation.status !== "SUCCEEDED" && operation.status !== "ACCEPTED" && operation.status !== "RUNNING"
+      ? operationFailureMessage(operation, "Lệnh không thể hoàn tất ở trạng thái hiện tại.")
       : null;
 
   return (
@@ -222,10 +226,10 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
               <p className="text-caption text-muted-foreground">Quyền cuối cùng vẫn được Order và Inventory kiểm tra lại khi nhận lệnh.</p>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button className="w-full" variant="destructive" disabled={!canCancel || command.isPending} onClick={() => openAction("cancel")}>
+              <Button className="w-full" variant="destructive" disabled={!canCancel || command.isPending || outcomeUnresolved} onClick={() => openAction("cancel")}>
                 Huỷ đơn chưa thanh toán
               </Button>
-              <Button className="w-full" variant="outline" disabled={!canRefund || command.isPending} onClick={() => openAction("refund")}>
+              <Button className="w-full" variant="outline" disabled={!canRefund || command.isPending || outcomeUnresolved} onClick={() => openAction("refund")}>
                 <RotateCcw aria-hidden />
                 Hoàn tiền trước xuất kho
               </Button>
@@ -288,14 +292,14 @@ export function AdminOrderDetail({ orderId }: { orderId: string }) {
               </div>
               {command.isError ? <ErrorState error={command.error} /> : null}
               {actionFailure ? (
-                <Alert variant={operation?.status === "MANUAL_REVIEW_REQUIRED" ? "warning" : "danger"} title="Lệnh chưa hoàn tất">
+                <Alert variant={manualReview ? "warning" : "danger"} title="Lệnh chưa hoàn tất">
                   <div className="space-y-2"><p>{actionFailure}</p>{operation ? <OperationStatus status={operation.status} /> : null}</div>
                 </Alert>
               ) : null}
             </div>
             <DialogFooter>
               <Button type="button" variant="secondary" disabled={command.isPending} onClick={closeAction}>Quay lại</Button>
-              <Button type="submit" variant={action === "cancel" ? "destructive" : "default"} disabled={command.isPending || confirmation !== orderId || (action === "refund" && !reasonCode.trim())}>
+              <Button type="submit" variant={action === "cancel" ? "destructive" : "default"} disabled={command.isPending || manualReview || confirmation !== orderId || (action === "refund" && !reasonCode.trim())}>
                 {command.isPending ? <LoaderCircle className="animate-spin" aria-hidden /> : null}
                 {command.isPending ? "Đang xử lý" : "Xác nhận"}
               </Button>

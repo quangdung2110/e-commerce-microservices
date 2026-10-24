@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { FormSection } from "@/components/admin/form-section";
-import { FieldBlock, SubmitButton } from "@/components/admin/inventory/inventory-shared";
+import { CommandRecovery, FieldBlock, SubmitButton } from "@/components/admin/inventory/inventory-shared";
 import { PageHeader } from "@/components/admin/page-header";
 import { Alert } from "@/components/ui/alert";
 import { ErrorState } from "@/components/ui/error-state";
@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useCommand } from "@/hooks/use-command";
+import { useInventoryCommand } from "@/hooks/use-inventory-command";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import { inventoryAdminApi, type CreateWarehouseRequest } from "@/lib/api/inventory-admin";
 import { inventoryErrorMessage } from "@/lib/inventory";
@@ -35,7 +35,7 @@ export function WarehouseCreateForm() {
   const [reason, setReason] = useState("");
   const [evidence, setEvidence] = useState("");
 
-  const create = useCommand({
+  const create = useInventoryCommand({
     mutationFn: (input: CreateWarehouseRequest, context) =>
       inventoryAdminApi.createWarehouse(input, context.commandId),
     onSuccess: (response) => {
@@ -44,13 +44,14 @@ export function WarehouseCreateForm() {
   });
 
   function edited() {
-    if (create.isError) create.startNewIntent();
+    if (!create.startNewIntent()) return;
     submitError.reset();
     setValidation(null);
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (create.isPending || create.isRetryDelayed) return;
     submitError.reset();
     setValidation(null);
     const fulfillmentPriority = Number(priority);
@@ -93,7 +94,9 @@ export function WarehouseCreateForm() {
       <PageHeader title="Tạo kho" description="Kho là master data của Inventory. Trạng thái kho chỉ ảnh hưởng phân bổ mới, không tự di chuyển hoặc giải phóng tồn." />
       {validation ? <Alert variant="danger">{validation}</Alert> : null}
       {submitError.message ? <ErrorState error={create.error} message={inventoryErrorMessage(create.error) ?? submitError.message} /> : null}
+      {create.isUnresolved ? <CommandRecovery commandId={create.commandId} /> : null}
 
+      <fieldset disabled={create.inputsLocked} className="space-y-8">
       <FormSection title="Thông tin kho">
         <FieldBlock id="warehouse-name" label="Tên kho *">
           <Input id="warehouse-name" required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} />
@@ -126,7 +129,8 @@ export function WarehouseCreateForm() {
         <FieldBlock id="warehouse-evidence" label="Tham chiếu bằng chứng *"><Input id="warehouse-evidence" required maxLength={512} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></FieldBlock>
       </FormSection>
 
-      <div className="flex justify-end"><SubmitButton pending={create.isPending} retry={create.isError} retryAfterSeconds={create.retryDelaySeconds}>Tạo kho</SubmitButton></div>
+      </fieldset>
+      <div className="flex justify-end"><SubmitButton pending={create.isPending} retry={create.isUnresolved} retryAfterSeconds={create.retryDelaySeconds}>Tạo kho</SubmitButton></div>
     </form>
   );
 }

@@ -105,6 +105,22 @@ export function MutationResult({ result }: { result: StockMutationResponse }) {
   );
 }
 
+export function CommandRecovery({ commandId }: { commandId?: string }) {
+  return (
+    <Alert variant="warning" title="Kết quả lệnh chưa rõ">
+      <p>Giữ trang này để thử lại đúng lệnh. Thông tin đã gửi được giữ nguyên cho đến khi xác định được kết quả.</p>
+      {commandId ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <IdChip value={commandId} />
+          <Link className="underline" href={`/admin/inventory/commands/${encodeURIComponent(commandId)}`} target="_blank" rel="noopener noreferrer">
+            Tra cứu kết quả lệnh (tab mới)
+          </Link>
+        </div>
+      ) : null}
+    </Alert>
+  );
+}
+
 export function ResultItem({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">

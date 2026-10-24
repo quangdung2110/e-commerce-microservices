@@ -14,7 +14,7 @@ import {
   type OrderOperation,
 } from "@/lib/api/order";
 import { PollTimeoutError, pollUntil } from "@/lib/api/operation";
-import { isTerminalOrderOperation } from "@/lib/order";
+import { isTerminalOrderOperation, isUnresolvedOrderResult } from "@/lib/order";
 
 export const adminOrderKeys = {
   all: ["admin", "orders"] as const,
@@ -57,6 +57,7 @@ export function useAdminOrderCommand(orderId: string) {
   useEffect(() => () => controller.current?.abort(), []);
 
   return useCommand<AdminOrderCommandResult, AdminOrderCommandIntent>({
+    isOutcomeUnresolved: isUnresolvedOrderResult,
     mutationFn: async (intent, { commandId }) => {
       const accepted =
         intent.kind === "cancel"

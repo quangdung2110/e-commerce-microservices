@@ -3,13 +3,13 @@
 import { useState } from "react";
 
 import { FormSection } from "@/components/admin/form-section";
-import { FieldBlock, MutationResult, SubmitButton } from "@/components/admin/inventory/inventory-shared";
+import { CommandRecovery, FieldBlock, MutationResult, SubmitButton } from "@/components/admin/inventory/inventory-shared";
 import { PageHeader } from "@/components/admin/page-header";
 import { Alert } from "@/components/ui/alert";
 import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
-import { useCommand } from "@/hooks/use-command";
+import { useInventoryCommand } from "@/hooks/use-inventory-command";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import { inventoryAdminApi, type StockMutationResponse, type StockReceiptRequest } from "@/lib/api/inventory-admin";
 import { inventoryErrorMessage, RECEIPT_REASON_LABELS, type ReceiptReason } from "@/lib/inventory";
@@ -27,14 +27,14 @@ export function StockReceiptForm() {
   const [sourceReference, setSourceReference] = useState("");
   const [evidence, setEvidence] = useState("");
 
-  const receipt = useCommand({
+  const receipt = useInventoryCommand({
     mutationFn: (input: StockReceiptRequest, context) =>
       inventoryAdminApi.recordStockReceipt(input, context.commandId),
     onSuccess: setResult,
   });
 
   function edited() {
-    if (receipt.isError) receipt.startNewIntent();
+    if (!receipt.startNewIntent()) return;
     submitError.reset();
     setValidation(null);
     setResult(null);
@@ -42,6 +42,7 @@ export function StockReceiptForm() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (receipt.isPending || receipt.isRetryDelayed) return;
     submitError.reset();
     setValidation(null);
     const parsedQuantity = Number(quantity);
@@ -79,7 +80,9 @@ export function StockReceiptForm() {
       {validation ? <Alert variant="danger">{validation}</Alert> : null}
       {submitError.message ? <ErrorState error={receipt.error} message={inventoryErrorMessage(receipt.error) ?? submitError.message} /> : null}
       {result ? <MutationResult result={result} /> : null}
+      {receipt.isUnresolved ? <CommandRecovery commandId={receipt.commandId} /> : null}
 
+      <fieldset disabled={receipt.inputsLocked} className="space-y-8">
       <FormSection title="Vị trí nhận hàng">
         <div className="grid gap-5 sm:grid-cols-2">
           <FieldBlock id="receipt-warehouse" label="Mã kho *"><Input id="receipt-warehouse" required maxLength={128} value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} /></FieldBlock>
@@ -100,7 +103,8 @@ export function StockReceiptForm() {
         <FieldBlock id="receipt-evidence" label="Tham chiếu bằng chứng *"><Input id="receipt-evidence" required maxLength={512} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></FieldBlock>
       </FormSection>
 
-      <div className="flex justify-end"><SubmitButton pending={receipt.isPending} retry={receipt.isError} retryAfterSeconds={receipt.retryDelaySeconds}>Ghi nhận nhập hàng</SubmitButton></div>
+      </fieldset>
+      <div className="flex justify-end"><SubmitButton pending={receipt.isPending} retry={receipt.isUnresolved} retryAfterSeconds={receipt.retryDelaySeconds}>Ghi nhận nhập hàng</SubmitButton></div>
     </form>
   );
 }
