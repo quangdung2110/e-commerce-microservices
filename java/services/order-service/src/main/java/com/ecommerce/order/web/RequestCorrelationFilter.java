@@ -74,10 +74,22 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
         if (correlation.traceId() != null) {
             MDC.put(MDC_TRACE_ID, correlation.traceId());
         }
+        if (MDC.get("trace_id") == null && MDC.get("traceId") != null) { MDC.put("trace_id", MDC.get("traceId")); }
         response.setHeader(RequestCorrelation.REQUEST_ID_HEADER, correlation.requestId());
+        long accessStarted = System.nanoTime();
         try {
             chain.doFilter(request, response);
         } finally {
+            Object accessPattern = request.getAttribute(org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+            MDC.put("operation", accessPattern == null ? "unmatched" : accessPattern.toString());
+            MDC.put("method", request.getMethod());
+            MDC.put("status", Integer.toString(response.getStatus()));
+            MDC.put("duration_ms", Long.toString((System.nanoTime() - accessStarted) / 1_000_000));
+            log.info("request completed");
+            MDC.remove("operation");
+            MDC.remove("method");
+            MDC.remove("status");
+            MDC.remove("duration_ms");
             // The first async dispatch exits before the response is complete. Keep the original
             // receivedAtNanos on the request and count only when the final dispatch completes.
             if (!request.isAsyncStarted() && correlation.deadlineExceeded()) {

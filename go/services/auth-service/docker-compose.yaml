@@ -6,8 +6,8 @@
 services:
   auth-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/auth-service/Dockerfile
     ports:
       - "8080:8080"
     environment:

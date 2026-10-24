@@ -115,10 +115,15 @@ public class WebConfig implements WebMvcConfigurer {
      * against their internal allowlists and answer {@code 401} without it
      * ({@code docs/mesh/runtime-contract.md §6}, Inventory ADR-027).
      */
-    @Bean
     public RestClient.Builder restClientBuilder(ObjectMapper objectMapper) {
+        return restClientBuilder(objectMapper, io.micrometer.observation.ObservationRegistry.NOOP);
+    }
+
+    @Bean
+    public RestClient.Builder restClientBuilder(ObjectMapper objectMapper,
+            io.micrometer.observation.ObservationRegistry observations) {
         Duration timeout = properties.export().timeout();
-        return RestClient.builder()
+        return RestClient.builder().observationRegistry(observations)
                 .defaultHeader(SERVICE_IDENTITY_HEADER, SERVICE_IDENTITY)
                 // contracts ADR-002/003: export and handshake calls run on consumer or job threads with no
                 // inbound request, so each call gets its own request id and tells the provider how long

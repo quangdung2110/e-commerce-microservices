@@ -29,17 +29,28 @@ spring:
       properties:
         max.poll.interval.ms: 300000
     listener:
+      observation-enabled: true
       ack-mode: manual_immediate
       concurrency: 3
 
+    template:
+      observation-enabled: true
+
   lifecycle:
     timeout-per-shutdown-phase: 30s
+
 
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
 
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

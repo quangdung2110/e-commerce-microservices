@@ -2,7 +2,6 @@ package router
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/notification-service/internal/api/handler"
@@ -46,7 +45,7 @@ func NewInternal(deps InternalDeps) *gin.Engine {
 		metricsPath = "/metrics"
 	}
 	if deps.Metrics != nil {
-		engine.GET(metricsPath, gin.WrapH(promhttp.HandlerFor(deps.Metrics.Registry, promhttp.HandlerOpts{})))
+		engine.GET(metricsPath, gin.WrapH(httpMetrics.Handler(deps.Metrics.Registry)))
 	}
 
 	api := engine.Group("/internal/v1/notifications")

@@ -60,13 +60,14 @@ public class ProductClient implements DisposableBean {
     private static final Metadata.Key<String> TRACEPARENT =
             Metadata.Key.of("traceparent", Metadata.ASCII_STRING_MARSHALLER);
 
+    private final io.opentelemetry.api.OpenTelemetry telemetry;
     private final ManagedChannel channel;
     private final ProductServiceGrpc.ProductServiceFutureStub stub;
     private final Duration ceiling;
 
     @Autowired
-    public ProductClient(CheckoutProperties properties) {
-        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product());
+    public ProductClient(CheckoutProperties properties, io.opentelemetry.api.OpenTelemetry telemetry) {
+        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product(), telemetry);
     }
 
     /** Pings an active connection after this long without traffic (contracts ADR-007). Product permits one every 20 s. */
@@ -91,8 +92,15 @@ public class ProductClient implements DisposableBean {
     }
 
     ProductClient(ManagedChannel channel, Duration ceiling) {
+        this(channel, ceiling, null);
+    }
+
+    private ProductClient(ManagedChannel channel, Duration ceiling, io.opentelemetry.api.OpenTelemetry telemetry) {
+        this.telemetry = telemetry;
         this.channel = channel;
-        this.stub = ProductServiceGrpc.newFutureStub(channel);
+        this.stub = telemetry == null ? ProductServiceGrpc.newFutureStub(channel)
+                : ProductServiceGrpc.newFutureStub(channel).withInterceptors(
+                        io.opentelemetry.instrumentation.grpc.v1_6.GrpcTelemetry.create(telemetry).newClientInterceptor());
         this.ceiling = ceiling;
         // Connect now: the first request after startup must not pay for name resolution and the handshake.
         channel.getState(true);
@@ -132,23 +140,59 @@ public class ProductClient implements DisposableBean {
             // than the ceiling; Product then sees the real deadline instead of a fixed one.
             Duration effective = sink.contextView().getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, ceiling);
             Duration deadline = effective.compareTo(ceiling) < 0 ? effective : ceiling;
-            ListenableFuture<GetBatchSkusResponse> future = stub
+            ListenableFuture<GetBatchSkusResponse> future;
+            // Reactor does not hold a thread-local span across hops. Scope only the immediate RPC start.
+            try (io.opentelemetry.context.Scope ignored = parent(context, sink.contextView()).makeCurrent()) {
+                future = stub
                     .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
                     .withDeadlineAfter(Math.max(1, deadline.toMillis()), TimeUnit.MILLISECONDS)
                     .getBatchSkus(request);
+            }
             sink.onCancel(() -> future.cancel(true));
             Futures.addCallback(future, new FutureCallback<>() {
                 @Override
                 public void onSuccess(GetBatchSkusResponse response) {
-                    sink.success(response);
+                    // gRPC invokes listeners with its client span in thread-local scope. Reactor
+                    // owns the parent observation of the next wave; do not let the callback's
+                    // completed Product span override it in Micrometer's parent selection.
+                    try (io.opentelemetry.context.Scope ignored = io.opentelemetry.context.Context.root().makeCurrent()) {
+                        sink.success(response);
+                    }
                 }
 
                 @Override
                 public void onFailure(Throwable error) {
-                    sink.error(translate(error));
+                    try (io.opentelemetry.context.Scope ignored = io.opentelemetry.context.Context.root().makeCurrent()) {
+                        sink.error(translate(error));
+                    }
                 }
             }, MoreExecutors.directExecutor());
         }).map(response -> toBatch(response, requested));
+    }
+
+    private io.opentelemetry.context.Context parent(RequestContext context, reactor.util.context.ContextView reactorContext) {
+        var current = io.opentelemetry.context.Context.current();
+        if (telemetry == null) { return current; }
+        String traceparent = context.traceparent();
+        var observation = reactorContext.<io.micrometer.observation.Observation>getOrEmpty(
+                io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor.KEY);
+        if (observation.isPresent()) {
+            var tracing = observation.get().getContextView()
+                    .<io.micrometer.tracing.handler.TracingObservationHandler.TracingContext>get(
+                            io.micrometer.tracing.handler.TracingObservationHandler.TracingContext.class);
+            if (tracing != null && tracing.getSpan() != null) {
+                var span = tracing.getSpan().context();
+                traceparent = "00-" + span.traceId() + "-" + span.spanId() + "-"
+                        + (Boolean.FALSE.equals(span.sampled()) ? "00" : "01");
+            }
+        }
+        if (traceparent == null) { return current; }
+        return telemetry.getPropagators().getTextMapPropagator().extract(current,
+                java.util.Map.of("traceparent", traceparent),
+                new io.opentelemetry.context.propagation.TextMapGetter<java.util.Map<String, String>>() {
+                    public Iterable<String> keys(java.util.Map<String, String> carrier) { return carrier.keySet(); }
+                    public String get(java.util.Map<String, String> carrier, String key) { return carrier.get(key); }
+                });
     }
 
     /** gRPC statuses classified like their HTTP counterparts so DependencyGuard needs one rule set. */

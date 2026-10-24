@@ -59,6 +59,9 @@ pdp:
     require-https: ${PDP_MEDIA_REQUIRE_HTTPS:true}
 
 management:
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

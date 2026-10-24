@@ -51,6 +51,13 @@ spring:
     consumer:
       auto-offset-reset: earliest
 
+    listener:
+      observation-enabled: true
+
+
+    template:
+      observation-enabled: true
+
 server:
   port: ${SERVER_PORT:8085}
   shutdown: graceful
@@ -134,6 +141,16 @@ promotion:
     enabled: ${WORKERS_ENABLED:true}
 
 management:
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

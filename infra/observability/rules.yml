@@ -1,0 +1,101 @@
+groups:
+  - name: backend-recording
+    rules:
+      - record: service:http_requests:rate5m
+        expr: sum by (service) (rate(http_server_requests_seconds_count{uri!~"/actuator.*|/health.*"}[5m])) or sum by (service) (rate(http_server_requests_total{route!~"/health.*|/livez|/readyz"}[5m])) or sum by(service) (rate(traefik_entrypoint_requests_total{entrypoint="web"}[5m]))
+      - record: service:http_errors:rate5m
+        expr: (sum by (service) (rate(http_server_requests_seconds_count{status=~"5..",uri!~"/actuator.*|/health.*"}[5m])) or sum by (service) (rate(http_server_requests_total{status=~"5..",route!~"/health.*|/livez|/readyz"}[5m])) or sum by(service) (rate(traefik_entrypoint_requests_total{entrypoint="web",code=~"5.."}[5m]))) or on(service) (0 * service:http_requests:rate5m)
+      - record: service:http_latency:p95
+        expr: histogram_quantile(0.95, sum by (service, le) (rate(http_server_requests_seconds_bucket{uri!~"/actuator.*|/health.*"}[5m]))) or histogram_quantile(0.95, sum by (service, le) (rate(http_server_request_duration_seconds_bucket{route!~"/health.*|/livez|/readyz"}[5m]))) or histogram_quantile(0.95, sum by(service, le) (rate(traefik_entrypoint_request_duration_seconds_bucket{entrypoint="web"}[5m])))
+  - name: backend-alerts
+    rules:
+      - alert: TelemetryTargetDown
+        expr: up == 0
+        for: 2m
+        labels: {severity: critical, owner: platform}
+        annotations:
+          summary: 'Telemetry target {{ $labels.service }} is unavailable'
+          runbook_url: 'http://localhost:3001/d/backend-observability?viewPanel=1'
+          description: 'Check process health, exporter, network/DNS and Prometheus target error. See docs/observability/runbook.md#telemetrytargetdown.'
+      - alert: HighBackendErrorRate
+        expr: service:http_errors:rate5m / service:http_requests:rate5m > 0.05 and service:http_requests:rate5m > 0.1
+        for: 5m
+        labels: {severity: warning, owner: backend}
+        annotations:
+          summary: 'HTTP 5xx exceeds 5% on {{ $labels.service }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Inspect route/status, dependency failures and correlated traces. See docs/observability/runbook.md#highbackenderrorrate.'
+      - alert: HighBackendLatency
+        expr: service:http_latency:p95 > 2
+        for: 10m
+        labels: {severity: warning, owner: backend}
+        annotations:
+          summary: 'HTTP p95 exceeds 2s on {{ $labels.service }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Compare dependency, DB and queue latency. See docs/observability/runbook.md#highbackendlatency.'
+      - alert: DependencyFailures
+        expr: sum by (service, dependency) (rate(pdp_dependency_calls_seconds_count{outcome!="success"}[5m])) > 0.05 or sum by (service, dependency) (rate(checkout_dependency_calls_seconds_count{outcome!="success"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: warning, owner: backend}
+        annotations:
+          summary: 'Dependency failures on {{ $labels.service }} -> {{ $labels.dependency }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Inspect timeout, bulkhead and circuit outcomes; see docs/observability/runbook.md#dependencyfailures.'
+      - alert: KafkaConsumerLag
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 1000
+        for: 10m
+        labels: {severity: warning, owner: backend}
+        annotations:
+          summary: 'Kafka consumer lag on {{ $labels.consumergroup }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Check consumer errors, partition assignment and processing throughput. See docs/observability/runbook.md#kafkaconsumerlag.'
+      - alert: TelemetryExportFailure
+        expr: sum(rate(otelcol_exporter_send_failed_spans_total[5m])) > 0 or sum(rate(loki_write_dropped_entries_total[5m])) > 0
+        for: 2m
+        labels: {severity: warning, owner: platform}
+        annotations:
+          summary: 'Collector cannot deliver telemetry'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Check Loki/Jaeger availability, disk and collector queues. See docs/observability/runbook.md#telemetryexportfailure.'
+  # Inventory command saturation (docs/inventory/decisions/ADR-032-reserve-saturation-alerts.md). A hot SKU queues Reserve
+  # on one stock_position row lock: callers wait in Hikari, nothing reaches lock_timeout, so INVENTORY_BUSY stays at 0 and
+  # only Reserve latency and pool pending show the saturation (docs/performance/inventory-reserve-hot-sku-baseline-2026-10-19.md).
+  - name: inventory-recording
+    rules:
+      - record: inventory:reserve_requests:rate5m
+        expr: sum by (service) (rate(http_server_requests_seconds_count{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations"}[5m]))
+      - record: inventory:reserve_latency_seconds:p95_5m
+        expr: histogram_quantile(0.95, sum by (service, le) (rate(http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations"}[5m])))
+      - record: inventory:reserve_latency_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (service, le) (rate(http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations"}[5m])))
+  - name: inventory-alerts
+    rules:
+      - alert: InventoryReserveLatencySloBreach
+        # Reserve SLO (docs/inventory/operations.md §2): p95 <= 200 ms, p99 <= 500 ms. Route-level, so high-volume PDP
+        # availability reads on the same service cannot dilute it as they dilute HighBackendLatency.
+        expr: (inventory:reserve_latency_seconds:p95_5m > 0.2 or inventory:reserve_latency_seconds:p99_5m > 0.5) and on (service) inventory:reserve_requests:rate5m > 0.1
+        for: 10m
+        labels: {severity: critical, owner: backend}
+        annotations:
+          summary: 'Reserve latency breaches its SLO on {{ $labels.service }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Reserve p95 > 200 ms or p99 > 500 ms for 10 minutes. Check Hikari pending and stock_position lock waits for a hot SKU. See docs/observability/runbook.md#inventoryreservelatencyslobreach.'
+      - alert: InventoryDbPoolSaturated
+        # Per instance. Baseline: mean pending <= 1.5 on every step within the Reserve SLO, 61-154 once saturated.
+        expr: avg_over_time(hikaricp_connections_pending{service="inventory-service"}[2m]) > 10
+        for: 3m
+        labels: {severity: warning, owner: backend}
+        annotations:
+          summary: 'Inventory requests queue for database connections on {{ $labels.instance }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Average Hikari pending above 10 for 5 minutes: connections are held by lock waits (hot SKU) or a slow primary. See docs/observability/runbook.md#inventorydbpoolsaturated.'
+      - alert: InventoryCommandBusy
+        # Implements the INVENTORY_BUSY > 1% trigger of docs/inventory/operations.md §2. It covers lock-timeout and deadlock
+        # exhaustion only; queueing behind one hot row is caught by the two alerts above.
+        expr: sum by (service) (rate(inventory_commands_total{service="inventory-service",result="busy"}[5m])) / sum by (service) (rate(inventory_commands_total{service="inventory-service"}[5m])) > 0.01 and on (service) sum by (service) (rate(inventory_commands_total{service="inventory-service"}[5m])) > 0.1
+        for: 5m
+        labels: {severity: critical, owner: backend}
+        annotations:
+          summary: 'More than 1% of Inventory commands end INVENTORY_BUSY on {{ $labels.service }}'
+          runbook_url: 'http://localhost:3001/d/backend-observability'
+          description: 'Lock timeout, deadlock or serialization failure after two internal retries. See docs/observability/runbook.md#inventorycommandbusy.'

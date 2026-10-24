@@ -30,7 +30,7 @@ func serve(t *testing.T, verifier TokenVerifier) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/verify", nil)
 	req.Header.Set("Authorization", "Bearer x")
-	req.Header.Set("X-Request-Id", "req-1")
+	req.Header.Set("X-Request-Id", "req-test-0001")
 	req.Header.Set("X-Forwarded-Uri", "/api/v1/auth/sessions?cursor=secret")
 	rec := httptest.NewRecorder()
 	NewVerifyHandler(verifier, time.Second, zap.NewNop()).ServeHTTP(rec, req)
@@ -72,7 +72,7 @@ func TestVerifyHandler_MapsOutcomesToProblems(t *testing.T) {
 		var body map[string]any
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 		assert.Equal(t, tc.code, body["code"])
-		assert.Equal(t, "req-1", body["trace_id"])
+		assert.Equal(t, "req-test-0001", body["trace_id"])
 		assert.Equal(t, "/api/v1/auth/sessions", body["instance"], "query string is never echoed")
 	}
 }

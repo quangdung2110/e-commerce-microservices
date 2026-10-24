@@ -10,6 +10,7 @@ package product
 import (
 	"context"
 	"fmt"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"strings"
 	"time"
 
@@ -85,6 +86,7 @@ func dialOptions(cfg Config) []grpc.DialOption {
 		cfg.KeepAliveTimeout = DefaultKeepAliveTimeout
 	}
 	options := []grpc.DialOption{
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultServiceConfig(serviceConfig),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -325,6 +327,7 @@ func snapshotFromSku(skuID string, sku *productv1.Sku) domain.ProductSnapshot {
 		ProductID:         sku.GetProductId(),
 		ProductName:       sku.GetProductName(),
 		VariantAttributes: sku.GetVariantAttributes(),
+		VariantName:       sku.GetVariantName(),
 		ImageKey:          sku.GetImageUrl(),
 		IsAvailable:       sku.GetStatus() == productv1.SkuStatus_SKU_STATUS_ACTIVE,
 	}

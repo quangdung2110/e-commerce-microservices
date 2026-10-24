@@ -1,3 +1,18 @@
+x-backend-logging: &backend-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '3'
+
+x-java-observability: &java-observability
+  MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+  TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+
+x-go-observability: &go-observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_TRACES_SAMPLER_ARG: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+
 # Password of the shared Redis (requirepass). It holds Auth security state (reset tokens, OTP,
 # revocation), so it is never open (mesh ADR-002). Development value only; override with
 # REDIS_PASSWORD in .env. gateway-auth repeats the same default inside its redis:// URL.
@@ -412,6 +427,7 @@ services:
 
   # ── Search Service ─────────────────────────────────────────
   search-service:
+    logging: *backend-logging
     build:
       context: ./java/services/search-service
     container_name: search-service
@@ -423,7 +439,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
       KAFKA_SASL_USERNAME: search-service
@@ -457,6 +473,7 @@ services:
 
   # ── Review Service ─────────────────────────────────────────
   review-service:
+    logging: *backend-logging
     build:
       context: ./java/services/review-service
     container_name: review-service
@@ -470,7 +487,7 @@ services:
       minio:
         condition: service_healthy
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8080
 
@@ -537,6 +554,7 @@ services:
 
   # ── Product Service ────────────────────────────────────────
   product-service:
+    logging: *backend-logging
     build:
       context: ./java/services/product-service
       dockerfile: Dockerfile
@@ -550,7 +568,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8081
       GRPC_PORT: 9091
@@ -606,9 +624,10 @@ services:
 
   # ── Product Detail BFF ─────────────────────────────────────
   # Read composition for the PDP (docs/product-detail-bff). Stateless: no database, no
-  # Kafka. Inventory availability stays disabled, so every SKU is UNKNOWN, until the PDP
-  # rollout gate (load/freshness test, README.md "Trạng thái rollout") is passed.
+  # Kafka. Local Inventory enrichment is enabled for observability integration checks.
+  # Production still requires the load/freshness rollout gate.
   product-detail-bff:
+    logging: *backend-logging
     build:
       context: ./java/services/product-detail-bff
     container_name: product-detail-bff
@@ -618,9 +637,11 @@ services:
       - product-service
       - review-service
     environment:
+      <<: *java-observability
       SERVER_PORT: 8080
       PDP_PRODUCT_BASE_URL: http://product-service:8081
-      PDP_INVENTORY_ENABLED: "false"
+      PDP_INVENTORY_ENABLED: "true"
+      PDP_INVENTORY_BASE_URL: http://inventory-service:8080
       PDP_REVIEW_ENABLED: "true"
       PDP_REVIEW_BASE_URL: http://review-service:8080
       # Local CDN = bucket product-media của MinIO phát qua gateway; Search dùng đúng
@@ -628,7 +649,6 @@ services:
       PDP_MEDIA_CDN_BASE_URL: http://localhost:8088/media
       PDP_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
       PDP_MEDIA_REQUIRE_HTTPS: "false"
-      TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
       - "127.0.0.1:8093:8080"
     healthcheck:
@@ -657,6 +677,7 @@ services:
 
   # ── Promotion Service ──────────────────────────────────────
   promotion-service:
+    logging: *backend-logging
     build:
       context: ./java/services/promotion-service
       dockerfile: Dockerfile
@@ -671,7 +692,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8085
 
@@ -743,6 +764,7 @@ services:
   # commit-ordered published_event table and the Debezium connector in
   # java/services/inventory-service/src/main/resources/kafka (register it manually).
   inventory-service:
+    logging: *backend-logging
     build:
       context: ./java/services/inventory-service
       dockerfile: Dockerfile
@@ -751,6 +773,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *java-observability
       SERVER_PORT: 8080
       DB_URL: jdbc:postgresql://postgres:5432/inventory_service
       DB_USERNAME: postgres
@@ -830,6 +853,7 @@ services:
   # Needs the order_service database (init-db.sh) and the Debezium outbox connector in
   # java/services/order-service/src/main/resources/kafka/ for Cart/Review/Notification.
   order-service:
+    logging: *backend-logging
     build:
       context: ./java/services/order-service
       dockerfile: Dockerfile
@@ -846,7 +870,7 @@ services:
       temporal:
         condition: service_healthy
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       SERVER_PORT: 8080
       DB_URL: jdbc:postgresql://postgres:5432/order_service
       DB_USERNAME: postgres
@@ -897,9 +921,10 @@ services:
 
   # ── Cart Service ───────────────────────────────────────────
   cart-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/cart-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/cart-service/Dockerfile
     container_name: cart-service
     # Cart has no PostgreSQL dependency: Redis is its only store (ADR-010).
     depends_on:
@@ -912,6 +937,7 @@ services:
       product-service:
         condition: service_healthy
     environment:
+      <<: *go-observability
       APP_ENV: development
 
       # Override yaml config via CART_-prefixed env vars (viper maps . → _)
@@ -951,9 +977,10 @@ services:
 
   # ── Auth Service ───────────────────────────────────────────
   auth-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/auth-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/auth-service/Dockerfile
     container_name: auth-service
     depends_on:
       postgres:
@@ -965,6 +992,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *go-observability
       # Config doc override qua tien to AUTH_ (viper SetEnvPrefix trong
       # internal/common/config). Bien khong co tien to bi bo qua im lang, tru
       # DB_PASSWORD va REDIS_PASSWORD duoc noi thang trong application.yaml.
@@ -1009,14 +1037,16 @@ services:
   # Verify JWT cho moi route can danh tinh (docs/gateway/design.md). Khong publish
   # port: chi Traefik goi http://gateway-auth:8080/verify.
   gateway-auth:
+    logging: *backend-logging
     build:
-      context: ./go/services/gateway-auth
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/gateway-auth/Dockerfile
     container_name: gateway-auth
     depends_on:
       redis:
         condition: service_healthy
     environment:
+      <<: *go-observability
       # Ten bien dung chung voi auth-service (runtime-contract.md muc 6). Gia tri
       # phai khop go/services/auth-service/configs/application.yaml.
       AUTH_JWT_ISSUER: "https://auth.ecommerce.local"
@@ -1043,9 +1073,10 @@ services:
     restart: "no"
 
   user-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/user-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/user-service/Dockerfile
     container_name: user-service
     depends_on:
       user-migrate:
@@ -1059,6 +1090,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
+      <<: *go-observability
       # Every key of configs/application.yaml is overridable with a USER_ prefix.
       USER_APP_ENV: development
       USER_DATABASE_HOST: postgres
@@ -1137,9 +1169,10 @@ services:
   # map host 8091; internal 8081 (status/ops/metrics) map host 8092 — không qua
   # Gateway. Thiết kế: docs/notification/13-development.md.
   notification-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/notification-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/notification-service/Dockerfile
     container_name: notification-service
     profiles: ["notification"]
     depends_on:
@@ -1156,6 +1189,7 @@ services:
       localstack:
         condition: service_healthy
     environment:
+      <<: *go-observability
       # Mọi key của configs/application.yaml override được với tiền tố NOTIFICATION_.
       NOTIFICATION_APP_ENV: development
       NOTIFICATION_APP_ROLE: all
@@ -1197,6 +1231,7 @@ services:
   # Payment is opt-in because Stripe test credentials belong to an individual sandbox.
   # Start explicitly with: docker compose --profile payment up -d payment-service
   payment-service:
+    logging: *backend-logging
     profiles: ["payment"]
     build:
       context: ./java/services/payment-service
@@ -1209,7 +1244,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     environment:
-      <<: *kafka-sasl-java
+      <<: [*java-observability, *kafka-sasl-java]
       SPRING_PROFILES_ACTIVE: dev
       PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
       PAYMENT_DATABASE_USERNAME: postgres
@@ -1284,6 +1319,7 @@ services:
       - ecommerce-network
 
   checkout-service:
+    logging: *backend-logging
     build:
       context: ./java/services/checkout-service
       dockerfile: Dockerfile
@@ -1306,6 +1342,7 @@ services:
       order-service:
         condition: service_started
     environment:
+      <<: *java-observability
       SERVER_PORT: 8080
       CHECKOUT_REDIS_URL: redis://checkout-redis:6379/0
       # DEVELOPMENT ONLY keys (32 random bytes, base64). Production keys come from the secret
@@ -1327,7 +1364,6 @@ services:
       CHECKOUT_MEDIA_CDN_BASE_URL: http://localhost:8088/media
       CHECKOUT_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
       CHECKOUT_MEDIA_REQUIRE_HTTPS: "false"
-      TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
       - "127.0.0.1:8096:8080"
     healthcheck:
@@ -1371,6 +1407,7 @@ services:
       - "traefik.http.services.checkout-service.loadbalancer.serverstransport=business-api@file"
 
   api-gateway:
+    logging: *backend-logging
     image: traefik:v3.7.1
     container_name: api-gateway
     restart: unless-stopped
@@ -1393,8 +1430,145 @@ services:
     depends_on:
       - redis
 
+  # Local observability. UIs bind loopback; OTLP/exporters stay on the private Compose network.
+  observability-init:
+    image: python:3.12-alpine
+    command: [sh, -c, "mkdir -p /jaeger/keys /jaeger/values && chown -R 10001:10001 /jaeger && python /config/optional-targets.py"]
+    environment:
+      OBSERVABILITY_OPTIONAL_SERVICES: ${OBSERVABILITY_OPTIONAL_SERVICES:-}
+    volumes:
+      - ./infra/observability/optional-targets.py:/config/optional-targets.py:ro
+      - prometheus-targets:/targets
+      - jaeger-data:/jaeger
+    restart: "no"
+
+  prometheus:
+    logging: *backend-logging
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--enable-feature=exemplar-storage"]
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-targets:/etc/prometheus/targets:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      observability-init: {condition: service_completed_successfully}
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  alertmanager:
+    logging: *backend-logging
+    image: prom/alertmanager:v0.34.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  grafana:
+    logging: *backend-logging
+    image: grafana/grafana:13.2.4
+    ports: ["127.0.0.1:3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-local-observability}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./infra/observability/grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  loki:
+    logging: *backend-logging
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/config.yml"]
+    ports: ["127.0.0.1:3100:3100"]
+    volumes:
+      - ./infra/observability/loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  jaeger:
+    logging: *backend-logging
+    image: jaegertracing/jaeger:2.22.0
+    command: ["--config=/etc/jaeger/config.yml"]
+    ports: ["127.0.0.1:16686:16686"]
+    volumes:
+      - ./infra/observability/jaeger.yml:/etc/jaeger/config.yml:ro
+      - jaeger-data:/tmp/jaeger
+    depends_on:
+      observability-init: {condition: service_completed_successfully}
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  # Alloy is the OpenTelemetry collector and Docker log reader. Its persisted positions survive restarts.
+  otel-collector:
+    logging: *backend-logging
+    image: grafana/alloy:v1.20.1
+    command: [run, "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", /etc/alloy/config.alloy]
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-e-commerce-microservices}
+    volumes:
+      - ./infra/observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  redis-exporter:
+    logging: *backend-logging
+    image: oliver006/redis_exporter:v1.94.0
+    environment: {REDIS_ADDR: "redis://redis:6379"}
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  checkout-redis-exporter:
+    logging: *backend-logging
+    image: oliver006/redis_exporter:v1.94.0
+    environment: {REDIS_ADDR: "redis://checkout-redis:6379"}
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  postgres-exporter:
+    logging: *backend-logging
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/postgres?sslmode=disable
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  kafka-exporter:
+    logging: *backend-logging
+    image: danielqsj/kafka-exporter:v1.10.0
+    # Principal kafka-exporter may only DESCRIBE topics and groups (offsets and lag, no messages).
+    # A shell passes the password so it has one source (x-kafka-passwords).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec /bin/kafka_exporter --kafka.server=kafka:9092 --sasl.enabled --sasl.mechanism=scram-sha512 --sasl.username=kafka-exporter --sasl.password="$${SCRAM_PASSWORD}"
+    environment:
+      SCRAM_PASSWORD: *kafka-pw-exporter
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+
 # ── Volumes ────────────────────────────────────────────────
 volumes:
+  prometheus-data:
+  prometheus-targets:
+  alertmanager-data:
+  grafana-data:
+  loki-data:
+  jaeger-data:
+  alloy-data:
   es-data:
   postgres-data:
   redis-data:

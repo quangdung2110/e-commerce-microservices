@@ -38,6 +38,8 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureObservability
+@org.springframework.boot.autoconfigure.ImportAutoConfiguration(exclude =
+        org.springframework.boot.actuate.autoconfigure.tracing.otlp.OtlpAutoConfiguration.class)
 // Giá trị mặc định ở đây (không ở @DynamicPropertySource) để @TestPropertySource của lớp
 // con ghi đè được: property động luôn thắng property tĩnh.
 @TestPropertySource(properties = {

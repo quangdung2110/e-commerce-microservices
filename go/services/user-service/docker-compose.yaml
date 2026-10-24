@@ -7,8 +7,8 @@
 services:
   user-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/user-service/Dockerfile
     ports:
       - "8082:8082"
     environment:

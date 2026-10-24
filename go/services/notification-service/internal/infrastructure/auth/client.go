@@ -10,6 +10,7 @@
 package auth
 
 import (
+	obs "github.com/ecommerce/observability"
 	"context"
 	"encoding/json"
 	stderrors "errors"
@@ -121,7 +122,7 @@ func NewClient(cfg config.AuthConfig, cacheTTL time.Duration, cache ContactCache
 			ResponseHeaderTimeout: cfg.Timeout,
 			ForceAttemptHTTP2:     true,
 		}
-		c.clients[lane] = &http.Client{Transport: tr, Timeout: cfg.Timeout}
+		c.clients[lane] = &http.Client{Transport: obs.Transport(tr), Timeout: cfg.Timeout}
 		c.limiters[lane] = newLimiter(cfg.RatePerSecond.For(string(lane)), func() time.Time { return time.Now() })
 		if metrics != nil {
 			metrics.BulkheadCapacity.WithLabelValues(string(lane), string(entity.ChannelEmail), "auth_http_conns").Set(float64(maxConns))

@@ -17,6 +17,7 @@ import static org.awaitility.Awaitility.await;
  * The use case spans are children of Spring's server span, and the work Submit detaches from the request
  * stays inside the Submit span.
  */
+@org.springframework.test.context.TestPropertySource(properties = "checkout.timeouts.order-post=3s")
 class TracingSpansTest extends AbstractCheckoutTest {
 
     private static final Duration WAIT = Duration.ofSeconds(10);
@@ -37,7 +38,7 @@ class TracingSpansTest extends AbstractCheckoutTest {
     private static Span child(Span parent, List<Span> all, String name, String key, String value) {
         List<Span> found = childrenOf(parent, all).stream()
                 .filter(span -> span.name().equals(name) && value.equals(span.attributes().get(key))).toList();
-        assertThat(found).as("%s %s=%s under %s", name, key, value, parent.name()).hasSize(1);
+        assertThat(found).as("%s %s=%s under %s; recorded spans=%s", name, key, value, parent.name(), all).hasSize(1);
         return found.get(0);
     }
 
@@ -60,7 +61,9 @@ class TracingSpansTest extends AbstractCheckoutTest {
 
         Span preview = only("checkout.preview");
         await().atMost(WAIT).until(() -> traceOf(preview).stream().anyMatch(span -> span.id().equals(preview.parentId())));
-        List<Span> trace = traceOf(preview);
+        // SDK callbacks may end on the gRPC executor after the HTTP response and parent observation.
+        List<Span> trace = await().atMost(WAIT).until(() -> traceOf(preview), recorded -> recorded.stream()
+                .filter(span -> span.name().equals("checkout.dependency")).count() == 4);
         assertThat(trace).filteredOn(span -> span.id().equals(preview.parentId())).singleElement()
                 .satisfies(server -> assertThat(server.name()).startsWith("http post"));
         for (String dependency : List.of("cart", "user", "product", "inventory")) {
@@ -72,6 +75,10 @@ class TracingSpansTest extends AbstractCheckoutTest {
         child(preview, trace, "checkout.redis", "operation", "peek_preview");
         child(preview, trace, "checkout.redis", "operation", "create_preview");
         assertHttpClientSpanUnder(child(preview, trace, "checkout.dependency", "dependency", "cart"), trace);
+        assertHttpClientSpanUnder(child(preview, trace, "checkout.dependency", "dependency", "inventory"), trace);
+        await().atMost(WAIT).untilAsserted(() -> assertThat(childrenOf(
+                child(preview, traceOf(preview), "checkout.dependency", "dependency", "product"), traceOf(preview)))
+                .anyMatch(span -> span.name().contains("GetBatchSkus")));
         assertThat(preview.error()).isFalse();
     }
 

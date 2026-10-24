@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"log"
 	"net/http"
 	"os/signal"
@@ -57,6 +58,11 @@ func run(configPath string) error {
 		return fmt.Errorf("build logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
+	shutdownTelemetry, err := obs.Init("user-service")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -38,10 +38,31 @@ providers:
 # Logging
 log:
   level: INFO
+  format: json
 
 # Access Log
-accessLog: {}
+accessLog:
+  format: json
+  fields:
+    defaultMode: keep
+    names:
+      RequestPath: drop
+      RequestLine: drop
+      ClientUsername: drop
+    headers:
+      defaultMode: drop
+      names:
+        X-Request-Id: keep
 
-# Tracing (disabled for now)
-# tracing:
-#   serviceName: api-gateway
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addRoutersLabels: true
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+
+tracing:
+  serviceName: api-gateway
+  sampleRate: 1.0
+  otlp:
+    http:
+      endpoint: http://otel-collector:4318/v1/traces

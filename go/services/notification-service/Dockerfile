@@ -6,15 +6,16 @@ WORKDIR /app
 
 RUN apk add --no-cache ca-certificates
 
-COPY go.mod go.sum ./
+COPY observability /observability
+COPY services/notification-service/go.mod services/notification-service/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY services/notification-service/ .
 
 # One binary, many roles (docs/notification/13-development.md §1). Templates
 # and the catalog are embedded, so the image carries no template files.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-w -s' -o notification-service ./cmd/server \
- && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-w -s' -o notifctl ./cmd/notifctl
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o notification-service ./cmd/server \
+ && CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o notifctl ./cmd/notifctl
 
 FROM alpine:3.20
 

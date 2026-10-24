@@ -32,6 +32,8 @@
     </properties>
 
     <dependencies>
+        <dependency><groupId>io.opentelemetry</groupId><artifactId>opentelemetry-exporter-otlp</artifactId></dependency>
+
         <!--
             WebFlux, not MVC: when the buyer or the gateway drops the connection the
             subscription is cancelled and Reactor Netty aborts every dependency call still
@@ -73,6 +75,12 @@
             <groupId>io.github.resilience4j</groupId>
             <artifactId>resilience4j-micrometer</artifactId>
             <version>${resilience4j.version}</version>
+        </dependency>
+
+        <!-- Cache catalog Product in-process (ADR-011); version do Spring Boot quản lý -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
 
         <!-- Observability -->

@@ -287,7 +287,9 @@ func TestPerLaneClientsAndLimiters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, c.clients, 3)
 	for _, lane := range entity.AllLanes {
-		tr := c.clients[lane].Transport.(*http.Transport)
+		instrumented, ok := c.clients[lane].Transport.(interface{ Unwrap() http.RoundTripper })
+		require.True(t, ok, "tracing transport retains access to its isolated pool")
+		tr := instrumented.Unwrap().(*http.Transport)
 		assert.Equal(t, cfg.MaxConns.For(string(lane)), tr.MaxConnsPerHost)
 		assert.Equal(t, cfg.RatePerSecond.For(string(lane)), c.limiters[lane].rate)
 	}

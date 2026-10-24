@@ -35,6 +35,7 @@ public class HttpRemote {
     private final String baseUrl;
     private final Duration connectTimeout;
     private final Duration readTimeout;
+    private final io.micrometer.observation.ObservationRegistry observations;
     private final RestClient client;
     private final ObjectMapper mapper;
     private final String serviceName;
@@ -55,6 +56,14 @@ public class HttpRemote {
      */
     public HttpRemote(String dependency, String baseUrl, Duration connectTimeout, Duration readTimeout,
                       ObjectMapper mapper, String serviceName, MeterRegistry meters, int maxConcurrent) {
+        this(dependency, baseUrl, connectTimeout, readTimeout, mapper, serviceName, meters, maxConcurrent,
+                io.micrometer.observation.ObservationRegistry.NOOP);
+    }
+
+    public HttpRemote(String dependency, String baseUrl, Duration connectTimeout, Duration readTimeout,
+                      ObjectMapper mapper, String serviceName, MeterRegistry meters, int maxConcurrent,
+                      io.micrometer.observation.ObservationRegistry observations) {
+        this.observations = observations;
         this.dependency = dependency;
         this.baseUrl = baseUrl;
         this.connectTimeout = connectTimeout;
@@ -70,7 +79,16 @@ public class HttpRemote {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) connectTimeout.toMillis());
         factory.setReadTimeout((int) read.toMillis());
-        return RestClient.builder().baseUrl(baseUrl).requestFactory(factory).build();
+        return RestClient.builder().observationRegistry(observations)
+                .observationConvention(new org.springframework.http.client.observation.DefaultClientRequestObservationConvention() {
+                    @Override
+                    public io.micrometer.common.KeyValues getLowCardinalityKeyValues(
+                            org.springframework.http.client.observation.ClientRequestObservationContext context) {
+                        // Calls contain order/scope IDs in their paths. Keep the metric bounded by provider.
+                        return super.getLowCardinalityKeyValues(context).and("uri", "/" + dependency);
+                    }
+                })
+                .baseUrl(baseUrl).requestFactory(factory).build();
     }
 
     public RemoteResult post(String path, Map<String, String> headers, JsonNode body) {

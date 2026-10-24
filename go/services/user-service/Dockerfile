@@ -6,12 +6,13 @@ WORKDIR /app
 
 RUN apk add --no-cache ca-certificates
 
-COPY go.mod go.sum ./
+COPY observability /observability
+COPY services/user-service/go.mod services/user-service/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY services/user-service/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-w -s' -o user-service ./cmd/server
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o user-service ./cmd/server
 
 FROM alpine:3.20
 

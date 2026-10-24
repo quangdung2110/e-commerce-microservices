@@ -1,16 +1,17 @@
 # ---- Build Stage ----
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
 
-COPY go.mod go.sum ./
+COPY observability /observability
+COPY services/cart-service/go.mod services/cart-service/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY services/cart-service/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -p 2 \
     -ldflags="-s -w" \
     -o /app/cart-service \
     ./cmd/server
@@ -23,7 +24,7 @@ RUN apk add --no-cache ca-certificates tzdata wget
 WORKDIR /app
 
 COPY --from=builder /app/cart-service /app/cart-service
-COPY configs/ /app/configs/
+COPY services/cart-service/configs/ /app/configs/
 
 RUN addgroup -S nonroot && adduser -S nonroot -G nonroot
 USER nonroot:nonroot

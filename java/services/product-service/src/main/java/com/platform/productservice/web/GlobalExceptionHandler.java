@@ -95,6 +95,20 @@ public class GlobalExceptionHandler {
         return respond(ErrorCode.CATALOG_UNAVAILABLE, problem);
     }
 
+    @ExceptionHandler({org.springframework.web.servlet.resource.NoResourceFoundException.class,
+            org.springframework.web.HttpRequestMethodNotSupportedException.class})
+    public ResponseEntity<ProblemDetail> handleRouting(org.springframework.web.ErrorResponse exception,
+                                                      HttpServletRequest request) {
+        ProblemDetail body = ProblemDetail.forStatus(exception.getStatusCode());
+        body.setTitle(exception.getStatusCode().value() == 404 ? "Not Found" : "Method Not Allowed");
+        body.setDetail("No handler supports this request");
+        body.setInstance(URI.create(request.getRequestURI()));
+        body.setProperty("code", exception.getStatusCode().value() == 404 ? "NOT_FOUND" : "METHOD_NOT_ALLOWED");
+        body.setProperty("retryable", false);
+        traceId().ifPresent(id -> body.setProperty("trace_id", id));
+        return ResponseEntity.status(exception.getStatusCode()).headers(exception.getHeaders()).body(body);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleUnexpected(Exception exception, HttpServletRequest request) {
         log.error("Unhandled failure on {} {}", request.getMethod(), request.getRequestURI(), exception);

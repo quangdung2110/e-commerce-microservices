@@ -29,11 +29,16 @@ public class HttpProductCatalogClient implements ProductCatalogClient {
     private final PromotionProperties.Product product;
 
     public HttpProductCatalogClient(PromotionProperties properties) {
+        this(properties, RestClient.builder());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HttpProductCatalogClient(PromotionProperties properties, RestClient.Builder builder) {
         this.product = properties.getProduct();
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) product.getTimeout().toMillis());
         factory.setReadTimeout((int) product.getTimeout().toMillis());
-        this.restClient = RestClient.builder()
+        this.restClient = builder
                 .baseUrl(product.getBaseUrl())
                 .requestFactory(factory)
                 .defaultHeader(product.getIdentityHeader(), product.getIdentity())

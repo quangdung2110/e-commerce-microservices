@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	obs "github.com/ecommerce/observability"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -39,7 +40,8 @@ const (
 // traceparent.
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		traceparent := reqctx.ValidTraceparent(c.GetHeader(reqctx.HeaderTraceparent))
+		c.Request = obs.EnsureContext(c.Request)
+		traceparent := obs.Traceparent(c.Request.Context())
 		tracestate := reqctx.ValidTracestate(c.GetHeader(reqctx.HeaderTracestate), traceparent)
 		requestID := reqctx.NormalizeRequestID(c.GetHeader(HeaderRequestID), traceparent)
 

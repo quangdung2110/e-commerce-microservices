@@ -19,10 +19,11 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Inventory.class)
-    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
+    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
         HttpRemote http = new HttpRemote("inventory", c.inventoryBaseUrl(), c.connectTimeout(), c.inventoryRead(), mapper,
-                c.serviceName(), meters, c.maxConcurrentCalls());
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         String base = "/internal/inventory/v1";
         return new Gateways.Inventory() {
             @Override
@@ -85,10 +86,11 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Promotion.class)
-    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
+    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
         HttpRemote http = new HttpRemote("promotion", c.promotionBaseUrl(), c.connectTimeout(), c.promotionRead(), mapper,
-                c.serviceName(), meters, c.maxConcurrentCalls());
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         String base = "/internal/v1/promotion-allocation";
         return new Gateways.Promotion() {
             @Override
@@ -110,10 +112,11 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Payment.class)
-    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters) {
+    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
         HttpRemote http = new HttpRemote("payment", c.paymentBaseUrl(), c.connectTimeout(), c.paymentRead(), mapper,
-                c.serviceName(), meters, c.maxConcurrentCalls());
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         return new Gateways.Payment() {
             @Override
             public RemoteResult initiate(String key, String correlationId, JsonNode body) {

@@ -2,10 +2,13 @@
 package router
 
 import (
+	obs "github.com/ecommerce/observability"
 	"net/http"
 
 	"github.com/ecommerce/gateway-auth/internal/api/handler"
 )
+
+var httpMetrics = obs.NewHTTPMetrics()
 
 // New registers:
 //   - /verify         Traefik ForwardAuth target. Traefik may call it with the
@@ -17,5 +20,6 @@ func New(verify *handler.VerifyHandler, health *handler.HealthHandler) http.Hand
 	mux.Handle("/verify", verify)
 	mux.HandleFunc("GET /health/live", health.Live)
 	mux.HandleFunc("GET /health/ready", health.Ready)
-	return mux
+	mux.Handle("GET /metrics", httpMetrics.Handler())
+	return httpMetrics.Wrap(mux)
 }

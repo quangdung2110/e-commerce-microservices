@@ -54,6 +54,8 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureObservability
+@org.springframework.boot.autoconfigure.ImportAutoConfiguration(exclude =
+        org.springframework.boot.actuate.autoconfigure.tracing.otlp.OtlpAutoConfiguration.class)
 @Import(AbstractCheckoutTest.TestClockConfig.class)
 @TestPropertySource(properties = {
         "checkout.keys.token-hmac-keys=" + AbstractCheckoutTest.HMAC_KEYS,

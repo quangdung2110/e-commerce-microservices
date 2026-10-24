@@ -57,6 +57,7 @@ public class RequestContextFilter implements WebFilter {
         return Mono.deferContextual(reactorContext -> {
             HttpHeaders headers = exchange.getRequest().getHeaders();
             String traceId = RequestIds.traceId(reactorContext, headers);
+            exchange.getResponse().getHeaders().set("X-Request-Id", RequestIds.requestId(headers, traceId));
             exchange.getAttributes().put(CONTEXT_ATTRIBUTE, new RequestContext(
                     RequestIds.requestId(headers, traceId), traceId,
                     RequestIds.traceparent(reactorContext, headers), null, deadline));

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"net"
 	"net/http"
 	"os"
@@ -66,6 +67,11 @@ func run(configPath string) error {
 		return err
 	}
 	defer func() { _ = logger.Sync() }()
+	shutdownTelemetry, err := obs.Init("cart-service")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
 
 	metrics := observability.NewMetrics()
 

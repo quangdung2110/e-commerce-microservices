@@ -39,6 +39,7 @@ http:
           - "tracestate"
         # Allowlist runtime-contract muc 6.1.
         authResponseHeaders:
+          - "X-Request-Id"
           - "X-User-Id"
           - "X-User-Roles"
           - "X-User-Session-Id"

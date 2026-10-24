@@ -53,8 +53,8 @@ services:
   # =============================================================================
   auth-service:
     build:
-      context: ../auth-service
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/auth-service/Dockerfile
     image: auth-service:latest
     container_name: auth-service
     restart: unless-stopped

@@ -1,0 +1,8 @@
+**/.git
+**/node_modules
+**/target
+**/bin
+**/coverage*
+**/*.test
+**/.env*
+services/api-gateway

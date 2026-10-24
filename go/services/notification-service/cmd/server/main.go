@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"net/http"
 	"os"
 	"os/signal"
@@ -111,6 +112,11 @@ func run(configPath string) error {
 		return err
 	}
 	defer func() { _ = logger.Sync() }()
+	shutdownTelemetry, err := obs.Init("notification-service")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
