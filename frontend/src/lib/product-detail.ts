@@ -1,5 +1,12 @@
 import type { AttributeScalar, DetailSku, ProductDetail } from "@/lib/api/product-detail";
 
+/** Quantity in a login return URL is an intent, bounded by the Cart contract. */
+export function pdpQuantity(value?: string | number): number {
+  if (typeof value === "string" && !/^[1-9]\d{0,2}$/.test(value)) return 1;
+  const quantity = Number(value);
+  return Number.isInteger(quantity) && quantity >= 1 && quantity <= 100 ? quantity : 1;
+}
+
 export function scalarLabel(value: AttributeScalar): string {
   return typeof value === "boolean" ? value ? "Có" : "Không" : String(value);
 }

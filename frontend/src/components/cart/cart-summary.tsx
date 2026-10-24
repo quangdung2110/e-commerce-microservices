@@ -3,6 +3,7 @@ import { ShoppingBag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Cart } from "@/lib/api/cart";
 import { cartSubtotal, formatCartMoney } from "@/lib/cart";
+import { MobileActionDock } from "@/components/ui/mobile-action-dock";
 
 export function CartSummary({ cart, stale, locked = false }: { cart: Cart; stale: boolean; locked?: boolean }) {
   const subtotal = stale ? null : cartSubtotal(cart);
@@ -16,10 +17,9 @@ export function CartSummary({ cart, stale, locked = false }: { cart: Cart; stale
     </dl>
     {unavailable > 0 && <p className="text-caption text-muted-foreground">{unavailable} biến thể ngưng bán không được tính vào tạm tính.</p>}
     {!subtotal && <p className="text-caption text-muted-foreground">Cần xác minh đầy đủ giá và tình trạng bán trước khi tính tạm tính.</p>}
-    <p className="text-caption text-muted-foreground">Giá và tình trạng tồn kho sẽ được kiểm tra lại tại bước đặt hàng. Phiên bản hiện tại không tính phí vận chuyển.</p>
-    <div className="space-y-3">
+    <p className="text-caption text-muted-foreground">Giá và tình trạng hàng được kiểm tra lại trước khi đặt. Phí vận chuyển: 0₫.</p>
+    <MobileActionDock label="Tạm tính" amount={subtotal ? formatCartMoney(subtotal) : "Chưa tính được"} feedback={(locked || stale) ? <p id="checkout-availability" className="text-caption text-muted-foreground">Hoàn tất cập nhật và tải lại giỏ hàng trước khi đặt hàng.</p> : undefined}>
       {locked || stale ? <Button variant="clay" size="lg" className="w-full" disabled aria-describedby="checkout-availability"><ShoppingBag aria-hidden />Thanh toán</Button> : <Button variant="clay" size="lg" className="w-full" nativeButton={false} render={<Link href="/checkout" />}><ShoppingBag aria-hidden />Thanh toán</Button>}
-      {(locked || stale) && <p id="checkout-availability" className="text-caption text-muted-foreground">Hoàn tất cập nhật và tải lại giỏ hàng trước khi đặt hàng.</p>}
-    </div>
+    </MobileActionDock>
   </aside>;
 }

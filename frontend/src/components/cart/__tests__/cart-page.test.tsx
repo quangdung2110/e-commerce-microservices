@@ -13,6 +13,7 @@ vi.mock("@/lib/api/cart", () => ({ cartApi: { mine: vi.fn(), adjust: vi.fn(), re
 
 const line: CartItem = {
   sku_id: "s1", product_id: "p1", product_name: "Điện thoại", quantity: 2,
+  image_url: "/media/placeholder/product.svg",
   unit_price_at_add: { amount_minor: 100000, currency: "VND" }, current_price: { amount_minor: 90000, currency: "VND" },
   is_available: true, added_at: "2026-09-30T00:00:00Z", updated_at: "2026-09-30T00:00:00Z",
 };
@@ -47,6 +48,18 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); useAuthStore.getState().clear(); });
 
 describe("Cart screen", () => {
+  it.each(["CURRENT", "DEGRADED"] as const)("renders the Product display label on %s reads instead of internal attribute codes", async (freshness) => {
+    vi.mocked(cartApi.mine).mockResolvedValue(snapshot([{ ...line, variant_name: "Nhãn mới: Đen", variant_attributes: { "qa-axis": "black" } }], freshness));
+    setup();
+    expect(await screen.findByText("Nhãn mới: Đen")).toBeTruthy();
+    expect(screen.queryByText(/qa-axis/)).toBeNull();
+  });
+  it("keeps legacy cart values readable without exposing attribute codes", async () => {
+    vi.mocked(cartApi.mine).mockResolvedValue(snapshot([{ ...line, variant_attributes: { "qa-axis": "128GB", "color-axis": "Bạc" } }]));
+    setup();
+    expect(await screen.findByText("128GB · Bạc")).toBeTruthy();
+    expect(screen.queryByText(/qa-axis|color-axis/)).toBeNull();
+  });
   it("offers recovery from the initial read failure without showing an empty cart", async () => {
     vi.mocked(cartApi.mine).mockRejectedValueOnce(httpError(503, problem("CART_STORE_UNAVAILABLE", 503)));
     setup();
@@ -61,7 +74,7 @@ describe("Cart screen", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: ["cart"] }); });
     expect(await screen.findByText("Đang hiển thị lần tải thành công trước. Tải lại giỏ hàng trước khi tiếp tục thay đổi.")).toBeTruthy();
     expect(screen.getByRole("article", { name: "Điện thoại" })).toBeTruthy();
-    expect(screen.getByText("Chưa tính được")).toBeTruthy();
+    expect(screen.getAllByText("Chưa tính được")).toHaveLength(2);
     expect((screen.getByRole("button", { name: "Tăng số lượng Điện thoại" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Tải lại giá và giỏ hàng" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Thử tải lại" }));
@@ -143,7 +156,7 @@ describe("Cart screen", () => {
     vi.mocked(cartApi.mine).mockResolvedValue(snapshot([{ ...line, current_price: null }], "DEGRADED"));
     setup(); await ready();
     expect(screen.getByText("Chưa xác minh giá")).toBeTruthy();
-    expect(screen.getByText("Chưa tính được")).toBeTruthy();
+    expect(screen.getAllByText("Chưa tính được")).toHaveLength(2);
     expect(screen.queryByText("Giá sản phẩm đã thay đổi")).toBeNull();
     expect((screen.getByRole("button", { name: "Xóa Điện thoại khỏi giỏ" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByText("Hết hàng")).toBeNull();

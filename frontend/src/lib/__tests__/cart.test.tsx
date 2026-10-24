@@ -7,6 +7,7 @@ import { PriceChangeBanner } from "@/components/cart/price-change-banner";
 
 const item: CartItem = {
   sku_id: "s1", product_id: "p1", product_name: "Điện thoại", quantity: 2,
+  image_url: "/media/placeholder/product.svg",
   unit_price_at_add: { amount_minor: 100000, currency: "VND" }, current_price: { amount_minor: 90000, currency: "VND" },
   is_available: true, added_at: "2026-09-30T00:00:00Z", updated_at: "2026-09-30T00:00:00Z",
 };

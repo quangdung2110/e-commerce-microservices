@@ -30,6 +30,7 @@ export function CartItemCard({ item, freshness, selected, disabled, onSelect, on
   const current = freshness === "CURRENT" && validCartMoney(item.current_price) ? item.current_price : null;
   const line = currentLineTotal(item, freshness);
   const unavailable = freshness === "CURRENT" && !item.is_available;
+  const variantName = item.variant_name?.trim() || Object.values(item.variant_attributes ?? {}).join(" · ");
   return <article className="space-y-4 rounded-xl border border-border bg-surface-overlay p-6" aria-label={item.product_name} aria-busy={disabled}>
     <div className="flex items-start gap-3 sm:gap-4">
       <label className="flex min-h-11 min-w-11 shrink-0 items-center justify-center">
@@ -38,7 +39,7 @@ export function CartItemCard({ item, freshness, selected, disabled, onSelect, on
       <div className="size-16 shrink-0 overflow-hidden rounded-lg bg-surface-2 sm:size-20"><StorefrontImage src={item.image_url ?? ""} alt={item.product_name} className="size-full object-cover" /></div>
       <div className="min-w-0 flex-1 space-y-2">
         <h3 className="break-words font-sans text-[15px] font-medium">{item.product_name}</h3>
-        {item.variant_attributes && <p className="break-words text-caption text-muted-foreground">{Object.entries(item.variant_attributes).map(([name, value]) => `${name}: ${value}`).join(" · ")}</p>}
+        {variantName && <p className="break-words text-caption text-muted-foreground">{variantName}</p>}
         {unavailable && <Badge variant="destructive">Ngưng bán</Badge>}
         {freshness === "DEGRADED" && <Badge variant="warning">Chưa xác minh tình trạng bán</Badge>}
         <p className="text-[15px] tabular-nums">{current ? formatCartMoney(current) : "Chưa xác minh giá"}</p>

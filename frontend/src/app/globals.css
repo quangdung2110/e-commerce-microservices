@@ -408,6 +408,13 @@
   }
 }
 
+/* Reserve the measured action bar height, including error feedback and safe area. */
+@media (width < 1024px) {
+  body:has([data-purchase-dock]) {
+    padding-bottom: var(--purchase-dock-height, calc(6rem + env(safe-area-inset-bottom)));
+  }
+}
+
 /* --------------------------------------------------------------------------
    6. Utility riêng
    -------------------------------------------------------------------------- */
