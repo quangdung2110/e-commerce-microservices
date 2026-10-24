@@ -1,27 +1,27 @@
 name: Contract checks
 
 on:
-  pull_request:
-    paths:
-      - 'contracts/**'
-      - 'scripts/ci/**'
-      - '.github/workflows/contracts.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'contracts/**'
-      - 'scripts/ci/**'
-      - '.github/workflows/contracts.yml'
+  workflow_call:
+    inputs:
+      base:
+        type: string
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
   validation:
     name: Validate contracts (strict tools)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: npm
@@ -32,7 +32,7 @@ jobs:
           npm ci
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Install buf
-        uses: bufbuild/buf-setup-action@v1
+        uses: bufbuild/buf-setup-action@3e33fea8596569a62fcaa33eb3880b6ac7098941 # v1.9.0
         with:
           version: '1.47.2'
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -42,7 +42,7 @@ jobs:
         shell: pwsh
         run: ./contracts/tools/validate-contracts.ps1 -StrictTools
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - name: Install Python tooling
@@ -54,22 +54,20 @@ jobs:
 
   breaking-changes:
     name: No breaking contract changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BASE_REF: ${{ inputs.base }}
     steps:
       - name: Checkout repository with history
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Resolve the commit to compare with
-        id: base
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
-          fi
+          persist-credentials: false
+      - name: Require a valid compatibility baseline
+        run: git rev-parse --verify "$BASE_REF^{commit}"
       # buf breaking for protobuf and oasdiff for OpenAPI, from pinned images (contracts ADR-008).
       - name: Compare contracts with the base
-        run: ./contracts/tools/check-breaking.sh "${{ steps.base.outputs.ref }}"
+        run: bash contracts/tools/check-breaking.sh "$BASE_REF"
       - name: Prove the gate still catches breaking changes
-        run: ./contracts/tools/tests/test_check_breaking.sh "${{ steps.base.outputs.ref }}"
+        run: bash contracts/tools/tests/test_check_breaking.sh "$BASE_REF"

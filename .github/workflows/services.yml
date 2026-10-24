@@ -1,76 +1,48 @@
 name: Service tests
 
-# Runs the tests of every service whose files changed. A change to contracts/ or to the CI definitions runs all of them,
-# because contracts are copied into services (proto drift tests) and consumers validate fixtures against providers
-# (contracts ADR-008). The selection logic is scripts/ci/changed-services.sh.
+# Reusable by ci.yml. plan.py includes shared Go modules and their consumers.
 
 on:
-  pull_request:
-    paths:
-      - 'java/services/**'
-      - 'go/services/**'
-      - 'contracts/**'
-      - 'scripts/ci/**'
-      - '.github/workflows/services.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'java/services/**'
-      - 'go/services/**'
-      - 'contracts/**'
-      - 'scripts/ci/**'
-      - '.github/workflows/services.yml'
+  workflow_call:
+    inputs:
+      matrix:
+        type: string
+        required: true
 
-concurrency:
-  group: services-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
-  plan:
-    name: Select services
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
-      any: ${{ steps.select.outputs.any }}
-    steps:
-      - name: Checkout repository with history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Test the selection script
-        run: ./scripts/ci/tests/test_changed_services.sh
-      - name: Select changed services
-        id: select
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="origin/${{ github.base_ref }}"
-          else
-            base="${{ github.event.before }}"
-          fi
-          matrix="$(./scripts/ci/changed-services.sh "$base")"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          if [ "$matrix" = '{"include":[]}' ]; then echo "any=false" >> "$GITHUB_OUTPUT"; else echo "any=true" >> "$GITHUB_OUTPUT"; fi
-          echo "$matrix"
-
   test:
     name: ${{ matrix.name }}
-    needs: plan
-    if: needs.plan.outputs.any == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      max-parallel: 4
+      matrix: ${{ fromJSON(inputs.matrix) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Require Docker for integration tests
+        if: matrix.kind == 'java' || matrix.name == 'cart-service' || matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service'
+        run: docker info > /dev/null
 
       - name: Set up JDK 21
         if: matrix.kind == 'java'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
+          cache-dependency-path: ${{ matrix.dir }}/pom.xml
       # verify runs unit tests and the *IT classes; integration tests start PostgreSQL, Kafka and the like with
       # Testcontainers, which the hosted runner's Docker supports.
       - name: Test (Maven)
@@ -78,13 +50,77 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: mvn -B -ntp verify
 
+      - name: Verify Maven executed tests and report skips
+        if: matrix.kind == 'java'
+        env:
+          SERVICE_DIR: ${{ matrix.dir }}
+        run: |
+          args=()
+          if find "$SERVICE_DIR/src/test" -type d -name integration -print -quit | grep -q .; then
+            args+=(--integration)
+          fi
+          python scripts/ci/test_reports.py java "$SERVICE_DIR" "${args[@]}"
+
       - name: Set up Go
         if: matrix.kind == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: ${{ matrix.dir }}/go.mod
           cache-dependency-path: ${{ matrix.dir }}/go.sum
-      - name: Test (Go)
+      - name: Vet Go sources
         if: matrix.kind == 'go'
         working-directory: ${{ matrix.dir }}
-        run: go test ./...
+        run: go vet ./...
+      - name: Check Go formatting
+        if: matrix.kind == 'go'
+        working-directory: ${{ matrix.dir }}
+        run: |
+          files="$(gofmt -l .)"
+          if [[ -n "$files" ]]; then
+            printf 'Run gofmt on:\n%s\n' "$files"
+            exit 1
+          fi
+      - name: Test Go with race detection
+        if: matrix.kind == 'go'
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -o pipefail
+          go test -race -count=1 -json ./... | tee unit-tests.jsonl
+      - name: Verify Go unit tests executed
+        if: matrix.kind == 'go'
+        env:
+          SERVICE_DIR: ${{ matrix.dir }}
+        run: python scripts/ci/test_reports.py go "$SERVICE_DIR/unit-tests.jsonl"
+      - name: Run tagged Go integration tests
+        if: matrix.kind == 'go' && (matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service')
+        working-directory: ${{ matrix.dir }}
+        run: |
+          set -o pipefail
+          go test -race -count=1 -tags=integration -timeout 20m -json ./test/integration/... ./internal/... | tee integration-tests.jsonl
+      - name: Verify Go integration tests executed
+        if: matrix.kind == 'go' && (matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service')
+        env:
+          SERVICE_DIR: ${{ matrix.dir }}
+        run: python scripts/ci/test_reports.py go "$SERVICE_DIR/integration-tests.jsonl" --integration
+      - name: Exercise Cart Lua against real Redis
+        if: matrix.name == 'cart-service'
+        working-directory: ${{ matrix.dir }}
+        run: |
+          docker run -d --name ci-cart-redis -p 127.0.0.1:16379:6379 redis:7-alpine
+          for _ in $(seq 1 30); do
+            if docker exec ci-cart-redis redis-cli ping | grep -q PONG; then break; fi
+            sleep 1
+          done
+          set -o pipefail
+          CART_TEST_REDIS_ADDR=127.0.0.1:16379 go test -race -count=1 -json ./internal/infrastructure/cartredis/... | tee redis-tests.jsonl
+      - name: Collect test evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tests-${{ matrix.name }}
+          overwrite: true
+          path: |
+            ${{ matrix.dir }}/target/surefire-reports/
+            ${{ matrix.dir }}/target/failsafe-reports/
+            ${{ matrix.dir }}/*-tests.jsonl
+          retention-days: 14

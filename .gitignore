@@ -43,3 +43,10 @@ contracts/generated/
 .tools/
 **/node_modules/
 .pnpm-store/
+
+# CI evidence is uploaded as workflow artifacts, never committed.
+ci-artifacts/
+.tmp/ci-phase1/
+.tmp/ci-phase2/
+.tmp/ci-phase3/
+**/__pycache__/
