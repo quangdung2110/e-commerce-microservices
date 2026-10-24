@@ -221,6 +221,11 @@ notification hay Temporal history. Xem [ADR-027](./decisions/ADR-027-async-submi
    one provider intent is proven; Order never continues with a blank/unknown payment.
    It returns `client_secret`, `publishable_key`, transaction ID; pre-capture cancel is
    registered only as a fact-based cancellation activity.
+   Certified `422 PROVIDER_CREATE_NOT_ACCEPTED` là ngoại lệ có bằng chứng theo
+   [Payment ADR-024](../payment/decisions/ADR-024-certified-create-non-acceptance.md):
+   validate đầy đủ proof gắn order/attempt trước khi trả rejection. Không bind attempt;
+   submission `FAILED/PAYMENT_INITIATION_REJECTED`, cleanup Inventory/Promotion rồi
+   Order `CANCELLED`. Proof không hợp lệ và generic `503` vẫn UNKNOWN/replay cùng key.
 5. Khi initial attempt đạt `PAYMENT_READY`, workflow khóa
    `payment_deadline_at = min(PAYMENT_READY + 15 phút,
    orders.inventory_reservation_expires_at - clock-skew safety,
@@ -570,7 +575,10 @@ resolutions cannot substitute for these scope guards or fabricate a payout.
 **Payment failure/reverse:** a normal failure keeps master `RETURN_REQUESTED`, sets
 `payment_status=REFUND_FAILED` and case `FAILED`; it also opens a typed
 `CUSTOMER_PAYOUT_REMEDIATION` obligation, so the public operation remains
-`MANUAL_REVIEW_REQUIRED` until Finance/Accounting records a permitted resolution. Buyer
+`MANUAL_REVIEW_REQUIRED` until Finance/Accounting records a permitted resolution. Its
+`failure` problem is `REFUND_MANUAL_REVIEW_REQUIRED` (`409`, `retryable=false`); the
+frontend shows "being checked manually, do not resend" for every `MANUAL_REVIEW_REQUIRED`
+operation and disables the command that produced it. Buyer
 also freezes `CLOSE` with
 reason `REJECTED` and completes/recovers that Inventory command. `REJECTED` is a
 terminal payout outcome, not inspection `FAIL`. Buyer guard không reset.

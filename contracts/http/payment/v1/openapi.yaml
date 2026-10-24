@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Payment Service API
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: MIT
     identifier: MIT
@@ -45,7 +45,21 @@ paths:
         '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
         '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '409': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
+        '422':
+          description: >-
+            Idempotency mismatch, or PROVIDER_CREATE_NOT_ACCEPTED with an explicit
+            identity-bound no_payment_created proof. Only the latter certifies that
+            this command created no provider intent. Generic 503/PROVIDER_REQUEST_REJECTED
+            is NOT absence proof and must remain unresolved/manual review.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/problem+json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/ProviderCreateNotAcceptedProblem'
         '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/{transactionId}:
     get:
@@ -504,6 +518,28 @@ components:
         evidence_due_at: { type: [string, 'null'], format: date-time }
         opened_at: { type: string, format: date-time }
         closed_at: { type: [string, 'null'], format: date-time }
+    ProviderCreateNotAcceptedProblem:
+      type: object
+      additionalProperties: false
+      required: [code, retryable, correlation_id, no_payment_created, transaction_id, provider_operation_id, order_id, payment_attempt_number]
+      description: >-
+        Frozen proof for the first CREATE dispatch rejected with Stripe HTTP 400
+        amount_too_small. The operation must still be REQUESTED, with attempt_count=1,
+        no prior dispatch/recovery and no bound provider object; Payment has no financial
+        fact/version. Persisted atomically with the command response, replayed without
+        another provider call. No FAILED/CANCELED transition or financial event is emitted.
+        The INITIATING audit row is inert because its CREATE is terminal PROVIDER_REJECTED.
+        Order validates order/attempt and both internal identities before compensating.
+        Legacy stored 503 failures are not upgraded or inferred to mean no intent exists.
+      properties:
+        code: { const: PROVIDER_CREATE_NOT_ACCEPTED }
+        retryable: { const: false }
+        correlation_id: { type: string, minLength: 1, maxLength: 128 }
+        no_payment_created: { const: true }
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        provider_operation_id: { type: string, pattern: '^POP_[0-9A-HJKMNP-TV-Z]{26}$' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        payment_attempt_number: { type: integer, minimum: 1 }
     Problem:
       type: object
       additionalProperties: false
@@ -532,7 +568,11 @@ components:
         correlation_id: { type: string, minLength: 1, maxLength: 255 }
   responses:
     Problem:
-      description: Domain or infrastructure failure; retryable is authoritative.
+      description: >-
+        Domain or infrastructure failure. retryable controls command repetition,
+        not proof of provider non-acceptance. A generic 503 with retryable=false
+        does not prove absence of a payment; only ProviderCreateNotAcceptedProblem
+        carries the certified no-create outcome.
       headers:
         X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
         Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }

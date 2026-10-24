@@ -26,6 +26,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** WF-ORDER-004/005/006/006a/009/011 end to end against PostgreSQL and in-memory Temporal. */
 class CheckoutFlowIT extends AbstractIntegrationTest {
 
+    @Test
+    void completedEventUsesAttributesFromLegacyPurchaseSnapshotWhenLabelIsAbsent() throws Exception {
+        long orderId = paidOrder(Fixtures.submission(List.of(
+                new Fixtures.LineSpec("SKU-SNAPSHOT", 1, 20_000, "WH-HN", "Purchased product", null)), 0, null));
+        assertThat(jdbc.queryForObject("SELECT snapshot_variant_name FROM order_item_lines WHERE order_id = ?",
+                String.class, orderId)).isEqualTo("color: red");
+        // Model an already-persisted order from the old producer; only display metadata changes.
+        jdbc.update("UPDATE order_item_lines SET snapshot_variant_name = NULL WHERE order_id = ?", orderId);
+        dispatchAll(orderId);
+        deliverAll(orderId);
+        awaitStatus(orderId, "COMPLETED");
+        JsonNode event = outbox(orderId, "com.ecommerce.order.completed.v1").get(0);
+        assertThat(event.path("data").path("items").get(0).path("variant_name").asText()).isEqualTo("color: red");
+        validateAgainstContracts(orderId);
+    }
+
     private static String user() {
         return UUID.randomUUID().toString();
     }
@@ -133,6 +149,24 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
                 WHERE order_id = ? AND template_id = 'ORDER_CANCELLED'""", String.class, orderId);
         assertThat(template).isEqualTo("out_of_stock");
         assertThat(fakes.callsFor(orderId)).noneMatch(c -> c.startsWith("payment.initiate"));
+    }
+
+    @Test
+    void proven_no_create_failure_terminates_submission_and_releases_both_holds() throws Exception {
+        String buyer = user();
+        fakes.behaviour.put("initiate:" + buyer, "NO_CREATE");
+        String token = UUID.randomUUID().toString();
+        Response result = submit(Fixtures.submission(token, buyer, Fixtures.defaultLines(), 200_000, "promo-" + UUID.randomUUID()));
+        assertThat(result.status()).isEqualTo(409);
+        assertThat(result.body().path("code").asText()).isEqualTo("PAYMENT_INITIATION_REJECTED");
+        long orderId = jdbc.queryForObject("SELECT id FROM orders WHERE checkout_token=?", Long.class, token);
+        awaitStatus(orderId, "CANCELLED");
+        assertThat(fakes.callsFor(orderId)).contains("inventory.release:" + orderId + ":PRE_PAYMENT_SAGA_FAILED");
+        assertThat(fakes.callsFor(orderId)).anyMatch(call -> call.startsWith("promotion.cancel:"));
+        assertThat(fakes.callsFor(orderId).stream().filter(call -> call.startsWith("payment.initiate:")).count()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_payment_attempts WHERE order_id=?", Integer.class, orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT state FROM order_checkout_submissions WHERE checkout_token=?", String.class, UUID.fromString(token))).isEqualTo("FAILED");
+        assertThat(submit(Fixtures.submission(Fixtures.defaultLines(), 0, null)).status()).isEqualTo(201);
     }
 
     @Test

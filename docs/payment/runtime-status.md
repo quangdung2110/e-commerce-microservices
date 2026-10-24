@@ -14,6 +14,20 @@ verified_against_commit: null
 
 # Payment — Phạm vi runtime được kiểm chứng ngày 2026-10-11
 
+> **Bổ sung Checkout 2026-10-15:** [ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)
+> và Payment HTTP 1.1.0 thêm certified `422 PROVIDER_CREATE_NOT_ACCEPTED` chỉ cho
+> first-dispatch Stripe `400 amount_too_small`. Order validate proof và cleanup holds.
+> Artifact local mới đã retest: Orders 770082/770083 `CANCELLED`, Inventory `RELEASED`,
+> Promotion reserved=0, không capture/review mới. Order 770084 initiate bình thường rồi
+> cancel thành công. Legacy Order 770072/receipt 503/review cũ không tự thay đổi.
+> [Báo cáo và giới hạn kiểm chứng](../frontend/e2e-checkout-fix-report-2026-10-15.md).
+
+> **Bổ sung điều tra E2E 2026-10-14 (F10-06):** JAR trong container local cũ có SHA-256 `5C0C484022A7E877CB8D68694892206E14156B36247A6258A76948D4DFB0F21C`. Đối chiếu `javap` cho thấy `paymentMatches` của artifact này chấp nhận `CANCELED/EXPIRED` với Stripe canceled nhưng **thiếu FAILED**, trong khi source hiện tại đã có mapping FAILED. Do đó ba case drift giả của Order 770041 xuất phát từ **artifact deploy cũ**, không phải frontend hoặc Stripe. Xem [báo cáo sửa P2 và provenance](../frontend/e2e-payment-p2-fix-report-2026-10-14.md). Bảng dưới mô tả implementation source; xác nhận từng môi trường chạy bằng hash/artifact và retest, không suy ra parity chỉ từ source.
+
+> **F10-07 phát hiện khi retest bản deploy mới:** adapter ownership trước sửa ép `TransactionTemplate.getTransactionManager()` thành `DataSourceTransactionManager`; Spring Boot/JPA thực tế cung cấp `JpaTransactionManager`, làm scheduler ném ClassCastException trước khi tạo run dù readiness UP. Adapter đã đổi sang inject DataSource để lấy session autocommit độc lập, giữ nguyên transaction template cho mutation/fencing. `PaymentServiceContextIT` kiểm ownership, rollback và unlock cả hai lane trên cấu hình Boot thật; các test ownership với JDBC transaction manager vẫn được giữ. Bằng chứng runtime/test cuối nằm trong báo cáo P2.
+
+> **Retest local cuối 2026-10-14:** 72 unit + 106 integration đạt; image `sha256:d74a7939f064f4461c73e52a154b8479d469a0d63f75ffba23867087672c6f8a` đã deploy và healthy. OBJECT_STATE run 109 COMPLETED/drift 0, Payment FAILED/provider canceled của Order 770058 không tạo case mới. BALANCE_LEDGER vẫn bị `BALANCE_CURRENCY_MISMATCH` do balance transaction Stripe trả USD trong khi runtime chỉ nhận VND; ba case drift giả lịch sử của 770041 vẫn cần xử lý theo runbook. Không coi retest Object State là chứng nhận toàn bộ reconciliation đã xanh.
+
 Đây là bảng phân biệt implementation hiện tại và thiết kế vận hành mục tiêu.
 `implemented` của service/contract không có nghĩa mọi yêu cầu production đã hoàn tất.
 Chủ dự án chọn sửa lỗi runtime và đồng bộ tài liệu trong đợt audit này; KMS,

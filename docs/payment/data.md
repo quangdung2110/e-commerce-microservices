@@ -581,6 +581,13 @@ CREATE TABLE payment_idempotency (
 `response_body` của `INITIATE` **không** chứa `client_secret`; khi replay, Payment
 đọc `resource_id` → giải mã `client_secret_ciphertext` nếu còn dùng được.
 
+Theo [ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md), certified
+no-create receipt lưu `response_code=422` và proof bất biến trong `response_body`;
+replay không giải mã secret. `provider_operations` là `PROVIDER_REJECTED`, payment
+audit vẫn `INITIATING`, `requires_manual_review=false`, financial version 0. Không
+thêm enum/DDL, history hoặc outbox vì chưa có provider object hay financial fact.
+Không áp dụng ngoại lệ này cho receipt `503` và review case đã tồn tại.
+
 ### 3.8. `payment_review_cases`
 
 ```sql

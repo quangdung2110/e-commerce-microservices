@@ -58,9 +58,9 @@ và Payment.
    đa 100 line. Order internal `items[]`/`allocation_plan.lines[]` và public
    `items[]`/`lines[]`/return `lines[]`/refund-case `lines[]` giảm từ 200 xuống 100.
 2. **`variant_name`.** Checkout `CheckoutItem` có thêm `variant_name` optional/nullable.
-   Order lưu immutable ở `order_item_lines.snapshot_variant_name`; đây là nguồn duy nhất của
-   `order.completed.v1 items[].variant_name` và `variant_name` trong notification. Không
-   suy diễn từ `snapshot_attributes`.
+   Order lưu immutable ở `order_item_lines.snapshot_variant_name`. [ADR-022](./ADR-022-purchase-variant-snapshot-fallback.md)
+   cập nhật quy tắc này: Checkout dẫn xuất label từ purchase attributes; Order fallback
+   từ `snapshot_attributes` đã lưu khi line cũ thiếu label, không đọc catalog hiện tại.
 3. **Lỗi submit terminal.** Inventory Reserve `REJECT_ALL` trả
    `409 INVENTORY_RESERVATION_REJECTED`; Payment initiation bị từ chối bền vững trả
    `409 PAYMENT_INITIATION_REJECTED`. Recovery read trả `state=FAILED` cùng problem đó.
@@ -159,6 +159,12 @@ và Payment.
 24. **Operation mapping.** Cancellation `SUCCEEDED` khi order `CANCELLED`, `REJECTED` khi
     capture thắng race; payment-attempt `REJECTED` nếu deadline đã qua lúc Payment trả kết quả,
     `MANUAL_REVIEW_REQUIRED` nếu outcome không xác định.
+25. **Mã lỗi của operation chờ con người.** Operation refund/return vào
+    `MANUAL_REVIEW_REQUIRED` mang problem `REFUND_MANUAL_REVIEW_REQUIRED` (`409`,
+    `retryable=false`), không phải `INVALID_ORDER_TRANSITION`: trạng thái đơn không bị từ
+    chối, tiền mới là thứ cần Finance xử lý (E2E ORD09, F11-01). Frontend dịch **mọi** operation
+    `MANUAL_REVIEW_REQUIRED` thành "đang được kiểm tra thủ công, không cần gửi lại" bất kể
+    `failure.code` và khoá lệnh tạo ra nó; `REJECTED`/`FAILED` vẫn dịch theo `failure.code`.
 
 ## Hệ quả
 

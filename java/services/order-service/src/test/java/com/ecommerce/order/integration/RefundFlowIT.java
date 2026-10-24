@@ -133,6 +133,10 @@ class RefundFlowIT extends AbstractIntegrationTest {
         assertThat(orderStatus(orderId)).isEqualTo("RETURN_REQUESTED");
         await("closed rejected", () -> fakes.callsFor(orderId).contains("inventory.closeScope:" + orderId + ":REJECTED"));
         await("manual review", () -> "MANUAL_REVIEW_REQUIRED".equals(operationStatus(operationId)));
+        // The failure names the real cause (a refund that needs Finance), not an order-state conflict.
+        JsonNode manual = buyerGet("/api/v1/order-operations/" + operationId, placed.user()).body().path("failure");
+        assertThat(manual.path("code").asText()).isEqualTo("REFUND_MANUAL_REVIEW_REQUIRED");
+        assertThat(manual.path("retryable").asBoolean()).isFalse();
 
         JsonNode reconciliation = reconciliationCase(orderId);
         JsonNode obligation = obligation(reconciliation, "CUSTOMER_PAYOUT_REMEDIATION");
@@ -262,6 +266,8 @@ class RefundFlowIT extends AbstractIntegrationTest {
         }
         assertThat(finalization(orderId)).isEqualTo("RECOVERY_REQUIRED");
         assertThat(operationStatus(operationId)).isEqualTo("MANUAL_REVIEW_REQUIRED");
+        assertThat(buyerGet("/api/v1/order-operations/" + operationId, placed.user()).body()
+                .path("failure").path("code").asText()).isEqualTo("REFUND_MANUAL_REVIEW_REQUIRED");
         assertThat(order(orderId).get("status")).isEqualTo("REFUNDED");
         for (int i = 0; i < 40 && !"COMPLETED".equals(finalization(orderId)); i++) {
             temporal.sleep(Duration.ofMinutes(1));

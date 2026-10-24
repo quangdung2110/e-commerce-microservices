@@ -556,6 +556,12 @@ not a second business FSM.
 Temporal unavailability is `RETRY`, never terminal loss. Every API/CAS action that needs checkout, cancel,
 refund or financial reconciliation inserts this row in the same
 local transaction before returning `202`; a dispatcher starts/attaches idempotently.
+The dispatcher replenishes bounded windows while older RPCs are running (ADR-030), at most
+`dispatch-batch-size` tracked rows per table. Claim excludes locally tracked dispatch IDs and
+message targets, including sent rows whose lease renewal failed; it also excludes local
+message targets in retry backoff. These exclusions optimize one coordinator's scheduling,
+not global ordering. ACK/renew still require matching `IN_FLIGHT`, owner and `attempts`.
+There is no schema migration or new durable queue; crash recovery still uses these rows.
 For the four request-mirror commands, the corresponding durable dispatch, attempt or
 refund-case record must also retain the idempotency key, canonical request digest and
 operation/result reference before Redis loss can provide exact replay semantics.
@@ -933,7 +939,9 @@ sanitized result reference/problem, không chứa raw provider response hay PII.
 Buyer return stays `RUNNING` while scope finalization is pending, or
 `MANUAL_REVIEW_REQUIRED` on recovery/conflict. After the receipt, financial success
 maps to `SUCCEEDED`. Refund terminal failure opens a `CUSTOMER_PAYOUT_REMEDIATION`
-obligation and maps to `MANUAL_REVIEW_REQUIRED`, không phải một trạng thái `FAILED`
+obligation and maps to `MANUAL_REVIEW_REQUIRED` (problem `failure.code =
+REFUND_MANUAL_REVIEW_REQUIRED`, `retryable=false`; không dùng `INVALID_ORDER_TRANSITION`
+vì state đơn không bị từ chối), không phải một trạng thái `FAILED`
 không còn work; a reversal remains manual review until provider recovery or
 evidence-backed external remediation. The latter maps the operation to `SUCCEEDED` with
 case `EXTERNALLY_REMEDIATED`. Approved no-payout closure maps to `SUCCEEDED` with case

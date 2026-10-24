@@ -3,6 +3,8 @@ package com.ecommerce.order.service;
 import com.ecommerce.order.common.Json;
 import com.ecommerce.order.domain.FulfillmentStatus;
 import com.ecommerce.order.domain.OrderStatus;
+import com.ecommerce.order.domain.VariantSnapshot;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.ecommerce.order.store.OrderStore;
 import com.ecommerce.order.store.OrderStore.LineRow;
 import com.ecommerce.order.store.OrderStore.OrderRow;
@@ -72,7 +74,11 @@ public class OrderConvergence {
                 ObjectNode item = items.addObject();
                 item.put("product_id", line.productId());
                 item.put("sku_id", line.skuId());
-                item.put("variant_name", line.snapshotVariantName());
+                // Existing orders may predate label persistence; their stored attributes
+                // are authoritative too. Never ask Product for current SKU attributes.
+                item.put("variant_name", VariantSnapshot.name(line.snapshotVariantName(),
+                        json.mapper().convertValue(json.read(line.snapshotAttributesJson()),
+                                new TypeReference<Map<String, String>>() { })));
                 item.put("product_name", line.snapshotName());
                 item.put("product_image_url", line.snapshotImageUrl());
                 item.put("quantity", line.quantity());

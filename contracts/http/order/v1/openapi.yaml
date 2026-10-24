@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Order Service Public API
-  version: 1.1.0
+  version: 1.1.1
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -1025,6 +1025,11 @@ components:
     OrderOperation:
       type: object
       additionalProperties: false
+      description: >-
+        Public projection of an asynchronous command. MANUAL_REVIEW_REQUIRED means the outcome
+        is waiting for a person (for example Finance after a failed refund), not that the client
+        should retry; its failure problem code is REFUND_MANUAL_REVIEW_REQUIRED for refund and
+        return commands, and the client must not send a new command for the same intent.
       required:
         - operation_id
         - operation_type

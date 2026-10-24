@@ -8,6 +8,7 @@ import com.ecommerce.order.config.OrderProperties;
 import com.ecommerce.order.domain.CancelReason;
 import com.ecommerce.order.domain.DiscountAllocator;
 import com.ecommerce.order.domain.NameNormalizer;
+import com.ecommerce.order.domain.VariantSnapshot;
 import com.ecommerce.order.domain.OperationTypes;
 import com.ecommerce.order.domain.OrderStatus;
 import com.ecommerce.order.domain.PaymentStatus;
@@ -158,7 +159,7 @@ public class CheckoutSaga {
             long lineId = orders.insertLine(orderId, new OrderStore.NewLine(itemId,
                     request.allocationPlan().allocationPlanId(), planLine.lineReference(), planLine.warehouseId(),
                     item.skuId(), item.productId(), item.quantity(), item.unitPrice().amountMinor(), 0,
-                    item.snapshotName(), item.variantName(), item.snapshotImageUrl(),
+                    item.snapshotName(), VariantSnapshot.name(item.variantName(), item.snapshotAttributes()), item.snapshotImageUrl(),
                     NameNormalizer.normalize(item.snapshotName()), json.write(item.snapshotAttributes()),
                     json.write(item.categoryIds())));
             grossLines.add(new DiscountAllocator.Line(lineId, item.unitPrice().amountMinor() * item.quantity()));

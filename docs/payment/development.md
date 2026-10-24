@@ -81,6 +81,8 @@ hoặc:
 docker compose --env-file .env.local --profile payment up -d --build payment-service
 ```
 
+**Xác minh artifact sau build/deploy:** lưu image ID và SHA-256 của JAR/class thực sự trong container. F10-06 (14/10/2026) cho thấy source có `FAILED + payment_intent.canceled` nhưng JAR cũ đang chạy thiếu mapping này. Chạy regression `ReconciliationIT`, kiểm bytecode khi điều tra parity và retest provider observation sau deploy; chỉ source/test xanh chưa chứng minh runtime đã cập nhật. Xem [operations §9.10a](./operations.md#910a-drift-giả-payment-failed-nhưng-stripe-canceled) và [báo cáo P2](../frontend/e2e-payment-p2-fix-report-2026-10-14.md). Dừng reconciliation worker cũ trước khi thay bản ADR-023; không rolling chung với bản chưa có fencing.
+
 Compose build từ `java/services/payment-service/Dockerfile`, chạy profile `dev`,
 healthcheck `/actuator/health/liveness`. Các giá trị `*_local_change_me` chỉ giúp
 container khởi động; mọi call Stripe thực phải override bằng test-mode sandbox key.
@@ -168,7 +170,11 @@ env var (`payment.stripe.secret-key` ↔ `PAYMENT_STRIPE_SECRET_KEY`).
 
 Quy tắc: `application.yml` chỉ chứa default không nhạy cảm và placeholder `${…}`;
 module hiện chỉ có `application.yml`; profile `dev` cho phép local AES key nhưng
-không tự nạp secret. Không có giá trị secret commit; `.env.local` gitignored. CI fail nếu grep thấy `sk_live_`,
+không tự nạp secret. `StartupSecretGuard` ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)):
+ngoài profile `dev`/`local`/`test`, Stripe secret key và từng webhook secret đã cấu hình phải không trống, ≥ 20 ký tự, không là
+placeholder của compose (`*_local_change_me`); ở profile `dev`, webhook secret placeholder chỉ được chấp nhận khi secret key cũng là
+placeholder — đặt `sk_test_` thật mà quên `whsec_` của `stripe listen` thì Payment không khởi động (route webhook công khai qua gateway).
+Không có giá trị secret commit; `.env.local` gitignored. CI fail nếu grep thấy `sk_live_`,
 `pk_live_`, `whsec_` literal trong repo. Profile `test` không bao giờ đọc env Stripe
 thật.
 
@@ -319,6 +325,13 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
   khi freeze; balance lane cursor overlap; trimmer chỉ xóa dưới confirmed slot LSN.
 - Review case: `requires_manual_review` đồng bộ với case; đóng thiếu
   `resolution_type` bị reject; correction `MANUAL` ghi `actor`/`cause_ref`.
+- Certified CREATE non-acceptance ([ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)):
+  first dispatch `400 amount_too_small` trả `422` proof và replay không gọi provider;
+  assert không có review/history/outbox/financial version. Retry sau UNKNOWN và
+  `idempotency_error` không được certify; proof sai evidence phải rollback. Order
+  validate đầy đủ order/attempt/IDs và bù cả Inventory/Promotion khi proof hợp lệ.
+  CREATE dùng SDK network retries=0 để recovery đếm mọi dispatch; các operation khác
+  giữ cấu hình SDK retry hiện hành.
 
 **Contract/provider/consumer:**
 

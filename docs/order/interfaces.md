@@ -20,9 +20,22 @@ verified_against_commit: null
 
 # Order Service — Giao diện tích hợp
 
+`ORDER_COMPLETED.items[].variant_name` lấy từ purchase snapshot: ưu tiên label đã lưu;
+với line cũ thiếu label, dùng `snapshot_attributes` đã lưu, bỏ value rỗng, sắp key và nối
+`key: value / key: value` (tối đa 255 ký tự). Không lookup Product hiện tại. Checkout mới
+gửi label này và Order lưu lúc tạo line; fallback lúc completion hỗ trợ order đã tồn tại.
+
 > Hợp đồng Payment, Promotion, Inventory workflow và financial
 > reconciliation được liên kết bên dưới là nguồn wire-level. Ví dụ Markdown chỉ mô tả
 > behavior và không được ghi đè schema máy đọc.
+
+Payment initiate `422 PROVIDER_CREATE_NOT_ACCEPTED` theo [ADR-024](../payment/decisions/ADR-024-certified-create-non-acceptance.md)
+là rejection chỉ sau khi Order validate `no_payment_created=true`, `retryable=false`,
+`order_id`/`payment_attempt_number` trùng request và IDs `TXN_`/`POP_` đúng format.
+Proof thiếu/sai hoặc mang HTTP khác được giữ UNKNOWN. Proof hợp lệ dẫn tới
+`PAYMENT_INITIATION_REJECTED`, không bind active payment attempt, và cleanup các hold
+đã nhận. Generic `503 PROVIDER_REQUEST_REJECTED` vẫn UNKNOWN, kể cả `retryable=false`.
+Triển khai Order consumer trước Payment producer; không đổi event contract.
 
 ## 1. Danh mục tương tác
 
@@ -250,19 +263,6 @@ Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 evaluate lại và tạo token mới. Order không gọi API gia hạn reservation: Promotion tự gia hạn
 grace khi Confirm-Prepare fence `RESERVED -> CONFIRMING`.
 
-## 4. Event envelope, delivery và ordering
-
-Order dùng CloudEvents 1.0 structured JSON cho mọi message trên `t.order.events`.
-Kafka key, `data.order_id` và `subject=orders/{order_id}` dùng cùng canonical decimal
-string không padding. `id` là UUID ổn định của outbox row và không đổi khi relay retry;
-`sequence` tăng đơn điệu trên **integration event đã phát** của một order, không phải
-FSM version và được phép có gap.
-
-Delivery là at-least-once. Cart xóa SKU bằng `HDEL` idempotent; Review dedupe bằng
-receipt `CloudEvents.id` và unique business key. Consumer group có retry/DLQ riêng.
-Event Payment/Inventory/Delivery mà Order nhận phải qua durable inbox `event_id`,
-semantic identity và provider revision/version guard trước khi enqueue durable workflow
-message; chỉ dispatcher gọi Temporal.
 ### 3.1 Header correlation khi gọi remote
 
 Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md).
@@ -281,6 +281,19 @@ MDC của mọi dòng log trong request và trả `X-Request-Id` trong response.
 gốc nối bằng Workflow ID (chứa `checkout_token`), không bằng `X-Request-Id`; lưu context request gốc để
 nối thẳng là việc của mức 2 (tracing đầy đủ).
 
+## 4. Event envelope, delivery và ordering
+
+Order dùng CloudEvents 1.0 structured JSON cho mọi message trên `t.order.events`.
+Kafka key, `data.order_id` và `subject=orders/{order_id}` dùng cùng canonical decimal
+string không padding. `id` là UUID ổn định của outbox row và không đổi khi relay retry;
+`sequence` tăng đơn điệu trên **integration event đã phát** của một order, không phải
+FSM version và được phép có gap.
+
+Delivery là at-least-once. Cart xóa SKU bằng `HDEL` idempotent; Review dedupe bằng
+receipt `CloudEvents.id` và unique business key. Consumer group có retry/DLQ riêng.
+Event Payment/Inventory/Delivery mà Order nhận phải qua durable inbox `event_id`,
+semantic identity và provider revision/version guard trước khi enqueue durable workflow
+message; chỉ dispatcher gọi Temporal.
 
 ## 5. Event phát ra
 

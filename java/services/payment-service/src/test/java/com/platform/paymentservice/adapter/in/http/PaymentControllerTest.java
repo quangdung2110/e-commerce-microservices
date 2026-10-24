@@ -1,6 +1,7 @@
 package com.platform.paymentservice.adapter.in.http;
 
 import com.platform.paymentservice.application.service.InitiatePaymentService;
+import com.platform.paymentservice.application.service.InitiatePaymentResult;
 import com.platform.paymentservice.application.service.CancelPaymentService;
 import com.platform.paymentservice.application.service.CancelPaymentResult;
 import com.platform.paymentservice.application.service.CancelPaymentCommand;
@@ -39,6 +40,24 @@ class PaymentControllerTest {
     @MockBean PaymentClientDataService clientData;
     @MockBean CancelPaymentService cancel;
     @MockBean RefundPaymentService refund;
+
+    @Test
+    void certified_create_rejection_returns_identity_bound_422_without_client_data() throws Exception {
+        when(initiate.initiate(any(), anyString())).thenReturn(new InitiatePaymentResult.NoPaymentCreated(
+                TXN, "POP_01K5V7M4R8Q2K7V6W5X1Y0ZABD", 10001, 1));
+        mvc.perform(post("/v1/payments/initiate")
+                        .header("Idempotency-Key", "initiate-key-123456789")
+                        .header("X-Service-Identity", "order-service").header("X-Correlation-Id", "small-amount")
+                        .contentType("application/json")
+                        .content("{\"order_id\":\"10001\",\"payment_attempt_number\":1,\"amount\":{\"amount_minor\":1,\"currency\":\"VND\"},\"user_id\":\"00000000-0000-4000-8000-000000000001\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.code").value("PROVIDER_CREATE_NOT_ACCEPTED"))
+                .andExpect(jsonPath("$.no_payment_created").value(true))
+                .andExpect(jsonPath("$.order_id").value("10001"))
+                .andExpect(jsonPath("$.payment_attempt_number").value(1))
+                .andExpect(jsonPath("$.client_secret").doesNotExist());
+    }
 
     @Test
     void client_data_response_is_private_no_store_and_contract_shaped() throws Exception {

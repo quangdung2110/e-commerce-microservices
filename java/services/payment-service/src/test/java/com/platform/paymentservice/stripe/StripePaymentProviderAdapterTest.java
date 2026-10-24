@@ -45,7 +45,7 @@ class StripePaymentProviderAdapterTest {
         assertThat(gateway.requestOptions.getIdempotencyKey()).isEqualTo("pay:create:TXN_01");
         assertThat(gateway.requestOptions.getConnectTimeout()).isEqualTo(5_000);
         assertThat(gateway.requestOptions.getReadTimeout()).isEqualTo(15_000);
-        assertThat(gateway.requestOptions.getMaxNetworkRetries()).isEqualTo(2);
+        assertThat(gateway.requestOptions.getMaxNetworkRetries()).isZero();
         assertThat(result.resultJson()).doesNotContain("secret-value", "client_secret");
         assertThat(new String(result.transientClientSecret().orElseThrow())).isEqualTo("secret-value");
         assertThat(result.toString()).contains("REDACTED").doesNotContain("secret-value");
@@ -78,6 +78,22 @@ class StripePaymentProviderAdapterTest {
     }
 
     @Test
+    void only_first_create_amount_validation_failure_proves_no_payment_created() {
+        FakeGateway rejected = new FakeGateway(new InvalidRequestException(
+                "amount too small", "amount", "req_small", "amount_too_small", 400, null));
+        assertThat(((ProviderOperationResult.Rejected) adapter(rejected).dispatch(operation())).noPaymentCreated()).isTrue();
+        ProviderOperation first = operation();
+        ProviderOperation retried = new ProviderOperation(first.id(), first.paymentTransactionId(), null,
+                first.type(), first.providerIdempotencyKey(), first.commandIdempotencyKey(), first.requestFingerprintJson(),
+                ProviderOperationStatus.UNKNOWN, null, 1, Instant.parse("2026-09-22T09:00:00Z"),
+                first.safeReplayUntil(), first.recoveryDeadlineAt(), first.nextRetryAt());
+        assertThat(((ProviderOperationResult.Rejected) adapter(rejected).dispatch(retried)).noPaymentCreated()).isFalse();
+        FakeGateway other = new FakeGateway(new InvalidRequestException(
+                "idempotency mismatch", null, "req_conflict", "idempotency_error", 400, null));
+        assertThat(((ProviderOperationResult.Rejected) adapter(other).dispatch(operation())).noPaymentCreated()).isFalse();
+    }
+
+    @Test
     void cancel_uses_stable_key_and_only_confirms_canceled_or_succeeded_provider_facts() {
         FakeGateway canceled = new FakeGateway(intent("pi_cancel", 150_000, "vnd", null));
         canceled.cancelResult.setStatus("canceled");
@@ -89,6 +105,7 @@ class StripePaymentProviderAdapterTest {
         assertThat(canceled.cancelParams.getCancellationReason())
                 .isEqualTo(PaymentIntentCancelParams.CancellationReason.ABANDONED);
         assertThat(canceled.requestOptions.getIdempotencyKey()).isEqualTo("pay:cancel:TXN_01");
+        assertThat(canceled.requestOptions.getMaxNetworkRetries()).isEqualTo(2);
         assertThat(canceledResult.resultJson()).contains("\"status\":\"canceled\"");
 
         FakeGateway processing = new FakeGateway(intent("pi_cancel", 150_000, "vnd", null));

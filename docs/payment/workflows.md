@@ -104,6 +104,16 @@ payment ở `INITIATING`, idempotency `IN_PROGRESS`; trả `503 PROVIDER_OUTCOME
 `503 PROVIDER_REQUEST_REJECTED` không retry. Replay trả stored failure và không gọi
 Stripe. Scanner không expire `INITIATING`.
 
+**Ngoại lệ CREATE chưa được chấp nhận ([ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)):**
+chỉ Stripe `400 amount_too_small` tại lần dispatch đầu, operation chưa từng UNKNOWN/retry
+và chưa bind provider object, được persist atomically thành `422 PROVIDER_CREATE_NOT_ACCEPTED`.
+Response chứa `no_payment_created=true`, `transaction_id`, `provider_operation_id`,
+`order_id`, `payment_attempt_number`, `retryable=false`. Operation terminal
+`PROVIDER_REJECTED`; payment audit giữ `INITIATING`, financial version 0, không review
+case/history/financial event. Replay trả cùng proof, không gọi Stripe lại. Order
+validate proof đúng order/attempt rồi fail preparation và bù Inventory/Promotion holds.
+Không nâng cấp receipt `503` cũ hoặc suy luận từ `retryable=false`.
+
 **Test scenarios:** same-attempt replay; replay `INITIATING` khi recovery đã nhận
 operation và không còn active request; concurrent request còn active → `409`; replay sau khi payment đã `SUCCESS` (không
 trả secret); new attempt sau `EXPIRED`/`FAILED`/`CANCELED`; reject attempt number

@@ -86,7 +86,7 @@ class SubmitApiTest extends AbstractCheckoutTest {
         assertThat(first.path("snapshot_image_url").asText())
                 .isEqualTo("https://cdn.test/media/products/ao%20thun/black.jpg");
         assertThat(first.path("snapshot_attributes").path("size").asText()).isEqualTo("M");
-        assertThat(first.has("variant_name")).as("Product has no variant label yet").isFalse();
+        assertThat(first.path("variant_name").asText()).isEqualTo("color: black / size: M");
         assertThat(payload.path("items").get(1).path("snapshot_image_url").isNull())
                 .as("no image: Order gets null, never the placeholder").isTrue();
         JsonNode delivery = payload.path("delivery_address_snapshot");

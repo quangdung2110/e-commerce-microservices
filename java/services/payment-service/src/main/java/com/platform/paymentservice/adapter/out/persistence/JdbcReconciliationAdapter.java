@@ -18,17 +18,20 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
-import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import javax.sql.DataSource;
+import java.util.Objects;
 
 @Component
 public final class JdbcReconciliationAdapter implements ReconciliationPort {
     private final JdbcClient jdbc;
     private final TransactionTemplate transactions;
+    private final DataSource dataSource;
     private final Map<Long, Connection> owners = new ConcurrentHashMap<>();
 
-    public JdbcReconciliationAdapter(JdbcClient jdbc, TransactionTemplate transactions) {
+    public JdbcReconciliationAdapter(JdbcClient jdbc, TransactionTemplate transactions, DataSource dataSource) {
         this.jdbc = jdbc;
         this.transactions = transactions;
+        this.dataSource = Objects.requireNonNull(dataSource);
     }
 
     @Override
@@ -78,8 +81,9 @@ public final class JdbcReconciliationAdapter implements ReconciliationPort {
         };
         Connection connection = null;
         try {
-            var manager = (DataSourceTransactionManager) transactions.getTransactionManager();
-            connection = manager.getDataSource().getConnection();
+            // Ownership needs an independent autocommit session. Spring Boot may
+            // use JpaTransactionManager for the mutation transaction; never cast it.
+            connection = dataSource.getConnection();
             connection.setAutoCommit(true);
             try (var statement = connection.prepareStatement("SELECT pg_try_advisory_lock(731024, ?)")) {
                 statement.setInt(1, key);

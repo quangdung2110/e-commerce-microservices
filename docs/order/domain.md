@@ -299,12 +299,13 @@ xuất hiện trên `POST` mà nằm trong `failure` của operation resource (c
 | `UNAUTHENTICATED` | 401 | Không | Thiếu `X-User-Id` do Gateway cấp, hoặc thiếu `X-Service-Identity` trên route internal | Mọi endpoint |
 | `FORBIDDEN` | 403 | Không | Route `/api/v1/admin/**` thiếu role `ADMIN`; workload không thuộc allowlist của route internal | Admin, internal |
 | `NOT_FOUND` | 404 | Không | Order/operation/attempt/refund case không tồn tại hoặc không thuộc Buyer; route không tồn tại | Mọi endpoint |
-| `INVALID_ORDER_TRANSITION` | 409 | Không | State hiện tại không cho phép command | Cancel, return, admin refund, delivery confirmation; operation `failure` |
+| `INVALID_ORDER_TRANSITION` | 409 | Không | State hiện tại không cho phép command | Cancel, return, admin refund, delivery confirmation; operation `failure` của lệnh bị `REJECTED` (không dùng cho `MANUAL_REVIEW_REQUIRED` của refund — xem `REFUND_MANUAL_REVIEW_REQUIRED`) |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | Không | Cùng `Idempotency-Key` (hoặc `checkout_token`) nhưng canonical payload khác | POST có `Idempotency-Key` |
 | `REFUND_CUSTOMER_REQUEST_ALREADY_USED` | 409 | Không | Buyer one-shot guard (`buyer_return_locked_at`) đã set | `return-requests` |
 | `REFUND_CASE_ALREADY_EXISTS` | 409 | Không | Order đã có refund case trọn đời (Buyer hoặc Admin) | `return-requests`, `pre-dispatch-refund-requests` |
 | `REFUND_REQUIRES_ALL_ITEMS_DELIVERED` | 409 | Không | Có line chưa `DELIVERED` (tên mã là legacy); Buyer thử lại sau khi mọi line được Admin xác nhận đã giao | `return-requests` |
 | `ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED` | 409 | Không | Inventory không atomic-release được mọi committed line trước dispatch | Operation `failure` (`REJECTED`) của `pre-dispatch-refund-requests` |
+| `REFUND_MANUAL_REVIEW_REQUIRED` | 409 | Không | Refund/return đã được nhận nhưng cần con người xử lý: Payment từ chối command refund hoặc refund thất bại/bị provider đảo; return quá 30 ngày chờ Inventory hoặc Inventory từ chối `RegisterRefundScope`; đóng scope Inventory bị từ chối hoặc vào `RECOVERY_REQUIRED/CONFLICT`. Operation ở `MANUAL_REVIEW_REQUIRED` cho tới khi Finance/Ops quyết định; client không được gửi lại lệnh | Operation `failure` (`MANUAL_REVIEW_REQUIRED`) của `return-requests`, `pre-dispatch-refund-requests` |
 | `DELIVERY_REQUIRES_DISPATCH` | 409 | Không | Line còn `PROCESSING`, chưa có physical dispatch; Admin xác nhận lại sau khi Inventory ghi dispatch | `delivery-confirmations` |
 | `DELIVERY_ALREADY_CONFIRMED` | 409 | Không | Line đã `DELIVERED` với `delivery_reference` hoặc `delivered_at` khác | `delivery-confirmations` |
 | `PAYMENT_RETRY_NOT_ELIGIBLE` | 409 | Không | Attempt trước không `FAILED`, quá immutable deadline, hold hết hiệu lực hoặc đã cleanup/terminal (`INV-ORD-028`) | `payment-attempts`; operation `failure` |

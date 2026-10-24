@@ -14,6 +14,7 @@ public enum ErrorCode {
     DELIVERY_ALREADY_CONFIRMED(409, false, "The line delivery was already confirmed differently"),
     REFUND_CASE_ALREADY_EXISTS(409, false, "The order already has its lifetime refund case"),
     ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED(409, false, "Every committed line must still be undispatched"),
+    REFUND_MANUAL_REVIEW_REQUIRED(409, false, "The refund needs manual review"),
     PAYMENT_RETRY_NOT_ELIGIBLE(409, false, "A new payment attempt is not allowed"),
     OPERATION_IN_PROGRESS(409, false, "Another operation of this type is still running"),
     PROMOTION_RECALCULATION_NEEDED(409, false, "Promotion recalculation needed"),

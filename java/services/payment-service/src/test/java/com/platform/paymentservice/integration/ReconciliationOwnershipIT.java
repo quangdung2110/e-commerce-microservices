@@ -13,7 +13,7 @@ class ReconciliationOwnershipIT extends AbstractPaymentIT {
     @Test
     void live_session_excludes_another_worker_and_dead_owner_is_fenced_after_takeover() {
         var old = reconciliation.start("OBJECT_STATE", NOW.minusSeconds(60), NOW, false, NOW).orElseThrow();
-        var nextAdapter = new JdbcReconciliationAdapter(jdbcClient, transactions);
+        var nextAdapter = new JdbcReconciliationAdapter(jdbcClient, transactions, jdbc.getDataSource());
         assertThat(nextAdapter.start("OBJECT_STATE", NOW.minusSeconds(60), NOW, false, NOW)).isEmpty();
         killOwner();
         var next = nextAdapter.start("OBJECT_STATE", NOW.minusSeconds(60), NOW, false, NOW).orElseThrow();
@@ -32,7 +32,7 @@ class ReconciliationOwnershipIT extends AbstractPaymentIT {
         var old = reconciliation.start("OBJECT_STATE", NOW.minusSeconds(60), NOW, false, NOW).orElseThrow();
         var entered = new CountDownLatch(1);
         var finish = new CountDownLatch(1);
-        var nextAdapter = new JdbcReconciliationAdapter(jdbcClient, transactions);
+        var nextAdapter = new JdbcReconciliationAdapter(jdbcClient, transactions, jdbc.getDataSource());
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var mutation = executor.submit(() -> reconciliation.owned(old.id(), () -> {
                 entered.countDown();

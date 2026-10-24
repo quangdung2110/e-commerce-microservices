@@ -44,6 +44,8 @@ public sealed interface InitiatePaymentResult {
     record InvalidAttemptSequence() implements InitiatePaymentResult {}
     record ProviderOutcomeUnknown() implements InitiatePaymentResult {}
     record ProviderRejected() implements InitiatePaymentResult {}
+    record NoPaymentCreated(String transactionId, String providerOperationId, long orderId, int paymentAttemptNumber)
+            implements InitiatePaymentResult {}
     record ReviewRequired() implements InitiatePaymentResult {}
     record Fenced() implements InitiatePaymentResult {}
     record DependencyUnavailable() implements InitiatePaymentResult {}

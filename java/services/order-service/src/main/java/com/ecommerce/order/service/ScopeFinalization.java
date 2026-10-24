@@ -190,7 +190,12 @@ public class ScopeFinalization {
                 case SUCCEEDED, EXTERNALLY_REMEDIATED, CLOSED_INCOMPLETE -> OperationTypes.Status.SUCCEEDED;
                 default -> OperationTypes.Status.MANUAL_REVIEW_REQUIRED;
             };
-            operations.transition(refundCase.operationId(), status, "/api/v1/orders/" + orderId + "/refund-case", null);
+            // transition() replaces the stored problem, so a manual-review result keeps naming its cause.
+            String problem = status == OperationTypes.Status.MANUAL_REVIEW_REQUIRED
+                    ? json.write(problems.operationProblem("REFUND_MANUAL_REVIEW_REQUIRED",
+                            "Refund failed; customer payout remediation required"))
+                    : null;
+            operations.transition(refundCase.operationId(), status, "/api/v1/orders/" + orderId + "/refund-case", problem);
         }
         meters.counter("order.refund.scope_finalized", "outcome", body.path("outcome").asText()).increment();
     }
@@ -228,7 +233,7 @@ public class ScopeFinalization {
     private void manualReview(CaseRow refundCase, String detail) {
         if (refundCase.operationId() != null) {
             operations.transition(refundCase.operationId(), OperationTypes.Status.MANUAL_REVIEW_REQUIRED, null,
-                    json.write(problems.operationProblem("INVALID_ORDER_TRANSITION", detail)));
+                    json.write(problems.operationProblem("REFUND_MANUAL_REVIEW_REQUIRED", detail)));
         }
     }
 

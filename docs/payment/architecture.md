@@ -322,6 +322,11 @@ Ordering:
 - **Scheduler nhiều instance:** `SELECT … FOR UPDATE SKIP LOCKED` trên batch +
   lock theo payment; reconciliation/trimmer singleton.
 
+CREATE có ngoại lệ certified first-dispatch `400 amount_too_small` theo
+[ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md): durable `422`
+proof cho phép Order bù giữ chỗ. Không tạo financial transition giả, không mở review
+case và không đổi cách xử lý UNKNOWN, idempotency error hoặc receipt `503` đã tồn tại.
+
 ## 6. Mô hình triển khai
 
 ### 6.1. Process

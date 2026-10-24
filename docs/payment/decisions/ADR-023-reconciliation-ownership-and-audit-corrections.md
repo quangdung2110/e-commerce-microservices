@@ -67,6 +67,8 @@ balance/payout statement comparison hoặc tự tạo review case cho mọi lỗ
 
 ## Xác minh
 
+Bổ sung 2026-10-14: session autocommit của owner lấy trực tiếp từ DataSource được inject. Không cast TransactionTemplate.getTransactionManager() sang DataSourceTransactionManager: runtime Boot dùng JpaTransactionManager và gây ClassCastException (F10-07). TransactionTemplate vẫn giữ mutation/row fencing trong cùng transaction. PaymentServiceContextIT kiểm ownership, rollback và unlock trên cấu hình Boot thật cho OBJECT_STATE/BALANCE_LEDGER; các kiểm chứng JDBC/fencing dưới đây tiếp tục áp dụng.
+
 ReconciliationOwnershipIT kiểm live owner exclusion, pg_terminate_backend,
 takeover/fencing và successor chờ transaction cũ. BalanceReconciliationIT kiểm
 pagination, cửa sổ mới, canonical duplicate, conflict, fee credit và freeze/read bù.

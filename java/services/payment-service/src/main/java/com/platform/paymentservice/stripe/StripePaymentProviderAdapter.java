@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.paymentservice.application.port.out.PaymentProviderPort;
 import com.platform.paymentservice.application.port.out.ProviderOperationResult;
 import com.platform.paymentservice.domain.ProviderOperation;
+import com.platform.paymentservice.domain.ProviderOperationStatus;
 import com.platform.paymentservice.domain.ProviderOperationType;
 import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
@@ -71,9 +72,18 @@ final class StripePaymentProviderAdapter implements PaymentProviderPort {
                 .addAllPaymentMethodType(paymentMethodTypes)
                 .putAllMetadata(spec.metadata());
         try {
-            PaymentIntent intent = gateway.createPaymentIntent(params.build(), requestOptions(operation.providerIdempotencyKey()));
+            // CREATE retries must pass through durable dispatch accounting, so a first-response
+            // rejection cannot hide an earlier ambiguous SDK transport attempt.
+            PaymentIntent intent = gateway.createPaymentIntent(params.build(), requestOptions(operation.providerIdempotencyKey(), 0));
             return confirmed(intent);
         } catch (StripeException exception) {
+            if (Integer.valueOf(400).equals(exception.getStatusCode())
+                    && "amount_too_small".equals(exception.getCode())
+                    && operation.status() == ProviderOperationStatus.REQUESTED
+                    && operation.attemptCount() == 0 && operation.firstDispatchedAt() == null
+                    && operation.providerObjectId() == null) {
+                return new ProviderOperationResult.Rejected(exception.getRequestId(), sanitizedException(exception), true);
+            }
             return mapException(exception);
         }
     }
@@ -329,10 +339,14 @@ final class StripePaymentProviderAdapter implements PaymentProviderPort {
     }
 
     private RequestOptions requestOptions(String idempotencyKey) {
+        return requestOptions(idempotencyKey, maxNetworkRetries);
+    }
+
+    private RequestOptions requestOptions(String idempotencyKey, int networkRetries) {
         RequestOptions.RequestOptionsBuilder builder = RequestOptions.builder()
                 .setConnectTimeout(connectTimeoutMillis)
                 .setReadTimeout(readTimeoutMillis)
-                .setMaxNetworkRetries(maxNetworkRetries);
+                .setMaxNetworkRetries(networkRetries);
         if (idempotencyKey != null) builder.setIdempotencyKey(idempotencyKey);
         return builder.build();
     }

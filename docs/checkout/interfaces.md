@@ -156,6 +156,14 @@ và extension theo code. Không bao giờ trả body thô của downstream. Quy�
 | `CHECKOUT_UNAVAILABLE` | 503 | true | `RETRY` | `Retry-After` | Dependency bắt buộc lỗi, circuit mở, bulkhead đầy hoặc hết deadline |
 | `VOUCHER_OPTIONS_UNAVAILABLE` | 503 | true | `RETRY` | `Retry-After` | Promotion không trả được voucher options |
 
+Frontend recovery: `404 SUBMISSION_NOT_FOUND` chỉ chứng minh chưa có submission,
+không chứng minh quote còn hiệu lực. Sau khi người dùng gửi lại, lỗi terminal mới
+từ POST (ví dụ `410 CHECKOUT_EXPIRED`/`CHECKOUT_SUPERSEDED`, `409 PRICE_CHANGED`)
+phải ưu tiên hơn lỗi GET đã cache; ẩn nút gửi lại và hiển thị action của POST.
+`START_NEW_PREVIEW` cần người dùng chủ động chọn; không tự submit hoặc tự preview.
+Khi đã có lỗi terminal cần action, màn recovery không tiếp tục gọi kết quả là UNKNOWN
+hoặc hiện nút kiểm tra lại do timer 90 giây; timer chỉ giới hạn thời gian chờ kết quả chưa rõ.
+
 Khi Submit phát hiện nhiều thay đổi, `changed_fields` liệt kê tất cả (`CART`,
 `AVAILABILITY`, `PRICE`, `PROMOTION`) và `code` lấy theo thứ tự ưu tiên `CART_CHANGED` >
 `SKU_UNAVAILABLE` > `PRICE_CHANGED` > `PROMOTION_CHANGED`. Cùng một code có thể trả `422`
@@ -193,6 +201,7 @@ kể cả khi `Content-Type` khác `application/json` (Checkout đọc byte rồ
 | `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | Có | Có | Có |
 | `X-Correlation-ID` (= request ID đã chuẩn hoá) | — | — | — | Có (bắt buộc) | — | — |
 | `X-Causation-ID` (= `Idempotency-Key` của Preview) | — | — | — | Có (bắt buộc) | — | — |
+| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Không dùng header: deadline gRPC bằng đúng giá trị đó | Có | Có | Có |
 | `Idempotency-Key` (= `checkout_token`) | — | — | — | — | — | Chỉ POST |
 
 Request ID đã chuẩn hoá: dùng `X-Request-Id` từ Gateway nếu khớp
@@ -201,7 +210,6 @@ thể làm Inventory hay Order trả `400` bằng header sai độ dài. Request
 log để tra chéo với provider. Không gửi `Authorization`, cookie hay header client nào khác.
 
 ### Mapping Cart + Product → báo giá
-| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Không dùng header: deadline gRPC bằng đúng giá trị đó | Có | Có | Có |
 
 1. Cart rỗng → `422 CART_EMPTY`. Lấy danh sách `sku_id` unique.
 2. `GetBatchSkus`: SKU nằm trong `not_found_sku_ids`/`unavailable_sku_ids`, `status` khác
@@ -262,7 +270,7 @@ Bỏ `user_tier`. Map response theo bảng [VoucherOptions](#voucheroptions-ngu�
 | `items[].snapshot_name` | Product `product_name` |
 | `items[].snapshot_image_url` | URL CDN như báo giá; `null` khi SKU không có ảnh (không gửi placeholder) |
 | `items[].snapshot_attributes` | Product `variant_attributes` |
-| `items[].variant_name` | Không gửi (Product chưa có nhãn biến thể) |
+| `items[].variant_name` | Dẫn xuất từ snapshot `variant_attributes`: bỏ value rỗng, sắp theo key, nối `key: value / key: value`, giới hạn 255 ký tự; null nếu không có thuộc tính dùng được |
 | `pricing` | `total_amount`, `total_discount`, `final_amount` |
 | `promotions` | `[]` hoặc `[{promotion_id, discount_amount}]` |
 | `allocation_plan` | `allocation_plan_id` + `lines[{line_reference, sku_id, warehouse_id, quantity}]` từ Inventory |

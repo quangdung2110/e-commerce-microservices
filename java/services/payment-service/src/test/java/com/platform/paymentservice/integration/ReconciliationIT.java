@@ -8,6 +8,8 @@ import com.platform.paymentservice.application.port.out.StripeWebhookEvent;
 import com.platform.paymentservice.application.service.ReconciliationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -60,6 +62,42 @@ class ReconciliationIT extends AbstractPaymentIT {
         assertThat(jdbc.queryForObject("SELECT corrected_count FROM reconciliation_runs", Integer.class)).isZero();
     }
 
+    @ParameterizedTest
+    @CsvSource({"FAILED,false", "FAILED,true", "EXPIRED,false", "CANCELED,false"})
+    void canceled_provider_matches_non_capture_terminal_without_false_review(String status, boolean frozen) {
+        jdbc.update("UPDATE payment_transactions SET status=?,terminal_at=?::timestamptz WHERE id='TXN_RECON'", status, NOW.minusSeconds(1800).toString());
+        ReconciliationService service = new ReconciliationService(reconciliation,
+                new CanceledProvider(), commits, new FixedIds(), () -> NOW,
+                JsonMapper.builder().findAndAddModules().build());
+
+        assertThat(service.runObjectState(NOW.minusSeconds(3600), NOW, frozen, 100))
+                .isEqualTo(ReconciliationService.Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id='TXN_RECON'", String.class))
+                .isEqualTo(status);
+        assertThat(jdbc.queryForObject("SELECT provider_status_snapshot FROM payment_transactions WHERE id='TXN_RECON'", String.class))
+                .isEqualTo("canceled");
+        assertThat(jdbc.queryForObject("SELECT requires_manual_review FROM payment_transactions WHERE id='TXN_RECON'", Boolean.class))
+                .isFalse();
+        for (String table : new String[]{"payment_review_cases", "payment_status_history", "outbox_events", "financial_journals"}) {
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class)).isZero();
+        }
+        assertThat(jdbc.queryForObject("SELECT corrected_count FROM reconciliation_runs", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT drift_count FROM reconciliation_runs", Integer.class)).isZero();
+    }
+
+    @Test
+    void succeeded_provider_after_failed_still_opens_review_without_capture_correction() {
+        jdbc.update("UPDATE payment_transactions SET status='FAILED',terminal_at=?::timestamptz WHERE id='TXN_RECON'", NOW.minusSeconds(1800).toString());
+        assertThat(service(false).runObjectState(NOW.minusSeconds(3600), NOW, false, 100))
+                .isEqualTo(ReconciliationService.Outcome.COMPLETED);
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id='TXN_RECON'", String.class))
+                .isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT reason_code FROM payment_review_cases", String.class))
+                .isEqualTo("RECONCILIATION_DRIFT");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM financial_journals", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
+    }
+
     @Test
     void dispute_lifecycle_drift_is_corrected_through_dispute_fsm() {
         jdbc.update("DELETE FROM payment_transactions");
@@ -107,6 +145,23 @@ class ReconciliationIT extends AbstractPaymentIT {
                     "ch_recon", null, null, source.metadataPaymentTransactionId(),
                     2500L, "VND", "succeeded", null, null, null, null,
                     null, null, "txn_recon", "{\"status\":\"succeeded\"}"));
+        }
+        @Override public LookupResult retrieveRefund(StripeWebhookEvent source, String id) {
+            throw new AssertionError("no refunds in fixture");
+        }
+        @Override public LookupResult retrieveDispute(StripeWebhookEvent source, String id) {
+            throw new AssertionError("no disputes in fixture");
+        }
+    }
+
+    private static final class CanceledProvider implements ProviderCurrentFactPort {
+        @Override
+        public LookupResult retrievePaymentIntent(StripeWebhookEvent source, String id) {
+            return new CurrentFact(new StripeWebhookEvent(source.eventId(),
+                    "payment_intent.canceled", source.eventCreatedAt(), id, id,
+                    null, null, null, source.metadataPaymentTransactionId(),
+                    2500L, "VND", "canceled", null, null, null, null,
+                    null, null, null, "{\"status\":\"canceled\"}"));
         }
         @Override public LookupResult retrieveRefund(StripeWebhookEvent source, String id) {
             throw new AssertionError("no refunds in fixture");

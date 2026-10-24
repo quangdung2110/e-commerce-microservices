@@ -207,6 +207,14 @@ final class PaymentController {
         if (result instanceof InitiatePaymentResult.ProviderRejected) {
             return problem(HttpStatus.SERVICE_UNAVAILABLE, "PROVIDER_REQUEST_REJECTED", false, correlationId);
         }
+        if (result instanceof InitiatePaymentResult.NoPaymentCreated absent) {
+            return ResponseEntity.unprocessableEntity()
+                    .header("X-Correlation-Id", correlationId).header("Cache-Control", "private, no-store")
+                    .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                    .body(new NoPaymentCreatedProblem("PROVIDER_CREATE_NOT_ACCEPTED", false, correlationId,
+                            true, absent.transactionId(), absent.providerOperationId(),
+                            Long.toString(absent.orderId()), absent.paymentAttemptNumber()));
+        }
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", true, correlationId);
     }
 
@@ -370,6 +378,14 @@ final class PaymentController {
             @JsonProperty("client_secret") char[] clientSecret,
             @JsonProperty("publishable_key") String publishableKey,
             @JsonProperty("client_expires_at") Instant clientExpiresAt) {}
+
+    record NoPaymentCreatedProblem(String code, boolean retryable,
+            @JsonProperty("correlation_id") String correlationId,
+            @JsonProperty("no_payment_created") boolean noPaymentCreated,
+            @JsonProperty("transaction_id") String transactionId,
+            @JsonProperty("provider_operation_id") String providerOperationId,
+            @JsonProperty("order_id") String orderId,
+            @JsonProperty("payment_attempt_number") int paymentAttemptNumber) {}
 
     record Problem(String code, boolean retryable,
                    @JsonProperty("correlation_id") String correlationId) {}

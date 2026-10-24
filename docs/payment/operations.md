@@ -396,6 +396,14 @@ thật để đối chiếu; (3) ghi timeline vào incident trước khi thao t�
 
 ### 9.4. Provider operation kẹt
 
+Certified first-dispatch `400 amount_too_small` mới theo [ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)
+có receipt `422 PROVIDER_CREATE_NOT_ACCEPTED`, terminal CREATE và không review case.
+Order phải chấm dứt preparation và bù holds; audit payment còn `INITIATING` không
+đồng nghĩa operation đang chờ recovery. Không retry CREATE hoặc chuyển FSM bằng SQL.
+Receipt `503` cũ (bao gồm E2E order `770072`) không tự chuyển thành proof `422`;
+review case cũ vẫn cần đối chiếu provider và maker-checker. Đóng case đơn thuần
+không tự giải phóng Order đang PREPARING; cần recovery được phê duyệt cho cả hai miền.
+
 1. `SELECT id, operation_type, status, attempt_count, last_attempted_at FROM
    provider_operations WHERE status IN ('REQUESTED','UNKNOWN') ORDER BY created_at`.
 2. Recovery worker có chạy? (`payment_scheduler_run_duration_seconds{worker="recovery"}`).
@@ -481,6 +489,18 @@ Không đóng case nếu `requires_manual_review` vẫn `TRUE` sau commit (bug �
 4. Frozen > 24h mà không có incident mở → hỏi chủ sở hữu, unfreeze.
 5. Thiết kế sửa ledger bằng reversal journal + journal mới; API/tooling này chưa triển khai. Escalate Accounting, giữ freeze; không coi SQL trực tiếp là remediation đã kiểm chứng và cấm UPDATE/DELETE line cũ.
 
+### 9.10a. Drift giả: Payment FAILED nhưng Stripe canceled
+
+Theo ADR-014, FAILED/EXPIRED/CANCELED là terminal non-capture sau proof PaymentIntent canceled. Khi provider ID, amount và currency khớp, cặp FAILED/canceled phải ghi observation, không mở RECONCILIATION_DRIFT hoặc phát financial correction mới.
+
+Điều tra F10-06 ngày 2026-10-14 xác nhận container local dùng artifact cũ thiếu FAILED trong `ReconciliationService.paymentMatches`; source đã có guard. Trước sửa logic, đối chiếu image ID, SHA-256 JAR/class thực sự chạy và bytecode với artifact build từ source. Source đúng hoặc timestamp mới không chứng minh container đã nhận bản sửa. Bằng chứng ở [báo cáo P2](../frontend/e2e-payment-p2-fix-report-2026-10-14.md).
+
+Build/test Payment theo development §6.3; trước thay bản ownership ADR-023 phải dừng worker cũ rồi mới khởi động bản mới, không chạy rolling chung với bản cũ. Giữ nguyên secret local và database/volume. Sau deploy kiểm readiness, hash class đang chạy và đối soát một attempt FAILED/Stripe canceled: trạng thái/financial version không đổi, có provider observation và không mở case mới. Regression `ReconciliationIT.canceled_provider_matches_non_capture_terminal_without_false_review` bao gồm freeze và các terminal non-capture; success mâu thuẫn sau FAILED vẫn phải mở review.
+
+Nếu readiness UP nhưng không có run mới, kiểm scheduler log. F10-07 (14/10/2026) là `JpaTransactionManager cannot be cast to DataSourceTransactionManager` tại `JdbcReconciliationAdapter.acquire`: runtime Boot/JPA khác fixture JDBC. Session ownership phải lấy connection trực tiếp từ DataSource được inject, không ép kiểu transaction manager; mutation vẫn dùng TransactionTemplate hiện hữu. Dùng `PaymentServiceContextIT.reconciliation_ownership_and_rollback_work_with_the_boot_transaction_manager` cùng `ReconciliationOwnershipIT` để kiểm cấu hình thực và fencing. Không coi healthcheck UP hoặc test chỉ dựng JDBC manager là đủ xác nhận scheduler hoạt động.
+
+Các case giả đã tạo không tự biến mất khi deploy. Finance/Payment kiểm chứng provider ID, số tiền/currency, `amount_received=0` và bằng chứng decline/cancel; sau đó claim/resolve qua API hiện có với `NO_ACTION_NEEDED`, cause_ref và maker/checker được phân quyền. Không tự gán hai danh tính approver để đóng case, không xóa case/audit hoặc sửa status/manual-review flag bằng SQL. CAPTURE_AFTER_CANCEL/DISPUTE_OPENED và các mâu thuẫn tài chính thật vẫn giữ quy trình xử lý riêng.
+
 ### 9.11. Decline rate bất thường
 
 1. Phân bố `last_error_code` trong 30 phút: một code trội (`generic_decline` hàng
@@ -532,17 +552,6 @@ cause_ref, outbox/journal trong transaction aggregate.
   movement, cursor không vượt dữ liệu đã restore và các `UNKNOWN` operation đã vào
   recovery an toàn. Ghi kết quả drill/RCA với owner và thời gian thực tế.
 
-## Request ID, trace ID và deadline của caller
-
-Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-025](./decisions/ADR-025-request-correlation-and-caller-deadline.md). Log trong
-phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.level`); log của
-tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
-trả lại trong response.
-
-Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
-(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
-Payment trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
-cảnh báo đặt theo số đo p99 từ load test, không đặt trước. `X-Correlation-Id` (Workflow ID của Order) giữ nguyên là bắt buộc và được echo; nó không phải request ID. Payment không hủy lời gọi Stripe đã bắt đầu vì header này.
 ## Allowlist caller của route Order-facing
 
 `payment.identity.allowed-callers` (env `PAYMENT_ALLOWED_CALLERS`, mặc định `order-service`) là danh sách
@@ -558,3 +567,14 @@ là `403 FORBIDDEN` ([ADR-028](./decisions/ADR-028-finance-ops-caller-allowlist.
 không thuộc nhóm nào nên luôn bị từ chối. Ở docker-compose cổng `8089` chỉ bind `127.0.0.1`; gọi tay từ máy
 dev phải gửi `X-Service-Identity: finance-ops` cùng `X-Actor`/`X-Approver`.
 
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-025](./decisions/ADR-025-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.level`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Payment trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. `X-Correlation-Id` (Workflow ID của Order) giữ nguyên là bắt buộc và được echo; nó không phải request ID. Payment không hủy lời gọi Stripe đã bắt đầu vì header này.

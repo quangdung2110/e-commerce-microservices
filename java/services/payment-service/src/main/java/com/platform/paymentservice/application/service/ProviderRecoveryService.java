@@ -138,6 +138,16 @@ public final class ProviderRecoveryService {
                     unknown.resultJson(), now.plus(backoff(operation)), now));
             return;
         }
+        if (result instanceof ProviderOperationResult.Rejected rejected && rejected.noPaymentCreated()
+                && operation.status() == com.platform.paymentservice.domain.ProviderOperationStatus.REQUESTED
+                && operation.attemptCount() == 0 && operation.firstDispatchedAt() == null
+                && operation.providerObjectId() == null) {
+            initiations.recordTerminalFailure(new InitiatePaymentPort.TerminalInitiationFailure(
+                    operation.commandIdempotencyKey(), owner, item.commandLeaseToken(),
+                    item.operationLeaseToken(), operation.paymentTransactionId(), operation.id(), ids.nextReviewCaseId(),
+                    operation.id(), rejected.providerRequestId(), rejected.resultJson(), false, true, now));
+            return;
+        }
         reviewCreate(owner, item, result.providerRequestId(), result.resultJson(),
                 result instanceof ProviderOperationResult.ReviewRequired, now);
     }
@@ -260,7 +270,7 @@ public final class ProviderRecoveryService {
                 item.operation().commandIdempotencyKey(), owner, item.commandLeaseToken(),
                 item.operationLeaseToken(), item.operation().paymentTransactionId(),
                 item.operation().id(), ids.nextReviewCaseId(), item.operation().id(), requestId,
-                result, reviewRequired, now));
+                result, reviewRequired, false, now));
     }
 
     private void reviewRefund(String owner, ProviderRecoveryPort.Refund item,

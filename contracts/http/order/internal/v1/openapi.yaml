@@ -322,9 +322,12 @@ components:
           type: [string, 'null']
           maxLength: 255
           description: >-
-            Optional display variant label from the Product snapshot. Order persists it
+            Optional display variant label from the purchase snapshot. Checkout derives
+            it from nonblank snapshot_attributes in sorted key order, joined as
+            "key: value / key: value" and capped at 255 characters. Order derives the
+            same fallback when the label is absent, null or blank. Order persists it
             immutably and uses it for ORDER_COMPLETED items[].variant_name and notification
-            items; absent or null when the SKU has no variant label (Order ADR-020).
+            items; null only when there are no nonblank variant attributes (Order ADR-020).
     PricingSnapshot:
       type: object
       additionalProperties: false
