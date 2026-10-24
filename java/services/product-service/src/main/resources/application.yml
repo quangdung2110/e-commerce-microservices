@@ -61,14 +61,7 @@ server:
       min-spare: 10
 
 grpc:
-      listener:
-      observation-enabled: true
-
-
-    template:
-      observation-enabled: true
-
-server:
+  server:
     port: ${GRPC_PORT:9091}
     # Reflection lộ toàn bộ schema cho bất kỳ ai tới được cổng gRPC; chỉ bật ở profile dev
     # hoặc bằng PRODUCT_GRPC_REFLECTION=true khi cần grpcurl (Product ADR-022).
@@ -85,6 +78,10 @@ server:
 # Cấu hình riêng của service. Không có mục cache/inventory/scheduler:
 # thiết kế hiện hành không có các workload đó.
 product:
+  # One-time read-only transport/ORM warm-up, completed before accepting traffic.
+  warmup:
+    timeout: 30s
+    rounds: 3
   admin:
     required-role: ADMIN
     user-id-header: X-User-Id
@@ -103,14 +100,16 @@ product:
       - promotion-service
     buyer-read-clients:
       - product-detail-bff
-  export:
-    cursor-secret: ${EXPORT_CURSOR_SECRET:dev-export-cursor-secret-change-in-prod}
-    cursor-ttl: 30m
-    default-limit: 200
     # gRPC ProductService: x-service-identity phải nằm trong danh sách này (contracts ADR-004).
     grpc-clients:
       - cart-service
       - checkout-service
+  export:
+    # Không có fallback (security review 2026-10-22, H1): profile dev và docker-compose tự đặt giá trị
+    # dev; mọi môi trường khác lấy từ secret manager, thiếu thì StartupSecretGuard dừng service.
+    cursor-secret: ${EXPORT_CURSOR_SECRET:}
+    cursor-ttl: 30m
+    default-limit: 200
     max-limit: 500
     # Topic Debezium route outbox tới; export chụp offset của chúng làm replay
     # boundary cho Search (ADR-014).
@@ -143,6 +142,9 @@ management:
   endpoint:
     health:
       show-details: when_authorized
+      group:
+        readiness:
+          include: readinessState,db,catalogWarmup
       probes:
         enabled: true
   health:

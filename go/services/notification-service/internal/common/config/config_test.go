@@ -87,11 +87,32 @@ func TestValidateOrderingAndPrivacy(t *testing.T) {
 		{"short key outside development", func(c *Config) { c.App.Env = "staging"; c.Privacy.HMACKey = "short" }, "at least 32 bytes"},
 		{"bad previous keys", func(c *Config) { c.Privacy.PreviousHMACKeys = "nope" }, "previous_hmac_keys"},
 		{"previous redefines active", func(c *Config) { c.Privacy.PreviousHMACKeys = "1:abc" }, "redefines active"},
+		{"staging with the committed development key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = devHMACKey
+			c.Auth.SigningKey = strings.Repeat("a", 40)
+		}, "development value committed"},
+		{"staging without an auth signing key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+		}, "NOTIFICATION_AUTH_SIGNING_KEY) is required outside development"},
+		{"production with a placeholder auth signing key", func(c *Config) {
+			c.App.Env = "production"
+			c.Email.Provider = "ses"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+			c.Auth.SigningKey = "local-dev-auth-internal-signing-key-not-a-secret"
+		}, "development value committed"},
+		{"staging with a short auth signing key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+			c.Auth.SigningKey = "too-short"
+		}, "auth.signing_key (NOTIFICATION_AUTH_SIGNING_KEY) must be at least 32 bytes"},
 		{"staging with a real key", func(c *Config) {
 			c.App.Env = "staging"
 			c.Privacy.HMACKey = strings.Repeat("k", 32)
 			c.Privacy.HMACKeyVersion = 2
 			c.Privacy.PreviousHMACKeys = "1:" + strings.Repeat("o", 32)
+			c.Auth.SigningKey = strings.Repeat("a", 40)
 		}, ""},
 	}
 	for _, tc := range cases {
@@ -116,6 +137,7 @@ func TestPrivacyKeyFromEnvironment(t *testing.T) {
 	t.Setenv("NOTIFICATION_APP_ENV", "staging")
 	t.Setenv("NOTIFICATION_PRIVACY_HMAC_KEY", strings.Repeat("s", 40))
 	t.Setenv("NOTIFICATION_PRIVACY_HMAC_KEY_VERSION", "3")
+	t.Setenv("NOTIFICATION_AUTH_SIGNING_KEY", strings.Repeat("a", 40))
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -147,6 +169,7 @@ func TestInternalIdentityConfiguration(t *testing.T) {
 	prod.App.Env = "production"
 	prod.Email.Provider = "ses"
 	prod.Privacy.HMACKey = strings.Repeat("p", 32)
+	prod.Auth.SigningKey = strings.Repeat("s", 40)
 	if err := prod.Validate(); err != nil {
 		t.Fatalf("production must not require application-level mTLS: %v", err)
 	}

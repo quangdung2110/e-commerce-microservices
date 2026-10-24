@@ -112,8 +112,11 @@ review:
     public-endpoint: ${REVIEW_S3_PUBLIC_ENDPOINT:}
     region: ${REVIEW_S3_REGION:us-east-1}
     bucket: ${REVIEW_S3_BUCKET:review-media}
-    access-key: ${REVIEW_S3_ACCESS_KEY:minioadmin}
-    secret-key: ${REVIEW_S3_SECRET_KEY:minioadmin}
+    # No fallback (security review 2026-10-22, H1): Review's own object-store user, never the MinIO
+    # root. The dev profile and docker-compose set the local values; StartupSecretGuard stops any
+    # other environment that lacks them.
+    access-key: ${REVIEW_S3_ACCESS_KEY:}
+    secret-key: ${REVIEW_S3_SECRET_KEY:}
     # MinIO and most S3-compatible servers need path-style addressing.
     path-style-access: ${REVIEW_S3_PATH_STYLE:true}
 

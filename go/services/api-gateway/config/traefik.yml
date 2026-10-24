@@ -19,6 +19,14 @@ api:
 entryPoints:
   web:
     address: ":80"
+    # Client IP chain (security review 2026-10-22, H2; mesh ADR-004). Only the frontend container
+    # (fixed address on the ecommerce-edge network, docker-compose.yml) may name the browser in
+    # X-Forwarded-For / X-Real-Ip; it overwrites both with its TCP peer (frontend/client-ip-server.cjs).
+    # From any other peer, including a client calling :8088 directly, Traefik drops those headers
+    # and sets X-Real-Ip to the peer address. Rate limits key on X-Real-Ip (dynamic.yml).
+    forwardedHeaders:
+      trustedIPs:
+        - "10.89.8.10/32"
 
   metrics:
     address: ":8090"

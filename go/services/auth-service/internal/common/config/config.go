@@ -42,6 +42,10 @@ type AppConfig struct {
 
 func (a AppConfig) IsProduction() bool { return a.Env == "production" }
 
+// IsDevelopment is true only for a local run. Every other environment, staging
+// included, must carry real secrets (see validateSecrets).
+func (a AppConfig) IsDevelopment() bool { return a.Env == "development" || a.Env == "dev" }
+
 type ServerConfig struct {
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
@@ -62,6 +66,14 @@ type InternalConfig struct {
 	// AllowedCallers lists the service identities that may resolve a delivery or
 	// a contact.
 	AllowedCallers []string `mapstructure:"allowed_callers"`
+	// SigningKey authenticates the caller without a mesh: every request carries
+	// X-Service-Signature, an HMAC-SHA256 under this key shared with
+	// Notification (mesh ADR-004). Empty disables the check, which only
+	// development accepts.
+	SigningKey string `mapstructure:"signing_key"`
+	// SignatureTolerance bounds the clock difference and the replay window of
+	// a signed request.
+	SignatureTolerance time.Duration `mapstructure:"signature_tolerance"`
 }
 
 type DatabaseConfig struct {
@@ -189,8 +201,14 @@ type SecurityConfig struct {
 	Lockout        LockoutConfig        `mapstructure:"lockout"`
 	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
 	PasswordPolicy PasswordPolicyConfig `mapstructure:"password_policy"`
-	// TrustedProxies tells gin which hops may set X-Forwarded-For.
+	// TrustedProxies tells gin which hops may set the client IP headers: the
+	// gateway address only.
 	TrustedProxies []string `mapstructure:"trusted_proxies"`
+	// ClientIPHeaders are read, in order, when the request comes from a trusted
+	// proxy. Traefik sets X-Real-Ip to the client it saw (or keeps the one the
+	// frontend, its only trusted hop, forwarded), so X-Real-Ip names the browser
+	// whether or not the request went through Next (mesh ADR-004).
+	ClientIPHeaders []string `mapstructure:"client_ip_headers"`
 }
 
 type OTPConfig struct {
@@ -395,10 +413,39 @@ func (c *Config) Validate() error {
 	if c.Internal.Enabled && c.Internal.Port == c.App.Port {
 		problems = append(problems, "internal.port must differ from app.port")
 	}
+	if c.Internal.SignatureTolerance <= 0 {
+		problems = append(problems, "internal.signature_tolerance must be positive")
+	}
+	if !c.App.IsDevelopment() {
+		problems = append(problems, c.secretProblems()...)
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// secretProblems rejects, outside development, a secret that is missing, short,
+// a committed development value or a placeholder (security review 2026-10-22,
+// H1): the master key decrypts every private JWT key in auth.jwt_keys, and the
+// signing key is the only proof of the caller of the internal API without a
+// mesh.
+func (c *Config) secretProblems() []string {
+	var problems []string
+	if p := secretProblem("keys.master_key (AUTH_KEYS_MASTER_KEY)", c.Keys.MasterKeyBase64, 32); p != "" {
+		problems = append(problems, p)
+	}
+	for version, key := range c.Keys.PreviousMasterKeysBase64 {
+		if p := secretProblem("keys.previous_master_keys["+version+"]", key, 32); p != "" {
+			problems = append(problems, p)
+		}
+	}
+	if c.Internal.Enabled {
+		if p := secretProblem("internal.signing_key (AUTH_INTERNAL_SIGNING_KEY)", c.Internal.SigningKey, 32); p != "" {
+			problems = append(problems, p)
+		}
+	}
+	return problems
 }
 
 func setDefaults(v *viper.Viper) {
@@ -416,6 +463,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("internal.host", "0.0.0.0")
 	v.SetDefault("internal.port", 8081)
 	v.SetDefault("internal.allowed_callers", []string{"notification-service"})
+	v.SetDefault("internal.signing_key", "")
+	v.SetDefault("internal.signature_tolerance", "60s")
 
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
@@ -471,6 +520,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.lockout.max_failed_attempts", 5)
 	v.SetDefault("security.lockout.lock_duration", "15m")
 	v.SetDefault("security.lockout.counter_reset_after", "1h")
+	v.SetDefault("security.trusted_proxies", []string{})
+	v.SetDefault("security.client_ip_headers", []string{"X-Real-IP"})
 	v.SetDefault("security.password_policy.min_length", 12)
 	v.SetDefault("security.password_policy.max_length", 128)
 	v.SetDefault("security.rate_limit.login_per_ip.limit", 20)

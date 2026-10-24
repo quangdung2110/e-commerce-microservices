@@ -206,6 +206,13 @@ Không route authentication nào được fail open, kể cả read-only route.
 | `stripe-webhook` | Stripe allow-list + endpoint quota | 50 req/s, burst 100 | Bảo vệ delivery burst |
 | `websocket-handshake` | User ID và trusted IP | 5/phút | Hạn chế connection churn |
 
+**Trusted client IP** ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)): entrypoint
+`web` chỉ nhận `X-Forwarded-For`/`X-Real-Ip` từ frontend (`forwardedHeaders.trustedIPs`: địa chỉ cố định `10.89.8.10` ở compose, pod CIDR
+ở `deploy/k8s`); frontend ghi đè hai header đó bằng địa chỉ TCP của trình duyệt. Từ mọi nguồn khác Traefik bỏ chúng và đặt `X-Real-Ip` =
+địa chỉ peer. Các profile theo IP dùng `sourceCriterion.requestHeaderName: X-Real-Ip`, không dùng `ipStrategy.depth` (độ sâu khác nhau
+giữa request qua Next và request gọi thẳng gateway). Service phía sau (Auth) chỉ tin `X-Real-Ip` khi peer là gateway. Router công khai
+`/api/v1/auth/**` mang profile `auth-public` (`rate-limit-auth`).
+
 Các giá trị là chính sách khởi điểm và phải được load test xác nhận. Khi có trên một gateway replica, shared state là bắt buộc. Traffic protected fail closed khi distributed rate-limit state không sẵn sàng; public fallback cần approval tường minh và monitoring. Khi bị limit trả `429` cùng retry guidance nếu hỗ trợ.
 
 ## 8. Quy ước khả năng quan sát

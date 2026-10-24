@@ -23,6 +23,14 @@ public class ProductProperties {
     private Internal internal = new Internal();
     private Export export = new Export();
     private Markdown markdown = new Markdown();
+    private Warmup warmup = new Warmup();
+
+    @Getter
+    @Setter
+    public static class Warmup {
+        private Duration timeout = Duration.ofSeconds(30);
+        private int rounds = 3;
+    }
 
     @Getter
     @Setter
@@ -65,28 +73,31 @@ public class ProductProperties {
                 new ArrayList<>(List.of("search-service", "promotion-service"));
 
         /**
-         * Caller của gRPC {@code ProductService} (identity trong metadata
-         * {@code x-service-identity}), khớp interaction
-         * {@code cart-and-checkout-query-product-skus}. Mesh là nơi thực thi chính;
-         * danh sách này là lớp phòng thủ thứ hai (contracts ADR-004).
-         */
-        private List<String> grpcClients = new ArrayList<>(List.of("cart-service", "checkout-service"));
-
-        /**
          * Caller của nhóm route buyer-read ({@code /internal/v1/product-details/}),
          * khớp security scheme {@code productDetailBffMtls} (ADR-015). Tách khỏi
          * nhóm reindex để BFF storefront không đọc được export toàn catalog và
          * Search không đi qua đường buyer-read.
          */
         private List<String> buyerReadClients = new ArrayList<>(List.of("product-detail-bff"));
+
+        /**
+         * Caller của gRPC {@code ProductService} (identity trong metadata
+         * {@code x-service-identity}), khớp interaction
+         * {@code cart-and-checkout-query-product-skus}. Mesh là nơi thực thi chính;
+         * danh sách này là lớp phòng thủ thứ hai (contracts ADR-004).
+         */
+        private List<String> grpcClients = new ArrayList<>(List.of("cart-service", "checkout-service"));
     }
 
     @Getter
     @Setter
     public static class Export {
 
-        /** Khóa ký cursor export; lấy từ secret manager ở môi trường thật. */
-        private String cursorSecret = "change-me-export-cursor-secret";
+        /**
+         * Khóa ký cursor export (EXPORT_CURSOR_SECRET); lấy từ secret manager ở môi trường thật. Không có
+         * giá trị mặc định: ngoài profile dev/local/test, StartupSecretGuard dừng service nếu thiếu.
+         */
+        private String cursorSecret;
 
         private Duration cursorTtl = Duration.ofMinutes(30);
 

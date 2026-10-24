@@ -10,11 +10,11 @@
 package auth
 
 import (
-	obs "github.com/ecommerce/observability"
 	"context"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"io"
 	"net"
 	"net/http"
@@ -258,6 +258,10 @@ func (c *Client) call(ctx context.Context, lane entity.Lane, dependency string, 
 	req.Header.Set(constants.HeaderCacheControl, constants.NoStore)
 	if c.cfg.ServiceIdentity != "" {
 		req.Header.Set(constants.HeaderServiceIdentity, c.cfg.ServiceIdentity)
+	}
+	if c.cfg.SigningKey != "" {
+		req.Header.Set(constants.HeaderServiceSignature,
+			signatureHeader([]byte(c.cfg.SigningKey), c.clk.Now(), method, req.URL.EscapedPath(), c.cfg.ServiceIdentity))
 	}
 	rid := reqctx.RequestID(ctx)
 	if rid == "" {

@@ -62,13 +62,8 @@ http:
         burst: 200
         period: 1s
         sourceCriterion:
-          ipStrategy:
-            depth: 2
-            excludedIPs:
-              - "127.0.0.1/32"
-              - "10.0.0.0/8"
-              - "172.16.0.0/12"
-              - "192.168.0.0/16"
+          # X-Real-Ip: the client the entrypoint saw or the frontend named (traefik.yml, mesh ADR-004).
+          requestHeaderName: X-Real-Ip
 
     # API rate limit (stricter): 50 req/s, burst 100
     rate-limit-api:
@@ -77,8 +72,8 @@ http:
         burst: 100
         period: 1s
         sourceCriterion:
-          ipStrategy:
-            depth: 2
+          # X-Real-Ip: the client the entrypoint saw or the frontend named (traefik.yml, mesh ADR-004).
+          requestHeaderName: X-Real-Ip
 
     # Payment rate limit (strictest): 20 req/s, burst 40
     rate-limit-payment:
@@ -87,8 +82,8 @@ http:
         burst: 40
         period: 1s
         sourceCriterion:
-          ipStrategy:
-            depth: 2
+          # X-Real-Ip: the client the entrypoint saw or the frontend named (traefik.yml, mesh ADR-004).
+          requestHeaderName: X-Real-Ip
 
     # Auth rate limit: 10 req/s, burst 20 (brute-force protection)
     rate-limit-auth:
@@ -97,8 +92,8 @@ http:
         burst: 20
         period: 1s
         sourceCriterion:
-          ipStrategy:
-            depth: 2
+          # X-Real-Ip: the client the entrypoint saw or the frontend named (traefik.yml, mesh ADR-004).
+          requestHeaderName: X-Real-Ip
 
     # Promotion discovery profile: 20 request/phut/authenticated user cho
     # POST /api/v1/promotion-discovery (docs/promotion ADR-015, runtime-contract.md).

@@ -280,6 +280,10 @@ type AuthConfig struct {
 	BaseURL         string        `mapstructure:"base_url"`
 	Timeout         time.Duration `mapstructure:"timeout"`
 	ServiceIdentity string        `mapstructure:"service_identity"`
+	// SigningKey is shared with Auth (AUTH_INTERNAL_SIGNING_KEY): every call
+	// carries X-Service-Signature, the proof of caller Auth checks while there
+	// is no mesh (mesh ADR-004). Required outside development.
+	SigningKey string `mapstructure:"signing_key"`
 	// Client-side limits per lane so a bulk drain never floods Auth
 	// (06-backpressure.md §3). 0 = unlimited.
 	RatePerSecond LaneValues[float64] `mapstructure:"rate_per_second"`
@@ -584,6 +588,16 @@ func (c *Config) Validate() error {
 	if !c.App.IsDevelopment() && len(c.Privacy.HMACKey) < pii.MinHMACKeyBytes {
 		return fmt.Errorf("config: privacy.hmac_key (NOTIFICATION_PRIVACY_HMAC_KEY) must be at least %d bytes outside development", pii.MinHMACKeyBytes)
 	}
+	// Security review 2026-10-22, H1: outside development a committed or
+	// placeholder secret stops the service like a missing one does.
+	if !c.App.IsDevelopment() {
+		if p := secretProblem("privacy.hmac_key (NOTIFICATION_PRIVACY_HMAC_KEY)", c.Privacy.HMACKey, pii.MinHMACKeyBytes); p != "" {
+			return fmt.Errorf("config: %s", p)
+		}
+		if p := secretProblem("auth.signing_key (NOTIFICATION_AUTH_SIGNING_KEY)", c.Auth.SigningKey, 32); p != "" {
+			return fmt.Errorf("config: %s", p)
+		}
+	}
 	if _, err := c.Keyring(); err != nil {
 		return err
 	}
@@ -702,6 +716,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.base_url", "http://localhost:8081")
 	v.SetDefault("auth.timeout", "2s")
 	v.SetDefault("auth.service_identity", "notification-service")
+	v.SetDefault("auth.signing_key", "")
 	v.SetDefault("auth.rate_per_second.critical", 0)
 	v.SetDefault("auth.rate_per_second.transactional", 30)
 	v.SetDefault("auth.rate_per_second.bulk", 20)

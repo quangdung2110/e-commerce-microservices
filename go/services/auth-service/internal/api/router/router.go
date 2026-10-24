@@ -109,9 +109,7 @@ func newEngine(cfg *config.Config, logger *zap.Logger) *gin.Engine {
 
 	engine := gin.New()
 	engine.RedirectTrailingSlash = false
-	// gin trusts every proxy by default, which would let a client forge its own
-	// X-Forwarded-For and defeat per-IP rate limiting.
-	if err := engine.SetTrustedProxies(cfg.Security.TrustedProxies); err != nil {
+	if err := configureClientIP(engine, cfg.Security); err != nil {
 		logger.Warn("could not apply the trusted proxy list", zap.Error(err))
 	}
 
@@ -127,6 +125,17 @@ func newEngine(cfg *config.Config, logger *zap.Logger) *gin.Engine {
 	})
 
 	return engine
+}
+
+// configureClientIP decides what c.ClientIP() returns, the key of every per-IP
+// budget. gin trusts every proxy by default, which would let a client forge its
+// own X-Forwarded-For and defeat per-IP rate limiting. Only the gateway may name
+// the client, and only in the header it controls (mesh ADR-004).
+func configureClientIP(engine *gin.Engine, security config.SecurityConfig) error {
+	if len(security.ClientIPHeaders) > 0 {
+		engine.RemoteIPHeaders = security.ClientIPHeaders
+	}
+	return engine.SetTrustedProxies(security.TrustedProxies)
 }
 
 // rule converts a configured limit into the domain type.

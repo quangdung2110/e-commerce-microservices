@@ -16,6 +16,9 @@ const (
 	// the internal listener, equal to the caller's ServiceAccount name
 	// (docs/mesh/runtime-contract.md section 6).
 	HeaderServiceIdentity = "X-Service-Identity"
+	// HeaderServiceSignature proves the caller of the internal listener holds the
+	// shared signing key: "t=<unix seconds>,v1=<hex HMAC-SHA256>" (mesh ADR-004).
+	HeaderServiceSignature = "X-Service-Signature"
 )
 
 // RefreshCookieName is the only transport for the opaque refresh token.

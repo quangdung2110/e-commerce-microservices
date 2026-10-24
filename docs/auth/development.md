@@ -60,8 +60,15 @@ schema Auth** (khác `user-migrate`). Trên volume mới phải nạp tay trư�
 
 ```bash
 docker exec -i postgres psql -U postgres -d auth_db -v ON_ERROR_STOP=1 < docs/auth/schema/0001_initial_auth_schema.sql
+docker compose up postgres-init      # chuyển chủ sở hữu object vừa nạp sang role auth_service
 docker compose up -d --build auth-service gateway-auth
 ```
+
+Root Compose cho Auth đăng nhập bằng role `auth_service` (chủ `auth_db`), không bằng superuser
+([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)); `postgres-init` chạy mỗi lần
+`docker compose up` nên bước thứ hai chỉ cần khi stack đã chạy sẵn. Compose cũng đặt `AUTH_INTERNAL_SIGNING_KEY` (dev, chung với
+Notification) và `AUTH_SECURITY_TRUSTED_PROXIES`; `app.env: development` trong yaml cho phép master key và signing key dev, môi
+trường khác thì không.
 
 Dữ liệu test local: `bash frontend/scripts/create-dev-account.sh` (buyer; `DEV_ADMIN=1` cấp thêm role `ADMIN` bằng
 cách ghi vào `auth.account_roles`, theo [seed-admin.sql.example](./schema/seed-admin.sql.example)). Script đọc OTP từ

@@ -130,8 +130,9 @@ thoại. Rate limit theo (service gọi, `user_id`); khi Notification xả backl
 ### Listener internal
 
 Cả hai internal endpoint được phục vụ trên **listener nội bộ riêng (cổng 8081)**, không
-bao giờ qua Gateway, sau cùng một chuỗi middleware: allowlist `X-Service-Identity` rồi rate
-limit theo (service gọi, `delivery_id` hoặc `user_id`) `security.rate_limit.internal_per_resource`.
+bao giờ qua Gateway, sau cùng một chuỗi middleware: allowlist `X-Service-Identity`, chữ ký
+`X-Service-Signature`, rồi rate limit theo (service gọi, `delivery_id` hoặc `user_id`)
+`security.rate_limit.internal_per_resource`.
 
 Ai được chạm listener do **mesh** quyết định: Istio ambient kết thúc mTLS và thực thi
 `AuthorizationPolicy` theo principal + path (`notification-service` cho đúng hai path này,
@@ -140,6 +141,14 @@ caller và không tự kết thúc TLS ([ADR-007](./decisions/ADR-007-internal-c
 Ứng dụng chỉ thêm defense-in-depth: thiếu `X-Service-Identity` là `401 UNAUTHORIZED`, giá trị ngoài
 `internal.allowed_callers` (mặc định `notification-service`) là `403 FORBIDDEN`. Header này không phải
 bằng chứng authorization duy nhất, và ở Docker Compose (không có mesh) nó không được xác thực.
+
+Vì vậy, khi chưa có mesh, caller còn phải ký request ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)):
+`X-Service-Signature: t=<unix giây>,v1=<hex>` với `v1` = HMAC-SHA256 dưới `internal.signing_key`
+(`AUTH_INTERNAL_SIGNING_KEY`, chung với `NOTIFICATION_AUTH_SIGNING_KEY`) của chuỗi
+`t + "\n" + METHOD + "\n" + path (escaped) + "\n" + X-Service-Identity`. Thiếu, sai, lệch quá
+`internal.signature_tolerance` (60 s) hoặc ký cho method/path/caller khác là `401 UNAUTHORIZED`, trước rate limit.
+Khoá trống chỉ được phép khi `app.env` là development (bỏ kiểm); ngoài development khoá trống, ngắn hơn 32 byte, là
+giá trị dev của compose hoặc placeholder làm Auth không khởi động. Test vector chung: `test/unit/api/internal_signature_test.go`.
 
 Ánh xạ trạng thái account sang response của `notification-contact`:
 

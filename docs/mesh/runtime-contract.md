@@ -272,7 +272,11 @@ máy dev và mạng compose: chỉ gateway và frontend nghe trên mọi interfa
 chỉ có LoadBalancer cho Traefik và frontend, kèm NetworkPolicy L4 dẫn xuất từ mục 5.2 (chỉ có tác dụng với CNI thực thi
 NetworkPolicy). Từ [mesh ADR-003](decisions/ADR-003-kafka-sasl-scram-and-acls.md), Kafka xác thực SASL/SCRAM theo principal của
 từng client và chỉ chủ sở hữu topic được ghi (ACL), nên một container trong mạng compose không còn giả được event của service khác;
-REST của Kafka Connect vẫn không xác thực. Gateway route matrix vẫn còn prefix legacy
+REST của Kafka Connect vẫn không xác thực. Từ [mesh ADR-004](decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md),
+compose tách network: frontend chỉ thấy gateway (`ecommerce-edge`), Mailpit/LocalStack chỉ thấy Notification, Temporal UI và Grafana
+có network riêng; NetworkPolicy của `deploy/k8s` chỉ mở cổng nội bộ của Auth (8081) cho Notification và của User (8083) cho Checkout;
+API nội bộ của Auth đòi `X-Service-Signature` (HMAC khoá chung với Notification) như lớp thứ hai khi chưa có mesh. Trong
+`ecommerce-network`, header `X-Service-Identity` của các route nội bộ khác vẫn giả được. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
 và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service

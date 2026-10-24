@@ -1,6 +1,7 @@
 # ADR-002: Runtime ngoài mesh — chỉ gateway ra ngoài, Redis bắt buộc mật khẩu, Kafka không tự tạo topic
 
-- Status: Accepted (mục 6 thay bởi [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md))
+- Status: Accepted (mục 6 thay bởi [ADR-003](ADR-003-kafka-sasl-scram-and-acls.md); Việc còn mở 4 tiếp tục ở
+  [ADR-004](ADR-004-secrets-client-ip-network-split-and-internal-signing.md))
 - Date: 2026-10-22
 
 ## Context
@@ -85,7 +86,10 @@ thứ bảo đảm header đó là mesh (Istio ambient + `AuthorizationPolicy`),
 3. **Route Finance Ops của Payment chưa có dòng trong runtime contract §5.2**, nên dưới mesh không ai gọi được; thêm khi `finance-ops`
    có runtime.
 4. `checkout-redis` chưa có mật khẩu (không publish, chỉ Checkout dùng); credential dev mặc định của Postgres/MinIO/Elasticsearch;
-   không có TLS. Thuộc các finding High/Medium của cùng review, ngoài phạm vi ADR này.
+   không có TLS. Thuộc các finding High/Medium của cùng review, ngoài phạm vi ADR này. **Một phần đã xử lý ở
+   [ADR-004](ADR-004-secrets-client-ip-network-split-and-internal-signing.md)** (2026-10-22): role Postgres riêng mỗi service, user
+   MinIO riêng cho Review, tách network compose, chữ ký cho API nội bộ của Auth (một phần của mục 2); Elasticsearch, REST Connect,
+   Temporal, `checkout-redis` và TLS còn mở ở đó.
 
 ## Verification
 

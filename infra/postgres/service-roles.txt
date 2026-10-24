@@ -1,0 +1,14 @@
+# Login role of each service on the shared PostgreSQL (security review 2026-10-22, H3; mesh ADR-004).
+# One line per database: <database> <role> <environment variable holding the password>.
+# service-roles.sh makes the role the owner of the database and of every object in it, revokes
+# CONNECT from PUBLIC, and leaves the superuser `postgres` to infrastructure only (Debezium,
+# Temporal, postgres-exporter, migrations run by hand, local tools on :15432).
+auth_db             auth_service          PG_PASSWORD_AUTH_SERVICE
+user_service        user_service          PG_PASSWORD_USER_SERVICE
+notification_db     notification_service  PG_PASSWORD_NOTIFICATION_SERVICE
+product_service     product_service       PG_PASSWORD_PRODUCT_SERVICE
+review_service      review_service        PG_PASSWORD_REVIEW_SERVICE
+promotion_service   promotion_service     PG_PASSWORD_PROMOTION_SERVICE
+inventory_service   inventory_service     PG_PASSWORD_INVENTORY_SERVICE
+order_service       order_service         PG_PASSWORD_ORDER_SERVICE
+payment_service     payment_service       PG_PASSWORD_PAYMENT_SERVICE

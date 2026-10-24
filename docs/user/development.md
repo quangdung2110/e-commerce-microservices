@@ -63,7 +63,9 @@ DB trước khi migrate. Khi thêm migration hoặc triển khai lại, chạy t
 docker compose run --rm user-migrate
 ```
 
-Root DB: host `localhost:15432`, container `postgres:5432`, database `user_service`.
+Root DB: host `localhost:15432`, container `postgres:5432`, database `user_service`. User và
+`user-migrate` đăng nhập bằng role `user_service` (chủ database, `postgres-init` tạo trước, mật khẩu dev
+`PG_PASSWORD_USER_SERVICE`), không bằng superuser ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)).
 User không publish host port. Public API 8082 đi qua Gateway
 `localhost:8088/api/v1/users/me/*`; internal snapshot 8083 chỉ trong mạng backend.
 
