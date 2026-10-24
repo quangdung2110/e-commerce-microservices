@@ -47,9 +47,11 @@ interactions:
     contract: http/search/v2/openapi.yaml
     status: implemented
     notes: >-
-      Bốn API storefront anonymous cộng hai operation admin reindex. Một hit là một SKU;
-      facet và category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên
-      route /api/v1/search/** không còn backend và đã bỏ khỏi gateway local ở bước 4 frontend.
+      Bốn API storefront anonymous cộng năm operation admin reindex (tạo, liệt kê, đọc, hủy,
+      rollback). Một hit là một Product đại diện bởi SKU giá bán thấp nhất thỏa bộ lọc; facet và
+      category count đếm DISTINCT product_id. V1 legacy đã bị gỡ khỏi Search nên route
+      /api/v1/search/** không còn backend và đã bỏ khỏi gateway local ở bước 4 frontend.
+      Mọi lỗi là application/problem+json, không bao giờ 500 do request.
 
   - id: search-reindexes-product-catalog
     protocol: http
@@ -200,7 +202,8 @@ interactions:
     status: implemented
     notes: >-
       Internal API để resolve PII/secret theo delivery_id, không qua public Gateway. Mesh thực thi mTLS và principal
-      notification-service; Auth chỉ kiểm allowlist X-Service-Identity và rate limit theo (caller, delivery_id) (Auth ADR-007).
+      notification-service; Auth kiểm allowlist X-Service-Identity, chữ ký X-Service-Signature (khoá chung, mesh ADR-004)
+      và rate limit theo (caller, delivery_id) (Auth ADR-007).
 
   - id: gateway-verifies-auth-tokens
     protocol: http
@@ -269,7 +272,7 @@ interactions:
     consumers: [order-service]
     contract: http/payment/v1/openapi.yaml
     status: implemented
-    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction. EXPIRED/CANCELED attempts are not retryable; success after terminal non-capture is an Order reconciliation obligation, not a revived order.
+    notes: HTTP v1 only; Order persists a numbered payment attempt, reads Stripe client data from Payment on every use (client-data) instead of storing it, and refunds only its immutable captured transaction. EXPIRED/CANCELED attempts are not retryable; success after terminal non-capture is an Order reconciliation obligation, not a revived order. Initiate 422 PROVIDER_CREATE_NOT_ACCEPTED requires a complete matching no_payment_created proof before compensating holds (Payment ADR-024); generic 503 remains UNKNOWN.
 
   - id: stripe-delivers-payment-webhook
     protocol: http
@@ -354,7 +357,7 @@ interactions:
     consumers: [api-gateway]
     contract: http/promotion/v1/openapi.yaml
     status: implemented
-    notes: Authenticated suggestion/discovery/save/claim surface; discovery is rate-limited at the Gateway.
+    notes: Authenticated independent wallet GET plus suggestion/discovery/save/claim surface; wallet history is owner-scoped and does not need checkout context (Promotion ADR-023). Discovery is rate-limited at the Gateway.
 
   - id: gateway-administers-promotions
     protocol: http

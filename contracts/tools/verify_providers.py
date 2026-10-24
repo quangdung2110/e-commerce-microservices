@@ -211,7 +211,8 @@ def _send(method: str, url: str, headers: dict[str, str], body: Any, timeout: fl
         return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
 
 
-def run(probes_path: Path, only: set[str], format_check: bool, timeout: float) -> int:
+def run(probes_path: Path, only: set[str], format_check: bool, timeout: float,
+        strict: bool = False, redact_bodies: bool = False) -> int:
     config = yaml.safe_load(probes_path.read_text(encoding="utf-8"))
     interactions = {i["id"]: i for i in yaml.safe_load((CONTRACTS / "catalog" / "interactions.yaml").read_text(encoding="utf-8"))["interactions"]}
     targets: dict[str, str] = config["targets"]
@@ -267,7 +268,9 @@ def run(probes_path: Path, only: set[str], format_check: bool, timeout: float) -
             verdict.problems.append(f"status {status} is not one of the expected {expected}")
 
         if quiet:
-            pass
+            if strict and not verdict.ok:
+                failed += 1
+                print(f"FAIL prerequisite {probe['id']}: response did not satisfy its contract")
         elif verdict.ok:
             passed += 1
             print(f"ok   {probe['id']}  {method} {path.split('?')[0]} -> {status}")
@@ -275,19 +278,22 @@ def run(probes_path: Path, only: set[str], format_check: bool, timeout: float) -
             failed += 1
             print(f"FAIL {probe['id']}  {method} {path.split('?')[0]} -> {status}")
             for problem in verdict.problems:
-                print(f"       - {problem}")
-            snippet = body[:700].decode("utf-8", "replace").replace("\n", " ")
-            print(f"       body: {snippet}")
+                print("       - response violates its contract (details redacted)" if redact_bodies else f"       - {problem}")
+            if not redact_bodies:
+                snippet = body[:700].decode("utf-8", "replace").replace("\n", " ")
+                print(f"       body: {snippet}")
         if status < 300 and probe.get("capture"):
             try:
                 payload = json.loads(body.decode("utf-8"))
                 for name, expression in probe["capture"].items():
                     variables[name] = str(_dig(payload, expression))
             except Exception as error:  # noqa: BLE001
-                print(f"       (capture failed: {error})")
+                if strict:
+                    failed += 1
+                print("       capture failed" if redact_bodies else f"       (capture failed: {error})")
 
     print(f"\n{passed} passed, {failed} failed, {skipped} skipped")
-    return 1 if failed else 0
+    return 1 if failed or (strict and (skipped or not passed)) else 0
 
 
 def main(argv: list[str]) -> int:
@@ -296,8 +302,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--only", nargs="*", default=[], help="run only these probe ids")
     parser.add_argument("--format-check", action="store_true", help="also enforce JSON Schema 'format' (uuid, date-time...)")
     parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument("--strict", action="store_true", help="fail on skipped probes, failed prerequisites or captures")
+    parser.add_argument("--redact-bodies", action="store_true", help="do not print response bodies")
     args = parser.parse_args(argv)
-    return run(Path(args.probes), set(args.only), args.format_check, args.timeout)
+    return run(Path(args.probes), set(args.only), args.format_check, args.timeout, args.strict, args.redact_bodies)
 
 
 if __name__ == "__main__":

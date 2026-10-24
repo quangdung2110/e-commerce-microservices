@@ -3,12 +3,29 @@
 Chỉ ghi thay đổi có thể được provider hoặc consumer quan sát. Refactor nội bộ
 không cần xuất hiện ở đây.
 
+## 2026-10-22 (Auth internal request signature)
+
+- Auth internal HTTP v1.1.0: hai operation `/internal/v1/auth/**` bắt buộc thêm header `X-Service-Signature`
+  (`t=<unix giây>,v1=<hex HMAC-SHA256>` dưới khoá chung `AUTH_INTERNAL_SIGNING_KEY`/`NOTIFICATION_AUTH_SIGNING_KEY`);
+  thiếu, sai, lệch quá 60 giây hoặc ký cho method/path/caller khác trả `401` trước rate limit. Consumer duy nhất
+  (Notification) đổi cùng lúc. Không đổi body hay status khác. Xem
+  [mesh ADR-004](../docs/mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md).
+
 ## 2026-10-22 (Payment Operations caller allowlist)
 
 - Payment internal HTTP v1.1.0: mọi operation `/internal/v1/payment/**` bắt buộc `X-Service-Identity`
   (`finance-ops`, `accounting-ops`); thiếu là `401 UNAUTHENTICATED`, ngoài allowlist là `403 FORBIDDEN`, trước
   kiểm tra maker-checker. Trước đây route này không kiểm caller. Không đổi body, header khác hay hành vi khi
   caller hợp lệ. Xem [Payment ADR-028](../docs/payment/decisions/ADR-028-finance-ops-caller-allowlist.md).
+
+## 2026-10-20 (Promotion independent buyer wallet)
+
+- Thêm `GET /api/v1/me/promotion-vouchers`: owner-scoped wallet history với lọc trạng thái hiệu lực, keyset pagination, điều kiện và định nghĩa giảm giá. Không cần cart/address/context; `Cache-Control: no-store`. Không đổi hành vi save/claim/grant/reserve. Xem `WalletPage`/`WalletEntry` trong Promotion HTTP v1.
+
+## 2026-10-17 (Search storefront discovery policy)
+
+- Facet được quảng bá theo nhóm chung và danh mục đã cấu hình, có thứ tự biên tập; không hứa liệt kê mọi thuộc tính có token. Đơn vị trong nhãn được chuẩn hóa chữ hoa; opaque value và số đếm không đổi.
+- Discovery exclusions theo ID áp dụng trước query/grouping/count/pagination, cây category và đọc suggestion theo ID nguồn. Không xóa fixture hoặc thay quyền truy cập Product/admin/history. Không đổi schema HTTP/event hoặc token protocol. Xem [Search ADR-028](../docs/search/decisions/ADR-028-storefront-facet-discovery-policy.md).
 
 ## 2026-10-16 (Order submission response capacity)
 
@@ -17,6 +34,24 @@ không cần xuất hiện ở đây.
   dùng cùng token và không cần callback Checkout. Response capacity đầy có thể trả `503 ORDER_UNAVAILABLE`
   với `Retry-After` sau khi đã accept. Không đổi request/response schema, status code hay event contract.
   Thiết kế và giới hạn: [Order ADR-027](../docs/order/decisions/ADR-027-async-submission-checkpoint-waiters.md).
+
+## 2026-10-16 (Search full reindex)
+
+- Search v2 bảo toàn tombstone Product/SKU/Category qua full reindex, giữ revision/`deleted_at` để event cũ
+  không hồi sinh dữ liệu sau cutover. Count drift so SKU document `is_deleted=false` thay vì tổng có tombstone;
+  scan/copy không đầy đủ hoặc count shard lỗi chặn cutover. Không đổi request/response schema hay status enum.
+  Chi tiết: [Search ADR-026](../docs/search/decisions/ADR-026-reindex-preserves-tombstones.md).
+
+## 2026-10-16 (Nhãn biến thể cho Cart)
+
+- Product gRPC `Sku` thêm `variant_name` tại field13, giữ nguyên các field hiện có.
+  Product resolve tên attribute/label SELECT, text Có/Không cho BOOLEAN và scalar
+  khác, sắp theo code và nối bằng ` · `. Consumer chỉ dùng chuỗi này để hiển thị.
+- Cart HTTP v1 thêm `CartItem.variant_name` tùy chọn. Read CURRENT lấy tên hiện tại
+  từ Product; DEGRADED/SKU unavailable giữ display snapshot. GET không ghi snapshot
+  vào Redis hoặc gia hạn TTL. Cart cũ/provider cũ vẫn đọc được; frontend fallback
+  các giá trị biến thể, không in code attribute. Không đổi giá/quantity/idempotency.
+- Đồng bộ proto copy Product/Checkout, Go stubs và frontend generated types.
 
 ## 2026-10-16 (Bằng chứng resilience, mesh)
 
@@ -114,6 +149,31 @@ không cần xuất hiện ở đây.
   tới Product gRPC; Order gửi `X-Request-Id` (và pass-through `traceparent`/`tracestate` khi đang phục vụ
   một request) tới Inventory, Promotion, Payment; Checkout và Product Detail BFF gửi thêm `X-Request-Id`
   cho Inventory; Order và Cart trả `X-Request-Id` trong response. Header sai định dạng bị thay, không bị `400`.
+
+## 2026-10-15 (Payment — certified CREATE non-acceptance / Checkout recovery)
+
+- Payment HTTP v1 is `1.1.0`. Initiate has an additive 422 `PROVIDER_CREATE_NOT_ACCEPTED`
+  variant with `no_payment_created=true` and order, attempt, payment and provider-operation
+  identity. It is issued only for the first CREATE HTTP 400 `amount_too_small`, under durable
+  operation/command fencing. The frozen proof authorizes Order's existing preparation-failure
+  compensation; it does not fabricate a FAILED/CANCELED financial fact.
+- Generic/legacy `503 PROVIDER_REQUEST_REJECTED`, retryable/ambiguous outcomes and idempotency
+  conflicts still do not prove absence. Order rejects malformed or mismatched proof as UNKNOWN.
+  No event schema, database schema or public Checkout problem code changes.
+- Checkout recovery UI must display a definitive Submit error ahead of a cached GET
+  `SUBMISSION_NOT_FOUND`; START_NEW_PREVIEW replaces the resend action after 409/410.
+- See [Payment ADR-024](../docs/payment/decisions/ADR-024-certified-create-non-acceptance.md).
+
+## 2026-10-14 (Order — refund manual-review problem code)
+
+- Order HTTP v1 is `1.1.1` (description and problem-code change, no schema change). An operation that ends in
+  `MANUAL_REVIEW_REQUIRED` because a refund or return needs a person (Payment refund failure/reversal, Payment or
+  Inventory rejecting the frozen command, 30-day wait, scope finalization in `RECOVERY_REQUIRED`/`CONFLICT`) now carries
+  `failure.code = REFUND_MANUAL_REVIEW_REQUIRED` (`409`, `retryable=false`) instead of `INVALID_ORDER_TRANSITION`. The
+  order state was never rejected; the money outcome is waiting for Finance. Clients must treat every
+  `MANUAL_REVIEW_REQUIRED` operation as "do not resend" regardless of `failure.code`. `OrderOperation` documents this.
+  Payment-attempt operations that end in `MANUAL_REVIEW_REQUIRED` keep `DEPENDENCY_UNAVAILABLE`.
+- See [Order ADR-020 item 25](../docs/order/decisions/ADR-020-release-1-implementation-clarifications.md).
 
 ## 2026-10-12 (Inventory ADMIN — unfiltered lists)
 
