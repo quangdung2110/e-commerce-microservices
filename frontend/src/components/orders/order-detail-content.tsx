@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { ArrowLeft, LoaderCircle, RotateCw, Undo2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, CreditCard, LoaderCircle, RotateCw, Undo2 } from "lucide-react";
 
 import { CancelOrderDialog } from "@/components/orders/cancel-order-dialog";
 import { OrderLineCard } from "@/components/orders/order-line-card";
 import { OperationStatus, OrderStatus, PaymentStatus } from "@/components/orders/order-status";
 import { RefundCaseCard } from "@/components/orders/refund-case-card";
+import { OrderHistory } from "@/components/orders/order-history";
 import { Alert } from "@/components/ui/alert";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,16 +19,22 @@ import { useToast } from "@/components/ui/toast";
 import { useOrder, useOrderCommand, type OrderCommandResult } from "@/hooks/use-orders";
 import { usePendingReviews } from "@/hooks/use-reviews";
 import { formatDateTime, formatPhone, formatVND } from "@/lib/format";
-import { addressText, paymentAttemptNumber } from "@/lib/order";
-import { problemMessage } from "@/lib/api/problem";
+import { addressText, isManualReviewOperation, MANUAL_REVIEW_MESSAGE, operationFailureMessage, orderLines, paymentAttemptNumber } from "@/lib/order";
 import { cn } from "@/lib/utils";
 
 export function OrderDetailContent({ orderId }: { orderId: string }) {
   const router = useRouter();
   const { addToast } = useToast();
-  const order = useOrder(orderId);
+  const order = useOrder(orderId, { pollPayment: true });
   const command = useOrderCommand(orderId);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const paymentDeadline = Date.parse(order.data?.payment?.payment_deadline_at ?? "");
+  useEffect(() => {
+    if (!Number.isFinite(paymentDeadline) || paymentDeadline <= now) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(Math.max(0, paymentDeadline - Date.now()), 2_147_483_647));
+    return () => window.clearTimeout(timer);
+  }, [paymentDeadline, now]);
   // Đơn hoàn thành: tìm các sản phẩm của đúng đơn này còn quyền đánh giá (Review ADR-012 có order_id).
   const pendingReviews = usePendingReviews({ scanAll: true, enabled: order.data?.order_status === "COMPLETED" });
 
@@ -38,8 +45,10 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
       return;
     }
     if (!result.operation || result.operation.status !== "SUCCEEDED") {
-      const message = result.operation?.failure ? problemMessage({ problem: result.operation.failure }) : "Yêu cầu chưa thể hoàn tất. Vui lòng tải lại đơn hàng.";
-      addToast({ type: result.operation?.status === "MANUAL_REVIEW_REQUIRED" ? "warning" : "error", title: message });
+      const manual = isManualReviewOperation(result.operation);
+      addToast({ type: manual ? "warning" : "error", title: operationFailureMessage(result.operation, "Yêu cầu chưa thể hoàn tất. Vui lòng tải lại đơn hàng.") });
+      // Kết quả đang chờ con người xử lý: không giữ dialog để mời gửi lại.
+      if (manual) setCancelOpen(false);
       return;
     }
     if (kind === "cancel") {
@@ -72,6 +81,12 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
     return match ? `/reviews/new?eligibility=${encodeURIComponent(match.eligibility_id)}` : undefined;
   };
   const currentOperation = command.data?.operation;
+  const manualReview = isManualReviewOperation(currentOperation);
+  // Opening the existing attempt never creates a PaymentIntent. The payment page rechecks
+  // fresh Order/attempt credentials and all confirm guards before permitting payment.
+  const canResumePayment = data.order_status === "PENDING_PAYMENT" && data.payment_status === "PENDING"
+    && data.payment?.status === "PENDING" && Boolean(data.payment.active_attempt_number && data.payment.active_payment_transaction_id)
+    && now < paymentDeadline && !command.isPending && !command.data?.stillProcessing && !manualReview;
 
   return (
     <main className="mx-auto w-full max-w-small space-y-8 px-6 py-10 md:px-8 md:py-14">
@@ -90,7 +105,7 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
       {command.isError ? <ErrorState error={command.error} /> : null}
       {command.isPending ? <Alert variant="info" title="Đang xử lý yêu cầu"><span className="inline-flex items-center gap-2"><LoaderCircle className="size-4 animate-spin" aria-hidden />Không đóng trang trong lúc hệ thống kiểm tra trạng thái.</span></Alert> : null}
       {command.data?.stillProcessing ? <Alert variant="info" title="Yêu cầu đang tiếp tục xử lý">Không gửi lại thao tác này. Bạn có thể rời trang và kiểm tra lại sau.</Alert> : null}
-      {currentOperation && currentOperation.status !== "SUCCEEDED" ? <Alert variant={currentOperation.status === "MANUAL_REVIEW_REQUIRED" ? "warning" : "info"} title="Trạng thái thao tác"><OperationStatus status={currentOperation.status} /></Alert> : null}
+      {currentOperation && currentOperation.status !== "SUCCEEDED" ? <Alert variant={currentOperation.status === "MANUAL_REVIEW_REQUIRED" ? "warning" : "info"} title="Trạng thái thao tác"><div className="space-y-2"><OperationStatus status={currentOperation.status} />{manualReview ? <p>{MANUAL_REVIEW_MESSAGE}</p> : null}</div></Alert> : null}
 
       <section className="grid gap-6 lg:grid-cols-[1fr_320px]">
         <div className="space-y-6">
@@ -113,7 +128,8 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
             </CardContent>
           </Card>
 
-          {data.refund_case ? <RefundCaseCard orderId={orderId} /> : null}
+          {data.refund_case ? <RefundCaseCard orderId={orderId} orderLines={orderLines(data)} /> : null}
+          <OrderHistory order={data} />
         </div>
 
         <aside className="space-y-6 lg:sticky lg:top-24 lg:self-start">
@@ -126,11 +142,12 @@ export function OrderDetailContent({ orderId }: { orderId: string }) {
                 <div className="flex justify-between gap-4 border-t border-border pt-3"><dt className="font-medium">Thành tiền</dt><dd className="font-serif text-headline-5 font-normal tabular-nums">{formatVND(data.final_amount.amount_minor)}</dd></div>
               </dl>
             </CardContent>
-            {(data.available_actions.can_retry_payment || data.available_actions.can_return || data.available_actions.can_cancel) ? (
+            {(canResumePayment || data.available_actions.can_retry_payment || data.available_actions.can_return || data.available_actions.can_cancel) ? (
               <CardFooter className="flex-col items-stretch">
-                {data.available_actions.can_retry_payment ? <Button variant="clay" disabled={command.isPending || command.data?.stillProcessing} onClick={retryPayment}>{command.isPending ? <LoaderCircle className="animate-spin" aria-hidden /> : <RotateCw aria-hidden />}Thanh toán lại</Button> : null}
+                {canResumePayment ? <Link href={`/orders/${encodeURIComponent(orderId)}/payment?attempt=${data.payment.active_attempt_number}`} className={cn(buttonVariants({ variant: "clay" }))}><CreditCard aria-hidden />Tiếp tục thanh toán</Link> : null}
+                {data.available_actions.can_retry_payment ? <Button variant="clay" disabled={command.isPending || command.data?.stillProcessing || manualReview} onClick={retryPayment}>{command.isPending ? <LoaderCircle className="animate-spin" aria-hidden /> : <RotateCw aria-hidden />}Thanh toán lại</Button> : null}
                 {data.available_actions.can_return ? <Link href={`/orders/${orderId}/return`} className={cn(buttonVariants({ variant: "outline" }))}><Undo2 aria-hidden />Yêu cầu trả hàng</Link> : null}
-                {data.available_actions.can_cancel ? <Button variant="destructive" disabled={command.isPending || command.data?.stillProcessing} onClick={() => { command.startNewIntent(); setCancelOpen(true); }}>Huỷ đơn hàng</Button> : null}
+                {data.available_actions.can_cancel ? <Button variant="destructive" disabled={command.isPending || command.data?.stillProcessing || manualReview} onClick={() => { command.startNewIntent(); setCancelOpen(true); }}>Huỷ đơn hàng</Button> : null}
               </CardFooter>
             ) : null}
           </Card>

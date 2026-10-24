@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { OrderDetail, OrderLine } from "@/lib/api/order";
-import { addressText, canAdminCancelOrder, canAdminConfirmDelivery, canAdminRefundBeforeDispatch, dispatchedLines, isTerminalOrderOperation, paymentAttemptNumber, selectedReturnAmount } from "@/lib/order";
+import type { OrderDetail, OrderLine, OrderOperation } from "@/lib/api/order";
+import { problemMessage } from "@/lib/api/problem";
+import { addressText, canAdminCancelOrder, canAdminConfirmDelivery, canAdminRefundBeforeDispatch, dispatchedLines, isManualReviewOperation, isTerminalOrderOperation, MANUAL_REVIEW_MESSAGE, operationFailureMessage, paymentAttemptNumber, selectedReturnAmount } from "@/lib/order";
 
 describe("order helpers", () => {
   it("chỉ nhận attempt number từ result reference đúng dạng", () => {
@@ -16,6 +17,36 @@ describe("order helpers", () => {
     expect(isTerminalOrderOperation(operation)).toBe(false);
     expect(isTerminalOrderOperation({ ...operation, status: "SUCCEEDED" })).toBe(true);
     expect(isTerminalOrderOperation({ ...operation, status: "MANUAL_REVIEW_REQUIRED" })).toBe(true);
+  });
+
+  it("MANUAL_REVIEW_REQUIRED luôn dùng câu kiểm tra thủ công, bất kể failure.code", () => {
+    const base = { operation_id: "op", operation_type: "ADMIN_PRE_DISPATCH_REFUND", order_id: "1", result_reference: null, created_at: "", updated_at: "" } as const;
+    const problem = (code: string) => ({ type: "t", title: "t", status: 409, detail: "d", instance: "/", code, retryable: false });
+    for (const code of ["INVALID_ORDER_TRANSITION", "REFUND_MANUAL_REVIEW_REQUIRED", "DEPENDENCY_UNAVAILABLE"]) {
+      const operation = { ...base, status: "MANUAL_REVIEW_REQUIRED", failure: problem(code) } as OrderOperation;
+      expect(isManualReviewOperation(operation)).toBe(true);
+      expect(operationFailureMessage(operation, "fallback")).toBe(MANUAL_REVIEW_MESSAGE);
+    }
+    const noFailure = { ...base, status: "MANUAL_REVIEW_REQUIRED", failure: null } as OrderOperation;
+    expect(operationFailureMessage(noFailure, "fallback")).toBe(MANUAL_REVIEW_MESSAGE);
+  });
+
+  it("operation REJECTED/FAILED vẫn dịch theo failure.code, không có failure thì dùng fallback", () => {
+    const base = { operation_id: "op", operation_type: "ADMIN_PRE_DISPATCH_REFUND", order_id: "1", result_reference: null, created_at: "", updated_at: "" } as const;
+    const rejected = {
+      ...base,
+      status: "REJECTED",
+      failure: { type: "t", title: "t", status: 409, detail: "d", instance: "/", code: "ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED", retryable: false },
+    } as OrderOperation;
+    expect(isManualReviewOperation(rejected)).toBe(false);
+    expect(operationFailureMessage(rejected, "fallback")).toBe("Không thể hoàn tiền tự động vì đã có sản phẩm rời kho.");
+    expect(operationFailureMessage({ ...base, status: "FAILED", failure: null } as OrderOperation, "fallback")).toBe("fallback");
+    expect(operationFailureMessage(null, "fallback")).toBe("fallback");
+  });
+
+  it("có câu riêng cho mã REFUND_MANUAL_REVIEW_REQUIRED, không mời gửi lại", () => {
+    const message = problemMessage({ problem: { code: "REFUND_MANUAL_REVIEW_REQUIRED", status: 409 } });
+    expect(message).toMatch(/không cần gửi lại/);
   });
 
   it("ưu tiên tên địa giới snapshot và fallback về code", () => {

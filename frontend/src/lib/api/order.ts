@@ -30,7 +30,7 @@ const ADMIN_ORDER_BASE = "/api/v1/admin/orders";
 
 export const orderApi = {
   listMine: async (params: OrderListParams, signal?: AbortSignal) =>
-    (await api.get<OrderSearchPage>(ORDER_BASE, { params, signal })).data,
+    (await api.get<OrderSearchPage>(ORDER_BASE, { params, signal, paramsSerializer: { indexes: null } })).data,
 
   mine: async (orderId: string, signal?: AbortSignal) =>
     (await api.get<OrderDetail>(`${ORDER_BASE}/${encodeURIComponent(orderId)}`, { signal })).data,

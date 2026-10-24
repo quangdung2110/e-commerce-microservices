@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CheckoutPageContent } from "@/components/checkout/checkout-page-content";
 import { checkoutApi, type CheckoutPreview, type SubmissionReady, type VoucherOption } from "@/lib/api/checkout";
@@ -76,6 +76,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); useAuthStore.getState().clear(); });
 
 describe("checkout buyer flow", () => {
+  it("F04 can save an ineligible public voucher for later without changing the active quote", async () => {
+    optionsWith({ ...voucher, source: "PUBLIC", required_action: "SAVE", eligible: false, reason: "MIN_ORDER_NOT_MET" });
+    setup(); await quoteReady();
+    expect((screen.getByRole("button", { name: "Lưu và áp dụng" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Lưu voucher" }));
+    expect(await screen.findByText(/Đã lưu voucher vào ví/)).toBeTruthy();
+    expect(promotionApi.saveVoucher).toHaveBeenCalledWith(voucher.promotion_id, expect.any(AbortSignal));
+    expect(checkoutApi.preview).toHaveBeenCalledTimes(1);
+    expect(checkoutApi.submit).not.toHaveBeenCalled();
+    expect(promotionApi.claimVoucher).not.toHaveBeenCalled();
+  });
+  it.each(["CAMPAIGN_NOT_ACTIVE", "PROMOTION_DISABLED", "VOUCHER_EXPIRED"] as const)("F04 does not offer saving when %s", async reason => {
+    optionsWith({ ...voucher, source: "PUBLIC", required_action: "SAVE", eligible: false, reason });
+    setup(); await quoteReady();
+    expect(screen.queryByRole("button", { name: "Lưu voucher" })).toBeNull();
+  });
   it("loads a wallet voucher, applies by previous token, and uses the authoritative new price", async () => {
     optionsWith(voucher);
     setup(); await quoteReady();
@@ -83,11 +99,20 @@ describe("checkout buyer flow", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Áp dụng voucher" }));
     await waitFor(() => expect(checkoutApi.preview).toHaveBeenLastCalledWith({ delivery_address_id: address.id, previous_checkout_token: token, promotion_id: voucher.promotion_id }, expect.any(String), expect.any(AbortSignal)));
     await quoteReady();
-    expect(screen.getByText("185.000 ₫")).toBeTruthy();
+    expect(screen.getAllByText("185.000 ₫")).toHaveLength(2);
     expect(screen.queryByText("180.000 ₫")).toBeNull();
     expect(promotionApi.saveVoucher).not.toHaveBeenCalled();
     expect(promotionApi.claimVoucher).not.toHaveBeenCalled();
     await waitFor(() => expect(checkoutApi.voucherOptions).toHaveBeenCalledWith(secondToken, expect.any(AbortSignal)));
+  });
+  it("presents structured voucher rules even when marketing text contradicts them", async () => {
+    optionsWith({ ...voucher, name: "Giảm 10% đơn từ 200K", description: "Incorrect fixture description", discount_rule: { type: "PERCENTAGE", value_basis_points: 1500, max_discount: money(50000) } });
+    setup(); await quoteReady();
+    expect(await screen.findByRole("heading", { name: /Giảm 15%, tối đa 50\.000\s₫/ })).toBeTruthy();
+    expect(screen.getByText(/Đơn tối thiểu 100.000/)).toBeTruthy();
+    expect(screen.queryByText("Giảm 10% đơn từ 200K")).toBeNull();
+    expect(screen.queryByText("Incorrect fixture description")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Đặt hàng và thanh toán" })).toHaveLength(1);
   });
   it("saves public ownership before requesting the discounted quotation", async () => {
     optionsWith({ ...voucher, source: "PUBLIC", required_action: "SAVE" });
@@ -146,9 +171,10 @@ describe("checkout buyer flow", () => {
     await waitFor(() => expect(checkoutApi.preview).toHaveBeenLastCalledWith({ delivery_address_id: address.id, previous_checkout_token: secondToken, promotion_id: null }, expect.any(String), expect.any(AbortSignal)));
     await quoteReady(); expect(checkoutApi.submit).not.toHaveBeenCalled();
   });
-  it("can reload options after a stale claim gate without applying an unowned voucher", async () => {
+  // The backend flags CLAIM_GATE_STALE retryable: true; the tray must still unlock so the user can reload it.
+  it.each([false, true])("can reload options after a stale claim gate (retryable: %s) without applying an unowned voucher", async (retryable) => {
     optionsWith({ ...voucher, source: "PUBLIC", required_action: "CLAIM" });
-    vi.mocked(promotionApi.claimVoucher).mockRejectedValueOnce(httpError(409, problem("CLAIM_GATE_STALE", 409, { retryable: false })));
+    vi.mocked(promotionApi.claimVoucher).mockRejectedValueOnce(httpError(409, problem("CLAIM_GATE_STALE", 409, { retryable })));
     setup(); await quoteReady();
     fireEvent.click(await screen.findByRole("button", { name: "Nhận và áp dụng" }));
     await screen.findByText("Chương trình vừa thay đổi. Vui lòng tải lại rồi thử nhận voucher.");
@@ -344,11 +370,43 @@ describe("checkout buyer flow", () => {
     await waitFor(() => expect(checkoutApi.submit).toHaveBeenCalledWith(token, expect.anything()));
     expect(checkoutApi.preview).not.toHaveBeenCalled();
   });
+  it.each(["CHECKOUT_EXPIRED", "CHECKOUT_SUPERSEDED", "PRICE_CHANGED"])("replaces the cached recovery 404 with terminal Submit %s and stops resending", async (code) => {
+    vi.mocked(checkoutApi.submission).mockRejectedValue(httpError(404, problem("SUBMISSION_NOT_FOUND", 404, { action: "NONE" })));
+    vi.mocked(checkoutApi.submit).mockRejectedValueOnce(httpError(code === "PRICE_CHANGED" ? 409 : 410, problem(code, code === "PRICE_CHANGED" ? 409 : 410, { action: "START_NEW_PREVIEW", retryable: false })));
+    setup(token);
+    fireEvent.click(await screen.findByRole("button", { name: "Gửi lại cùng yêu cầu đặt hàng" }));
+    const fresh = await screen.findByRole("button", { name: "Xem báo giá mới" });
+    expect(screen.queryByRole("button", { name: "Gửi lại cùng yêu cầu đặt hàng" })).toBeNull();
+    expect(checkoutApi.submit).toHaveBeenCalledTimes(1);
+    expect(checkoutApi.preview).not.toHaveBeenCalled();
+    fireEvent.click(fresh);
+    await quoteReady();
+    expect(checkoutApi.preview).toHaveBeenCalledTimes(1);
+    expect(checkoutApi.submit).toHaveBeenCalledTimes(1);
+  });
   it("aborts status polling on unmount", async () => {
     vi.mocked(checkoutApi.submission).mockImplementation(() => new Promise(() => {}));
     const view = setup(token);
     await waitFor(() => expect(checkoutApi.submission).toHaveBeenCalled());
     const signal = vi.mocked(checkoutApi.submission).mock.calls.at(-1)![1]!;
     view.unmount(); expect(signal.aborted).toBe(true);
+  });
+  it("keeps a definitive recovery failure actionable after the 90-second poll deadline", async () => {
+    const timers = vi.spyOn(window, "setTimeout");
+    try {
+      vi.mocked(checkoutApi.submission).mockRejectedValue(httpError(409, problem("PAYMENT_INITIATION_REJECTED", 409, { action: "START_NEW_PREVIEW", retryable: false })));
+      setup(token);
+      await screen.findByRole("button", { name: "Xem báo giá mới" });
+      const deadline = timers.mock.calls.find(([, delay]) => typeof delay === "number" && delay > 89_000 && delay <= 90_000)?.[0];
+      expect(typeof deadline).toBe("function");
+      act(() => { if (typeof deadline === "function") deadline(); });
+      expect(screen.getByRole("heading", { name: "Cần xem lại yêu cầu đặt hàng" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Kiểm tra lại kết quả" })).toBeNull();
+      expect(screen.queryByText(/Chưa có kết quả cuối/)).toBeNull();
+      expect(checkoutApi.submit).not.toHaveBeenCalled();
+      expect(checkoutApi.preview).not.toHaveBeenCalled();
+    } finally {
+      timers.mockRestore();
+    }
   });
 });

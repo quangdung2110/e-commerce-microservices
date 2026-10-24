@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useCommand } from "@/hooks/use-command";
 import { useCursorInfiniteList } from "@/hooks/use-cursor-list";
+import { usePaidOrderCartSync } from "@/hooks/use-paid-order-cart-sync";
 import {
   orderApi,
   type BuyerReturnRequest,
@@ -13,15 +14,16 @@ import {
   type OrderListParams,
   type OrderOperation,
 } from "@/lib/api/order";
-import { isTerminalOrderOperation } from "@/lib/order";
+import { isTerminalOrderOperation, isUnresolvedOrderResult } from "@/lib/order";
 import { PollTimeoutError, pollUntil } from "@/lib/api/operation";
 import { useAuthStore } from "@/store/useAuthStore";
+import type { BuyerOrderFilters } from "@/lib/buyer-order-filters";
 
 export const orderKeys = {
   all: ["orders"] as const,
   lists: (accountId: string | undefined) => ["orders", accountId, "list"] as const,
-  list: (accountId: string | undefined, tab: BuyerTab | undefined, q: string) =>
-    ["orders", accountId, "list", { tab, q }] as const,
+  list: (accountId: string | undefined, tab: BuyerTab | undefined, q: string, filters: BuyerOrderFilters = {}) =>
+    ["orders", accountId, "list", { tab, q, ...filters }] as const,
   detail: (accountId: string | undefined, orderId: string) =>
     ["orders", accountId, "detail", orderId] as const,
   refund: (accountId: string | undefined, orderId: string) =>
@@ -30,19 +32,19 @@ export const orderKeys = {
     ["orders", accountId, "payment-attempt", orderId, attempt] as const,
 };
 
-export function useMyOrders(tab: BuyerTab | undefined, q: string) {
+export function useMyOrders(tab: BuyerTab | undefined, q: string, filters: BuyerOrderFilters = {}, enabled = true) {
   const status = useAuthStore((state) => state.status);
   const accountId = useAuthStore((state) => state.claims?.sub);
   return useCursorInfiniteList({
-    queryKey: orderKeys.list(accountId, tab, q),
+    queryKey: orderKeys.list(accountId, tab, q, filters),
     fetchPage: (cursor, signal) => {
-      const params: OrderListParams = { limit: 20 };
+      const params: OrderListParams = { ...filters, limit: 20 };
       if (tab) params.tab = tab;
       if (q) params.q = q;
       if (cursor) params.cursor = cursor;
       return orderApi.listMine(params, signal);
     },
-    enabled: status === "authenticated" && Boolean(accountId),
+    enabled: enabled && status === "authenticated" && Boolean(accountId),
     staleTime: 15_000,
     refetchOnMount: true,
     refetchOnWindowFocus: true,
@@ -52,15 +54,18 @@ export function useMyOrders(tab: BuyerTab | undefined, q: string) {
 export function useOrder(orderId: string, options?: { refetchInterval?: number | false; pollPayment?: boolean }) {
   const status = useAuthStore((state) => state.status);
   const accountId = useAuthStore((state) => state.claims?.sub);
-  return useQuery({
+  const query = useQuery({
     queryKey: orderKeys.detail(accountId, orderId),
     queryFn: ({ signal }) => orderApi.mine(orderId, signal),
     enabled: status === "authenticated" && Boolean(accountId && orderId),
     staleTime: 10_000,
     refetchInterval: options?.pollPayment
-      ? (query) => query.state.data?.payment_status === "PENDING" ? 2_500 : false
+      ? (query) => query.state.data?.payment_status === "PENDING"
+        && ["PENDING_PAYMENT", "CANCELLING"].includes(query.state.data.order_status) ? 2_500 : false
       : options?.refetchInterval,
   });
+  usePaidOrderCartSync(query.data);
+  return query;
 }
 
 export function useRefundCase(orderId: string, enabled: boolean) {
@@ -79,7 +84,7 @@ export function useRefundCase(orderId: string, enabled: boolean) {
   });
 }
 
-export function usePaymentAttempt(orderId: string, attemptNumber: number | null) {
+export function usePaymentAttempt(orderId: string, attemptNumber: number | null, options?: { poll?: boolean }) {
   const accountId = useAuthStore((state) => state.claims?.sub);
   return useQuery({
     queryKey: orderKeys.attempt(accountId, orderId, attemptNumber),
@@ -87,6 +92,9 @@ export function usePaymentAttempt(orderId: string, attemptNumber: number | null)
     enabled: Boolean(accountId && orderId && attemptNumber),
     staleTime: 0,
     refetchOnMount: "always",
+    refetchInterval: options?.poll
+      ? (query) => query.state.data?.status === "PENDING" ? 2_500 : false
+      : false,
   });
 }
 
@@ -113,6 +121,7 @@ export function useOrderCommand(orderId: string) {
   useEffect(() => () => controller.current?.abort(), []);
 
   return useCommand<OrderCommandResult, OrderCommandIntent>({
+    isOutcomeUnresolved: isUnresolvedOrderResult,
     mutationFn: async (intent, { commandId }) => {
       const accepted =
         intent.kind === "cancel"

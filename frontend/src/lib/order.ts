@@ -1,4 +1,5 @@
 import type { OrderDetail, OrderLine, OrderOperation } from "@/lib/api/order";
+import { problemMessage } from "@/lib/api/problem";
 
 export const TERMINAL_OPERATION_STATUSES = new Set<OrderOperation["status"]>([
   "SUCCEEDED",
@@ -9,6 +10,38 @@ export const TERMINAL_OPERATION_STATUSES = new Set<OrderOperation["status"]>([
 
 export function isTerminalOrderOperation(operation: OrderOperation): boolean {
   return TERMINAL_OPERATION_STATUSES.has(operation.status);
+}
+
+/**
+ * `MANUAL_REVIEW_REQUIRED` nghĩa là kết quả đang chờ con người (ví dụ Finance xử lý hoàn tiền
+ * thất bại), không phải lỗi để thử lại. Câu này thay mọi thông điệp theo `failure.code` để người
+ * dùng không bị mời gửi lại lệnh.
+ */
+export const MANUAL_REVIEW_MESSAGE =
+  "Yêu cầu đang được bộ phận vận hành kiểm tra thủ công. Bạn không cần gửi lại — hãy tải lại đơn hàng sau để xem kết quả.";
+
+export function isManualReviewOperation(operation: OrderOperation | null | undefined): boolean {
+  return operation?.status === "MANUAL_REVIEW_REQUIRED";
+}
+
+/**
+ * Lệnh đã được server nhận nhưng kết quả cuối chưa rõ: poll hết hạn (operation còn chạy) hoặc
+ * operation chờ kiểm tra thủ công. Giữ nguyên Idempotency-Key và khoá lệnh, không gửi ý định mới.
+ */
+export function isUnresolvedOrderResult(result: {
+  stillProcessing: boolean;
+  operation: OrderOperation | null;
+}): boolean {
+  return result.stillProcessing || isManualReviewOperation(result.operation);
+}
+
+/** Thông điệp cho operation đã kết thúc nhưng không `SUCCEEDED`. */
+export function operationFailureMessage(
+  operation: OrderOperation | null | undefined,
+  fallback: string
+): string {
+  if (isManualReviewOperation(operation)) return MANUAL_REVIEW_MESSAGE;
+  return operation?.failure ? problemMessage({ problem: operation.failure }) : fallback;
 }
 
 export function orderLines(order: OrderDetail): OrderLine[] {

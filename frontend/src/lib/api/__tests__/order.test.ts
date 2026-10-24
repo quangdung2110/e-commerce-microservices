@@ -22,6 +22,7 @@ describe("orderApi", () => {
     expect(api.get).toHaveBeenCalledWith("/api/v1/orders", {
       params: { tab: "TO_RECEIVE", q: "điện thoại", cursor: "next", limit: 20 },
       signal,
+      paramsSerializer: { indexes: null },
     });
   });
 

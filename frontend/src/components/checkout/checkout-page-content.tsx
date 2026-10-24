@@ -21,6 +21,7 @@ import { isRetryable, problemCode, retryAfterSeconds } from "@/lib/api/problem";
 import { formatAddressLine } from "@/lib/constants/address";
 import { formatDateTime, formatVND } from "@/lib/format";
 import { useAuthStore } from "@/store/useAuthStore";
+import { MobileActionDock } from "@/components/ui/mobile-action-dock";
 
 export function CheckoutPageContent({ initialToken }: { initialToken: string | null }) {
   const accountId = useAuthStore((state) => state.claims?.sub);
@@ -28,7 +29,7 @@ export function CheckoutPageContent({ initialToken }: { initialToken: string | n
     <header className="space-y-3">
       <Link href="/cart" className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-lg text-[14px] text-muted-foreground"><ArrowLeft className="size-4" aria-hidden />Về giỏ hàng</Link>
       <h1 className="font-serif text-headline-2 font-normal">Đặt hàng</h1>
-      <p className="text-[15px] text-muted-foreground">Chọn nơi nhận hàng, kiểm tra báo giá và tiếp tục thanh toán qua Stripe.</p>
+      <p className="text-[15px] text-muted-foreground">Chọn nơi nhận hàng, kiểm tra tổng tiền và tiếp tục thanh toán.</p>
     </header>
     <CheckoutContents key={accountId} initialToken={initialToken} />
   </main>;
@@ -49,8 +50,12 @@ function CheckoutContents({ initialToken }: { initialToken: string | null }) {
   const vouchers = useCheckoutVouchers(preview?.checkout_token ?? "", Boolean(preview && !expired && !token && !quote.isPending && !uncertainPreview), changeVoucher);
   const optionsProblem = checkoutProblem(vouchers.options.error);
   const invalidOptions = optionsProblem && optionsProblem.action !== "RETRY";
-  const error = token ? submission.error ?? (submission.data ? null : submit.error) : quote.error ?? (invalidOptions ? vouchers.options.error : null);
+  // A terminal Submit response supersedes the cached GET error that offered a resend.
+  // Retryable Submit failures still defer to recovery, which may already know the result.
+  const terminalSubmitError = submit.isError && !isRetryable(submit.error) ? submit.error : null;
+  const error = token ? terminalSubmitError ?? submission.error ?? (submission.data ? null : submit.error) : quote.error ?? (invalidOptions ? vouchers.options.error : null);
   const problem = checkoutProblem(error);
+  const recoveryActionRequired = Boolean(problem && !isRetryable(error) && problem.code !== "SUBMISSION_NOT_FOUND");
 
   useEffect(() => {
     if (token || optionsProblem?.action !== "VIEW_SUBMISSION") return;
@@ -93,18 +98,18 @@ function CheckoutContents({ initialToken }: { initialToken: string | null }) {
   const freshAllowed = problem?.action === "START_NEW_PREVIEW" || problem?.action === "CHANGE_VOUCHER";
   if (token) return <Card><CardContent className="space-y-6 py-8" aria-live="polite">
     <div className="flex items-start gap-4"><Clock3 className="mt-1 size-6 shrink-0 text-info" aria-hidden /><div className="space-y-2">
-      <h2 className="font-serif text-headline-4 font-normal">{destination ? "Đơn hàng đã sẵn sàng" : "Đang kiểm tra kết quả đặt hàng"}</h2>
-      <p className="text-[15px] text-muted-foreground">{destination ? "Đang chuyển tới đơn hàng của bạn…" : "Yêu cầu có thể đã được nhận. Hãy giữ trang này hoặc quay lại để xem kết quả; không đặt thêm đơn trong lúc chờ."}</p>
-      {response && !isSubmissionReady(response) && response.state === "RESULT_UNKNOWN" && <p className="text-caption text-muted-foreground">Chưa xác định được kết quả. Hệ thống sẽ tiếp tục kiểm tra cùng yêu cầu.</p>}
+      <h2 className="font-serif text-headline-4 font-normal">{destination ? "Đơn hàng đã sẵn sàng" : recoveryActionRequired ? "Cần xem lại yêu cầu đặt hàng" : "Đang kiểm tra kết quả đặt hàng"}</h2>
+      <p className="text-[15px] text-muted-foreground">{destination ? "Đang chuyển tới đơn hàng của bạn…" : recoveryActionRequired ? "Thực hiện hướng dẫn bên dưới trước khi tiếp tục." : "Yêu cầu có thể đã được nhận. Hãy giữ trang này hoặc quay lại để xem kết quả; không đặt thêm đơn trong lúc chờ."}</p>
+      {!recoveryActionRequired && response && !isSubmissionReady(response) && response.state === "RESULT_UNKNOWN" && <p className="text-caption text-muted-foreground">Chưa xác định được kết quả. Hệ thống sẽ tiếp tục kiểm tra cùng yêu cầu.</p>}
     </div></div>
     {error != null && <ErrorState error={error} />}
     {problem?.promotion_reason && <Alert variant="warning">{voucherReason(problem.promotion_reason)}</Alert>}
     {problem?.dropped_promotion && <Alert variant="warning">Voucher đã bị bỏ khỏi đơn: {voucherReason(problem.dropped_promotion.reason)} Hãy xem báo giá mới trước khi đặt hàng.</Alert>}
     {problem?.action === "EDIT_CART" && <Link href="/cart" className="focus-ring inline-flex min-h-11 items-center text-clay-strong">Sửa giỏ hàng</Link>}
     {freshAllowed && <Button variant="outline" onClick={freshQuote} disabled={!addressId || addresses.isError}>Xem báo giá mới</Button>}
-    {problemCode(submission.error) === "SUBMISSION_NOT_FOUND" && <Button variant="outline" disabled={submit.isPending} onClick={() => submit.mutate(token)}>Gửi lại cùng yêu cầu đặt hàng</Button>}
-    {(checkout.pollPaused || (submission.isError && isRetryable(submission.error))) && <StatusRetry key={submission.errorUpdatedAt} error={submission.error} busy={submission.isFetching || submit.isPending} onRetry={checkout.resume} />}
-    {checkout.pollPaused && !destination && <p className="text-caption text-muted-foreground">Chưa có kết quả cuối. Bạn có thể tiếp tục kiểm tra; yêu cầu cũ vẫn được giữ để phục hồi khi tải lại trang.</p>}
+    {!terminalSubmitError && problemCode(submission.error) === "SUBMISSION_NOT_FOUND" && <Button variant="outline" disabled={submit.isPending} onClick={() => submit.mutate(token)}>Gửi lại cùng yêu cầu đặt hàng</Button>}
+    {!recoveryActionRequired && (checkout.pollPaused || (submission.isError && isRetryable(submission.error))) && <StatusRetry key={submission.errorUpdatedAt} error={submission.error} busy={submission.isFetching || submit.isPending} onRetry={checkout.resume} />}
+    {!recoveryActionRequired && checkout.pollPaused && !destination && <p className="text-caption text-muted-foreground">Chưa có kết quả cuối. Bạn có thể tiếp tục kiểm tra; yêu cầu cũ vẫn được giữ để phục hồi khi tải lại trang.</p>}
     {addresses.isError && freshAllowed && <ErrorState error={addresses.error} onRetry={() => void addresses.refetch()} />}
   </CardContent></Card>;
 
@@ -149,14 +154,16 @@ function CheckoutContents({ initialToken }: { initialToken: string | null }) {
           <div className="min-w-0 flex-1 space-y-2"><p className="break-words text-[15px] font-medium">{item.product_name}</p><p className="text-caption text-muted-foreground">{Object.values(item.variant_attributes).join(" · ")}</p><p className="text-[14px]">{item.quantity} × {formatVND(item.unit_price.amount_minor)} {item.list_unit_price.amount_minor > item.unit_price.amount_minor && <del className="text-caption text-muted-foreground">{formatVND(item.list_unit_price.amount_minor)}</del>}</p><p className="text-[15px] font-medium tabular-nums">{formatVND(item.line_total.amount_minor)}</p></div>
         </li>)}</ul></CardContent></Card> : null}
       </div>
-      <Card className="lg:sticky lg:top-28"><CardHeader><CardTitle>Xác nhận đơn hàng</CardTitle></CardHeader><CardContent className="space-y-5">
+      <Card className="lg:sticky lg:top-36"><CardHeader><CardTitle>Xác nhận đơn hàng</CardTitle></CardHeader><CardContent className="space-y-5">
         {preview && !quote.isPending ? <>
           <dl className="space-y-3 text-[15px]"><div className="flex justify-between gap-3"><dt>Tiền sản phẩm</dt><dd className="tabular-nums">{formatVND(preview.pricing.total_amount.amount_minor)}</dd></div><div className="flex justify-between gap-3"><dt>Giảm giá</dt><dd className="tabular-nums">{formatVND(preview.pricing.total_discount.amount_minor)}</dd></div><div className="flex flex-wrap justify-between gap-3 border-t border-border pt-4"><dt>Tổng thanh toán</dt><dd className="font-serif text-headline-4 font-normal tabular-nums">{formatVND(preview.pricing.final_amount.amount_minor)}</dd></div></dl>
           <p className="text-caption text-muted-foreground">Báo giá có hiệu lực đến {formatDateTime(preview.expires_at)}. Báo giá này chưa giữ hàng.</p>
           {expired && <Alert variant="warning">Báo giá đã hết hạn. Tải báo giá mới trước khi đặt hàng.</Alert>}
         </> : <><Skeleton className="h-5 w-full" /><Skeleton className="h-5 w-full" /><Skeleton className="h-9 w-3/4" /></>}
-        <p className="text-caption text-muted-foreground">Không tính phí vận chuyển trong phiên bản hiện tại. Thanh toán bằng Stripe.</p>
-        <Button variant="clay" className="w-full" disabled={!canSubmit} onClick={checkout.placeOrder}><CreditCard aria-hidden />Đặt hàng và thanh toán</Button>
+        <p className="text-caption text-muted-foreground">Phí vận chuyển: 0₫. Thanh toán bảo mật qua Stripe.</p>
+        <MobileActionDock label="Tổng thanh toán" amount={preview && !quote.isPending ? formatVND(preview.pricing.final_amount.amount_minor) : "Đang cập nhật…"} feedback={expired ? <p role="status" className="text-caption text-warning">Giá đã hết hạn. Cập nhật giá trước khi đặt hàng.</p> : !canSubmit ? <p role="status" className="text-caption text-muted-foreground">Kiểm tra địa chỉ, giá và voucher trước khi đặt hàng.</p> : undefined}>
+          <Button variant="clay" className="w-full" aria-label="Đặt hàng và thanh toán" disabled={!canSubmit} onClick={checkout.placeOrder}><CreditCard aria-hidden /><span className="lg:hidden">Đặt hàng</span><span className="hidden lg:inline">Đặt hàng và thanh toán</span></Button>
+        </MobileActionDock>
         <Button variant="outline" className="w-full" disabled={locked} onClick={freshQuote}>{quote.isPending ? <LoaderCircle className="animate-spin" aria-hidden /> : null}Tải báo giá mới</Button>
       </CardContent></Card>
     </div>

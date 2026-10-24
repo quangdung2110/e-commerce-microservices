@@ -63,6 +63,8 @@ export const ORDER_MESSAGES: Record<string, string> = {
     "Thông tin xác nhận giao hàng chưa hợp lệ. Thời điểm giao phải sau lúc xuất kho và không ở tương lai.",
   ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED:
     "Không thể hoàn tiền tự động vì đã có sản phẩm rời kho.",
+  REFUND_MANUAL_REVIEW_REQUIRED:
+    "Hồ sơ hoàn tiền đang được bộ phận vận hành kiểm tra. Bạn không cần gửi lại yêu cầu.",
   PROMOTION_RECALCULATION_NEEDED: "Voucher cần được tính lại. Vui lòng xem lại đơn hàng.",
   PAYMENT_TIMEOUT: "Đơn hàng đã quá thời hạn thanh toán.",
 };
