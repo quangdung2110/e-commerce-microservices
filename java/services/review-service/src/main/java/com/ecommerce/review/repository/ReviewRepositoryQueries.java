@@ -18,7 +18,7 @@ public final class ReviewRepositoryQueries {
     public static final String REVIEW_COLUMNS = """
             id, eligibility_id, product_id, sku_id, author_display_name, author_anonymized_at,
             rating, content, edit_count, status, active_report_count, has_media,
-            first_reported_at, hidden_at, created_at, updated_at
+            first_reported_at, hidden_at, created_at, updated_at, content_edited_at
             """;
 
     /**
@@ -51,7 +51,7 @@ public final class ReviewRepositoryQueries {
                 SELECT r.id, r.eligibility_id, r.product_id, r.sku_id, r.author_display_name,
                        r.author_anonymized_at, r.rating, r.content, r.edit_count, r.status,
                        r.active_report_count, r.has_media, r.first_reported_at, r.hidden_at,
-                       r.created_at, r.updated_at, e.variant_name_snapshot,
+                       r.created_at, r.updated_at, r.content_edited_at, e.variant_name_snapshot,
                        e.product_name_snapshot, e.product_image_url_snapshot
                   FROM review_eligibilities e
                   JOIN reviews r ON r.eligibility_id = e.id
@@ -77,7 +77,7 @@ public final class ReviewRepositoryQueries {
                 SELECT r.id, r.eligibility_id, r.product_id, r.sku_id, r.author_display_name,
                        r.author_anonymized_at, r.rating, r.content, r.edit_count, r.status,
                        r.active_report_count, r.has_media, r.first_reported_at, r.hidden_at,
-                       r.created_at, r.updated_at, e.variant_name_snapshot
+                       r.created_at, r.updated_at, r.content_edited_at, e.variant_name_snapshot
                   FROM reviews r
                   JOIN review_eligibilities e ON e.id = r.eligibility_id
                  WHERE r.status = 'APPROVED' AND r.product_id = ?

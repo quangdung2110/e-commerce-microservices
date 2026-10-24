@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -28,6 +29,12 @@ any S3-compatible object storage (MinIO in compose). Kafka/Connect and object st
 fixed dependencies of the design, not of the read path.
 
 ## 0. Runtime choices and why
+
+Build storage trước khi chạy integration tests: `docker compose build minio`.
+Testcontainers dùng cùng image `ecommerce-minio:RELEASE.2025-10-15T17-29-55Z` như compose.
+`infra/minio/Dockerfile` build source chính thức với archive SHA-256 cố định vì upstream
+không còn phân phối binary/image dựng sẵn. `ReviewBoundaryIT` PUT lại URL đã ký sau attach,
+assert HTTP 412 và byte vẫn nguyên; kiểm header đơn thuần không đủ chứng nhận immutability.
 
 **Spring JDBC, not an ORM.** Every command in this design is a specific statement: a
 conditional `UPDATE` that doubles as the ownership check, a `FOR UPDATE` row lock, an
@@ -51,11 +58,12 @@ not on this projection, whose every write already recomputes the whole row.
 
 ## 1. Local schema
 
-The service applies `V1`–`V3` with Flyway at startup (`db/migration/`); each file is kept
+The service applies `V1`–`V4` with Flyway at startup (`db/migration/`); each file is kept
 byte-identical to its counterpart under [`schema/`](./schema) — `V1__init_review_schema.sql` to
 [`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql),
 `V2__eligibility_product_snapshot.sql` to `0002_eligibility_product_snapshot.sql` and
-`V3__privacy_sweep_includes_failed.sql` to `0003_privacy_sweep_includes_failed.sql` — and
+`V3__privacy_sweep_includes_failed.sql` to `0003_privacy_sweep_includes_failed.sql`, and
+`V4__review_content_edited_at.sql` to `0004_review_content_edited_at.sql` — and
 `SchemaSyncTest` fails the build if any pair ever drifts.
 
 Applying the schema by hand needs PostgreSQL only. `init-db.sh` creates the
@@ -64,11 +72,17 @@ Applying the schema by hand needs PostgreSQL only. `init-db.sh` creates the
 
 ```bash
 docker compose up -d postgres
-for f in docs/review/schema/000[123]_*.sql; do
-  docker compose exec -T postgres psql -U postgres -d review_service < "$f"
+for f in docs/review/schema/000[1234]_*.sql; do
+  docker compose exec -T postgres psql --single-transaction -U postgres -d review_service < "$f"
 done
 docker compose exec postgres psql -U postgres -d review_service -c "\dt review.*"
+docker compose up postgres-init   # hands every object to the review_service role
 ```
+
+The service itself logs in as `review_service`, the owner of the database, never as the
+superuser; `postgres-init` creates the role and moves ownership of objects created by hand,
+and runs on every `docker compose up` ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)).
+Object storage uses the MinIO user `review-service`, limited to the `review-media` bucket.
 
 `init-db.sh` only runs when the PostgreSQL volume is first created. On an existing
 volume the database will be missing; create it once rather than wiping the volume:
@@ -77,7 +91,7 @@ volume the database will be missing; create it once rather than wiping the volum
 docker compose exec postgres psql -U postgres -c "CREATE DATABASE review_service"
 ```
 
-Schema CI must apply `0001`, `0002` and `0003` in order to an empty PostgreSQL 14 database. It
+Schema CI must apply `0001`–`0004` in order to an empty PostgreSQL 14 database. It
 must also verify the dynamic outbox bootstrap created the current and next UTC partitions.
 
 ### Auth → Review `USER_DELETED` persistence contract test
@@ -196,9 +210,9 @@ the proof lives because it is not where the row suggests:
 
 ## 4. Migration and deployment rules
 
-`V1`–`V3` are applied by Flyway and environments hold Review data, so none of them is edited:
+`V1`–`V4` are applied by Flyway and environments hold Review data, so none of them is edited:
 Flyway rejects a changed checksum at startup. Every change is a new forward-only migration
-(`V4`, …): add nullable/defaulted columns first, create large indexes concurrently, run
+(`V5`, …): add nullable/defaulted columns first, create large indexes concurrently, run
 dual-read/write compatibility windows, then remove obsolete fields later. A new migration is
 mirrored into `docs/review/schema/` as `000N_<name>.sql` in the same commit and added to
 `SchemaSyncTest`, which compares each pair byte for byte.

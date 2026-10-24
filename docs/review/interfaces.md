@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -67,7 +68,24 @@ when `CLAIMED`, its review ID. `GET /api/v1/reviews/me/{review_id}` is the recov
 read for a lost edit response. Neither endpoint exposes reports, reporter identity,
 legal record or takedown reason.
 
+`OwnerReview` also exposes optional, nullable, read-only `content_edited_at` on
+create/PATCH responses and owner single/list reads. The current server always emits
+it (including null). It is the transaction time of the accepted author PATCH, whether
+it changes rating, content or media. Moderation, reports, official replies and privacy
+never change it. `updated_at` remains a general record-update timestamp. Public review,
+Admin snapshots and event payloads keep their existing fields.
+
+For legacy edited reviews, migration V4 recovers the timestamp only from unambiguous
+retained `REVIEW_UPDATED` history; otherwise it stays null. A client must not fall back
+to `updated_at`. With `edit_count=1` and null/absent time, show “Đã chỉnh sửa” without a
+date. Keeping the new response field optional permits the frontend to handle an older
+backend during rollout; requests cannot set or overwrite it.
+
 ### Request bodies
+
+Integer fields reject fractional JSON tokens (including `1.0`) and numeric strings
+before any entitlement claim or upload quota reservation. Validation errors carry
+wire field names only; rejected content and framework/Java internals are never returned.
 
 Every request body schema is `additionalProperties: false`, and Review enforces it: a field
 the contract does not define is `400 INVALID_REQUEST` and `errors[].field` names it. That is
@@ -186,7 +204,7 @@ the allowlist of the route's group is `403 FORBIDDEN`, so the BFF cannot page th
 and Search cannot read the PDP summary. An internal route that belongs to no group
 rejects every caller. The filter matches the decoded path without `;` parameters (the path
 Spring MVC routes on), not the raw URI, so `/%69nternal/v1/...` or `/internal/v1;x=1/...` cannot
-skip the token check (`InternalIdentityFilterPathTest`).
+skip the check (`InternalIdentityFilterPathTest`). There are no bearer tokens to rotate.
 
 ### PDP summary
 

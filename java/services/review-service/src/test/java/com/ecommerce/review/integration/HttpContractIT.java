@@ -191,6 +191,8 @@ class HttpContractIT extends AbstractReviewIT {
         assertThat(Pattern.matches("^/api/v1/reviews/[0-9a-fA-F-]{36}$", created.header("Location"))).isTrue();
         assertThat(created.body().path("visibility_status").asText()).isEqualTo("APPROVED");
         assertThat(created.body().path("media")).hasSize(1);
+        assertThat(created.body().has("content_edited_at")).isTrue();
+        assertThat(created.body().path("content_edited_at").isNull()).isTrue();
 
         Response status = expect(PUBLIC, "GET", "/api/v1/reviews/me/eligibilities/{eligibility_id}",
                 "/api/v1/reviews/me/eligibilities/" + eligibilityId, null, 200, as(buyer));
@@ -207,6 +209,10 @@ class HttpContractIT extends AbstractReviewIT {
                 Map.of("rating", 5), 200, as(buyer));
         assertThat(edited.body().path("edit_count").asInt()).isEqualTo(1);
         assertThat(edited.body().path("content").asText()).isEqualTo("Vải đẹp");
+        String authorEditTime = edited.body().path("content_edited_at").asText();
+        assertThat(Instant.parse(authorEditTime)).isEqualTo(Instant.parse(
+                outboxPayloads(com.ecommerce.review.outbox.ReviewEventType.REVIEW_UPDATED.type())
+                        .get(0).path("time").asText()));
         Response second = expect(PUBLIC, "PATCH", "/api/v1/reviews/{review_id}", "/api/v1/reviews/" + reviewId,
                 Map.of("content", "đổi lại"), 409, as(buyer));
         assertThat(second.body().path("code").asText()).isEqualTo("EDIT_QUOTA_EXHAUSTED");
@@ -228,6 +234,9 @@ class HttpContractIT extends AbstractReviewIT {
         Response ownReview = expect(PUBLIC, "POST", "/api/v1/reviews/{review_id}/reports",
                 "/api/v1/reviews/" + reviewId + "/reports", Map.of("reason", "SPAM"), 403, as(buyer));
         assertThat(ownReview.body().path("code").asText()).isEqualTo("REVIEW_REPORT_FORBIDDEN");
+        Response afterReport = expect(PUBLIC, "GET", "/api/v1/reviews/me/{review_id}",
+                "/api/v1/reviews/me/" + reviewId, null, 200, as(buyer));
+        assertThat(afterReport.body().path("content_edited_at").asText()).isEqualTo(authorEditTime);
     }
 
     @Test
@@ -447,6 +456,9 @@ class HttpContractIT extends AbstractReviewIT {
         List<Response> responses = List.of(
                 call("POST", "/api/v1/reviews", "{", as(buyer)),
                 call("POST", "/api/v1/reviews", Map.of("eligibility_id", eligibilityId, "rating", 9), as(buyer)),
+                call("POST", "/api/v1/reviews", Map.of("eligibility_id", eligibilityId, "rating", -1), as(buyer)),
+                call("POST", "/api/v1/reviews", Map.of("eligibility_id", eligibilityId, "rating", 5,
+                        "content", "private-content-".repeat(334)), as(buyer)),
                 call("POST", "/api/v1/reviews", Map.of("rating", 5), as(buyer)),
                 call("POST", "/api/v1/reviews/" + UUID.randomUUID() + "/reports", Map.of("reason", "NOPE"), as(buyer)),
                 call("PATCH", "/api/v1/reviews/" + UUID.randomUUID(), "{}", as(buyer)),
@@ -458,7 +470,7 @@ class HttpContractIT extends AbstractReviewIT {
             assertThat(PUBLIC.violationsOfSchema("Problem", response.body())).isEmpty();
             assertThat(response.body().path("code").asText()).isEqualTo("INVALID_REQUEST");
             assertThat(response.body().toString())
-                    .doesNotContain("org.springframework", "com.ecommerce", "java.", "Validation failed for argument");
+                    .doesNotContain("org.springframework", "com.ecommerce", "java.", "Validation failed for argument", "private-content-");
         }
     }
 
@@ -474,8 +486,11 @@ class HttpContractIT extends AbstractReviewIT {
                 asAdmin(admin));
         Response patch = call("PATCH", "/api/v1/reviews/" + UUID.randomUUID(), Map.of("rating", 4, "status", "REMOVED"),
                 as(buyer));
+        Response upload = call("POST", "/api/v1/reviews/media/upload-urls",
+                Map.of("media_type", "IMAGE", "content_type", "image/png", "byte_size", 20,
+                        "author_name", "Mạo danh"), as(buyer));
 
-        for (Response response : List.of(post, takedown, patch)) {
+        for (Response response : List.of(post, takedown, patch, upload)) {
             assertThat(response.status()).as(response.body().toString()).isEqualTo(400);
             assertCode(response, "INVALID_REQUEST");
         }
@@ -483,6 +498,7 @@ class HttpContractIT extends AbstractReviewIT {
         assertThat(takedown.body().path("errors").get(0).path("field").asText()).isEqualTo("approved_by_admin_id");
         // Nothing was claimed by the rejected create.
         assertThat(eligibilityStatus(eligibilityId).name()).isEqualTo("PENDING");
+        assertThat(jdbc.sql("SELECT count(*) FROM review_media_assets").query(Long.class).single()).isZero();
     }
 
     @Test

@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -146,10 +147,15 @@ locks review and joins eligibility to authorize owner. Require `status=APPROVED`
 `edit_count=0`. Review preserves fields absent from PATCH; `content: null` clears text,
 an absent `media_asset_ids` preserves attachments and an empty array removes all of
 them. It verifies any newly supplied object metadata before its transaction, then
-saves old rating/media presence, replaces requested assets, sets `edit_count=1`, and
+saves old rating/media presence, replaces requested assets, sets `edit_count=1` and
+`content_edited_at` to the transaction time, and
 writes `REVIEW_UPDATED` carrying old/new metric values and `affects_aggregate`.
 Content-only edits and media replacement retaining `has_media=true` set
 `affects_aggregate=false`.
+
+`content_edited_at` is null at creation; it is immutable across reporting, moderation,
+replies and privacy. Owner reads use it for author-edit history; `updated_at` remains
+a general record timestamp. Legacy missing/ambiguous edit history remains null.
 
 Second edit returns `409 EDIT_QUOTA_EXHAUSTED`. A lost successful response is resolved
 by reading review; retry must not apply an additional edit.

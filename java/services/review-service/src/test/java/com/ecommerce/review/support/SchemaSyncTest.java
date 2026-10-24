@@ -33,6 +33,11 @@ class SchemaSyncTest {
         assertIdentical("V3__privacy_sweep_includes_failed.sql", "0003_privacy_sweep_includes_failed.sql");
     }
 
+    @Test
+    void theAuthorEditTimestampMigrationIsTheDocumentedSchema() throws IOException {
+        assertIdentical("V4__review_content_edited_at.sql", "0004_review_content_edited_at.sql");
+    }
+
     private static void assertIdentical(String migrationName, String documentedName) throws IOException {
         Path documented = ContractSchemas.repositoryRoot().resolve("docs/review/schema/" + documentedName);
         Path migration = Path.of("src/main/resources/db/migration/" + migrationName).toAbsolutePath();

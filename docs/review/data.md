@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -112,6 +113,34 @@ Quota sửa thuộc `reviews.edit_count` (`0..1`), không nằm trong eligibilit
 review chỉ tồn tại khi `eligibility.status = CLAIMED`; thao tác tạo review là
 `UPDATE ... WHERE status='PENDING' AND expires_at > now() RETURNING` rồi insert review
 trong cùng transaction.
+
+`reviews.content_edited_at` (`TIMESTAMPTZ`, nullable; migration V4/schema 0004) là
+transaction time của PATCH được tác giả chấp nhận, gồm sửa rating, content hoặc media.
+Create để null. Conditional UPDATE tăng `edit_count` lên 1 và đặt timestamp này trong
+cùng transaction với `REVIEW_UPDATED`; thời gian bằng `payload.time` của event đó.
+Report, hide, dismiss, official reply, takedown và privacy không ghi cột này.
+`updated_at` vẫn là lần cập nhật bản ghi bất kỳ, không phải thời gian tác giả sửa.
+
+V4 chỉ backfill review `edit_count=1` khi outbox còn bằng chứng `REVIEW_UPDATED`
+của review với một transaction time duy nhất (`created_at` của outbox bằng event time).
+Không dùng `reviews.updated_at`, không dùng thời điểm migration. Thiếu event hoặc có
+nhiều edit time mâu thuẫn thì giữ null. Backfill giữ nguyên `updated_at`, edit quota,
+rating, visibility và không sinh event. CHECK chỉ cho timestamp khác null khi
+`edit_count=1`; review cũ đã sửa vẫn có thể null vì thiếu bằng chứng lịch sử.
+
+`reviews.content_edited_at` (`TIMESTAMPTZ`, nullable; migration V4/schema 0004) là
+transaction time của PATCH được tác giả chấp nhận, gồm sửa rating, content hoặc media.
+Create để null. Conditional UPDATE tăng `edit_count` lên 1 và đặt timestamp này trong
+cùng transaction với `REVIEW_UPDATED`; thời gian bằng `payload.time` của event đó.
+Report, hide, dismiss, official reply, takedown và privacy không ghi cột này.
+`updated_at` vẫn là lần cập nhật bản ghi bất kỳ, không phải thời gian tác giả sửa.
+
+V4 chỉ backfill review `edit_count=1` khi outbox còn bằng chứng `REVIEW_UPDATED`
+của review với một transaction time duy nhất (`created_at` của outbox bằng event time).
+Không dùng `reviews.updated_at`, không dùng thời điểm migration. Thiếu event hoặc có
+nhiều edit time mâu thuẫn thì giữ null. Backfill giữ nguyên `updated_at`, edit quota,
+rating, visibility và không sinh event. CHECK chỉ cho timestamp khác null khi
+`edit_count=1`; review cũ đã sửa vẫn có thể null vì thiếu bằng chứng lịch sử.
 
 `reviews` cố ý copy `product_id` và `sku_id` cho public read. Composite foreign key
 `(eligibility_id, product_id, sku_id)` bảo đảm copy này luôn trùng entitlement. Review

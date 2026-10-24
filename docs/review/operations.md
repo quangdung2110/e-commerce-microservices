@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -21,6 +22,28 @@ verified_against_commit: null
 ---
 
 # Review Service — Vận hành
+
+## Author edit timestamp rollout (V4)
+
+Deploy migration `V4__review_content_edited_at.sql` with the new Review backend, then
+the regenerated frontend. Existing response fields/statuses and event payloads remain
+unchanged. `OwnerReview.content_edited_at` is optional on the wire for rolling clients;
+the new backend always includes it, nullable. An older backend may omit it; the frontend
+must never use `updated_at` as a fallback author-edit time.
+
+V4 takes the PostgreSQL ALTER TABLE lock and scans retained `review_outbox` edit events
+to backfill only unambiguous author-edit transaction times. Budget a migration window
+for that scan/lock on large installations. Run the documented SQL **in one transaction**
+(`psql --single-transaction`), as Flyway does: the record `updated_at` trigger is disabled
+only during the backfill under that lock and re-enabled before commit. Other writes are
+blocked until commit; quota/status/ratings are not rewritten and no events are emitted.
+Missing or conflicting retained history stays null; do not repair it from `updated_at`.
+
+After deployment verify: a new review has null author-edit time; an accepted author PATCH
+sets it to the `REVIEW_UPDATED` transaction time; report/hide/dismiss/reply/takedown and
+privacy leave it unchanged. Check Flyway version 4 and trigger `trg_review_updated_at`
+enabled. Backend rollback may leave this additive column in place; do not drop the column
+or overwrite Flyway history/checksums to roll back application code.
 
 ## 1. Proposed SLOs
 
@@ -45,6 +68,23 @@ and the critical alert on `review_privacy_hard_delete_overdue_total` fires when 
 zero for more than 25 hours, not on the first non-zero sample.
 
 ## 2. Health and dependencies
+
+Storage là một phần của invariant immutable media: phải enforce signed conditional PUT
+`If-None-Match: *`, trả 412 khi object đã tồn tại và giữ byte ban đầu. MinIO local cũ
+`RELEASE.2024-01-16T16-07-38Z` không đáp ứng; compose/test dùng source release
+`RELEASE.2025-10-15T17-29-55Z` build bằng `infra/minio/Dockerfile`.
+Nguồn release: [upstream](https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z).
+Không downgrade storage về bản cũ. Khi nâng từ instance từng ký upload thiếu điều kiện,
+ngừng issue upload và để URL cũ hết TTL (15 phút mặc định) trước khi mở lại media writes;
+giữ nguyên volume, không dùng `down -v`. Health endpoint chỉ chứng minh service sẵn sàng;
+phải chạy `ReviewBoundaryIT` để chứng minh write-once khi đổi storage/provider.
+
+Entitlement đã nhận completed event cũ không tự thay snapshot khi deploy producer mới.
+Để sửa variant NULL, operator có thể chạy
+`node scripts/repair-review-variant-snapshots.mjs --order=770013` (dry-run), kiểm mapping,
+rồi thêm `--apply`. Script chỉ cập nhật variant NULL của entitlement đúng buyer/order/
+product/SKU từ line thuộc Order COMPLETED; bỏ qua identity đã erase và từ chối split-line
+snapshot mâu thuẫn. Không thay quyền, review, rating, expiry hay outbox; chạy lại idempotent.
 
 API readiness requires PostgreSQL, configured `REVIEW_AUTHOR_ALIAS_HMAC_SECRET` and
 `REVIEW_PRIVACY_GUARD_HMAC_SECRET`, and the `review_outbox` partition of the **current UTC
@@ -81,7 +121,8 @@ retryable 503 for that media operation and never attaches an unchecked object.
 | `REVIEW_PRIVACY_GUARD_HMAC_SECRET` | none | Required, stable secret for HMAC deletion guards. Do not rotate while a guard with its key version is retained. |
 | `REVIEW_INTERNAL_PDP_CALLERS` | `product-detail-bff` | Allowlist `X-Service-Identity` cho `/internal/v1/reviews/products/**`. Rỗng nghĩa là từ chối mọi caller ([ADR-015](./decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)) |
 | `REVIEW_INTERNAL_EXPORT_CALLERS` | `search-service` | Allowlist `X-Service-Identity` cho `/internal/v1/reviews/rating-aggregate-exports**`. Tách khỏi PDP để Product Detail BFF không phân trang được rating export và Search không đọc được PDP summary |
-| `REVIEW_S3_ENDPOINT` / `REVIEW_S3_BUCKET` / `REVIEW_S3_ACCESS_KEY` / `REVIEW_S3_SECRET_KEY` | none | Object storage S3-compatible cho media bytes; đổi provider là thay cấu hình, không phải đổi contract |
+| `REVIEW_S3_ENDPOINT` / `REVIEW_S3_BUCKET` / `REVIEW_S3_ACCESS_KEY` / `REVIEW_S3_SECRET_KEY` | none | Object storage S3-compatible cho media bytes; đổi provider là thay cấu hình, không phải đổi contract. Credential là user riêng của Review, không bao giờ là root: compose dùng user `review-service` do `minio-init` tạo với policy chỉ bucket `review-media` ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)) |
+| Secret ngoài dev | profile khác `dev`/`local`/`test` | `StartupSecretGuard` dừng service khi hai HMAC secret (≥ 32 ký tự) hoặc `REVIEW_S3_*` trống, quá ngắn, là giá trị dev đã commit (`dev-review-*`, `minioadmin`, `review-service-local-dev`) hoặc placeholder. docker-compose chạy profile `prod,local` |
 | `REVIEW_S3_PUBLIC_ENDPOINT` | empty → `REVIEW_S3_ENDPOINT` | Origin storage mà trình duyệt truy cập được; presigner ký trực tiếp origin này cho upload/download. S3 client HEAD/DELETE vẫn dùng endpoint nội bộ. Compose local: `http://localhost:9000`; không rewrite host của signed URL |
 | `REVIEW_S3_REGION` | `us-east-1` | Region dùng để ký SigV4; MinIO chấp nhận bất kỳ giá trị nào miễn là ổn định |
 | `REVIEW_S3_PATH_STYLE` | true | Path-style addressing. MinIO và phần lớn S3 server tự host không phục vụ virtual-host bucket |

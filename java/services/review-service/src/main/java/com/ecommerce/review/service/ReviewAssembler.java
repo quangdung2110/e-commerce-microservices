@@ -78,7 +78,8 @@ public class ReviewAssembler {
                 review.status(),
                 review.editCount(),
                 review.createdAt(),
-                review.updatedAt());
+                review.updatedAt(),
+                review.contentEditedAt());
     }
 
     public PublicDtos.OfficialReply toOfficialReply(AdminReply reply) {

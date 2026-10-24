@@ -9,6 +9,7 @@ evidence:
   - docs/review/schema/0001_initial_review_schema.sql
   - docs/review/schema/0002_eligibility_product_snapshot.sql
   - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
   - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
@@ -60,7 +61,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-003` | Chỉ `owner_user_id` của eligibility còn `PENDING` được tạo review. |
 | `REVIEW-BR-004` | Tạo review atomically chuyển `PENDING → CLAIMED`; một eligibility sinh tối đa một review. |
 | `REVIEW-BR-005` | Rating nằm trong 1–5; content là null hoặc non-blank, không quá maximum cố định. |
-| `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1. |
+| `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1 và đặt `content_edited_at` bằng transaction time. Create để timestamp null; moderation/privacy không đổi nó. `updated_at` chỉ là thời gian cập nhật record chung. |
 | `REVIEW-BR-007` | Caller chỉ gửi `asset_id` của asset do mình sở hữu. Khi create/edit, Review xác minh object đã upload, rồi atomically chuyển asset hợp lệ sang `VERIFIED`/`ATTACHED`; asset phải chưa attach và không vượt số lượng tối đa. |
 | `REVIEW-BR-008` | Một account có tối đa một active report cho một review khi identity còn tồn tại; tác giả không tự report. Sau khi admin dismiss, caller có thể report lại. |
 | `REVIEW-BR-009` | Report đầu tiên của một chu kỳ ghi `first_reported_at`. Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT` và ghi `hidden_at`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. Vì hide chuyển mọi report `PENDING` thành `ACTIONED`, một queue lọc theo report status sẽ mất case đúng lúc cần phân xử; moderation queue vì thế khóa theo review state, và đó là đường duy nhất lấy được `review_id` cho dismiss. |

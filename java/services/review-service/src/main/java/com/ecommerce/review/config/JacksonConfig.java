@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.cfg.CoercionAction;
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
+import com.fasterxml.jackson.databind.type.LogicalType;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -34,9 +37,14 @@ public class JacksonConfig {
     @Bean
     @Primary
     public ObjectMapper objectMapper() {
-        return base()
+        ObjectMapper mapper = base()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+                .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT)
                 .setSerializationInclusion(JsonInclude.Include.ALWAYS);
+        mapper.coercionConfigFor(LogicalType.Integer)
+                .setCoercion(CoercionInputShape.String, CoercionAction.Fail)
+                .setCoercion(CoercionInputShape.EmptyString, CoercionAction.Fail);
+        return mapper;
     }
 
     /**

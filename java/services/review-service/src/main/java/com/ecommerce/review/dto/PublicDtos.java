@@ -55,7 +55,8 @@ public final class PublicDtos {
     }
 
     /**
-     * The owner view. It adds {@code visibility_status}, {@code edit_count} and the
+     * The owner view. It adds {@code visibility_status}, {@code edit_count}, the
+     * nullable author-only {@code content_edited_at}, and the
      * product name and thumbnail snapshotted at purchase, and nothing else: reports, reporter identity, the legal record and the takedown reason
      * are not owner-visible ({@code docs/review/interfaces.md 2}).
      */
@@ -75,7 +76,8 @@ public final class PublicDtos {
             ReviewStatus visibilityStatus,
             int editCount,
             Instant createdAt,
-            Instant updatedAt) {
+            Instant updatedAt,
+            Instant contentEditedAt) {
     }
 
     public record PublicReviewPage(List<PublicReview> items, String nextCursor) {

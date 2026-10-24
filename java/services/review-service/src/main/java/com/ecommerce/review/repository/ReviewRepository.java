@@ -45,7 +45,8 @@ public class ReviewRepository {
             Rows.instant(rs, "first_reported_at"),
             Rows.instant(rs, "hidden_at"),
             Rows.instant(rs, "created_at"),
-            Rows.instant(rs, "updated_at"));
+            Rows.instant(rs, "updated_at"),
+            Rows.instant(rs, "content_edited_at"));
 
     private static final RowMapper<ReviewWithVariant> WITH_VARIANT =
             (rs, row) -> new ReviewWithVariant(MAPPER.mapRow(rs, row), rs.getString("variant_name_snapshot"));
@@ -115,7 +116,7 @@ public class ReviewRepository {
                 SELECT r.id, r.eligibility_id, r.product_id, r.sku_id, r.author_display_name,
                        r.author_anonymized_at, r.rating, r.content, r.edit_count, r.status,
                        r.active_report_count, r.has_media, r.first_reported_at, r.hidden_at,
-                       r.created_at, r.updated_at, e.variant_name_snapshot,
+                       r.created_at, r.updated_at, r.content_edited_at, e.variant_name_snapshot,
                        e.product_name_snapshot, e.product_image_url_snapshot
                   FROM reviews r
                   JOIN review_eligibilities e ON e.id = r.eligibility_id
@@ -205,16 +206,17 @@ public class ReviewRepository {
      * <p>{@code edit_count = 0} is part of the predicate, so a duplicated request cannot
      * spend a second edit even if the first response was lost (REVIEW-BR-006).
      */
-    public Optional<Review> applyEdit(UUID reviewId, int rating, String content, boolean hasMedia) {
+    public Optional<Review> applyEdit(UUID reviewId, int rating, String content, boolean hasMedia, Instant now) {
         return jdbc.sql("""
                 UPDATE reviews
-                   SET rating = ?, content = ?, has_media = ?, edit_count = 1
+                   SET rating = ?, content = ?, has_media = ?, edit_count = 1, content_edited_at = ?
                  WHERE id = ? AND status = 'APPROVED' AND edit_count = 0
                 RETURNING
                 """ + COLUMNS)
                 .param(rating)
                 .param(content)
                 .param(hasMedia)
+                .param(OffsetDateTime.ofInstant(now, ZoneOffset.UTC))
                 .param(reviewId)
                 .query(MAPPER).optional();
     }

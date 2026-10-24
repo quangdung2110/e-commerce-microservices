@@ -515,6 +515,7 @@ components:
       maxLength: 64
     Rating:
       type: integer
+      description: JSON integer token from 1 to 5. Decimal tokens (including 1.0) and numeric strings are rejected with 400 INVALID_REQUEST without consuming eligibility or edit quota.
       minimum: 1
       maximum: 5
     ReviewVisibilityStatus:
@@ -623,7 +624,19 @@ components:
         visibility_status: { $ref: '#/components/schemas/ReviewVisibilityStatus' }
         edit_count: { type: integer, minimum: 0, maximum: 1 }
         created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        updated_at:
+          type: string
+          format: date-time
+          description: Last record update, including moderation/privacy; not the author edit time.
+        content_edited_at:
+          type: [string, 'null']
+          format: date-time
+          readOnly: true
+          description: >-
+            Transaction time of the author's accepted PATCH (rating, content or media).
+            Null before any edit or for legacy edited reviews whose original edit event
+            is no longer available or unambiguous. Reporting, moderation, official replies
+            and privacy processing never change it. Never infer it from updated_at.
     PublicReviewPage:
       type: object
       additionalProperties: false
@@ -761,7 +774,9 @@ components:
           minimum: 1
           description: >-
             Declared object size in bytes; the object that is uploaded must have exactly
-            this size. Above the configured limit for `media_type` (default 10 MiB for
+            this size. Must be a JSON integer token; decimal tokens and numeric strings
+            are rejected with 400 INVALID_REQUEST without issuing an asset or consuming quota.
+            Above the configured limit for `media_type` (default 10 MiB for
             IMAGE, 100 MiB for VIDEO) is `400 INVALID_REQUEST`.
         checksum:
           type: string
@@ -782,7 +797,12 @@ components:
         headers:
           type: object
           additionalProperties: { type: string, minLength: 1, maxLength: 512 }
-          description: Required storage headers. Client must not add a different object key or overwrite target.
+          description: >-
+            Required storage headers, including signed If-None-Match '*'. Client must
+            preserve signed headers (Content-Length is set by the browser). Storage
+            rejects subsequent PUTs to the same object with 412 without changing bytes,
+            including after attachment. Removing the conditional header invalidates the
+            signature. Client must not add a different object key or overwrite target.
     IssuedMediaAsset:
       type: object
       additionalProperties: false
