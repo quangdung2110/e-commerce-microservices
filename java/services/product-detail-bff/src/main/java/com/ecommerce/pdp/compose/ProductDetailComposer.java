@@ -4,7 +4,6 @@ import com.ecommerce.pdp.api.ProductDetailResponse;
 import com.ecommerce.pdp.api.ProductDetailResponse.AvailabilityStatus;
 import com.ecommerce.pdp.client.InventoryClient;
 import com.ecommerce.pdp.client.InventoryPayload;
-import com.ecommerce.pdp.client.ProductClient;
 import com.ecommerce.pdp.client.ProductPayload;
 import com.ecommerce.pdp.client.RequestContext;
 import com.ecommerce.pdp.client.ReviewClient;
@@ -29,11 +28,12 @@ import java.util.stream.Collectors;
 import static net.logstash.logback.argument.StructuredArguments.kv;
 
 /**
- * WF-PDP-001 (docs/product-detail-bff/workflows.md): Product trước, rồi Inventory và
- * Review song song, rồi compose. Product là dependency bắt buộc; Inventory và Review chỉ
- * degrade phần của mình thành {@code UNKNOWN}/{@code UNAVAILABLE}.
+ * WF-PDP-001 (docs/product-detail-bff/workflows.md): Product trước (qua {@link CatalogCache},
+ * ADR-011), rồi Inventory và Review song song, rồi compose. Product là dependency bắt buộc;
+ * Inventory và Review chỉ degrade phần của mình thành {@code UNKNOWN}/{@code UNAVAILABLE}.
  *
- * <p>Không có retry, cache hay trạng thái nào giữa các request. Mọi quyết định degrade
+ * <p>Không có retry. Trạng thái duy nhất giữa các request là catalog Product trong
+ * {@link CatalogCache}; Inventory và Review luôn được gọi mới. Mọi quyết định degrade
  * dựa trên {@link CallResult} do {@link DependencyGuard} phân loại.
  */
 @Component
@@ -42,20 +42,20 @@ public class ProductDetailComposer {
     private static final Logger log = LoggerFactory.getLogger(ProductDetailComposer.class);
 
     private final DependencyGuard guard;
-    private final ProductClient productClient;
+    private final CatalogCache catalog;
     private final InventoryClient inventoryClient;
     private final ReviewClient reviewClient;
     private final MediaUrls mediaUrls;
     private final PdpMetrics metrics;
 
     public ProductDetailComposer(DependencyGuard guard,
-                                 ProductClient productClient,
+                                 CatalogCache catalog,
                                  InventoryClient inventoryClient,
                                  ReviewClient reviewClient,
                                  MediaUrls mediaUrls,
                                  PdpMetrics metrics) {
         this.guard = guard;
-        this.productClient = productClient;
+        this.catalog = catalog;
         this.inventoryClient = inventoryClient;
         this.reviewClient = reviewClient;
         this.mediaUrls = mediaUrls;
@@ -63,7 +63,7 @@ public class ProductDetailComposer {
     }
 
     public Mono<PdpResult> compose(String slug, RequestContext context) {
-        return guard.call(Dependency.PRODUCT, context.deadline(), () -> productClient.fetch(slug, context))
+        return catalog.lookup(slug, context)
                 .flatMap(product -> {
                     if (!product.isSuccess()) {
                         return Mono.just(new PdpResult.Unavailable(product.retryAfterSeconds()));

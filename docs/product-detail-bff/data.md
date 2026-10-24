@@ -15,8 +15,10 @@ Product Detail BFF không sở hữu persistent database, stock projection, Kafk
 bootstrap cursor hoặc Review store. `SkuAvailabilityState` và mọi cache/read replica
 cho availability thuộc Inventory; catalog thuộc Product; review/rating thuộc Review.
 
-BFF chỉ giữ dữ liệu trong phạm vi request để compose response. Không được thêm foreign
-key, join database hoặc access credential tới Product, Inventory hay Review database.
+BFF chỉ giữ dữ liệu trong phạm vi request để compose response, ngoại trừ catalog Product
+trong cache in-process có TTL ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md),
+mục dưới). Không được thêm foreign key, join database hoặc access credential tới Product,
+Inventory hay Review database.
 
 ## Cache boundary
 
@@ -30,6 +32,24 @@ phù hợp freshness budget đã chốt. `catalog_revision` không được dùn
 key hay điều kiện invalidation: category và nhãn thuộc tính đổi mà không tăng revision
 này. Khi cache miss hoặc cache bypass, BFF gọi Product, Inventory và Review theo workflow
 chuẩn.
+
+### Catalog cache in-process (ADR-011)
+
+Policy đã chốt cho phần catalog:
+
+| Mục | Giá trị |
+|---|---|
+| Nội dung | Đúng payload buyer-read `200` của Product đã validate; không availability, không review, không response PDP |
+| Key | Slug |
+| TTL | `PDP_CATALOG_CACHE_TTL`, mặc định 10 giây, cho phép 1–60 giây; tính từ lúc Product trả, không gia hạn khi đọc |
+| Invalidation | Chỉ hết hạn theo TTL hoặc bị loại khi vượt trần bộ nhớ; không theo sự kiện, không dựa vào `catalog_revision` |
+| Không giữ | `404`, timeout, `5xx`, sai contract, circuit mở, bulkhead đầy, hết budget |
+| Gộp lời gọi | Request cùng slug khi chưa có entry chờ chung một lời gọi Product |
+| Bộ nhớ | `PDP_CATALOG_CACHE_MAX_WEIGHT`, mặc định 64 MB ước lượng |
+| Bypass | `PDP_CATALOG_CACHE_ENABLED=false`: mỗi request một lời gọi Product như trước |
+
+Entry mất khi pod restart, không cần recovery. Hệ quả: giá, tên, ảnh, markdown, danh mục và
+nhãn thuộc tính trên PDP có thể trễ tối đa một TTL; Checkout vẫn lấy giá thật từ Product.
 
 Response degrade không bao giờ được cache: `200` có ít nhất một SKU `UNKNOWN` hoặc
 `review_section.status = UNAVAILABLE`, và mọi `503`, luôn mang `Cache-Control: no-store`

@@ -91,6 +91,15 @@ theo đúng mapping và không tính vào circuit breaker; `400`/`401`/`403` t�
 được map đúng, phát alert và không tính vào circuit breaker; client hủy request thì mọi
 call con bị hủy; mọi response degrade, `404` và `503` mang `Cache-Control: no-store`.
 
+Test catalog cache theo [ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)
+(`CatalogCacheTest`, `CatalogCachePropertiesValidationTest`): lượt hai trong TTL không gọi
+Product nhưng vẫn gọi Inventory và Review; hết TTL thì gọi lại; `404` và lỗi Product không
+được giữ; tồn kho luôn mới; 20 request đồng thời cùng slug tạo một lời gọi Product; hủy
+request khởi tạo không làm hỏng request đang chờ; TTL ngoài 1–60 giây hoặc trần dưới 1 MB
+thì không khởi động. Các test còn lại chạy với cache tắt (`AbstractPdpTest`) để giữ kiểm
+chứng một lời gọi Product mỗi request; benchmark trước/sau ở
+[docs/performance](../performance/pdp-catalog-cache-benchmark-2026-10-17.md).
+
 ## Definition of Done
 
 Public OpenAPI và cả ba internal dependency contract có contract

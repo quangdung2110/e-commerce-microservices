@@ -84,6 +84,11 @@ catalog.
 | `X-Correlation-ID` (cùng giá trị request ID) | — | Có (bắt buộc) | — |
 | `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Có |
 
+Khi catalog cache bật ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)), một lời
+gọi Product phục vụ mọi request cùng slug tới trong lúc nó chạy; nó mang `X-Request-Id` và
+`traceparent` của request khởi tạo, nên request gộp vào không xuất hiện riêng trong log
+Product. Request được phục vụ từ cache không gọi Product.
+
 **Request ID đã chuẩn hóa.** BFF chỉ dùng `X-Request-Id` từ gateway/client khi giá trị
 khớp `^[A-Za-z0-9._:-]{8,128}$`; nếu thiếu hoặc không khớp, BFF dùng trace ID (32 ký tự
 hex) của span hiện tại. Giá trị client gửi sai không làm request lỗi, chỉ bị thay thế. Nhờ

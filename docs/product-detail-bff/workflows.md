@@ -14,8 +14,13 @@ owners:
 1. Gateway định tuyến request public (anonymous, rate profile `public-read`) tới BFF.
    BFF đặt deadline PDP 1 000 ms tính từ lúc nhận request và chuẩn hóa request ID
    (`X-Request-Id` hợp lệ, nếu không thì trace ID). Slug không khớp pattern hoặc dài hơn 180 thì trả `404` ngay (kể cả đường dẫn dưới prefix PDP mà không phải một slug: rỗng, có `/` cuối, nhiều segment).
-2. Nếu deadline còn dưới 100 ms thì trả `503` mà không gọi Product. Ngược lại BFF gọi
-   Product internal buyer-read theo slug với timeout `min(400 ms, deadline còn lại − 50 ms)`.
+2. Nếu catalog cache ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)) đang giữ
+   slug thì dùng payload đó và sang bước 4 mà không gọi Product. Nếu không, khi deadline còn
+   dưới 100 ms thì trả `503` mà không gọi Product. Ngược lại BFF gọi Product internal
+   buyer-read theo slug với timeout `min(400 ms, deadline còn lại − 50 ms)`; khi cache bật,
+   lời gọi này dùng chung cho mọi request cùng slug tới trong lúc nó chạy, budget 400 ms tính
+   từ lúc bắt đầu tải, và mỗi request chờ theo deadline còn lại của chính nó. Chỉ `200` hợp
+   lệ được giữ, tối đa một TTL.
 3. Product trả `404` thì BFF trả `404` (`no-store`) ngay, không gọi Inventory hoặc Review. Product
    timeout/lỗi/circuit open/bulkhead đầy, hoặc response vi phạm schema hay ràng buộc tham
    chiếu (media trỏ SKU không có, variant value không có option, trùng `sku_id`/`media_id`, storage key có segment `.`/`..`/rỗng), hoặc status ngoài contract (`4xx` khác `400`/`401`/`403`/`404`, `3xx`) thì BFF trả `503`.
@@ -40,7 +45,9 @@ owners:
 Inventory batch read là advisory UI query: BFF không retry ở ứng dụng; mesh cũng không
 retry route này. Order Reserve vẫn là quyết định cuối cùng chống oversell. Nếu client
 hoặc gateway hủy request ở bất kỳ bước nào, BFF hủy các call đang chạy. Bảng phân loại
-kết quả đầy đủ nằm ở [operations.md](./operations.md#health-và-degradation).
+kết quả đầy đủ nằm ở [operations.md](./operations.md#health-và-degradation). Khi catalog cache
+bật, client hủy request không hủy lời gọi Product dùng chung (nó còn phục vụ các request
+khác cùng slug), chỉ hủy việc chờ của request đó.
 
 ## WF-PDP-002 — Degrade và recovery boundary
 

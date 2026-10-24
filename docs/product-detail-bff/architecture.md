@@ -12,7 +12,7 @@ owners:
 ```mermaid
 flowchart LR
   B[Buyer] --> G[API Gateway]
-  G --> BFF[Product Detail BFF\nstateless composition]
+  G --> BFF[Product Detail BFF\nstateless composition\n+ catalog cache TTL ngắn]
   BFF -->|mTLS buyer-read by slug| P[Product]
   BFF -->|mTLS batch availability by SKU| IQ[Inventory Availability Read API]
   BFF -->|internal PDP read| R[Review]
@@ -69,6 +69,11 @@ dependency không làm cạn request pool của PDP.
 ## Resilience: phân chia với mesh và gateway
 
 Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md):
+
+Startup khởi tạo outbound HTTP resources và làm read-only Product probe trên pool thật
+trước khi Spring Boot quảng bá readiness. Ngân sách startup riêng không dùng deadline PDP,
+không ghi dữ liệu và không phụ thuộc Inventory/Review optional. Thất bại dừng startup;
+runtime readiness vẫn local và giữ graceful shutdown. Pool được dispose khi đóng context.
 
 - **Gateway** chờ response header của route PDP tối đa 3 giây và chỉ retry lỗi kết nối
   tới BFF.

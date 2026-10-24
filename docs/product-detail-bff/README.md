@@ -71,8 +71,10 @@ Runtime là Java 21 + Spring Boot WebFlux + Resilience4j
 [operations.md](./operations.md#cấu-hình).
 
 Không có Kafka consumer, PostgreSQL read model, Inventory export client hoặc Search
-dependency trong BFF. Cache process-local hoặc CDN, nếu được bật, chỉ là tối ưu ngắn
-hạn và không phải source of truth.
+dependency trong BFF. Catalog Product được giữ in-process tối đa một TTL ngắn (mặc định
+10 giây) và lời gọi Product trùng slug được gộp
+([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)); tồn kho và review không bao
+giờ được cache. Cache, kể cả CDN nếu được bật, chỉ là tối ưu và không phải source of truth.
 
 ## Invariants
 

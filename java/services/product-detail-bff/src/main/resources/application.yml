@@ -28,6 +28,11 @@ pdp:
   phase-min-remaining: 100ms
   compose-reserve: 50ms
   full-response-cache-control: ${PDP_FULL_RESPONSE_CACHE_CONTROL:no-store}
+  # ADR-011: chỉ catalog Product (không stock, không review); TTL là độ trễ tối đa của giá/tên/ảnh trên PDP.
+  catalog-cache:
+    enabled: ${PDP_CATALOG_CACHE_ENABLED:true}
+    ttl: ${PDP_CATALOG_CACHE_TTL:10s}
+    max-weight: ${PDP_CATALOG_CACHE_MAX_WEIGHT:64MB}
   product:
     enabled: true
     base-url: ${PDP_PRODUCT_BASE_URL:}

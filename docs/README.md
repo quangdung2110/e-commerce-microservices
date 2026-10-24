@@ -190,7 +190,7 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [product-detail-bff/domain.md](./product-detail-bff/domain.md) | Ngôn ngữ chung và quy tắc hiển thị `PDP-BR-001..011`. |
 | [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
 | [product-detail-bff/workflows.md](./product-detail-bff/workflows.md) | `WF-PDP-001` đọc Product Detail và `WF-PDP-002` degrade/recovery. |
-| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; catalog cache in-process TTL ngắn (ADR-011), không cache tồn kho/review hay response degrade. |
 | [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker, cấu hình và runbook. |
 | [product-detail-bff/development.md](./product-detail-bff/development.md) | Stack, chạy local, test bắt buộc và Definition of Done. |
 | [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR-001..008: Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux, làm rõ hot path và hiệu chỉnh sau audit (status ngoài contract, `storage_key`, readiness, request ID trong log). |

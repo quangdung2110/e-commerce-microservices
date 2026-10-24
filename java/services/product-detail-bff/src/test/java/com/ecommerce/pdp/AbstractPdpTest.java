@@ -47,6 +47,9 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
         "pdp.media.cdn-base-url=" + AbstractPdpTest.CDN,
         "pdp.media.placeholder-url=" + AbstractPdpTest.PLACEHOLDER,
         "pdp.full-response-cache-control=" + AbstractPdpTest.FULL_CACHE_CONTROL,
+        // Test thay stub Product giữa các test cùng slug: catalog cache (ADR-011) chỉ bật ở
+        // các test của chính nó, mọi test khác kiểm hành vi một lời gọi Product mỗi request.
+        "pdp.catalog-cache.enabled=false",
         "management.tracing.sampling.probability=1.0"
 })
 public abstract class AbstractPdpTest {

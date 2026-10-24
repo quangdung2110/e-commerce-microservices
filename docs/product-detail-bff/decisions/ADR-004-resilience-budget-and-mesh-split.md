@@ -73,7 +73,9 @@ kết nối ở mesh (Product, Review) và gateway (kết nối tới BFF).
 
 Nếu sau pha 1 deadline còn lại dưới 100 ms, BFF không gọi Inventory và Review: mọi SKU là
 `UNKNOWN`, `review_section.status = UNAVAILABLE`. Deadline được truyền bằng request
-context; khi client hoặc gateway hủy request, BFF hủy mọi call đang chạy.
+context; khi client hoặc gateway hủy request, BFF hủy mọi call đang chạy (ngoại lệ từ
+[ADR-011](./ADR-011-in-process-catalog-cache.md): khi catalog cache bật, lời gọi Product dùng
+chung cho nhiều request cùng slug không bị hủy theo một client).
 
 Để các timeout trên có nghĩa, provider cần đạt latency kỳ vọng: Product buyer-read
 p99 ≤ 250 ms, Inventory batch-read (≤ 500 SKU) p99 ≤ 200 ms, Review PDP summary
@@ -145,6 +147,21 @@ CDN cache, nên tải về BFF tăng khi Inventory trả `UNKNOWN` nhiều; tỷ
 dõi như chỉ số sức khỏe của Inventory.
 
 ## Verification
+
+### Bổ sung 2026-10-12: outbound startup warm-up
+
+Timeout Product tại BFF có thể bao gồm khởi tạo client/DNS/connect; cold start/idle chưa
+được chứng minh là nguyên nhân duy nhất. Chọn startup runner read-only GET Product trên
+pool dùng bởi request thật, ba round với ngân sách tổng 30 giây, mỗi GET 5 giây và tối đa
+hai retry backoff mỗi round. Chỉ quảng bá readiness sau thành công; startup thất bại nếu
+probe không hoàn tất. Khởi tạo local HTTP resources của Inventory/Review nhưng không probe
+hai provider optional. Không thay bảng timeout, retry business, circuit hoặc degradation
+của ADR này. Readiness runtime không gọi downstream.
+
+Thêm DNS/connect/pool/decode metrics với labels hữu hạn và log failure có request/trace ID.
+Test phải kiểm tra first request không được fixture làm nóng, timeout startup có giới hạn,
+probe không ghi dữ liệu, missing Product vẫn 404 còn timeout vẫn 503/no-store. Warm-up
+không thay thế việc đo latency sau idle và dưới tải.
 
 - Test: Product chậm làm cạn budget dẫn tới bỏ pha 2; timeout ứng dụng kích hoạt trước
   timeout mesh; circuit open, half-open rồi đóng; bulkhead từ chối; `4xx` từ từng

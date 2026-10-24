@@ -1,0 +1,115 @@
+# Isolated stack for the PDP catalog cache benchmark (docs/performance/pdp-catalog-cache-benchmark-2026-10-17.md).
+#
+# Own project, network and PostgreSQL: nothing here touches the shared compose stack. Driven by
+# scripts/ci/pdp-bench.sh; it is not meant to stay up.
+#
+# Product, Inventory and Review run from the images the shared stack already built (they are the same in both
+# variants). The BFF runs from a jar copied by the script, so the baseline and the cached build can be swapped
+# without rebuilding an image. CPU limits stand in for pod limits: without them one JVM could take all 16 host
+# CPUs and hide the contention the benchmark is meant to show.
+#
+#   BFF_JAR        jar of the product-detail-bff variant under test
+#   BFF_ENV_FILE   extra BFF settings of the variant (cache on/off)
+name: pdp-bench
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # pg_stat_statements counts the SQL each variant sends to Product's database.
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB",
+              "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/00-init-db.sql:ro
+      - ./seed:/seed:ro
+    cpus: 3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  product-service:
+    image: e-commerce-microservices-product-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8081
+      GRPC_PORT: 9091
+      DB_URL: jdbc:postgresql://postgres:5432/product_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      # Closed port: the markdown consumer retries quietly; the buyer-read path never touches Kafka.
+      KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9
+      LOGGING_LEVEL_ORG_APACHE_KAFKA: ERROR
+      EXPORT_CURSOR_SECRET: bench-export-cursor-secret
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    cpus: 2
+
+  inventory-service:
+    image: e-commerce-microservices-inventory-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/inventory_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      INVENTORY_WRITE_FREEZE: "false"
+      # Reads only: no projector/sequencer competing with the measured path.
+      WORKERS_ENABLED: "false"
+      JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
+    cpus: 1.5
+
+  review-service:
+    image: e-commerce-microservices-review-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/review_service?currentSchema=review,public
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP: 127.0.0.1:9
+      LOGGING_LEVEL_ORG_APACHE_KAFKA: ERROR
+      REVIEW_AUTHOR_ALIAS_HMAC_SECRET: bench-review-author-alias-secret
+      REVIEW_PRIVACY_GUARD_HMAC_SECRET: bench-review-privacy-guard-secret
+      REVIEW_S3_ENDPOINT: http://127.0.0.1:9
+      REVIEW_S3_PUBLIC_ENDPOINT: http://localhost:9000
+      REVIEW_S3_BUCKET: review-media
+      REVIEW_S3_ACCESS_KEY: bench
+      REVIEW_S3_SECRET_KEY: bench-secret
+      JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
+    cpus: 1.5
+
+  product-detail-bff:
+    image: eclipse-temurin:21-jre-alpine
+    depends_on:
+      - product-service
+      - inventory-service
+      - review-service
+    entrypoint: ["java", "-Xms256m", "-Xmx1024m", "-XX:+UseG1GC", "-jar", "/app/bff.jar"]
+    env_file:
+      - ${BFF_ENV_FILE:?set BFF_ENV_FILE}
+    environment:
+      SERVER_PORT: 8080
+      PDP_PRODUCT_BASE_URL: http://product-service:8081
+      PDP_INVENTORY_ENABLED: "true"
+      PDP_INVENTORY_BASE_URL: http://inventory-service:8080
+      PDP_REVIEW_ENABLED: "true"
+      PDP_REVIEW_BASE_URL: http://review-service:8080
+      PDP_MEDIA_CDN_BASE_URL: http://localhost:8088/media
+      PDP_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      PDP_MEDIA_REQUIRE_HTTPS: "false"
+      # Same sampling as the shared stack would add tracing overhead that is not part of the question.
+      TRACING_SAMPLING_PROBABILITY: "0.0"
+    volumes:
+      - ${BFF_JAR:?set BFF_JAR}:/app/bff.jar:ro
+    cpus: 2

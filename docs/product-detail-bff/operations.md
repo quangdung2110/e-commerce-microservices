@@ -34,6 +34,28 @@ Latency kỳ vọng của provider để các timeout dưới đây có nghĩa:
 
 ## Health và degradation
 
+Warm-up startup chạy một lần trước `ACCEPTING_TRAFFIC`: khởi tạo local Reactor Netty
+resources của các client và GET Product bằng slug `client-warmup-00000000-0000-0000-0000-000000000000`
+trên chính HTTP pool của Product. Chấp nhận 200/404, không parse/log body và không gọi Inventory
+POST hoặc Review; hai dependency này vẫn optional. `PDP_CLIENT_WARMUP_TIMEOUT` mặc định
+`30s`, `PDP_CLIENT_WARMUP_ROUNDS` mặc định `3` (1–10). Mỗi GET tối đa 5 giây, connect startup
+tối đa 400 ms như client Product, tối đa hai retry backoff 100–500 ms mỗi round; tổng bị chặn bởi timeout startup.
+Thất bại dừng startup, orchestrator phải tôn trọng readiness và backoff rollout. Local Compose
+chờ Product healthy. Sau startup không có downstream fan-out trong readiness và không chạy
+lại warm-up khi circuit mở. Deadline PDP/Product/Inventory/Review giữ nguyên.
+
+Probe dùng chính WebClient/byte-array codec và observation của Product client. Jackson
+readers Product/Inventory/Review được resolve khi tạo client. Chỉ `HttpClient.warmup()`
+chưa khởi tạo đầy đủ WebClient pipeline và chưa tạo kết nối tới provider.
+
+Metric `pdp_client_startup_warmup_seconds{outcome}` đo startup; Reactor Netty HTTP metrics đo
+DNS/connect/response, connection-provider metrics đo pending acquire và pool. URI label chỉ
+gồm tên dependency; `pdp_client_decode_seconds{type}` đo Jackson parse. Log `dependency call failed`
+có request_id, trace_id, dependency, outcome, duration_ms và budget_ms để đối chiếu access log
+Product. Không đưa slug/ID/token vào metric label. Cold start/idle là giả thuyết cần đo;
+không suy ra DB chậm từ riêng timer phía BFF. Regression có request đầu tiên không pre-warm,
+404 Product và timeout 503; các request sau idle vẫn cần quan sát khi rollout.
+
 BFF chỉ ready khi có thể phục vụ request và cấu hình bắt buộc ở mục
 [Cấu hình](#cấu-hình) hợp lệ: Product base URL; CDN base URL (tuyệt đối, `https` trừ local) và URL
 placeholder cho SKU không ảnh
@@ -106,7 +128,7 @@ gọi. Timeout ở BFF luôn ngắn hơn timeout mesh của cùng route.
   ([ADR-007](./decisions/ADR-007-hot-path-clarifications.md)). Gateway chờ response header của route
   PDP tối đa 3 giây và chỉ retry lỗi kết nối tới BFF
   ([gateway/runtime-contract.md §5](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc)).
-- **Retry:** ứng dụng không retry dependency nào. Retry duy nhất là retry lỗi kết nối của
+- **Retry:** ứng dụng không retry dependency nào trong request. Retry trong request là retry lỗi kết nối của
   mesh (Product, Review) theo
   [mesh/runtime-contract.md §7](../mesh/runtime-contract.md#7-traffic-policy-east-west).
   `Retry-After` trong `503` của Inventory không làm BFF chờ hay retry.
@@ -119,9 +141,11 @@ gọi. Timeout ở BFF luôn ngắn hơn timeout mesh của cùng route.
   trong `DestinationRule` của mesh là giới hạn riêng, bảo vệ provider trước mọi caller.
 - Batch size tối đa khớp contract Inventory là 500 SKU.
 
-CDN/in-process cache là optional. Nếu bật, cache policy phải nêu TTL, invalidation,
-cache key và behavior khi bypass; response degrade không bao giờ được cache
-([data.md](./data.md#cache-boundary)). BFF không có persistent stock cache hoặc recovery
+Catalog Product được cache in-process theo policy của
+[ADR-011](./decisions/ADR-011-in-process-catalog-cache.md) ([data.md](./data.md#catalog-cache-in-process-adr-011)):
+TTL 10 giây mặc định, gộp lời gọi trùng slug, không giữ `404`/lỗi. CDN cache vẫn là
+optional; nếu bật, policy phải nêu TTL, invalidation, cache key và behavior khi bypass;
+response degrade không bao giờ được cache ([data.md](./data.md#cache-boundary)). BFF không có persistent stock cache hoặc recovery
 state. Không dùng SKU ID, product ID hoặc slug làm metric label.
 
 ## Observability và alerts
@@ -142,6 +166,9 @@ theo cạnh gọi; metric dưới đây là ngữ nghĩa mà chỉ BFF biết.
 | `pdp_review_unavailable_total` | `source` = `call_failed`, `skipped`, `disabled` | Số response có review `UNAVAILABLE` |
 | `pdp_inventory_item_violations_total` | `kind` = `missing`, `extra` | Item Inventory vi phạm cam kết một item mỗi SKU ("`contract_violation` mức item" trong tài liệu này là counter này kèm một dòng log cảnh báo; outcome `contract_violation` của `pdp_dependency_calls_seconds` chỉ dành cho response sai contract của cả lời gọi) |
 | `resilience4j_circuitbreaker_state` | `name` = `product`, `inventory`, `review` | Trạng thái circuit breaker |
+| `pdp_catalog_cache_requests_total` | `result` = `hit`, `miss`, `coalesced` | Lookup catalog: phục vụ từ cache, khởi tạo một lời gọi Product, hoặc chờ chung lời gọi đang chạy ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)). Lời gọi Product thật vẫn đếm ở `pdp_dependency_calls_seconds` |
+| `pdp_catalog_cache_wait_timeouts_total` | — | Request hết deadline của chính nó khi chờ lời gọi Product chung (trả `503`) |
+| `pdp_catalog_cache_entries`, `pdp_catalog_cache_weight_bytes` | — | Số entry và bộ nhớ ước lượng của catalog cache |
 
 SLO "Degrade do Inventory/Review" đếm từ `pdp_dependency_calls_seconds_count` với outcome
 khác `success` và khác `disabled`; không dùng số SKU `UNKNOWN` vì `inventory_returned` là
@@ -183,6 +210,9 @@ Spring property tương ứng. Secret lấy từ secret manager, không commit v
 | `PDP_MEDIA_PLACEHOLDER_URL` | none | Có | URL tuyệt đối cho `thumbnail_url` khi SKU không có ảnh; bằng `THUMBNAIL_PLACEHOLDER_URL` của Search |
 | `PDP_MEDIA_REQUIRE_HTTPS` | `true` | Không | Chỉ docker-compose local đặt `false`, vì MinIO được phát qua gateway bằng `http://localhost:8088/media`; mọi môi trường khác bắt buộc `https` |
 | `PDP_FULL_RESPONSE_CACHE_CONTROL` | `no-store` | Không | `Cache-Control` của `200` đầy đủ (storefront cache policy, [data.md](./data.md#cache-boundary)); `200` degrade, `404` và `503` luôn `no-store` bất kể giá trị này |
+| `PDP_CATALOG_CACHE_ENABLED` | `true` | Không | `false` trả lại hành vi một lời gọi Product mỗi request ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)) |
+| `PDP_CATALOG_CACHE_TTL` | `10s` | Không | Độ trễ tối đa của catalog trên PDP; 1–60 giây, startup từ chối giá trị ngoài khoảng khi cache bật |
+| `PDP_CATALOG_CACHE_MAX_WEIGHT` | `64MB` | Không | Trần bộ nhớ ước lượng của catalog cache; 1 MB–1 GB. Tính vào heap khi đặt memory limit cho pod |
 | `TRACING_SAMPLING_PROBABILITY` | `0.1` | Không | Tỷ lệ lấy mẫu trace; `traceparent` vẫn được truyền và trace ID vẫn dùng làm request ID dự phòng khi trace không được lấy mẫu |
 | `PDP_DEADLINE_MS`, timeout, circuit breaker, bulkhead | Theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)/[ADR-007](./decisions/ADR-007-hot-path-clarifications.md) | Không | Cấu hình được để load test hiệu chỉnh: `PDP_DEADLINE_MS` là biến riêng, còn timeout, bulkhead và circuit breaker ghi đè bằng Spring property `pdp.product.*`, `pdp.inventory.*`, `pdp.review.*`, `pdp.circuit-breaker.*` (relaxed binding, ví dụ `PDP_INVENTORY_BULKHEAD`). Đổi giá trị production phải cập nhật ADR và giữ quy tắc timeout BFF < mesh, deadline < gateway − 1 giây |
 
