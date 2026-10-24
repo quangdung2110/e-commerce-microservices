@@ -24,6 +24,7 @@ resources:
   - minio.yaml
   - temporal.yaml
   - kafka-topics-init.yaml
+  - postgres-roles-init.yaml
   - networkpolicies.yaml
 
 # Không còn Service LoadBalancer cho hạ tầng (mesh ADR-002): LoadBalancer của Docker Desktop mở cổng
@@ -33,6 +34,11 @@ configMapGenerator:
   - name: postgres-init
     files:
       - init-db.sh=../../../init-db.sh
+  # Role riêng của từng service (mesh ADR-004), chung với postgres-init của docker-compose.
+  - name: postgres-roles
+    files:
+      - service-roles.sh=../../../infra/postgres/service-roles.sh
+      - service-roles.txt=../../../infra/postgres/service-roles.txt
   # Topic, principal và ACL chung với kafka-init của docker-compose (mesh ADR-002, ADR-003).
   - name: kafka-topics
     files:
@@ -46,6 +52,7 @@ configMapGenerator:
   - name: minio-seed
     files:
       - product-media-read.json=../../../infra/minio/policies/product-media-read.json
+      - review-media-rw.json=../../../infra/minio/policies/review-media-rw.json
       - product.svg=../../../infra/minio/product-media/placeholder/product.svg
 
 # Chỉ dùng cho môi trường local; giá trị trùng docker-compose.yml.
@@ -58,6 +65,21 @@ secretGenerator:
     literals:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
+      # User review-service (chỉ bucket review-media), trùng x-review-s3-secret của docker-compose.
+      - REVIEW_S3_SECRET_KEY=review-service-local-dev
+  # Mật khẩu login role của từng service, trùng x-postgres-passwords của docker-compose (service
+  # nhận phần của nó qua env do generate.py sinh); Job postgres-roles-init đọc hết.
+  - name: postgres-service-credentials
+    literals:
+      - PG_PASSWORD_AUTH_SERVICE=auth-service-local-dev
+      - PG_PASSWORD_USER_SERVICE=user-service-local-dev
+      - PG_PASSWORD_NOTIFICATION_SERVICE=notification-service-local-dev
+      - PG_PASSWORD_PRODUCT_SERVICE=product-service-local-dev
+      - PG_PASSWORD_REVIEW_SERVICE=review-service-local-dev
+      - PG_PASSWORD_PROMOTION_SERVICE=promotion-service-local-dev
+      - PG_PASSWORD_INVENTORY_SERVICE=inventory-service-local-dev
+      - PG_PASSWORD_ORDER_SERVICE=order-service-local-dev
+      - PG_PASSWORD_PAYMENT_SERVICE=payment-service-local-dev
   # Trùng x-redis-password của docker-compose; service nhận giá trị này qua env do generate.py sinh.
   - name: redis-credentials
     literals:

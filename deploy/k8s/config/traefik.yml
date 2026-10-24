@@ -17,6 +17,14 @@ api:
 entryPoints:
   web:
     address: ":80"
+    # Client IP chain (mesh ADR-004): a frontend pod may name the browser in X-Forwarded-For /
+    # X-Real-Ip (it overwrites both with its TCP peer); from any other source Traefik drops them and
+    # sets X-Real-Ip to the peer. Pod IPs are not fixed, so the trust is the pod CIDR of Docker
+    # Desktop kubeadm (10.1.0.0/16). The LoadBalancer Service keeps the client source address
+    # (externalTrafficPolicy: Local, generate.py), so external traffic never arrives from it.
+    forwardedHeaders:
+      trustedIPs:
+        - "10.1.0.0/16"
 
   metrics:
     address: ":8090"

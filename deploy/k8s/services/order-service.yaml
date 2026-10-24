@@ -61,9 +61,9 @@ spec:
         - name: DB_URL
           value: jdbc:postgresql://postgres:5432/order_service
         - name: DB_USERNAME
-          value: postgres
+          value: order_service
         - name: DB_PASSWORD
-          value: postgres
+          value: order-service-local-dev
         - name: KAFKA_BROKERS
           value: kafka:9092
         - name: KAFKA_SASL_USERNAME

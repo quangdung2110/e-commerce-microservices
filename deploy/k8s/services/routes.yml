@@ -9,6 +9,7 @@ http:
       service: auth-service
       middlewares:
       - strip-identity-headers@file
+      - rate-limit-auth@file
     auth-service-protected:
       rule: (Path(`/api/v1/auth/sessions`) && (Method(`GET`) || Method(`DELETE`))) || (PathPrefix(`/api/v1/auth/sessions/`) && Method(`DELETE`)) || Path(`/api/v1/auth/password`) || Path(`/api/v1/auth/email-change-requests`) || Path(`/api/v1/auth/email-changes/confirmations`) || Path(`/api/v1/auth/accounts/me/deletion-requests`) || PathPrefix(`/api/v1/auth/admin/`)
       entryPoints:

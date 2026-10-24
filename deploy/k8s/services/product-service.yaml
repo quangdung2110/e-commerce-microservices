@@ -60,7 +60,7 @@ spec:
         - name: TRACING_SAMPLING_PROBABILITY
           value: '1.0'
         - name: SPRING_PROFILES_ACTIVE
-          value: prod
+          value: prod,local
         - name: SERVER_PORT
           value: '8081'
         - name: GRPC_PORT
@@ -68,9 +68,9 @@ spec:
         - name: DB_URL
           value: jdbc:postgresql://postgres:5432/product_service
         - name: DB_USERNAME
-          value: postgres
+          value: product_service
         - name: DB_PASSWORD
-          value: postgres
+          value: product-service-local-dev
         - name: KAFKA_BOOTSTRAP_SERVERS
           value: kafka:9092
         - name: KAFKA_SASL_USERNAME

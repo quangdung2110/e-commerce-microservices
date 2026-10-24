@@ -59,8 +59,10 @@ spec:
           value: postgres
         - name: NOTIFICATION_DATABASE_NAME
           value: notification_db
+        - name: NOTIFICATION_DATABASE_USERNAME
+          value: notification_service
         - name: DB_PASSWORD
-          value: postgres
+          value: notification-service-local-dev
         - name: NOTIFICATION_REDIS_HOST
           value: redis
         - name: REDIS_PASSWORD
@@ -89,6 +91,8 @@ spec:
           value: test
         - name: NOTIFICATION_AUTH_BASE_URL
           value: http://auth-service:8081
+        - name: NOTIFICATION_AUTH_SIGNING_KEY
+          value: local-dev-auth-internal-signing-key-not-a-secret
         - name: NOTIFICATION_FRONTEND_BASE_URL
           value: http://localhost:3000
         - name: NOTIFICATION_OUTBOX_PUBLISHER

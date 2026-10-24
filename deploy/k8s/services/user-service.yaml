@@ -50,7 +50,7 @@ spec:
         - -path
         - /migrations
         - -database
-        - postgres://postgres:postgres@postgres:5432/user_service?sslmode=disable
+        - postgres://user_service:user-service-local-dev@postgres:5432/user_service?sslmode=disable
         - up
         volumeMounts:
         - name: migrations
@@ -81,8 +81,10 @@ spec:
           value: user-service-local-dev
         - name: USER_KAFKA_CONSUMER_ENABLED
           value: 'true'
+        - name: USER_DATABASE_USERNAME
+          value: user_service
         - name: DB_PASSWORD
-          value: postgres
+          value: user-service-local-dev
         - name: REDIS_PASSWORD
           value: local-dev-redis-password
         volumeMounts:

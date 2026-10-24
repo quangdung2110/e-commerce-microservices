@@ -63,9 +63,9 @@ spec:
         - name: DB_URL
           value: jdbc:postgresql://postgres:5432/promotion_service
         - name: DB_USERNAME
-          value: postgres
+          value: promotion_service
         - name: DB_PASSWORD
-          value: postgres
+          value: promotion-service-local-dev
         - name: REDIS_HOST
           value: redis
         - name: REDIS_PORT

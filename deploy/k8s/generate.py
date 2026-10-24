@@ -53,7 +53,10 @@ WORKLOADS = {
     "payment-service": dict(ns="ecommerce", mem=JPCT),
     "checkout-service": dict(ns="ecommerce", mem=JPCT),
     "cart-service": dict(ns="ecommerce", mem=GO, probe=("/health/live", "http")),
-    "auth-service": dict(ns="ecommerce", mem=GO, probe=("/health/live", "http"), init="auth-migrate"),
+    # Pod IP của Traefik không cố định: Auth tin X-Real-Ip từ pod CIDR của Docker Desktop kubeadm (mesh ADR-004);
+    # compose dùng địa chỉ cố định 10.89.3.2 của api-gateway.
+    "auth-service": dict(ns="ecommerce", mem=GO, probe=("/health/live", "http"), init="auth-migrate",
+                         env={"AUTH_SECURITY_TRUSTED_PROXIES": "10.1.0.0/16"}),
     "user-service": dict(ns="ecommerce", mem=GO, probe=("/health/ready", "http"), init="user-migrate"),
     "notification-service": dict(ns="ecommerce", mem=GO, probe=("/livez", "internal")),
     # Giả lập SES/SNS/SQS cho Notification (profile notification của compose).
@@ -88,7 +91,7 @@ JOBS = {"kafka-connect-init": dict(ns="data", mem=("256Mi", "512Mi"))}
 # Hạ tầng do deploy/k8s/infra quản lý (namespace data). kafka-init là Job kafka-topics-init ở đó.
 INFRA = {
     "postgres", "redis", "checkout-redis", "zookeeper", "kafka", "kafka-init", "kafka-connect",
-    "elasticsearch", "minio", "minio-init", "temporal", "temporal-ui",
+    "elasticsearch", "minio", "minio-init", "temporal", "temporal-ui", "postgres-init",
 }
 
 # NetworkPolicy (mesh ADR-002): ai được gọi workload nào lấy từ AuthorizationPolicy L7 mà
@@ -104,6 +107,14 @@ EXTRA_CALLERS = {
     "localstack": ["ecommerce/notification-service"],
 }
 SCRAPER = "observability/prometheus"
+# Listener nội bộ ở cổng riêng (mesh ADR-004, security review 2026-10-22 H4): NetworkPolicy là L4 nên
+# không tách được path, nhưng tách được cổng. Chỉ caller service-to-service tới cổng nội bộ (nội dung
+# OTP/link reset của Auth, địa chỉ của User); Traefik, gateway-auth và Prometheus chỉ tới cổng còn lại.
+# Cart phục vụ /internal/** trên cùng cổng public: chỉ mesh (L7) tách được, xem ADR-004.
+INTERNAL_LISTENERS = {
+    "auth-service": {"port": "internal", "callers": {"ecommerce/notification-service"}},
+    "user-service": {"port": "internal", "callers": {"ecommerce/checkout-service"}},
+}
 
 # Service chỉ có ở cụm này, viết theo cú pháp compose. Compose để người dùng nạp schema Auth bằng tay
 # (migration không chạy lại được trên volume đã nạp tay); database của cụm này mới và chỉ migrate nạp
@@ -112,7 +123,7 @@ EXTRA_SERVICES = {
     "auth-migrate": {
         "image": "migrate/migrate:v4.18.3",
         "command": ["-path", "/migrations", "-database",
-                    "postgres://postgres:postgres@postgres:5432/auth_db?sslmode=disable", "up"],
+                    "postgres://auth_service:auth-service-local-dev@postgres:5432/auth_db?sslmode=disable", "up"],
         "volumes": ["./go/services/auth-service/migrations:/migrations:ro"],
     },
 }
@@ -358,7 +369,10 @@ class Build:
                 "apiVersion": "v1",
                 "kind": "Service",
                 "metadata": {"name": f"{service}-external", "namespace": namespace},
-                "spec": {"type": "LoadBalancer", "selector": labels, "ports": external},
+                # Local: giữ địa chỉ nguồn của client (không SNAT vào pod CIDR mà Traefik tin để đọc
+                # X-Forwarded-For của frontend, mesh ADR-004).
+                "spec": {"type": "LoadBalancer", "externalTrafficPolicy": "Local", "selector": labels,
+                         "ports": external},
             })
         docs.append({
             "apiVersion": "apps/v1",
@@ -454,7 +468,17 @@ class Build:
                     sources = callers[service] - {"ecommerce/ecommerce-waypoint"}
                 else:
                     fail(f"{service}: không có caller trong {rel(MESH_POLICIES)} lẫn EXTRA_CALLERS")
-                ingress = [{"from": [peer(source) for source in sorted(sources | {SCRAPER})]}]
+                if service in INTERNAL_LISTENERS:
+                    internal = INTERNAL_LISTENERS[service]
+                    if not internal["callers"] <= sources:
+                        fail(f"{service}: caller nội bộ {internal['callers'] - sources} không có trong ma trận mesh")
+                    public = [{"port": n} for n in self.ports(service) if n != internal["port"]]
+                    ingress = [
+                        {"from": [peer(s) for s in sorted((sources - internal["callers"]) | {SCRAPER})], "ports": public},
+                        {"from": [peer(s) for s in sorted(internal["callers"])], "ports": [{"port": internal["port"]}]},
+                    ]
+                else:
+                    ingress = [{"from": [peer(source) for source in sorted(sources | {SCRAPER})]}]
             docs.append({
                 "apiVersion": "networking.k8s.io/v1",
                 "kind": "NetworkPolicy",

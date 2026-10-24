@@ -26,6 +26,7 @@ metadata:
   namespace: edge
 spec:
   type: LoadBalancer
+  externalTrafficPolicy: Local
   selector:
     app.kubernetes.io/name: frontend
   ports:

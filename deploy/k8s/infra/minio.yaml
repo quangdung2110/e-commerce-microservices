@@ -78,6 +78,7 @@ spec:
 # không sửa được; chạy lại tay: `kubectl -n data delete job minio-init` rồi apply.
 #  - review-media: private, Review ký mọi URL (ADR-011).
 #  - product-media: chỉ GetObject ẩn danh; policy "download" có sẵn sẽ lộ ListBucket.
+#  - user review-service: chỉ bucket review-media (mesh ADR-004), Review không dùng root.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -105,7 +106,10 @@ spec:
               mc mb --ignore-existing local/product-media
               mc anonymous set-json /seed/policies/product-media-read.json local/product-media
               mc cp --recursive /seed/product-media/ local/product-media/
-              echo 'review-media and product-media buckets ready'
+              mc admin policy create local review-media-rw /seed/policies/review-media-rw.json
+              mc admin user add local review-service "$REVIEW_S3_SECRET_KEY"
+              mc admin policy attach local review-media-rw --user review-service || true
+              echo 'review-media and product-media buckets ready, user review-service limited to review-media'
           volumeMounts:
             - name: seed
               mountPath: /seed
@@ -117,5 +121,7 @@ spec:
             items:
               - key: product-media-read.json
                 path: policies/product-media-read.json
+              - key: review-media-rw.json
+                path: policies/review-media-rw.json
               - key: product.svg
                 path: product-media/placeholder/product.svg

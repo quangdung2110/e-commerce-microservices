@@ -409,12 +409,6 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: ecommerce
-      podSelector:
-        matchLabels:
-          app.kubernetes.io/name: notification-service
-    - namespaceSelector:
-        matchLabels:
           kubernetes.io/metadata.name: edge
       podSelector:
         matchLabels:
@@ -431,6 +425,17 @@ spec:
       podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
+    ports:
+    - port: http
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ecommerce
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: notification-service
+    ports:
+    - port: internal
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -447,12 +452,6 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: ecommerce
-      podSelector:
-        matchLabels:
-          app.kubernetes.io/name: checkout-service
-    - namespaceSelector:
-        matchLabels:
           kubernetes.io/metadata.name: edge
       podSelector:
         matchLabels:
@@ -463,6 +462,17 @@ spec:
       podSelector:
         matchLabels:
           app.kubernetes.io/name: prometheus
+    ports:
+    - port: http
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ecommerce
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: checkout-service
+    ports:
+    - port: internal
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

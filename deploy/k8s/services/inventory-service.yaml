@@ -55,9 +55,9 @@ spec:
         - name: DB_URL
           value: jdbc:postgresql://postgres:5432/inventory_service
         - name: DB_USERNAME
-          value: postgres
+          value: inventory_service
         - name: DB_PASSWORD
-          value: postgres
+          value: inventory-service-local-dev
         - name: INVENTORY_WRITE_FREEZE
           value: 'false'
         - name: WORKERS_ENABLED

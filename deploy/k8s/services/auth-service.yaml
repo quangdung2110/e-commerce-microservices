@@ -50,7 +50,7 @@ spec:
         - -path
         - /migrations
         - -database
-        - postgres://postgres:postgres@postgres:5432/auth_db?sslmode=disable
+        - postgres://auth_service:auth-service-local-dev@postgres:5432/auth_db?sslmode=disable
         - up
         volumeMounts:
         - name: migrations
@@ -72,9 +72,13 @@ spec:
         - name: AUTH_DATABASE_NAME
           value: auth_db
         - name: AUTH_DATABASE_USERNAME
-          value: postgres
+          value: auth_service
         - name: DB_PASSWORD
-          value: postgres
+          value: auth-service-local-dev
+        - name: AUTH_SECURITY_TRUSTED_PROXIES
+          value: 10.1.0.0/16
+        - name: AUTH_INTERNAL_SIGNING_KEY
+          value: local-dev-auth-internal-signing-key-not-a-secret
         - name: AUTH_REDIS_HOST
           value: redis
         - name: AUTH_REDIS_PORT

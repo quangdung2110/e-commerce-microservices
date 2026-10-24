@@ -50,6 +50,8 @@ spec:
           value: http://otel-collector:4318/v1/traces
         - name: TRACING_SAMPLING_PROBABILITY
           value: '1.0'
+        - name: SPRING_PROFILES_ACTIVE
+          value: local
         - name: SERVER_PORT
           value: '8080'
         - name: CHECKOUT_REDIS_URL

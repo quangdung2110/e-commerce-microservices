@@ -61,9 +61,9 @@ spec:
         - name: PAYMENT_DATABASE_URL
           value: jdbc:postgresql://postgres:5432/payment_service
         - name: PAYMENT_DATABASE_USERNAME
-          value: postgres
+          value: payment_service
         - name: DB_PASSWORD
-          value: postgres
+          value: payment-service-local-dev
         - name: PAYMENT_KAFKA_BROKERS
           value: kafka:9092
         - name: KAFKA_SASL_USERNAME

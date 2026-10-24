@@ -6,7 +6,7 @@ Istio vẫn ở [deploy/mesh](../mesh/README.md) và chưa được cài.
 
 | Lớp | Namespace | Nội dung | Nguồn |
 |---|---|---|---|
-| `infra/` | `data` | PostgreSQL, Redis (bắt buộc mật khẩu), checkout-redis, ZooKeeper, Kafka (+ Job `kafka-topics-init`), Kafka Connect, Elasticsearch, MinIO (+ Job tạo bucket), Temporal, Temporal UI, NetworkPolicy | Viết tay |
+| `infra/` | `data` | PostgreSQL, Redis (bắt buộc mật khẩu), checkout-redis, ZooKeeper, Kafka (+ Job `kafka-topics-init`), Kafka Connect, Elasticsearch, MinIO (+ Job tạo bucket và user `review-service`), Job `postgres-roles-init` (role riêng mỗi service, mesh ADR-004), Temporal, Temporal UI, NetworkPolicy | Viết tay |
 | `services/` | `ecommerce` | 13 service nghiệp vụ (product, search, review, product-detail-bff, promotion, inventory, order, payment, checkout, cart, auth, user, notification) + Mailpit, LocalStack | **Sinh** từ `docker-compose.yml` |
 | `services/` | `edge` | Traefik (Service `api-gateway`), `gateway-auth`, frontend | **Sinh** |
 | `services/` | `data` | Job `kafka-connect-init` đăng ký 6 connector Debezium | **Sinh** |
@@ -105,6 +105,13 @@ UI observability dùng script riêng (compose cũng chỉ bind loopback cho chú
 namespace của dự án. `kubectl port-forward` không đi qua NetworkPolicy. Cụm kubeadm của Docker Desktop **không thực thi**
 NetworkPolicy, nên ở đây chúng là cấu hình sẵn cho cụm có CNI thực thi (Calico, Cilium…). Khi cài mesh, thay bộ này bằng
 `deploy/mesh/generated/80-networkpolicies.yaml`: traffic L7 đi qua waypoint nên nguồn không còn là pod caller.
+Listener nội bộ ở cổng riêng chỉ mở cho caller nội bộ (`INTERNAL_LISTENERS` trong `generate.py`, mesh ADR-004): Auth `internal`
+(8081) chỉ Notification, User `internal` (8083) chỉ Checkout; Traefik, gateway-auth và Prometheus chỉ tới cổng public.
+
+**IP client** (mesh ADR-004): `config/traefik.yml` tin `X-Forwarded-For`/`X-Real-Ip` từ pod CIDR `10.1.0.0/16` (frontend; pod IP
+không cố định), Auth tin `X-Real-Ip` từ cùng dải (`AUTH_SECURITY_TRUSTED_PROXIES` trong `generate.py`). Service LoadBalancer dùng
+`externalTrafficPolicy: Local` để traffic từ ngoài giữ địa chỉ nguồn, không mang địa chỉ trong pod CIDR. Dải này là mặc định của
+Docker Desktop kubeadm; cụm khác phải đổi ở hai chỗ đó.
 
 ## Lớp observability
 
