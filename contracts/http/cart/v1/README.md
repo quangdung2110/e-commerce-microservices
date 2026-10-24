@@ -49,6 +49,13 @@ dưới `/api/v1/carts/mine`; vượt giới hạn trả `429 RATE_LIMITED` (`re
 
 ## Read freshness
 
+`CartItem.variant_name` tùy chọn chứa nhãn biến thể đã resolve bởi Product. Read
+CURRENT của SKU còn bán lấy nhãn hiện tại (kể cả sau đổi tên attribute/option);
+DEGRADED hoặc SKU không còn bán dùng nhãn snapshot khi ghi Cart gần nhất. GET không
+persist nhãn mới. Cart legacy/provider cũ có thể chưa có nhãn; UI hiển thị các value
+của `variant_attributes`, không dùng code làm tên hiển thị. `variant_name` chỉ phục
+vụ hiển thị, không thay SKU ID/giá/quantity hoặc snapshot Checkout nội bộ.
+
 GET không gia hạn Redis TTL và có `Cache-Control: no-store`. `catalog_freshness`
 `CURRENT` nghĩa Cart vừa enrich từ Product; `DEGRADED` nghĩa Product không khả dụng,
 `current_price` có thể `null` và `is_available` là snapshot catalog gần nhất.

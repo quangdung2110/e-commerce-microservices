@@ -64,6 +64,10 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
 
 ### 3.1 Item JSON
 
+`variant_name` tùy chọn được ghi cùng snapshot Product khi add/refresh validation.
+Cart cũ thiếu field vẫn decode bình thường. GET có thể trả tên mới từ Product nhưng
+không persist vào Redis; khi degraded/unavailable chỉ dùng tên đã lưu gần nhất.
+
 ```json
 {
   "product_id": "PRODUCT-TSHIRT",
@@ -71,6 +75,7 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
   "unit_price_at_add": { "amount_minor": 125000, "currency": "VND" },
   "product_name": "Áo thun đỏ",
   "variant_attributes": { "color": "red", "size": "M" },
+  "variant_name": "Màu sắc: Đỏ · Kích thước: M",
   "image_url": "products/tshirt/red.png",
   "catalog_validated_at_ms": "1780000000000",
   "catalog_validation_expires_at_ms": "1780000060000",

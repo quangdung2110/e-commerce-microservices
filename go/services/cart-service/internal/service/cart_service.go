@@ -71,6 +71,10 @@ func (s *CartService) GetCart(ctx context.Context, identity domain.Identity) (do
 		line := domain.ViewItem{Item: item, Available: item.IsAvailable}
 		if snapshot, ok := snapshots[item.SkuID]; ok {
 			line.Available = snapshot.IsAvailable
+			if snapshot.IsAvailable {
+				// Refresh display text in the response only; never mutate the Redis snapshot on GET.
+				line.VariantName = snapshot.VariantName
+			}
 			if snapshot.IsAvailable || snapshot.Price.Currency != "" {
 				price := snapshot.Price
 				line.CurrentPrice = &price

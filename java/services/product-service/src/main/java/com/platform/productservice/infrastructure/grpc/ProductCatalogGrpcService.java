@@ -22,6 +22,7 @@ import com.platform.productservice.infrastructure.persistence.ProductMediaReposi
 import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
 import com.platform.productservice.service.support.CategoryTreeService;
+import com.platform.productservice.service.support.VariantNameResolver;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
 import net.devh.boot.grpc.server.service.GrpcService;
@@ -63,6 +64,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
     private final SkuRepository skuRepository;
     private final ProductMediaRepository mediaRepository;
     private final CategoryTreeService categoryTree;
+    private final VariantNameResolver variantNames;
 
     @Override
     @Transactional(readOnly = true)
@@ -103,7 +105,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
         } else {
             List<ProductMediaEntity> media =
                     mediaRepository.findByProductIdOrderBySortOrderAscMediaIdAsc(product.getProductId());
-            response.setSku(toProto(product, sku.get(), media, categoryIds(product, new HashMap<>())));
+            response.setSku(toProto(product, sku.get(), media, categoryIds(product, new HashMap<>()),
+                    variantNames.resolve(List.of(sku.get())).getOrDefault(skuId, "")));
         }
         responseObserver.onNext(response.build());
         responseObserver.onCompleted();
@@ -147,6 +150,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                 : mediaRepository.findByProductIdInOrderBySortOrderAscMediaIdAsc(productIds).stream()
                         .collect(Collectors.groupingBy(ProductMediaEntity::getProductId));
 
+        Map<UUID, String> names = variantNames.resolve(skus.values());
         Map<UUID, List<String>> ancestry = new HashMap<>();
         for (UUID skuId : skuIds) {
             SkuEntity sku = skus.get(skuId);
@@ -158,7 +162,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
             } else {
                 response.putSkus(skuId.toString(), toProto(product, sku,
                         mediaByProduct.getOrDefault(product.getProductId(), List.of()),
-                        categoryIds(product, ancestry)));
+                        categoryIds(product, ancestry), names.getOrDefault(skuId, "")));
             }
         }
 
@@ -173,11 +177,12 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
     }
 
     private Sku toProto(ProductEntity product, SkuEntity sku, List<ProductMediaEntity> media,
-                         List<String> categoryIds) {
+                         List<String> categoryIds, String variantName) {
         Sku.Builder builder = Sku.newBuilder()
                 .setSkuId(sku.getSkuId().toString())
                 .setProductId(product.getProductId().toString())
                 .setProductName(product.getName())
+                .setVariantName(variantName)
                 .setPrice(money(sku.getSellingPriceVnd()))
                 .setBasePrice(money(sku.getBasePriceVnd()))
                 .setStatus(sku.getStatus() == com.platform.productservice.domain.enums.SkuStatus.ACTIVE

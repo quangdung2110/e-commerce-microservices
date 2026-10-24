@@ -288,6 +288,15 @@ components:
           type: object
           additionalProperties: { type: string, maxLength: 200 }
           maxProperties: 30
+        variant_name:
+          type: string
+          maxLength: 64000
+          description: >-
+            Product-resolved Vietnamese display text (attribute names and display values).
+            CURRENT uses the current Product read; DEGRADED or unavailable SKU falls back
+            to the stored display snapshot. GET never persists that refresh. Optional for
+            legacy carts/providers. Consumers without a label display raw values only,
+            not attribute codes. Display only; variant_attributes remains unchanged.
         image_url:
           type: string
           format: uri

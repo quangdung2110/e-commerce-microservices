@@ -16,4 +16,6 @@ public interface AttributeRepository extends JpaRepository<AttributeEntity, UUID
     List<AttributeEntity> findAllByOrderByCodeAsc();
 
     List<AttributeEntity> findByAttributeIdIn(Collection<UUID> attributeIds);
+
+    List<AttributeEntity> findByCodeIn(Collection<String> codes);
 }

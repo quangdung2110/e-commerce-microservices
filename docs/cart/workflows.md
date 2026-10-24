@@ -43,7 +43,7 @@ Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart khô
 
 1. `HGETALL items`; hash không tồn tại trả cart rỗng, không fallback store khác.
 2. Nếu có item, gọi `GetBatchSkus` với deadline 200ms.
-3. Response giữ `unit_price_at_add`, phủ `current_price` và catalog saleability hiện tại; không có quantity/stock availability.
+3. Response giữ `unit_price_at_add`, phủ `current_price`, `variant_name` và catalog saleability hiện tại; không có stock availability. `variant_name` lấy nhãn hiện tại từ Product khi SKU còn bán; DEGRADED/SKU unavailable dùng display snapshot gần nhất. GET không persist nhãn mới. Cart legacy thiếu tên vẫn đọc được; frontend chỉ fallback value, không in code attribute.
 4. Product lỗi/breaker mở trả `200` với `catalog_freshness = DEGRADED` và `current_price` có thể null.
 
 GET không gia hạn TTL, không chạm ZSET, không cập nhật snapshot Redis và không phát

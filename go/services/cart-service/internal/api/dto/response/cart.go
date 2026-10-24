@@ -20,6 +20,7 @@ type CartItem struct {
 	ProductID         string            `json:"product_id"`
 	ProductName       string            `json:"product_name"`
 	VariantAttributes map[string]string `json:"variant_attributes,omitempty"`
+	VariantName       string            `json:"variant_name,omitempty"`
 	// ImageURL is always an absolute CDN URL, or the placeholder when the SKU
 	// has no image. A storage key never leaves the service.
 	ImageURL string `json:"image_url"`
@@ -96,6 +97,7 @@ func newCartItem(line domain.ViewItem, urls media.URLs) CartItem {
 		ProductID:         line.ProductID,
 		ProductName:       line.ProductName,
 		VariantAttributes: line.VariantAttributes,
+		VariantName:       line.VariantName,
 		ImageURL:          urls.Image(line.ImageKey),
 		Quantity:          line.Quantity,
 		UnitPriceAtAdd:    newMoney(line.UnitPriceAtAdd),

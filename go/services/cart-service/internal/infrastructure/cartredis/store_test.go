@@ -103,6 +103,7 @@ func (h *harness) snapshot(_ ...int64) *domain.StoredItem {
 		ProductID:         "PRODUCT-TSHIRT",
 		ProductName:       "Ao thun do",
 		VariantAttributes: map[string]string{"color": "red", "size": "M"},
+		VariantName:       "Màu sắc: Đỏ · Kích thước: M",
 		ImageKey:          "products/tshirt/red.png",
 		Price:             domain.Money{AmountMinor: 125000, Currency: "VND"},
 		IsAvailable:       true,
@@ -802,6 +803,9 @@ func TestLoadItemsSurvivesTheLuaJSONRoundTrip(t *testing.T) {
 	}
 	if item.VariantAttributes["color"] != "red" || item.VariantAttributes["size"] != "M" {
 		t.Fatalf("variant_attributes = %+v", item.VariantAttributes)
+	}
+	if item.VariantName != "Màu sắc: Đỏ · Kích thước: M" {
+		t.Fatalf("variant_name lost across Lua round trip: %q", item.VariantName)
 	}
 }
 

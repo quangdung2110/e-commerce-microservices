@@ -40,7 +40,7 @@ Cart không publish cổng host trong Docker Compose gốc; client đi qua Gatew
 (`http://localhost:8088/api/v1/carts/mine`). Cổng 8085 thuộc Promotion.
 
 `GET /api/v1/carts/mine` đọc Redis items. Sau đó Cart gọi `GetBatchSkus` để
-phủ `current_price` và catalog saleability. Product timeout/breaker mở trả snapshot với
+phủ `current_price`, `variant_name` và catalog saleability. Product timeout/breaker mở trả snapshot với
 `catalog_freshness = DEGRADED` và `current_price` có thể null. Redis miss trả cart
 rỗng; không rehydrate. GET là query thuần: không cập nhật snapshot Redis, TTL hay
 abandonment schedule. Một SKU mà Product báo không tồn tại hoặc không bán được vẫn nằm

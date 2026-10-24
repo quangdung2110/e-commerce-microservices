@@ -277,6 +277,37 @@ func TestGetCartEnrichesWithLiveProductData(t *testing.T) {
 	}
 }
 
+func TestGetCartRefreshesDisplayWithoutWritingAndKeepsSnapshotOnFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available bool
+		fail      bool
+		want      string
+	}{
+		{"renamed catalog", true, false, "Nhãn mới: Đen"},
+		{"degraded", true, true, "Nhãn cũ: Đen"},
+		{"unavailable", false, false, "Nhãn cũ: Đen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{items: []domain.Item{{SkuID: "SKU-A", StoredItem: domain.StoredItem{VariantName: "Nhãn cũ: Đen", Quantity: 3}}}}
+			catalog := &fakeCatalog{batch: map[string]domain.ProductSnapshot{"SKU-A": {SkuID: "SKU-A", IsAvailable: tc.available, VariantName: "Nhãn mới: Đen"}}}
+			if tc.fail {
+				catalog.batchErr = errors.New("Product unavailable")
+			}
+			view, err := newService(store, catalog).GetCart(context.Background(), testIdentity(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Items[0].VariantName != tc.want {
+				t.Fatalf("variant name = %q, want %q", view.Items[0].VariantName, tc.want)
+			}
+			if store.items[0].VariantName != "Nhãn cũ: Đen" || len(store.upsertCalls) != 0 {
+				t.Fatal("GET changed the stored snapshot")
+			}
+		})
+	}
+}
+
 // A Product outage degrades the read but must not fail it. The cart page does
 // not die with Product Service.
 func TestGetCartDegradesWhenProductFails(t *testing.T) {

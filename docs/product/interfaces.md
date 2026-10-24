@@ -104,7 +104,7 @@ hoặc Search.
 ## gRPC catalog read
 
 `GetSku` và `GetBatchSkus` trả: `sku_id`, `product_id`, `product_name`,
-`variant_attributes`, `image_url`, `base_price`, published selling `price`,
+`variant_attributes`, `variant_name`, `image_url`, `base_price`, published selling `price`,
 `category_ids` (tối đa 20 ID duy nhất), catalog saleability,
 `catalog_revision`, `updated_at`. `category_ids` là Product-owned ancestry để Checkout
 dựng trusted Promotion facts: category của Product và mọi ancestor tới root, root trước; nếu
@@ -115,6 +115,13 @@ fallback ảnh cấp Product, rỗng khi không có ảnh), không phải URL tu
 hiển thị (Cart, Checkout) dựng URL CDN từ key như Search và Product Detail BFF. Chúng không trả quantity, `OUT_OF_STOCK` hay stock
 status. Nếu Product/SKU không catalog-active, response là unavailable; Cart có thể giữ
 SKU hết stock; Checkout phải lấy allocation preview và Order mới reserve tại Inventory.
+
+`variant_name` là display text hiện tại: các cặp tên attribute/giá trị sắp theo code,
+nối bằng ` · `; SELECT lấy label option, BOOLEAN Có/Không, kiểu khác scalar text.
+Attribute không còn định nghĩa bị bỏ qua, option SELECT thiếu label fallback về code
+option. Không có thuộc tính resolve được thì rỗng; không đổi `variant_attributes`.
+Metadata được đọc chung cho cả batch (tối đa hai query), không truy vấn từng SKU.
+Consumer chỉ dùng tên cho hiển thị; không suy diễn identity hoặc giá từ chuỗi này.
 
 Caller gRPC gửi metadata `x-service-identity`; Product kiểm với `product.internal.grpc-clients` (mặc định
 `cart-service`, `checkout-service`): thiếu là `UNAUTHENTICATED`, ngoài danh sách là `PERMISSION_DENIED`

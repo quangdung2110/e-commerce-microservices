@@ -100,6 +100,7 @@ func activeSku() *productv1.Sku {
 		ProductId:         "PRODUCT-A",
 		ProductName:       "Ao thun do",
 		VariantAttributes: map[string]string{"color": "red"},
+		VariantName:       "Màu sắc: Đỏ",
 		ImageUrl:          "products/a/hero.png",
 		Price:             &commonv1.Money{AmountMinor: 125000, Currency: "VND"},
 		Status:            productv1.SkuStatus_SKU_STATUS_ACTIVE,
@@ -134,6 +135,9 @@ func TestGetSkuMapsAnActiveSku(t *testing.T) {
 	}
 	if snapshot.VariantAttributes["color"] != "red" {
 		t.Fatalf("variant attributes = %+v", snapshot.VariantAttributes)
+	}
+	if snapshot.VariantName != "Màu sắc: Đỏ" {
+		t.Fatalf("variant name = %q", snapshot.VariantName)
 	}
 }
 

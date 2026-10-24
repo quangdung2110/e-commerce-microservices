@@ -7,6 +7,15 @@ storage key of the representative image (SKU image, else Product image; empty wh
 none), not an absolute URL; consumers build the CDN URL from it. The API never exposes
 Inventory stock state.
 
+`Sku.variant_name` (field13) là chuỗi hiển thị tiếng Việt do Product resolve từ
+attribute metadata hiện tại: tên attribute + giá trị, sắp theo code, nối bằng ` · `.
+SELECT dùng label option; BOOLEAN dùng Có/Không; kiểu khác giữ scalar text. Attribute
+không còn định nghĩa bị bỏ qua; SELECT option không tìm thấy dùng giá trị gốc.
+Rỗng khi không có thuộc tính resolve được. `variant_attributes` giữ nguyên code/value.
+Không dùng `variant_name` để chọn SKU, tính giá hay cấp quyền. GetBatchSkus resolve
+metadata chung cho batch, tối đa hai query metadata, không query riêng từng SKU.
+Field mới additive; provider cũ không trả thì consumer nhận chuỗi rỗng theo proto3.
+
 **Trạng thái:** `proposed` ([ADOPTION](../../../../ADOPTION.md)). Provider `product-service` và consumer
 `cart-service`/`checkout-service` đã dùng contract này; chưa `implemented` vì `.proto` vẫn là bản copy trong
 service (xem "Bản copy trong service" bên dưới).

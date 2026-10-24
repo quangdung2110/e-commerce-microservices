@@ -33,6 +33,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ProductCatalogGrpcIntegrationTest extends AbstractCatalogIntegrationTest {
 
+    @Test
+    void variantNameUsesCurrentAttributeAndOptionLabelsOnPointAndBatchReads() {
+        var type = com.platform.productservice.domain.enums.AttributeValueType.SELECT;
+        UUID category = givenLeafCategory("variant-labels");
+        UUID color = givenAttribute("color", "Màu sắc", type);
+        givenMapping(category, color, true, true);
+        attributeService.createOption(color, new com.platform.productservice.web.dto.AttributeDtos.CreateAttributeOptionRequest("black", "Đen", 0));
+        var product = productCommandService.create(new ProductDtos.CreateProductRequest(category,
+                "Label test", "label-test", null, Map.of(), List.of(),
+                List.of(new ProductDtos.CreateSkuRequest("LABEL-1", 100L,
+                        com.platform.productservice.domain.enums.SkuStatus.ACTIVE,
+                        Map.of("color", "black"), List.of()))));
+        productCommandService.changeStatus(product.productId(), ProductEntity.etagOf(1L), ProductStatus.ACTIVE);
+        String sku = product.skus().get(0).skuId().toString();
+        assertThat(getSku(sku).getSku().getVariantName()).isEqualTo("Màu sắc: Đen");
+
+        attributeService.replace(color, new com.platform.productservice.web.dto.AttributeDtos.ReplaceAttributeRequest("color", "Màu mới", type));
+        assertThat(getSku(sku).getSku().getVariantName()).isEqualTo("Màu mới: Đen");
+        CapturingObserver<GetBatchSkusResponse> observer = new CapturingObserver<>();
+        grpcService.getBatchSkus(GetBatchSkusRequest.newBuilder().addSkuIds(sku).build(), observer);
+        assertThat(observer.error).isNull();
+        assertThat(observer.value.getSkusOrThrow(sku).getVariantName()).isEqualTo("Màu mới: Đen");
+        assertThat(observer.value.getSkusOrThrow(sku).getVariantAttributesMap()).containsEntry("color", "black");
+    }
+
     @Autowired
     private ProductCatalogGrpcService grpcService;
 
