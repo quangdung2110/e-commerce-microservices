@@ -32,3 +32,21 @@ spec:
       mode: PERMISSIVE
     '443':
       mode: PERMISSIVE
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: frontend-public-port
+  namespace: edge
+  labels:
+    app.kubernetes.io/part-of: ecommerce-mesh
+    app.kubernetes.io/managed-by: deploy-mesh-generate
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    '3000':
+      mode: PERMISSIVE

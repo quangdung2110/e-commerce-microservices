@@ -1,0 +1,57 @@
+NAMESPACE          POD NAME                                             ADDRESS                            NODE                         WAYPOINT           PROTOCOL
+data               checkout-redis-0                                     10.244.1.17                        ecommerce-mesh-worker        None               TCP
+data               elasticsearch-0                                      10.244.1.21                        ecommerce-mesh-worker        None               TCP
+data               kafka-0                                              10.244.1.19                        ecommerce-mesh-worker        None               TCP
+data               kafka-connect-689fccb86-f2l8j                        10.244.1.7                         ecommerce-mesh-worker        None               TCP
+data               minio-0                                              10.244.1.53                        ecommerce-mesh-worker        None               TCP
+data               postgres-0                                           10.244.1.25                        ecommerce-mesh-worker        None               TCP
+data               redis-0                                              10.244.1.26                        ecommerce-mesh-worker        None               TCP
+data               temporal-56cd456c68-wfzsp                            10.244.1.8                         ecommerce-mesh-worker        None               TCP
+data               temporal-ui-78d5777779-4dbvq                         10.244.1.9                         ecommerce-mesh-worker        None               TCP
+data               zookeeper-0                                          10.244.1.27                        ecommerce-mesh-worker        None               TCP
+default            kubernetes                                           172.26.0.3                                                      None               TCP
+ecommerce          auth-service-6f7b7c8bb7-dz8g9                        10.244.1.38                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          aws-ses                                              email.ap-southeast-1.amazonaws.com                              None               TCP
+ecommerce          aws-sqs                                              sqs.ap-southeast-1.amazonaws.com                                None               TCP
+ecommerce          cart-service-fb5cb4f46-ktkrl                         10.244.1.37                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          checkout-service-6bf844f588-q92k8                    10.244.1.36                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          ecommerce-waypoint-6f6468c55d-gr7k2                  10.244.1.6                         ecommerce-mesh-worker        None               TCP
+ecommerce          ecommerce-waypoint-6f6468c55d-l4n6w                  10.244.1.5                         ecommerce-mesh-worker        None               TCP
+ecommerce          inventory-service-7b8d7dc94-jb6g2                    10.244.1.33                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          localstack-78966d9f9c-rt44l                          10.244.1.63                        ecommerce-mesh-worker        None               HBONE
+ecommerce          mailpit-c85858657-h9tpk                              10.244.1.52                        ecommerce-mesh-worker        None               HBONE
+ecommerce          mesh-probe-checkout                                  10.244.0.8                         ecommerce-mesh-control-plane ecommerce-waypoint HBONE
+ecommerce          mesh-probe-finance                                   10.244.1.58                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          mesh-probe-order                                     10.244.1.57                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          mesh-probe-plain                                     10.244.1.60                        ecommerce-mesh-worker        ecommerce-waypoint TCP
+ecommerce          notification-service-669dddf59d-d9762                10.244.1.42                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          order-service-66fbcb676f-nnjrn                       10.244.1.41                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          payment-service-86d6964b8d-ppr97                     10.244.1.62                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          product-detail-bff-6c7dbf986b-lrcz4                  10.244.1.43                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          product-service-77f744df47-pj9h2                     10.244.1.35                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          promotion-service-766f8978cf-bldl2                   10.244.1.45                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          review-service-65d6ccbd59-57cfr                      10.244.1.44                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          search-service-6d55975d56-wclxb                      10.244.1.46                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+ecommerce          stripe-api                                           api.stripe.com                                                  None               TCP
+ecommerce          user-service-64bc4746f6-4jm62                        10.244.1.48                        ecommerce-mesh-worker        ecommerce-waypoint HBONE
+edge               frontend-5b44ff8545-fghlh                            10.244.1.47                        ecommerce-mesh-worker        None               HBONE
+edge               gateway-auth-995cf88b5-nvnrs                         10.244.1.50                        ecommerce-mesh-worker        None               HBONE
+edge               mesh-probe-gateway                                   10.244.1.61                        ecommerce-mesh-worker        None               HBONE
+edge               traefik-5d9c6db654-8grg6                             10.244.1.49                        ecommerce-mesh-worker        None               HBONE
+istio-system       istio-cni-node-b254q                                 10.244.1.3                         ecommerce-mesh-worker        None               TCP
+istio-system       istio-cni-node-srrht                                 10.244.0.5                         ecommerce-mesh-control-plane None               TCP
+istio-system       istiod-68d5885888-skgls                              10.244.1.2                         ecommerce-mesh-worker        None               TCP
+istio-system       ztunnel-5pdqf                                        10.244.1.4                         ecommerce-mesh-worker        None               TCP
+istio-system       ztunnel-z46jl                                        10.244.0.6                         ecommerce-mesh-control-plane None               TCP
+kube-system        coredns-7d764666f9-45797                             10.244.0.4                         ecommerce-mesh-control-plane None               TCP
+kube-system        coredns-7d764666f9-bgv2d                             10.244.0.2                         ecommerce-mesh-control-plane None               TCP
+kube-system        etcd-ecommerce-mesh-control-plane                    172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+kube-system        kindnet-95mnl                                        172.26.0.2                         ecommerce-mesh-worker        None               TCP
+kube-system        kindnet-9fqkj                                        172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+kube-system        kube-apiserver-ecommerce-mesh-control-plane          172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+kube-system        kube-controller-manager-ecommerce-mesh-control-plane 172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+kube-system        kube-proxy-87c2v                                     172.26.0.2                         ecommerce-mesh-worker        None               TCP
+kube-system        kube-proxy-jjl22                                     172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+kube-system        kube-scheduler-ecommerce-mesh-control-plane          172.26.0.3                         ecommerce-mesh-control-plane None               TCP
+local-path-storage local-path-provisioner-67b778fdf6-dwqgk              10.244.0.3                         ecommerce-mesh-control-plane None               TCP
+observability      mesh-probe-scraper                                   10.244.1.59                        ecommerce-mesh-worker        None               HBONE

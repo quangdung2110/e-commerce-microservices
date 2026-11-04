@@ -26,6 +26,25 @@ spec:
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
+  name: allow-frontend
+  namespace: edge
+  labels:
+    app.kubernetes.io/part-of: ecommerce-mesh
+    app.kubernetes.io/managed-by: deploy-mesh-generate
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  rules:
+  - to:
+    - operation:
+        ports:
+        - '3000'
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
   name: allow-gateway-auth
   namespace: edge
   labels:

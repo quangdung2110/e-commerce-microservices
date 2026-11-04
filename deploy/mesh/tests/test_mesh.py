@@ -42,14 +42,7 @@ class Policies:
 
     @staticmethod
     def _path_matches(patterns: list[str], path: str) -> bool:
-        for value in patterns:
-            if value.startswith("*") and path.endswith(value[1:]):
-                return True
-            if value.endswith("*") and not value.startswith("*") and path.startswith(value[:-1]):
-                return True
-            if "*" not in value and path == value:
-                return True
-        return False
+        return any(generate.Pattern(value, value, False).matches(path) for value in patterns)
 
     def allows(self, service: str, who: str, method: str, path: str) -> bool:
         for rule in self.by_service.get(service, []):
@@ -176,6 +169,56 @@ class AuthorizationTest(unittest.TestCase):
 
 
 class IdentityAndTransportTest(unittest.TestCase):
+    def test_local_provider_exceptions_are_bound_to_destination_and_port(self):
+        docs = {d["metadata"]["name"]: d for d in load_all("41-authorizationpolicies-ecommerce.yaml")}
+        for name, port in (("mailpit", "1025"), ("localstack", "4566")):
+            spec = docs[f"allow-local-provider-{name}"]["spec"]
+            self.assertEqual({"matchLabels": {"app.kubernetes.io/name": name}}, spec["selector"])
+            self.assertEqual([{"from": [{"source": {"principals": [principal("ecommerce/notification-service")]}}],
+                               "to": [{"operation": {"ports": [port]}}]}], spec["rules"])
+
+    def test_health_checks_do_not_open_other_actuator_paths_or_methods(self):
+        policy = Policies()
+        checkout = principal("ecommerce/checkout-service")
+        self.assertTrue(policy.allows("promotion-service", checkout, "GET", "/actuator/health/readiness"))
+        self.assertFalse(policy.allows("promotion-service", checkout, "POST", "/actuator/health/readiness"))
+        self.assertFalse(policy.allows("promotion-service", checkout, "GET", "/actuator/env"))
+        self.assertFalse(policy.allows("promotion-service", principal("ecommerce/order-service"), "GET", "/actuator/health/readiness"))
+
+    def test_only_the_waypoint_can_connect_directly_to_business_pods(self):
+        baseline = next(d for d in load_all("41-authorizationpolicies-ecommerce.yaml")
+                        if d["metadata"]["name"] == "l4-baseline")
+        self.assertEqual([{"from": [{"source": {"principals": [principal("ecommerce/ecommerce-waypoint")]}}]}],
+                         baseline["spec"]["rules"])
+
+    def test_prometheus_only_gets_exact_metrics_endpoints(self):
+        topology = yaml.safe_load((MESH / "topology.yaml").read_text(encoding="utf-8"))
+        for doc in load_all("41-authorizationpolicies-ecommerce.yaml"):
+            refs = [r for r in doc["spec"].get("targetRefs", []) if r["kind"] == "Service"]
+            if not refs:
+                continue
+            service = topology["services"][refs[0]["name"]]
+            grants = [r for r in doc["spec"]["rules"] if any(principal("observability/prometheus") in
+                      f["source"].get("principals", []) for f in r["from"])]
+            self.assertEqual(1 if service.get("metrics_path") else 0, len(grants))
+            for grant in grants:
+                self.assertEqual([{"operation": {"paths": [service["metrics_path"]], "methods": ["GET"],
+                                  "ports": [str(service["ports"]["http"])]}}], grant["to"])
+
+    def test_every_grant_is_bound_to_its_listener_port(self):
+        for doc in load_all("41-authorizationpolicies-ecommerce.yaml"):
+            if not any(r["kind"] == "Service" for r in doc["spec"].get("targetRefs", [])):
+                continue
+            for rule in doc["spec"]["rules"]:
+                self.assertTrue(rule["to"][0]["operation"]["ports"], doc["metadata"]["name"])
+
+    def test_similarly_named_routes_cannot_inherit_a_suffix_grant(self):
+        policies = Policies()
+        who = principal("ecommerce/checkout-service")
+        self.assertFalse(policies.allows("user-service", who, "GET", "/api/v1/admin/checkout-snapshot"))
+        self.assertFalse(policies.allows("cart-service", who, "GET", "/internal/other/checkout-snapshot"))
+        self.assertFalse(policies.allows("inventory-service", who, "POST", "/internal/inventory/v1/reservations"))
+
     def test_every_service_has_its_own_service_account_and_none_mounts_a_token(self):
         accounts = {(d["metadata"]["namespace"], d["metadata"]["name"]): d for d in load_all("10-serviceaccounts.yaml")}
         for service in yaml.safe_load(generate.SERVICES.read_text(encoding="utf-8"))["services"]:
@@ -197,7 +240,7 @@ class IdentityAndTransportTest(unittest.TestCase):
                         referenced.update(source["source"].get("principals", []))
         self.assertLessEqual(referenced, accounts, f"principals without a ServiceAccount: {sorted(referenced - accounts)}")
 
-    def test_mtls_is_strict_everywhere_except_traefik_public_ports(self):
+    def test_mtls_is_strict_everywhere_except_explicit_public_edge_ports(self):
         docs = load_all("20-peerauthentication.yaml")
         mesh_wide = [d for d in docs if d["metadata"]["namespace"] == "istio-system"][0]
         self.assertEqual("STRICT", mesh_wide["spec"]["mtls"]["mode"])
@@ -206,8 +249,8 @@ class IdentityAndTransportTest(unittest.TestCase):
             permissive = {port for port, v in doc["spec"].get("portLevelMtls", {}).items() if v["mode"] == "PERMISSIVE"}
             if permissive:
                 self.assertEqual("edge", doc["metadata"]["namespace"])
-                self.assertEqual({"80", "443"}, permissive)
-                self.assertEqual("traefik", doc["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"])
+                workload = doc["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"]
+                self.assertEqual({"traefik": {"80", "443"}, "frontend": {"3000"}}[workload], permissive)
 
     def test_namespaces_carry_the_ambient_and_waypoint_labels(self):
         namespaces = {d["metadata"]["name"]: d["metadata"]["labels"] for d in load_all("00-namespaces.yaml")}
@@ -243,6 +286,12 @@ def parse_row(cells: list[str]) -> tuple[list[int], int | None]:
 
 
 class TrafficPolicyTest(unittest.TestCase):
+    def test_multiport_fallback_targets_the_public_http_listener(self):
+        topology = yaml.safe_load((MESH / "topology.yaml").read_text(encoding="utf-8"))
+        for doc in load_all("50-virtualservices.yaml"):
+            self.assertEqual(topology["services"][doc["metadata"]["name"]]["ports"]["http"],
+                             doc["spec"]["http"][-1]["route"][0]["destination"]["port"]["number"])
+
     @classmethod
     def setUpClass(cls):
         cls.policy = yaml.safe_load((MESH / "traffic-policy.yaml").read_text(encoding="utf-8"))
@@ -367,10 +416,10 @@ class PatternTest(unittest.TestCase):
             "/api/v1/auth/**": [("/api/v1/auth", False), ("/api/v1/auth/*", False)],
             "/internal/v1/reviews/rating-aggregate-exports**": [("/internal/v1/reviews/rating-aggregate-exports*", False)],
             "/v1/payments/initiate": [("/v1/payments/initiate", False)],
-            "/internal/v1/carts/*/checkout-snapshot": [("*/checkout-snapshot", True)],
-            "/v1/payments/{transactionId}/cancel": [("*/cancel", True)],
-            "/v1/payments/{transactionId}": [("/v1/payments/*", True)],
-            "/internal/v1/users/*/addresses/*/checkout-snapshot": [("*/checkout-snapshot", True)],
+            "/internal/v1/carts/*/checkout-snapshot": [("/internal/v1/carts/{*}/checkout-snapshot", False)],
+            "/v1/payments/{transactionId}/cancel": [("/v1/payments/{*}/cancel", False)],
+            "/v1/payments/{transactionId}": [("/v1/payments/{*}", False)],
+            "/internal/v1/users/*/addresses/*/checkout-snapshot": [("/internal/v1/users/{*}/addresses/{*}/checkout-snapshot", False)],
         }
         for path, expected in cases.items():
             actual = [(p.value, p.broadened) for p in generate.to_patterns(path)]
@@ -391,6 +440,27 @@ class PatternTest(unittest.TestCase):
 
 
 class HelmValuesTest(unittest.TestCase):
+    def test_all_four_mesh_images_are_digest_pinned(self):
+        digests = yaml.safe_load((MESH / "versions.yaml").read_text(encoding="utf-8"))["istio"]["image_digests"]
+        istiod = yaml.safe_load((MESH / "helm/istiod.values.yaml").read_text(encoding="utf-8"))
+        cni = yaml.safe_load((MESH / "helm/cni.values.yaml").read_text(encoding="utf-8"))
+        ztunnel = yaml.safe_load((MESH / "helm/ztunnel.values.yaml").read_text(encoding="utf-8"))
+        for image, value in (("pilot", istiod["image"]), ("proxyv2", istiod["global"]["proxy"]["image"]),
+                             ("install-cni", cni["image"]), ("ztunnel", ztunnel["image"])):
+            self.assertRegex(digests[image], r"^sha256:[0-9a-f]{64}$")
+            self.assertEqual(f"docker.io/istio/{image}@{digests[image]}", value)
+
+    def test_application_services_declare_their_protocols(self):
+        topology = yaml.safe_load((MESH / "topology.yaml").read_text(encoding="utf-8"))
+        for name, service in topology["services"].items():
+            path = MESH.parents[1] / "deploy/k8s/services" / f"{name}.yaml"
+            if not path.exists():  # Planned workloads do not have a runtime yet.
+                continue
+            resource = next(d for d in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+                            if d["kind"] == "Service" and d["metadata"]["name"] == name)
+            for port in resource["spec"]["ports"]:
+                self.assertEqual("grpc" if port["name"] == "grpc" else "http", port["appProtocol"], name)
+
     def test_every_values_file_pins_the_version_of_versions_yaml(self):
         version = yaml.safe_load((MESH / "versions.yaml").read_text(encoding="utf-8"))["istio"]["version"]
         self.assertNotIn("latest", version)

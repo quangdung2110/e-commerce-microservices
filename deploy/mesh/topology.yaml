@@ -17,6 +17,7 @@ waypoint:
 
 # Workloads in `edge` and `observability`: L4 policy is attached with a pod selector.
 edge_workloads:
+  frontend:     {selector: {app.kubernetes.io/name: frontend}, ports: {http: 3000}}
   traefik:      {selector: {app.kubernetes.io/name: traefik}, ports: {web: 80, websecure: 443, metrics: 8090}}
   gateway-auth: {selector: {app.kubernetes.io/name: gateway-auth}, ports: {http: 8080}}
 
@@ -31,20 +32,42 @@ observability_workloads:
 # Workloads without a runtime yet (finance-ops, accounting-ops, notification-ops, promotion-legacy-migrator, chat-service,
 # analytics-service) only call, or are not called over HTTP: they get a ServiceAccount and no Service port.
 services:
-  auth-service:         {ports: {http: 8080, internal: 8081}}
-  user-service:         {ports: {http: 8082, internal: 8083}}
-  cart-service:         {ports: {http: 8080}}
-  product-service:      {ports: {http: 8081, grpc: 9091}}
-  inventory-service:    {ports: {http: 8080}}
-  search-service:       {ports: {http: 8080}}
-  product-detail-bff:   {ports: {http: 8080}}
-  checkout-service:     {ports: {http: 8080}}
-  order-service:        {ports: {http: 8080}}
-  payment-service:      {ports: {http: 8080}}
-  promotion-service:    {ports: {http: 8085}}
-  review-service:       {ports: {http: 8080}}
-  notification-service: {ports: {http: 8080, internal: 8081}}
+  auth-service:         {ports: {http: 8080, internal: 8081}, metrics_path: /metrics}
+  user-service:         {ports: {http: 8082, internal: 8083}, metrics_path: /metrics}
+  cart-service:         {ports: {http: 8080}, metrics_path: /metrics}
+  product-service:      {ports: {http: 8081, grpc: 9091}, metrics_path: /actuator/prometheus}
+  inventory-service:    {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  search-service:       {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  product-detail-bff:   {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  checkout-service:     {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  order-service:        {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  payment-service:      {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  promotion-service:    {ports: {http: 8085}, metrics_path: /actuator/prometheus}
+  review-service:       {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  notification-service: {ports: {http: 8080, internal: 8081}, metrics_path: /metrics}
   chat-service:         {ports: {http: 8080}}
+
+# Local email-provider simulators: mTLS + destination/port authorization, no business HTTP grants.
+# Their Service and Pod explicitly disable waypoint inheritance (deploy/k8s/generate.py).
+local_tcp_providers:
+  mailpit: {port: 1025, caller: ecommerce/notification-service}
+  localstack: {port: 4566, caller: ecommerce/notification-service}
+
+# Existing gateway active health checks and Checkout's read-only startup probe.
+health_checks:
+  checkout-service:
+    - {path: /health/ready, callers: [edge/traefik]}
+  inventory-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+  order-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+  product-detail-bff:
+    - {path: /actuator/health/readiness, callers: [edge/traefik]}
+  product-service:
+    - {path: /actuator/health/readiness, callers: [edge/traefik]}
+  promotion-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+    - {path: /actuator/health/readiness, callers: [ecommerce/checkout-service]}
 
 # Egress (runtime-contract section 8). Everything else outside the cluster is blocked by REGISTRY_ONLY.
 egress:

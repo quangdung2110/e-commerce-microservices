@@ -9,7 +9,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ecommerce-mesh
     app.kubernetes.io/managed-by: deploy-mesh-generate
-    istio.io/waypoint-for: service
+    istio.io/waypoint-for: all
 spec:
   gatewayClassName: istio-waypoint
   listeners:

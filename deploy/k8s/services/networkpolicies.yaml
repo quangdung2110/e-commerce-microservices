@@ -322,6 +322,18 @@ spec:
           kubernetes.io/metadata.name: ecommerce
       podSelector:
         matchLabels:
+          app.kubernetes.io/name: accounting-ops
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ecommerce
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: finance-ops
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ecommerce
+      podSelector:
+        matchLabels:
           app.kubernetes.io/name: order-service
     - namespaceSelector:
         matchLabels:

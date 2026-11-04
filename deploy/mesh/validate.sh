@@ -9,11 +9,13 @@ export MSYS_NO_PATHCONV=1
 host_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
 KUBECONFORM=ghcr.io/yannh/kubeconform:v0.6.7
-ISTIOCTL=istio/istioctl:1.24.2
 HELM=alpine/helm:3.16.2
 PY="$(command -v python3 || command -v python)"
 cd "$MESH"
 ISTIO_VERSION="$("$PY" -c "import yaml;print(yaml.safe_load(open('versions.yaml'))['istio']['version'])")"
+ISTIOCTL="istio/istioctl:$ISTIO_VERSION"
+CHARTS="$("$PY" -c 'import local; print(local.fetch_charts())')"
+CHART_MOUNT="$(host_path "$CHARTS")"
 
 echo "== generated files are current"
 "$PY" generate.py --check
@@ -23,8 +25,8 @@ echo "== tests against docs/mesh/runtime-contract.md"
 
 MOUNT="$(host_path "$MESH")"
 
-echo "== kubeconform (Kubernetes 1.31 + Istio and Gateway API CRDs)"
-docker run --rm -v "$MOUNT:/mesh:ro" "$KUBECONFORM" -strict -summary -kubernetes-version 1.31.0 \
+echo "== kubeconform (Kubernetes 1.35 + Istio and Gateway API CRDs)"
+docker run --rm -v "$MOUNT:/mesh:ro" "$KUBECONFORM" -strict -summary -kubernetes-version 1.35.0 \
   -schema-location default \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
   /mesh/generated
@@ -36,8 +38,9 @@ docker run --rm -v "$MOUNT:/mesh:ro" --entrypoint istioctl "$ISTIOCTL" analyze -
 
 echo "== helm template (Istio $ISTIO_VERSION charts)"
 for chart in base istiod cni ztunnel; do
-  docker run --rm -v "$MOUNT/helm:/v:ro" "$HELM" template "$chart" "$chart" \
-    --repo https://istio-release.storage.googleapis.com/charts --version "$ISTIO_VERSION" -n istio-system -f "/v/$chart.values.yaml" >/dev/null
+  case "$chart" in istiod) source=istio-control/istio-discovery ;; cni) source=istio-cni ;; *) source="$chart" ;; esac
+  docker run --rm -v "$MOUNT/helm:/v:ro" -v "$CHART_MOUNT:/charts:ro" "$HELM" template "$chart" "/charts/$source" \
+    -n istio-system -f "/v/$chart.values.yaml" >/dev/null
   echo "  $chart renders"
 done
 echo "mesh manifests OK"

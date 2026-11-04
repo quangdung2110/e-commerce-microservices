@@ -1,0 +1,629 @@
+{
+  "timestamp": "2026-11-04T06:04:50.164275+00:00",
+  "context": "kind-ecommerce-mesh",
+  "application_diagnostics": {
+    "finance_review_cases": {
+      "status": 503,
+      "body": "{\"code\":\"DEPENDENCY_UNAVAILABLE\",\"retryable\":true,\"correlation_id\":\"mesh-p1-verification\"}"
+    }
+  },
+  "passed": 54,
+  "total": 54,
+  "results": [
+    {
+      "name": "checkout legitimate preview",
+      "caller": "checkout",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/internal/inventory/v1/allocation-previews",
+        "identity": "checkout-service",
+        "method": "POST",
+        "body": {
+          "lines": [
+            {
+              "line_reference": "mesh-test",
+              "sku_id": "mesh-no-such-sku",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"outcome\":\"REJECT_ALL\",\"generated_at\":\"2026-11-04T06:04:27.746372Z\",\"rejected_lines\":[{\"line_reference\":\"mesh-test\",\"sku_id\":\"mesh-no-such-sku\",\"quantity\":1,\"reason\":\"NO_ELIGIBLE_WAREHOUSE\"}]}"
+      },
+      "passed": true
+    },
+    {
+      "name": "checkout legitimate promotion readiness",
+      "caller": "checkout",
+      "request": {
+        "target": "http://promotion-service.ecommerce:8085/actuator/health/readiness",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"status\":\"UP\"}"
+      },
+      "passed": true
+    },
+    {
+      "name": "order cannot borrow checkout health permission",
+      "caller": "order",
+      "request": {
+        "target": "http://promotion-service.ecommerce:8085/actuator/health/readiness",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "gateway legitimate inventory health",
+      "caller": "gateway",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/actuator/health",
+        "identity": "traefik"
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"status\":\"UP\",\"groups\":[\"liveness\",\"readiness\"]}"
+      },
+      "passed": true
+    },
+    {
+      "name": "gateway cannot borrow order payment permission",
+      "caller": "gateway",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "order legitimate inventory query",
+      "caller": "order",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 404,
+        "body": "{\"type\":\"https://contracts.ecommerce.local/problems/not-found\",\"title\":\"Not found\",\"status\":404,\"detail\":\"The resource does not exist or is not visible to this caller\",\"instance\":\"/internal/inventory/v1/reservations/mesh-no-such-order\",\"code\":\"NOT_FOUND\",\"retryable\":false,\"correlation_id\":\"mesh-p1-verification\"}"
+      },
+      "passed": true
+    },
+    {
+      "name": "checkout spoofing order denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "order spoofing checkout denied",
+      "caller": "order",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/internal/inventory/v1/allocation-previews",
+        "identity": "checkout-service",
+        "method": "POST",
+        "body": {
+          "lines": [
+            {
+              "line_reference": "mesh-test",
+              "sku_id": "mesh-no-such-sku",
+              "quantity": 1
+            }
+          ]
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "order legitimate payment query",
+      "caller": "order",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 404,
+        "body": "{\"code\":\"PAYMENT_NOT_FOUND\",\"retryable\":false,\"correlation_id\":\"mesh-p1-verification\"}"
+      },
+      "passed": true
+    },
+    {
+      "name": "checkout spoofing payment caller denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "order missing attribution header denied by application",
+      "caller": "order",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/v1/payments/TXN_00000000000000000000000000"
+      },
+      "response": {
+        "status": 401,
+        "body": "{\"code\":\"UNAUTHENTICATED\",\"retryable\":false,\"correlation_id\":\"mesh-p1-verification\"}"
+      },
+      "passed": true
+    },
+    {
+      "name": "finance legitimate journal query",
+      "caller": "finance",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/internal/v1/payment/ledger/journals/FJN_00000000000000000000000000",
+        "identity": "finance-ops",
+        "headers": {
+          "X-Actor": "mesh-finance-operator"
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": "{\"code\":\"FINANCIAL_JOURNAL_NOT_FOUND\",\"retryable\":false,\"correlation_id\":\"mesh-p1-verification\"}"
+      },
+      "passed": true
+    },
+    {
+      "name": "order spoofing finance denied",
+      "caller": "order",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/internal/v1/payment/review-cases",
+        "identity": "finance-ops",
+        "headers": {
+          "X-Actor": "mesh-finance-operator"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "Go Cart legitimate checkout read",
+      "caller": "checkout",
+      "request": {
+        "target": "http://cart-service.ecommerce:8080/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 200,
+        "body": "{\"items\":[]}"
+      },
+      "passed": true
+    },
+    {
+      "name": "Go Cart spoofed checkout denied",
+      "caller": "order",
+      "request": {
+        "target": "http://cart-service.ecommerce:8080/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "Go User legitimate address lookup",
+      "caller": "checkout",
+      "request": {
+        "target": "http://user-service.ecommerce:8083/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 404,
+        "body": "{\"type\":\"https://errors.ecommerce.local/address-not-found\",\"title\":\"Address không tồn tại\",\"status\":404,\"detail\":\"Address không tồn tại.\",\"instance\":\"/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot\",\"code\":\"ADDRESS_NOT_FOUND\",\"trace_id\":\"152de0bb-6036-42ad-ae49-b7f4fade868f\",\"retryable\":false}"
+      },
+      "passed": true
+    },
+    {
+      "name": "Go User spoofed checkout denied",
+      "caller": "order",
+      "request": {
+        "target": "http://user-service.ecommerce:8083/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "Go User internal route on public listener denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://user-service.ecommerce:8082/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "forged user ADMIN from checkout denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/api/v1/admin/inventory/warehouses",
+        "identity": "order-service",
+        "headers": {
+          "X-User-Id": "00000000-0000-0000-0000-000000000000",
+          "X-User-Roles": "ADMIN"
+        }
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "public Frontend remains reachable",
+      "caller": "plain",
+      "request": {
+        "target": "http://frontend.edge:3000/"
+      },
+      "response": {
+        "status": 200,
+        "body": "<!DOCTYPE html><html lang=\"vi\" class=\"inter_dbdd7d5e-module__Jwifzq__variable newsreader_b32a19d3-module__T4c3Tq__variable geist_mono_1bf8cbf6-module__FlyLvG__variable h-full antialiased\"><head><meta charSet=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><link rel=\"preload\" as=\"image\" imageSrcSet=\"/_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=384&amp;q=75 384w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=640&amp;q=75 640w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=750&amp;q=75 750w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=828&amp;q=75 828w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=1080&amp;q=75 1080w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=1200&amp;q=75 1200w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=1920&amp;q=75 1920w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=2048&amp;q=75 2048w, /_next/image?url=%2Fimages%2Ftechnology-desk.jpg&amp;w=3840&amp;q=75 3840w\" imageSizes=\"(min-width: 1192px) 540px, (min-width: 768px) 45vw, 100vw\"/><link rel=\"stylesheet\" href=\"/_next/static/chunks/17h0xe56ejwkx.css\" data-precedence=\"next\"/><link rel=\"preload\" as=\"script\" fetchPriority=\"low\" href=\"/_next/static/chunks/2zjueh7t2vecu.js\"/><script src=\"/_next/static/chunks/39jur218l8-_y.js\" async=\"\"></script><script src=\"/_next/static/chunks/43rzazpghd3-v.js\" async=\"\"></script><script src=\"/_next/static/chunks/0n-zjr76qg7uq.js\" async=\"\"></script><script src=\"/_next/static/chunks/27jktro2p5rq9.js\" async=\"\"></script><script src=\"/_next/static/chunks/turbopack-24qab_eaw70rs.js\" async=\"\"></script><script src=\"/_next/static/chunks/055q61t696d7o.js\" async=\"\"></script><script src=\"/_next/static/chunks/1b5sa77d6zfly.js\" async=\"\"></script><script src=\"/_next/static/chunks/1se90kzc_i3v7.js\" async=\"\"></script><script src=\"/_next/static/chunks/14mrh2-p_w84d.js\" async=\"\"></script><script src=\"/_next/static/chunks/1e2ai_wi0mlzp.js\" async=\"\"></script><script src=\"/_next/s"
+      },
+      "passed": true
+    },
+    {
+      "name": "gateway still requires user authentication",
+      "caller": "plain",
+      "request": {
+        "target": "http://api-gateway.edge:80/api/v1/products"
+      },
+      "response": {
+        "status": 401,
+        "body": "{\"type\":\"https://contracts.ecommerce.local/problems/unauthorized\",\"title\":\"Unauthorized\",\"status\":401,\"detail\":\"A Bearer access token is required.\",\"instance\":\"/api/v1/products\",\"code\":\"UNAUTHORIZED\",\"trace_id\":\"052eb5077541c0753317bdab98cd3fd3\",\"retryable\":false}\n"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service Pod IP closed even to order",
+      "caller": "order",
+      "request": {
+        "target": "http://10.244.1.33:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service Pod IP forged order denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://10.244.1.33:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service plaintext forged order denied",
+      "caller": "plain",
+      "request": {
+        "target": "http://10.244.1.33:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": "CONNECTION_REJECTED",
+        "body": "[Errno 104] Connection reset by peer"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service scraper legitimate metrics",
+      "caller": "scraper",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/actuator/prometheus",
+        "identity": "prometheus"
+      },
+      "response": {
+        "status": 200,
+        "body": "# HELP application_ready_time_seconds Time taken for the application to be ready to service requests\n# TYPE application_ready_time_seconds gauge\napplication_ready_time_seconds{application=\"inventory-service\",main_application_class=\"com.ecommerce.inventory.InventoryServiceApplication\"} 43.77\n# HELP application_started_time_seconds Time taken to start the application\n# TYPE application_started_time_seconds gauge\napplication_started_time_seconds{application=\"inventory-service\",main_application_class=\"com.ecommerce.inventory.InventoryServiceApplication\"} 43.393\n# HELP disk_free_bytes Usable space for path\n# TYPE disk_free_bytes gauge\ndisk_free_bytes{application=\"inventory-service\",path=\"/.\"} 8.84037296128E11\n# HELP disk_total_bytes Total space for path\n# TYPE disk_total_bytes gauge\ndisk_total_bytes{application=\"inventory-service\",path=\"/.\"} 1.081101176832E12\n# HELP executor_active_threads The approximate number of threads that are actively executing tasks\n# TYPE executor_active_threads gauge\nexecutor_active_threads{application=\"inventory-service\",name=\"applicationTaskExecutor\"} 0.0\nexecutor_active_threads{application=\"inventory-service\",name=\"taskScheduler\"} 0.0\n# HELP executor_completed_tasks_total The approximate total number of tasks that have completed execution\n# TYPE executor_completed_tasks_total counter\nexecutor_completed_tasks_total{application=\"inventory-service\",name=\"applicationTaskExecutor\"} 0.0\nexecutor_completed_tasks_total{application=\"inventory-service\",name=\"taskScheduler\"} 18148.0\n# HELP executor_pool_core_threads The core number of threads for the pool\n# TYPE executor_pool_core_threads gauge\nexecutor_pool_core_threads{application=\"inventory-service\",name=\"applicationTaskExecutor\"} 8.0\nexecutor_pool_core_threads{application=\"inventory-service\",name=\"taskScheduler\"} 1.0\n# HELP executor_pool_max_threads The maximum allowed number of threads in the pool\n# TYPE executor_pool_max_threads gauge\nexecutor_pool_max_threads{application=\"inventory-service\",name="
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service scraper forged order denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service scraper Pod IP forged order denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://10.244.1.33:8080/internal/inventory/v1/reservations/mesh-no-such-order",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "inventory-service metrics POST denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://inventory-service.ecommerce.svc.cluster.local:8080/actuator/prometheus",
+        "identity": "prometheus",
+        "method": "POST"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service Pod IP closed even to order",
+      "caller": "order",
+      "request": {
+        "target": "http://10.244.1.62:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service Pod IP forged order denied",
+      "caller": "checkout",
+      "request": {
+        "target": "http://10.244.1.62:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service plaintext forged order denied",
+      "caller": "plain",
+      "request": {
+        "target": "http://10.244.1.62:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": "CONNECTION_REJECTED",
+        "body": "[Errno 104] Connection reset by peer"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service scraper legitimate metrics",
+      "caller": "scraper",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/actuator/prometheus",
+        "identity": "prometheus"
+      },
+      "response": {
+        "status": 200,
+        "body": "# HELP application_ready_time_seconds Time taken for the application to be ready to service requests\n# TYPE application_ready_time_seconds gauge\napplication_ready_time_seconds{main_application_class=\"com.platform.paymentservice.PaymentServiceApplication\"} 19.053\n# HELP application_started_time_seconds Time taken to start the application\n# TYPE application_started_time_seconds gauge\napplication_started_time_seconds{main_application_class=\"com.platform.paymentservice.PaymentServiceApplication\"} 19.027\n# HELP disk_free_bytes Usable space for path\n# TYPE disk_free_bytes gauge\ndisk_free_bytes{path=\"/app/.\"} 8.84037328896E11\n# HELP disk_total_bytes Total space for path\n# TYPE disk_total_bytes gauge\ndisk_total_bytes{path=\"/app/.\"} 1.081101176832E12\n# HELP executor_active_threads The approximate number of threads that are actively executing tasks\n# TYPE executor_active_threads gauge\nexecutor_active_threads{name=\"applicationTaskExecutor\"} 0.0\nexecutor_active_threads{name=\"taskScheduler\"} 0.0\n# HELP executor_completed_tasks_total The approximate total number of tasks that have completed execution\n# TYPE executor_completed_tasks_total counter\nexecutor_completed_tasks_total{name=\"applicationTaskExecutor\"} 0.0\nexecutor_completed_tasks_total{name=\"taskScheduler\"} 45.0\n# HELP executor_pool_core_threads The core number of threads for the pool\n# TYPE executor_pool_core_threads gauge\nexecutor_pool_core_threads{name=\"applicationTaskExecutor\"} 8.0\nexecutor_pool_core_threads{name=\"taskScheduler\"} 1.0\n# HELP executor_pool_max_threads The maximum allowed number of threads in the pool\n# TYPE executor_pool_max_threads gauge\nexecutor_pool_max_threads{name=\"applicationTaskExecutor\"} 2.147483647E9\nexecutor_pool_max_threads{name=\"taskScheduler\"} 2.147483647E9\n# HELP executor_pool_size_threads The current number of threads in the pool\n# TYPE executor_pool_size_threads gauge\nexecutor_pool_size_threads{name=\"applicationTaskExecutor\"} 0.0\nexecutor_pool_size_threads{name=\"taskScheduler\"} 1.0\n# HELP "
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service scraper forged order denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service scraper Pod IP forged order denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://10.244.1.62:8080/v1/payments/TXN_00000000000000000000000000",
+        "identity": "order-service"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "payment-service metrics POST denied",
+      "caller": "scraper",
+      "request": {
+        "target": "http://payment-service.ecommerce.svc.cluster.local:8080/actuator/prometheus",
+        "identity": "prometheus",
+        "method": "POST"
+      },
+      "response": {
+        "status": 403,
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "gRPC checkout legitimate Service DNS",
+      "caller": "checkout",
+      "request": {
+        "protocol": "grpc",
+        "target": "product-service.ecommerce.svc.cluster.local:9091",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": "OK",
+        "body_hex": "12260a2430303030303030302d303030302d303030302d303030302d303030303030303030303030"
+      },
+      "passed": true
+    },
+    {
+      "name": "gRPC order spoofing checkout product-service.ecommerce.svc.cluster.local:9091",
+      "caller": "order",
+      "request": {
+        "protocol": "grpc",
+        "target": "product-service.ecommerce.svc.cluster.local:9091",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": "PERMISSION_DENIED",
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "gRPC checkout Pod IP closed",
+      "caller": "checkout",
+      "request": {
+        "protocol": "grpc",
+        "target": "10.244.1.35:9091",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": "PERMISSION_DENIED",
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "gRPC order spoofing checkout 10.244.1.35:9091",
+      "caller": "order",
+      "request": {
+        "protocol": "grpc",
+        "target": "10.244.1.35:9091",
+        "identity": "checkout-service"
+      },
+      "response": {
+        "status": "PERMISSION_DENIED",
+        "body": "RBAC: access denied"
+      },
+      "passed": true
+    },
+    {
+      "name": "RBAC observability/prometheus cannot patch deployments",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC observability/prometheus cannot create pods",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC observability/prometheus cannot create serviceaccounts/token",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot patch deployments",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot create pods",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot create serviceaccounts/token",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot patch deployments",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot create pods",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot create serviceaccounts/token",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC edge/traefik cannot patch deployments",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC edge/traefik cannot create pods",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC edge/traefik cannot create serviceaccounts/token",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot patch deployments",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot create pods",
+      "passed": true,
+      "response": "no"
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot create serviceaccounts/token",
+      "passed": true,
+      "response": "no"
+    }
+  ]
+}

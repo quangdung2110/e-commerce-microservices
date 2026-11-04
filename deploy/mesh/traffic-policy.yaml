@@ -18,6 +18,16 @@
 version: 1
 
 routes:
+  - id: payment-finance-operations
+    service: payment-service
+    prefix: /internal/v1/payment/
+    attempts: 0
+    timeout_s: 30
+    doc_row: "`/internal/v1/payment/**`"
+    examples:
+      - {method: GET, path: /internal/v1/payment/review-cases}
+      - {method: POST, path: /internal/v1/payment/review-cases/PRC_example/claim}
+
   # ---- Product
   - id: product-reads
     service: product-service

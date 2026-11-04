@@ -5,6 +5,7 @@ kind: ServiceAccount
 metadata:
   name: traefik
   namespace: edge
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: Service
@@ -18,9 +19,11 @@ spec:
   - name: web
     port: 80
     targetPort: web
+    appProtocol: http
   - name: metrics
     port: 8090
     targetPort: metrics
+    appProtocol: http
 ---
 apiVersion: v1
 kind: Service

@@ -60,8 +60,8 @@ WORKLOADS = {
     "user-service": dict(ns="ecommerce", mem=GO, probe=("/health/ready", "http"), init="user-migrate"),
     "notification-service": dict(ns="ecommerce", mem=GO, probe=("/livez", "internal")),
     # Giả lập SES/SNS/SQS cho Notification (profile notification của compose).
-    "mailpit": dict(ns="ecommerce", mem=("32Mi", "128Mi"), ports={"smtp": 1025, "http": 8025}),
-    "localstack": dict(ns="ecommerce", mem=("256Mi", "1Gi"), ports={"http": 4566}),
+    "mailpit": dict(ns="ecommerce", mem=("32Mi", "128Mi"), ports={"smtp": 1025, "http": 8025}, mesh_l4=True),
+    "localstack": dict(ns="ecommerce", mem=("256Mi", "1Gi"), ports={"http": 4566}, mesh_l4=True),
     "gateway-auth": dict(ns="edge", mem=GO, probe=("/health/live", "http")),
     "api-gateway": dict(
         ns="edge",
@@ -352,14 +352,19 @@ class Build:
 
         labels = {"app.kubernetes.io/name": name}
         docs = [
-            {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": name, "namespace": namespace}},
+            {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": name, "namespace": namespace},
+             "automountServiceAccountToken": False},
             {
                 "apiVersion": "v1",
                 "kind": "Service",
-                "metadata": {"name": service, "namespace": namespace},
+                "metadata": {"name": service, "namespace": namespace,
+                             **({"labels": {"istio.io/use-waypoint": "none"}} if spec.get("mesh_l4") else {})},
                 "spec": {
                     "selector": labels,
-                    "ports": [{"name": n, "port": p, "targetPort": n} for n, p in ports.items()],
+                    "ports": [{"name": n, "port": p, "targetPort": n,
+                               **({"appProtocol": "grpc" if n == "grpc" else "http"}
+                                  if n in {"grpc", "http", "internal", "web", "metrics"} else {})}
+                              for n, p in ports.items()],
                 },
             },
         ]
@@ -383,7 +388,8 @@ class Build:
                 # Một node, RAM sát: RollingUpdate chạy pod mới cạnh pod cũ, nhân đôi JVM khi apply.
                 "strategy": {"type": "Recreate"},
                 "selector": {"matchLabels": labels},
-                "template": {"metadata": {"labels": labels}, "spec": pod},
+                "template": {"metadata": {"labels": {**labels,
+                             **({"istio.io/use-waypoint": "none"} if spec.get("mesh_l4") else {})}}, "spec": pod},
             },
         })
         return docs

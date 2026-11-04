@@ -1,3 +1,4 @@
-# Values for the `ztunnel` chart, Istio 1.24.2 ambient.
-# Install: helm install ztunnel istio/ztunnel -n istio-system -f deploy/mesh/helm/ztunnel.values.yaml --version 1.24.2
-tag: 1.24.2
+# Values for the `ztunnel` chart, Istio 1.31.3 ambient.
+# Installed by deploy/mesh/local.py from the checksum-pinned official release bundle.
+tag: 1.31.3
+image: docker.io/istio/ztunnel@sha256:2c27371b3139ecbf4f5a017354bd540889482441712e88cd8e654ead5a3eb5b2

@@ -5,6 +5,7 @@ kind: ServiceAccount
 metadata:
   name: auth-service
   namespace: ecommerce
+automountServiceAccountToken: false
 ---
 apiVersion: v1
 kind: Service
@@ -18,9 +19,11 @@ spec:
   - name: http
     port: 8080
     targetPort: http
+    appProtocol: http
   - name: internal
     port: 8081
     targetPort: internal
+    appProtocol: http
 ---
 apiVersion: apps/v1
 kind: Deployment

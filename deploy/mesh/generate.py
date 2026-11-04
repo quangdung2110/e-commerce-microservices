@@ -13,10 +13,8 @@ Output: deploy/mesh/generated/*.yaml and generated/coverage-report.md. Never edi
     python deploy/mesh/generate.py            # write
     python deploy/mesh/generate.py --check    # exit 1 when the files on disk differ (CI)
 
-Istio AuthorizationPolicy paths support only exact, prefix (`/x/*`) and suffix (`*/x`) matches, so a contract path with a
-wildcard in the middle (`/internal/v1/carts/*/checkout-snapshot`) becomes the suffix `*/checkout-snapshot`, which is broader
-than the contract. Every such rule is listed in coverage-report.md; the application allowlist (contracts ADR-004) is the exact
-check behind it.
+Istio URI templates preserve path segment boundaries. Never broaden a route grant to a suffix match:
+the application's attribution header cannot repair an overly broad grant to an authenticated caller.
 """
 from __future__ import annotations
 
@@ -113,6 +111,9 @@ class Pattern:
     broadened: bool     # true when the pattern allows more than the contract path
 
     def matches(self, path: str) -> bool:
+        if "{*}" in self.value or "{**}" in self.value:
+            expression = re.escape(self.value).replace(r"\{\*\*\}", ".*").replace(r"\{\*\}", "[^/]+")
+            return re.fullmatch(expression, path) is not None
         if self.value.endswith("*") and not self.value.startswith("*"):
             return path.startswith(self.value[:-1])
         if self.value.startswith("*"):
@@ -135,12 +136,7 @@ def to_patterns(path: str) -> list[Pattern]:
         return [Pattern(base, contract, False), Pattern(base + "/*", contract, False)]
     if path.endswith("**"):
         return [Pattern(path[:-2] + "*", contract, False)]
-    segments = path.split("/")
-    last = max(i for i, segment in enumerate(segments) if "*" in segment)
-    tail = segments[last + 1:]
-    if not tail:
-        return [Pattern("/".join(segments[:last]) + "/*", contract, True)]
-    return [Pattern("*/" + "/".join(tail), contract, True)]
+    return [Pattern(path.replace("*", "{*}"), contract, False)]
 
 
 def samples(path: str) -> list[str]:
@@ -184,7 +180,7 @@ def parse_ecommerce_rules(contract_text: str) -> list[Rule]:
         destination_cell, path_cell, method_cell, from_cell, source_cell = (cells + [""] * 5)[:5]
         destination_tokens = ticks(destination_cell)
         if not destination_tokens:
-            continue  # "Mọi service" metrics row: handled as the namespace L4 baseline
+            continue  # Metrics are generated from topology, with exact paths and listener ports at L7.
         destination = destination_tokens[0]
         port_name = destination_tokens[1] if len(destination_tokens) > 1 else None
         principals = [principal(token) for token in ticks(from_cell) if "/" in token]
@@ -243,6 +239,9 @@ def peer_authentication() -> list[dict]:
          "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "traefik"}},
                   "mtls": {"mode": "STRICT"},
                   "portLevelMtls": {"80": {"mode": "PERMISSIVE"}, "443": {"mode": "PERMISSIVE"}}}},
+        {"apiVersion": ISTIO_SECURITY, "kind": "PeerAuthentication", "metadata": meta("frontend-public-port", "edge"),
+         "spec": {"selector": {"matchLabels": {"app.kubernetes.io/name": "frontend"}},
+                  "mtls": {"mode": "STRICT"}, "portLevelMtls": {"3000": {"mode": "PERMISSIVE"}}}},
     ]
 
 
@@ -251,7 +250,7 @@ def waypoint(topology: dict) -> list[dict]:
     name, namespace = spec["name"], spec["namespace"]
     return [
         {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway",
-         "metadata": meta(name, namespace, {"istio.io/waypoint-for": "service"}),
+         "metadata": meta(name, namespace, {"istio.io/waypoint-for": "all"}),
          "spec": {"gatewayClassName": "istio-waypoint", "listeners": [{"name": "mesh", "port": 15008, "protocol": "HBONE"}]}},
         {"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": meta(name, namespace),
          "spec": {"minAvailable": 1,
@@ -273,23 +272,42 @@ def ecommerce_policies(topology: dict, rules: list[Rule]) -> list[dict]:
     waypoint_principal = principal(f"ecommerce/{waypoint_name}")
     prometheus = principal("observability/prometheus")
     docs = [
-        # ztunnel (L4): after the waypoint took over, only the waypoint and the metrics scraper may reach a pod.
-        authz("l4-baseline", "ecommerce", {"action": "ALLOW", "rules": [{"from": [{"source": {"principals": [waypoint_principal, prometheus]}}]}]}),
+        # Business listeners accept only the waypoint. Scrapers must pass L7 checks too, including on Pod IP.
+        authz("l4-baseline", "ecommerce", {"action": "ALLOW", "rules": [{"from": [{"source": {"principals": [waypoint_principal]}}]}]}),
         # waypoint (L7): nothing is allowed unless a per-Service policy below says so.
         authz("deny-all", "ecommerce", {"action": "ALLOW", "targetRefs": [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": waypoint_name}]}),
     ]
+    for name, provider in topology.get("local_tcp_providers", {}).items():
+        docs.append(authz(f"allow-local-provider-{name}", "ecommerce", {
+            "selector": {"matchLabels": {"app.kubernetes.io/name": name}}, "action": "ALLOW",
+            "rules": [{"from": [{"source": {"principals": [principal(provider["caller"])]}}],
+                       "to": [{"operation": {"ports": [str(provider["port"])]}}]}]}))
     by_destination: dict[str, list[Rule]] = {}
     for rule in rules:
         by_destination.setdefault(rule.destination, []).append(rule)
+    for destination, service in topology["services"].items():
+        if service.get("metrics_path"):
+            by_destination.setdefault(destination, [])
     for destination in sorted(by_destination):
         policy_rules = []
         for rule in by_destination[destination]:
-            operation: dict = {"paths": sorted({p.value for p in rule.patterns})}
+            ports = topology["services"][destination]["ports"]
+            listener = rule.port_name or ("internal" if "internal" in ports and
+                       all(p.contract.startswith("/internal/") for p in rule.patterns) else "http")
+            operation: dict = {"paths": sorted({p.value for p in rule.patterns}), "ports": [str(ports[listener])]}
             if rule.methods:
                 operation["methods"] = rule.methods
             if rule.not_paths:
                 operation["notPaths"] = rule.not_paths
             policy_rules.append({"from": [{"source": {"principals": rule.principals}}], "to": [{"operation": operation}]})
+        service = topology["services"][destination]
+        if service.get("metrics_path"):
+            policy_rules.append({"from": [{"source": {"principals": [prometheus]}}], "to": [{"operation": {
+                "paths": [service["metrics_path"]], "methods": ["GET"], "ports": [str(service["ports"]["http"])]}}]})
+        for health in topology.get("health_checks", {}).get(destination, []):
+            policy_rules.append({"from": [{"source": {"principals": [principal(p) for p in health["callers"]]}}],
+                                 "to": [{"operation": {"paths": [health["path"]], "methods": ["GET"],
+                                                       "ports": [str(service["ports"]["http"])]}}]})
         docs.append(authz(f"allow-{destination}", "ecommerce", {
             "action": "ALLOW",
             "targetRefs": [{"group": "", "kind": "Service", "name": destination}],
@@ -398,7 +416,8 @@ def virtual_services(topology: dict, policy: dict) -> list[dict]:
             http.append(entry)
         # A route that matches nothing above (public traffic through Traefik) is not rewritten: mesh defaults apply
         # (meshConfig.defaultHttpRetryPolicy.attempts: 0), and no timeout is set at the mesh (contract section 7).
-        http.append({"name": "default", "route": [{"destination": {"host": host(service)}}]})
+        http.append({"name": "default", "route": [{"destination": {"host": host(service),
+                                                                  "port": {"number": ports["http"]}}}]})
         docs.append({"apiVersion": ISTIO_NETWORKING, "kind": "VirtualService", "metadata": meta(service, "ecommerce"),
                      "spec": {"hosts": [host(service)], "http": http}})
     return docs
@@ -461,9 +480,9 @@ def coverage_report(rules: list[Rule]) -> str:
         "# AuthorizationPolicy coverage report",
         "",
         "Generated with the manifests; do not edit. Each row of runtime-contract section 5.2 becomes one rule. A rule marked",
-        "**broader** allows more paths than the contract states, because Istio matches only exact, prefix and suffix patterns.",
-        "The principal restriction is exact in every case; the application allowlist ([contracts ADR-004](../../../contracts/decisions/ADR-004-service-identity-allowlist.md))",
-        "is the exact check behind it.",
+        "**broader** would allow more paths than the contract states. URI templates preserve segment boundaries.",
+        "Authorization uses authenticated principals, listener ports and paths; attribution headers cannot grant access.",
+        "Metrics grants are generated separately from topology: Prometheus, GET, exact metrics path and HTTP port only.",
         "",
         "| Destination | Principals | Methods | Contract path | Istio pattern | Match |",
         "|---|---|---|---|---|---|",

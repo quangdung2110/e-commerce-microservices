@@ -1,6 +1,6 @@
 # Quy ước vận hành của Service Mesh
 
-> **Trạng thái:** Quy ước mục tiêu (`target/proposed`) — chưa xác minh trên cluster.
+> **Trạng thái:** triển khai và kiểm chứng local bằng kind theo ADR-005; production vẫn cần kiểm chứng riêng.
 > **Nguồn chân lý:** Tài liệu này định nghĩa hành vi bắt buộc của mesh và được ưu tiên hơn
 > manifest hoặc kế hoạch khi có mâu thuẫn. Với identity header và route public, nó bổ sung —
 > không thay thế — [gateway/runtime-contract.md](../gateway/runtime-contract.md).
@@ -21,20 +21,20 @@ dụng đều là defense-in-depth; `AuthorizationPolicy` mục 5 là nơi thự
 
 | Hạng mục | Quy ước |
 |---|---|
-| Mesh | Istio `1.24.2` ambient mode ([`deploy/mesh/versions.yaml`](../../deploy/mesh/versions.yaml)); pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest`. Digest chưa điền: chưa có cluster để xác minh |
+| Mesh | Istio `1.31.3` ambient mode ([`deploy/mesh/versions.yaml`](../../deploy/mesh/versions.yaml)); pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest` |
 | Kubernetes | Phiên bản trong ma trận tương thích của bản Istio đã pin; CNI của cluster phải được `istio-cni` hỗ trợ ở ambient |
 | Cài đặt | Helm chart chính thức (`base`, `istiod`, `cni`, `ztunnel`), values được version hóa; không `istioctl install` thủ công trên production |
 | Profile | `ambient`; sidecar injection tắt mặc định (`istio-injection` không gắn cho namespace nào) |
 | Edge | Traefik `v3.7.1` là workload trong `edge`; không deploy Istio Ingress Gateway |
 | Traffic policy east-west | `VirtualService` + `DestinationRule` (waypoint thực thi); `HTTPRoute` chỉ dùng cho Traefik |
-| Telemetry | `Telemetry` API → OpenTelemetry Collector (`observability`); Prometheus scrape trực tiếp |
+| Telemetry | `Telemetry` API → OpenTelemetry Collector (`observability`); Prometheus scrape endpoint chính xác qua waypoint |
 | Local development | Docker Compose **không có mesh**; mọi bảo đảm trong tài liệu này chỉ tồn tại trên cluster |
 
 ## 3. Namespace, nhãn và yêu cầu workload
 
 | Namespace | `istio.io/dataplane-mode` | `istio.io/use-waypoint` | mTLS |
 |---|---|---|---|
-| `edge` | `ambient` | — | STRICT, trừ port `80`/`443` của Traefik: PERMISSIVE |
+| `edge` | `ambient` | — | STRICT, trừ port public `80`/`443` của Traefik và `3000` của Frontend: PERMISSIVE |
 | `ecommerce` | `ambient` | `ecommerce-waypoint` | STRICT |
 | `observability` | `ambient` | — | STRICT |
 | `data` | không gắn | — | Ngoài mesh (đợt 1) |
@@ -49,15 +49,15 @@ Yêu cầu bắt buộc cho mọi workload trong `edge` và `ecommerce`:
 - Không `hostNetwork`, không `hostPort`; pod dùng `hostNetwork` không được ztunnel bảo vệ.
 - Job/CronJob trong hai namespace này chạy bình thường (không có sidecar cần thoát).
 - Readiness/liveness probe của kubelet đi thẳng, không qua mTLS — không cần cấu hình thêm.
-- Waypoint `ecommerce-waypoint`: `Gateway` với `gatewayClassName: istio-waypoint`, ≥2 replica,
+- Waypoint `ecommerce-waypoint`: `Gateway` với `gatewayClassName: istio-waypoint`, `istio.io/waypoint-for: all`, ≥2 replica,
   `PodDisruptionBudget minAvailable: 1`, HPA theo CPU, request/limit được load test xác nhận.
 
 ## 4. Xác thực transport
 
 `PeerAuthentication` `default` trong `istio-system` đặt `mtls.mode: STRICT` toàn mesh.
 `PeerAuthentication` riêng cho workload Traefik đặt `portLevelMtls` `80`/`443` = `PERMISSIVE`
-vì LoadBalancer bên ngoài mesh kết nối trực tiếp. Không namespace hay workload nào khác được
-PERMISSIVE; "mở tạm PERMISSIVE để debug" là vi phạm contract.
+vì LoadBalancer bên ngoài mesh kết nối trực tiếp. Frontend có ngoại lệ tương tự, chỉ port public `3000`.
+Không listener nghiệp vụ trong `ecommerce` được PERMISSIVE; "mở tạm PERMISSIVE để debug" là vi phạm contract.
 
 Chứng chỉ workload do istiod cấp, TTL 24 giờ, rotate tự động; alert khi chứng chỉ còn dưới 6 giờ
 mà chưa rotate.
@@ -69,11 +69,17 @@ Ký hiệu principal: `edge/traefik` = `cluster.local/ns/edge/sa/traefik`;
 (ALLOW không rule). Policy L7 gắn `targetRefs` tới Service đích và được waypoint thực thi;
 policy L4 gắn `selector` và được ztunnel thực thi.
 
+Listener nghiệp vụ trong `ecommerce` chỉ nhận principal của waypoint ở L4. Không có ngoại lệ L4
+cho Prometheus: scraper đi qua waypoint và chỉ được `GET` đúng metrics path/cổng HTTP khai báo trong
+`topology.yaml`. URI template `{*}` giữ nguyên ranh giới segment của path; không nới rule thành suffix.
+Mỗi grant gắn với port của listener đích. Traffic trực tiếp Pod IP vẫn phải qua cùng kiểm soát.
+
 ### 5.1 Namespace `edge` (L4, ztunnel)
 
 | Đích | Port | Được phép từ |
 |---|---|---|
 | Traefik | `80`, `443` | Bất kỳ (PERMISSIVE; bảo vệ bằng LoadBalancer/firewall) |
+| `frontend` | `3000` | Bất kỳ (public UI, PERMISSIVE chỉ trên cổng này) |
 | Traefik | `8090` metrics | `observability/prometheus` |
 | `gateway-auth` | HTTP | `edge/traefik` |
 | `gateway-auth` | metrics | `observability/prometheus` |
@@ -127,14 +133,21 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `notification-service` | `/internal/v1/notifications/requests/*`, `/internal/v1/notifications/deliveries` | GET | `ecommerce/order-service`, `ecommerce/finance-ops` | `support-queries-notification-status` |
 | `notification-service` | `/internal/v1/notifications/ops/**` | X | `ecommerce/notification-ops` | `notification-ops-operates-notification`; không route qua Gateway |
 | `payment-service` | `/v1/payments/{transactionId}`, `/v1/payments/{transactionId}/client-data`, `/v1/refunds/{refundTransactionId}` | GET | `ecommerce/order-service` | `order-initiates-payment` |
+| `payment-service` | `/internal/v1/payment/**` | X | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | Payment ADR-028; operations allowlist; actor/maker-checker vẫn do ứng dụng kiểm tra |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
-| Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
+| Mọi service | metrics path/cổng HTTP trong `topology.yaml` | GET | `observability/prometheus` | mục 9; qua waypoint, không được gọi nghiệp vụ |
+| Mọi service có health check | health path/caller chính xác trong `topology.yaml` | GET | Theo `health_checks` | Health check của Traefik và startup probe Promotion của Checkout; không mở toàn bộ actuator |
 
 Không có rule nào cho `analytics-service` inbound HTTP: service này chỉ nhận Kafka.
 `notification-service` nhận HTTP từ Traefik (inbox), từ support workload (status) và từ
 `notification-ops` (ops); SES event đi qua SNS → SQS nên không có webhook route. Mọi path
 không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới vào
 `interactions.yaml`, PR phải kèm dòng mới trong bảng này và policy tương ứng.
+
+Hai provider giả lập local `mailpit` và `localstack` dùng mTLS + policy L4 theo đích/cổng,
+chỉ cho `notification-service` tới SMTP `1025` và AWS API giả lập `4566`. Chúng đặt
+`istio.io/use-waypoint: none` trên Service/Pod; không được tái sử dụng ngoại lệ này cho service nghiệp vụ.
+Nguồn cấu hình: `local_tcp_providers` trong topology. UI Mailpit qua port-forward của operator.
 
 ### 5.3 Namespace `observability` (L4, ztunnel)
 
@@ -183,6 +196,7 @@ của Istio.
 | `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | 0 | 15 giây | Order đọc `client-data` ngay trong request của Checkout và query sau UNKNOWN; Order cắt ở 10 giây và còn bị kẹp bởi `X-Request-Timeout-Ms` của Checkout (Order ADR-023) |
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout cắt Order POST ở 13 giây (Order chờ `PAYMENT_READY` tối đa 12 giây), GET recovery ở 2 giây, và query Order status sau timeout thay vì nhân ba deadline ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Webhook không nằm trong policy này |
 | `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/internal/v1/categories/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
+| `/internal/v1/payment/**` | 0 | 30 giây | Finance/Accounting Ops; không retry mutation tự động; maker-checker và idempotency tại ứng dụng |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
 | `GET /internal/v1/auth/users/*/notification-contact` | 2 lần, `connect-failure,refused-stream` | 2 giây | Pure read; Notification cache 15 phút và có bulkhead theo lane |
@@ -262,10 +276,13 @@ Cân bằng gRPC không còn phụ thuộc hoàn toàn vào waypoint: client rou
 
 Repository có manifest mesh sinh từ tài liệu này ([`deploy/mesh/`](../../deploy/mesh/README.md), [mesh ADR-001](decisions/ADR-001-manifests-generated-from-runtime-contract.md)):
 Namespace, ServiceAccount, `PeerAuthentication`, waypoint, `AuthorizationPolicy` (L4 và L7), `VirtualService`, `DestinationRule`,
-`ServiceEntry`, `Telemetry`, `NetworkPolicy` và Helm values Istio 1.24.2. Chúng đã qua kiểm tra schema (`kubeconform`),
-`istioctl analyze` và test đối chiếu với các bảng ở mục 5 và 7, nhưng **chưa được áp dụng lên cluster nào**: các tiêu chí ở mục 10
-(HBONE, test dương/âm `403 RBAC`, retry, phân bố gRPC, trace) vẫn chưa đạt. Repository chưa có manifest Kubernetes của chính các service
-(Deployment, Service), nên Service và `appProtocol` ở mục 3 vẫn là yêu cầu chưa thực hiện, và digest image chưa được pin. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
+`ServiceEntry`, `Telemetry`, `NetworkPolicy` và Helm values Istio 1.31.3. Theo ADR-005, chúng đã được triển khai
+trên cluster kind local cùng Deployment/Service thực từ `deploy/k8s`, appProtocol và digest đã được pin.
+Kiểm chứng caller/route/port, HTTP/gRPC, header giả, Pod IP, plaintext, metrics và RBAC nằm tại
+[`mesh-p1-evidence-2026-11-04`](../security/mesh-p1-evidence-2026-11-04/results.json). Không suy rộng
+kết quả này thành toàn bộ tiêu chí mục 10: retry, phân bố gRPC nhiều backend, tracing, rotation và performance
+vẫn cần kiểm chứng riêng. Production chưa triển khai/kiểm chứng bởi công việc local này.
+docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
 Compose là bằng chứng bảo mật. Từ [mesh ADR-002](decisions/ADR-002-local-runtime-exposure-and-broker-auth.md), phạm vi spoof thu về
 máy dev và mạng compose: chỉ gateway và frontend nghe trên mọi interface, cổng service/hạ tầng bind `127.0.0.1`; `deploy/k8s`

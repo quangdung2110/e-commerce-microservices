@@ -1,6 +1,7 @@
-# Values for the `cni` chart, Istio 1.24.2 ambient. The cluster CNI must be one istio-cni supports in ambient mode.
-# Install: helm install istio-cni istio/cni -n istio-system -f deploy/mesh/helm/cni.values.yaml --version 1.24.2
+# Values for the `cni` chart, Istio 1.31.3 ambient. The cluster CNI must be one istio-cni supports in ambient mode.
+# Installed by deploy/mesh/local.py from the checksum-pinned official release bundle.
 profile: ambient
+image: docker.io/istio/install-cni@sha256:e98782038634ef4fadaf78b53dd8fa4134fda3d65838ead5fc1edef245451c0f
 
 global:
-  tag: 1.24.2
+  tag: 1.31.3

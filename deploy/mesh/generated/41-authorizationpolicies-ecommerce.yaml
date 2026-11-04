@@ -16,7 +16,6 @@ spec:
     - source:
         principals:
         - cluster.local/ns/ecommerce/sa/ecommerce-waypoint
-        - cluster.local/ns/observability/sa/prometheus
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -32,6 +31,52 @@ spec:
   - group: gateway.networking.k8s.io
     kind: Gateway
     name: ecommerce-waypoint
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-local-provider-mailpit
+  namespace: ecommerce
+  labels:
+    app.kubernetes.io/part-of: ecommerce-mesh
+    app.kubernetes.io/managed-by: deploy-mesh-generate
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mailpit
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/ecommerce/sa/notification-service
+    to:
+    - operation:
+        ports:
+        - '1025'
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-local-provider-localstack
+  namespace: ecommerce
+  labels:
+    app.kubernetes.io/part-of: ecommerce-mesh
+    app.kubernetes.io/managed-by: deploy-mesh-generate
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: localstack
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/ecommerce/sa/notification-service
+    to:
+    - operation:
+        ports:
+        - '4566'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -57,6 +102,8 @@ spec:
         paths:
         - /api/v1/auth
         - /api/v1/auth/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -67,6 +114,8 @@ spec:
         paths:
         - /.well-known
         - /.well-known/*
+        ports:
+        - '8080'
         methods:
         - GET
   - from:
@@ -76,7 +125,9 @@ spec:
     to:
     - operation:
         paths:
-        - '*/content'
+        - /internal/v1/auth/notification-deliveries/{*}/content
+        ports:
+        - '8081'
         methods:
         - POST
   - from:
@@ -86,9 +137,23 @@ spec:
     to:
     - operation:
         paths:
-        - '*/notification-contact'
+        - /internal/v1/auth/users/{*}/notification-contact
+        ports:
+        - '8081'
         methods:
         - GET
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /metrics
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -114,6 +179,8 @@ spec:
         paths:
         - /api/v1/carts
         - /api/v1/carts/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -121,9 +188,23 @@ spec:
     to:
     - operation:
         paths:
-        - '*/checkout-snapshot'
+        - /internal/v1/carts/{*}/checkout-snapshot
+        ports:
+        - '8080'
         methods:
         - GET
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /metrics
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -149,6 +230,8 @@ spec:
         paths:
         - /ws
         - /ws/*
+        ports:
+        - '8080'
         methods:
         - GET
 ---
@@ -176,6 +259,8 @@ spec:
         paths:
         - /api/v1/checkout/preview
         - /api/v1/checkout/submit
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -185,10 +270,36 @@ spec:
     to:
     - operation:
         paths:
-        - '*/voucher-options'
-        - /api/v1/checkout/submissions/*
+        - /api/v1/checkout/previews/{*}/voucher-options
+        - /api/v1/checkout/submissions/{*}
+        ports:
+        - '8080'
         methods:
         - GET
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /health/ready
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -214,6 +325,8 @@ spec:
         paths:
         - /api/v1/admin/inventory
         - /api/v1/admin/inventory/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -222,6 +335,8 @@ spec:
     - operation:
         paths:
         - /internal/inventory/v1/allocation-previews
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -231,11 +346,13 @@ spec:
     to:
     - operation:
         paths:
-        - /internal/inventory/v1/commands/*
+        - /internal/inventory/v1/commands/{*}
         - /internal/inventory/v1/refund-scopes
         - /internal/inventory/v1/refund-scopes/*
         - /internal/inventory/v1/reservations
         - /internal/inventory/v1/reservations/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -244,6 +361,8 @@ spec:
     - operation:
         paths:
         - /internal/inventory/v1/sku-availabilities:batch-get
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -255,6 +374,32 @@ spec:
         paths:
         - /exports/inventory/v1
         - /exports/inventory/v1/*
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /actuator/health
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -280,6 +425,8 @@ spec:
         paths:
         - /api/v1/notifications
         - /api/v1/notifications/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -289,7 +436,9 @@ spec:
     - operation:
         paths:
         - /internal/v1/notifications/deliveries
-        - /internal/v1/notifications/requests/*
+        - /internal/v1/notifications/requests/{*}
+        ports:
+        - '8081'
         methods:
         - GET
   - from:
@@ -301,6 +450,20 @@ spec:
         paths:
         - /internal/v1/notifications/ops
         - /internal/v1/notifications/ops/*
+        ports:
+        - '8081'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /metrics
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -332,6 +495,8 @@ spec:
         - /api/v1/order-operations/*
         - /api/v1/orders
         - /api/v1/orders/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -340,6 +505,8 @@ spec:
     - operation:
         paths:
         - /internal/v1/checkout-order-submissions
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -349,7 +516,9 @@ spec:
     to:
     - operation:
         paths:
-        - /internal/v1/checkout-order-submissions/*
+        - /internal/v1/checkout-order-submissions/{*}
+        ports:
+        - '8080'
         methods:
         - GET
   - from:
@@ -360,7 +529,9 @@ spec:
     to:
     - operation:
         paths:
-        - '*/financial-reconciliation-case'
+        - /internal/v1/orders/{*}/financial-reconciliation-case
+        ports:
+        - '8080'
         methods:
         - GET
   - from:
@@ -371,9 +542,35 @@ spec:
     to:
     - operation:
         paths:
-        - '*/financial-reconciliation-decisions'
+        - /internal/v1/orders/{*}/financial-reconciliation-decisions
+        ports:
+        - '8080'
         methods:
         - POST
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /actuator/health
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -398,6 +595,8 @@ spec:
     - operation:
         paths:
         - /v1/payments/webhook/stripe
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -407,9 +606,11 @@ spec:
     to:
     - operation:
         paths:
-        - '*/cancel'
-        - '*/refund'
         - /v1/payments/initiate
+        - /v1/payments/{*}/cancel
+        - /v1/payments/{*}/refund
+        ports:
+        - '8080'
         methods:
         - POST
   - from:
@@ -419,13 +620,37 @@ spec:
     to:
     - operation:
         paths:
-        - '*/client-data'
-        - /v1/payments/*
-        - /v1/refunds/*
+        - /v1/payments/{*}
+        - /v1/payments/{*}/client-data
+        - /v1/refunds/{*}
+        ports:
+        - '8080'
         methods:
         - GET
-        notPaths:
-        - /v1/payments/webhook/*
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/ecommerce/sa/finance-ops
+        - cluster.local/ns/ecommerce/sa/accounting-ops
+    to:
+    - operation:
+        paths:
+        - /internal/v1/payment
+        - /internal/v1/payment/*
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -451,8 +676,34 @@ spec:
         paths:
         - /api/v1/storefront/products
         - /api/v1/storefront/products/*
+        ports:
+        - '8080'
         methods:
         - GET
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /actuator/health/readiness
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -482,6 +733,8 @@ spec:
         - /api/v1/categories/*
         - /api/v1/products
         - /api/v1/products/*
+        ports:
+        - '8081'
   - from:
     - source:
         principals:
@@ -491,6 +744,8 @@ spec:
         paths:
         - /internal/v1/categories/export
         - /internal/v1/products/export
+        ports:
+        - '8081'
   - from:
     - source:
         principals:
@@ -499,7 +754,9 @@ spec:
     to:
     - operation:
         paths:
-        - '*/snapshot'
+        - /internal/v1/products/{*}/snapshot
+        ports:
+        - '8081'
         methods:
         - GET
   - from:
@@ -509,7 +766,9 @@ spec:
     to:
     - operation:
         paths:
-        - /internal/v1/product-details/*
+        - /internal/v1/product-details/{*}
+        ports:
+        - '8081'
         methods:
         - GET
   - from:
@@ -520,9 +779,35 @@ spec:
     to:
     - operation:
         paths:
-        - /ecommerce.product.v1.ProductService/*
+        - /ecommerce.product.v1.ProductService/{*}
+        ports:
+        - '9091'
         methods:
         - POST
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8081'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /actuator/health/readiness
+        methods:
+        - GET
+        ports:
+        - '8081'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -551,6 +836,8 @@ spec:
         - /api/v1/me
         - /api/v1/me/*
         - /api/v1/promotion-discovery
+        ports:
+        - '8085'
   - from:
     - source:
         principals:
@@ -559,6 +846,8 @@ spec:
     - operation:
         paths:
         - /internal/v1/promotion-discount-calculations
+        ports:
+        - '8085'
         methods:
         - POST
   - from:
@@ -569,6 +858,8 @@ spec:
     - operation:
         paths:
         - /internal/v1/promotion-voucher-options
+        ports:
+        - '8085'
         methods:
         - POST
   - from:
@@ -581,6 +872,8 @@ spec:
         - /internal/v1/promotion-allocation/cancellations
         - /internal/v1/promotion-allocation/confirmations
         - /internal/v1/promotion-allocation/reservations
+        ports:
+        - '8085'
         methods:
         - POST
   - from:
@@ -591,8 +884,46 @@ spec:
     - operation:
         paths:
         - /internal/v1/promotion-allocation/technical-cancellations
+        ports:
+        - '8085'
         methods:
         - POST
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8085'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/edge/sa/traefik
+    to:
+    - operation:
+        paths:
+        - /actuator/health
+        methods:
+        - GET
+        ports:
+        - '8085'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/ecommerce/sa/checkout-service
+    to:
+    - operation:
+        paths:
+        - /actuator/health/readiness
+        methods:
+        - GET
+        ports:
+        - '8085'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -620,6 +951,8 @@ spec:
         - /api/v1/admin/reviews/*
         - /api/v1/reviews
         - /api/v1/reviews/*
+        ports:
+        - '8080'
   - from:
     - source:
         principals:
@@ -627,7 +960,9 @@ spec:
     to:
     - operation:
         paths:
-        - '*/pdp-summary'
+        - /internal/v1/reviews/products/{*}/pdp-summary
+        ports:
+        - '8080'
         methods:
         - GET
   - from:
@@ -638,6 +973,20 @@ spec:
     - operation:
         paths:
         - /internal/v1/reviews/rating-aggregate-exports*
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -663,6 +1012,20 @@ spec:
         paths:
         - /api/v2/search
         - /api/v2/search/*
+        ports:
+        - '8080'
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /actuator/prometheus
+        methods:
+        - GET
+        ports:
+        - '8080'
 ---
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -688,6 +1051,8 @@ spec:
         paths:
         - /api/v1/users
         - /api/v1/users/*
+        ports:
+        - '8082'
   - from:
     - source:
         principals:
@@ -695,6 +1060,20 @@ spec:
     to:
     - operation:
         paths:
-        - '*/checkout-snapshot'
+        - /internal/v1/users/{*}/addresses/{*}/checkout-snapshot
+        ports:
+        - '8083'
         methods:
         - GET
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/observability/sa/prometheus
+    to:
+    - operation:
+        paths:
+        - /metrics
+        methods:
+        - GET
+        ports:
+        - '8082'
