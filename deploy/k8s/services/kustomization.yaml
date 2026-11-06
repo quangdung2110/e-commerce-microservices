@@ -29,6 +29,8 @@ resources:
 - frontend.yaml
 - kafka-connect-init.yaml
 - networkpolicies.yaml
+patches:
+- path: ../config/data-client-security.yaml
 configMapGenerator:
 - name: cart-service-app-configs
   namespace: ecommerce

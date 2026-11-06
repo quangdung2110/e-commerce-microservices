@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-11-06T15:44:26.280701+07:00",
+  "context": "kind-ecommerce-mesh",
+  "cni": "docker.io/kindest/kindnetd:v20260820-69b56db7",
+  "checkout_readiness_status": 200,
+  "checkout_readiness_up": true,
+  "search_product_api_status": 200,
+  "exporter_http_status": 200,
+  "exporter_redis_up": true,
+  "connector_registrar_complete": true,
+  "active_postgres_logical_slots": 6,
+  "data_portforward_denied": {
+    "ecommerce:order-service": true,
+    "ecommerce:checkout-service": true,
+    "ecommerce:search-service": true,
+    "data:default": true
+  },
+  "checkout_submit_api_integration": {
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "methods": [
+      "replayRelaysFreshPaymentData",
+      "concurrentSubmitsClaimOnce"
+    ],
+    "scope": "Testcontainers Redis and mocked Order/other upstreams"
+  },
+  "post_enrollment_check": {
+    "timestamp": "2026-11-06T15:51:48.011231+07:00",
+    "dataplane_mode": {
+      "ecommerce": "ambient",
+      "observability": "ambient",
+      "data": null
+    },
+    "checkout_http_status": 200,
+    "search_http_status_via_gateway": 200,
+    "prometheus_probe_redis_up": true
+  }
+}

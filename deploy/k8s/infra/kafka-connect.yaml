@@ -10,6 +10,7 @@ spec:
   ports:
     - name: rest
       port: 8083
+      targetPort: rest-tls
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -17,6 +18,8 @@ metadata:
   name: kafka-connect
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: kafka-connect
@@ -87,25 +90,20 @@ spec:
               value: ^SCRAM_PASSWORD_DEBEZIUM_[A-Z]+$
             - name: HEAP_OPTS
               value: -Xms256m -Xmx512m
-            # Worker quảng bá địa chỉ pod cho REST nội bộ thay vì hostname không phân giải được.
+            # Một worker. Chỉ proxy mTLS cùng pod có thể gọi listener gốc.
+            - name: CONNECT_LISTENERS
+              value: http://127.0.0.1:8083
             - name: ADVERTISED_HOST_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
-          ports:
-            - name: rest
-              containerPort: 8083
+              value: "127.0.0.1"
           readinessProbe:
-            httpGet:
-              path: /
-              port: 8083
+            exec:
+              command: ["curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8083/"]
             initialDelaySeconds: 30
             periodSeconds: 20
             timeoutSeconds: 10
           livenessProbe:
-            httpGet:
-              path: /
-              port: 8083
+            exec:
+              command: ["curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8083/"]
             initialDelaySeconds: 90
             periodSeconds: 30
             timeoutSeconds: 10
@@ -115,3 +113,31 @@ spec:
               memory: 512Mi
             limits:
               memory: 1Gi
+        - name: rest-proxy
+          image: nginx:1.28-alpine
+          ports:
+            - name: rest-tls
+              containerPort: 8443
+          readinessProbe:
+            tcpSocket:
+              port: rest-tls
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: rest-proxy
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: rest-server
+              mountPath: /run/connect-tls
+              readOnly: true
+      volumes:
+        - name: rest-proxy
+          configMap:
+            name: kafka-connect-rest-proxy
+        - name: rest-server
+          secret:
+            secretName: kafka-connect-rest-server

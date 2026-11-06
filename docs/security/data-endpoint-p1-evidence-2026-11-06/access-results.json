@@ -1,0 +1,71 @@
+{
+  "outside": {
+    "checkout-redis blocked": true,
+    "elasticsearch blocked": true,
+    "kafka-connect blocked": true,
+    "checkout-redis pod IP blocked": true,
+    "elasticsearch pod IP blocked": true,
+    "kafka-connect pod IP blocked": true,
+    "Connect raw pod IP blocked": true
+  },
+  "outside-cross-node": {
+    "checkout-redis blocked": true,
+    "elasticsearch blocked": true,
+    "kafka-connect blocked": true,
+    "checkout-redis pod IP blocked": true,
+    "elasticsearch pod IP blocked": true,
+    "kafka-connect pod IP blocked": true,
+    "Connect raw pod IP blocked": true
+  },
+  "other-data": {
+    "checkout-redis blocked": true,
+    "elasticsearch blocked": true,
+    "kafka-connect blocked": true,
+    "checkout-redis pod IP blocked": true,
+    "elasticsearch pod IP blocked": true,
+    "kafka-connect pod IP blocked": true,
+    "Connect raw pod IP blocked": true
+  },
+  "checkout": {
+    "Redis without AUTH": true,
+    "Redis with wrong credential": true,
+    "Redis with Checkout credential": true,
+    "Checkout ACL blocks keys outside checkout": true,
+    "Checkout script readiness": true,
+    "Checkout Preview Lua": true,
+    "Checkout Preview Lua replays": true,
+    "Checkout Submit Lua claims": true,
+    "Checkout duplicate Submit Lua keeps first attempt": true,
+    "Checkout finalizes one result": true,
+    "Checkout finalization preserves original result": true
+  },
+  "search": {
+    "Elasticsearch without credentials": true,
+    "Elasticsearch with wrong credentials": true,
+    "Elasticsearch with Search credential": true,
+    "Search role cannot manage security": true,
+    "Search role can create source index": true,
+    "Search role can create dest index": true,
+    "Search role can index": true,
+    "Search role can reindex": true,
+    "Search role can add aliases": true,
+    "Search role can switch aliases as in IndexAdmin": true,
+    "Search role can read reindexed data": true,
+    "Synthetic Elasticsearch indices cleaned up": true
+  },
+  "connect": {
+    "Kafka Connect direct REST blocked": true,
+    "Kafka Connect without client certificate": true,
+    "Kafka Connect with registrar certificate": true,
+    "All six connectors and tasks running": true
+  },
+  "order": {
+    "checkout-redis blocked": true,
+    "elasticsearch blocked": true,
+    "kafka-connect blocked": true,
+    "checkout-redis pod IP blocked": true,
+    "elasticsearch pod IP blocked": true,
+    "kafka-connect pod IP blocked": true,
+    "Connect raw pod IP blocked": true
+  }
+}

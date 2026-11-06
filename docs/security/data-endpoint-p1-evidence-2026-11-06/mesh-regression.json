@@ -1,0 +1,263 @@
+{
+  "timestamp": "2026-11-06T08:52:09.144356+00:00",
+  "context": "kind-ecommerce-mesh",
+  "passed": 54,
+  "total": 54,
+  "checks": [
+    {
+      "name": "checkout legitimate preview",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "checkout legitimate promotion readiness",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "order cannot borrow checkout health permission",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "gateway legitimate inventory health",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "gateway cannot borrow order payment permission",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "order legitimate inventory query",
+      "passed": true,
+      "observed_status": 404
+    },
+    {
+      "name": "checkout spoofing order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "order spoofing checkout denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "order legitimate payment query",
+      "passed": true,
+      "observed_status": 404
+    },
+    {
+      "name": "checkout spoofing payment caller denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "order missing attribution header denied by application",
+      "passed": true,
+      "observed_status": 401
+    },
+    {
+      "name": "finance legitimate journal query",
+      "passed": true,
+      "observed_status": 404
+    },
+    {
+      "name": "order spoofing finance denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "Go Cart legitimate checkout read",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "Go Cart spoofed checkout denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "Go User legitimate address lookup",
+      "passed": true,
+      "observed_status": 404
+    },
+    {
+      "name": "Go User spoofed checkout denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "Go User internal route on public listener denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "forged user ADMIN from checkout denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "public Frontend remains reachable",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "gateway still requires user authentication",
+      "passed": true,
+      "observed_status": 401
+    },
+    {
+      "name": "inventory-service Pod IP closed even to order",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "inventory-service Pod IP forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "inventory-service plaintext forged order denied",
+      "passed": true,
+      "observed_status": "CONNECTION_REJECTED"
+    },
+    {
+      "name": "inventory-service scraper legitimate metrics",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "inventory-service scraper forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "inventory-service scraper Pod IP forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "inventory-service metrics POST denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "payment-service Pod IP closed even to order",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "payment-service Pod IP forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "payment-service plaintext forged order denied",
+      "passed": true,
+      "observed_status": "CONNECTION_REJECTED"
+    },
+    {
+      "name": "payment-service scraper legitimate metrics",
+      "passed": true,
+      "observed_status": 200
+    },
+    {
+      "name": "payment-service scraper forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "payment-service scraper Pod IP forged order denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "payment-service metrics POST denied",
+      "passed": true,
+      "observed_status": 403
+    },
+    {
+      "name": "gRPC checkout legitimate Service DNS",
+      "passed": true,
+      "observed_status": "OK"
+    },
+    {
+      "name": "gRPC order spoofing checkout product-service.ecommerce.svc.cluster.local:9091",
+      "passed": true,
+      "observed_status": "PERMISSION_DENIED"
+    },
+    {
+      "name": "gRPC checkout Pod IP closed",
+      "passed": true,
+      "observed_status": "PERMISSION_DENIED"
+    },
+    {
+      "name": "gRPC order spoofing checkout 10.244.1.96:9091",
+      "passed": true,
+      "observed_status": "PERMISSION_DENIED"
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot patch deployments",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot create pods",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/checkout-service cannot create serviceaccounts/token",
+      "passed": true
+    },
+    {
+      "name": "RBAC edge/traefik cannot patch deployments",
+      "passed": true
+    },
+    {
+      "name": "RBAC edge/traefik cannot create pods",
+      "passed": true
+    },
+    {
+      "name": "RBAC edge/traefik cannot create serviceaccounts/token",
+      "passed": true
+    },
+    {
+      "name": "RBAC observability/prometheus cannot patch deployments",
+      "passed": true
+    },
+    {
+      "name": "RBAC observability/prometheus cannot create pods",
+      "passed": true
+    },
+    {
+      "name": "RBAC observability/prometheus cannot create serviceaccounts/token",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot patch deployments",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot create pods",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/finance-ops cannot create serviceaccounts/token",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot patch deployments",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot create pods",
+      "passed": true
+    },
+    {
+      "name": "RBAC ecommerce/order-service cannot create serviceaccounts/token",
+      "passed": true
+    }
+  ]
+}

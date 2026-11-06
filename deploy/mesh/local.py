@@ -143,10 +143,18 @@ def install():
 
 def stack():
     guard()
-    for layer in ("infra", "services"):
+    run([sys.executable, ROOT / "deploy/k8s/data_credentials.py", "--context", CONTEXT, "--kubeconfig", CONFIG])
+    kube("apply", "-f", MESH / "checkout-redis-exporter-policy.yaml")
+    for layer in ("infra", "services", "observability"):
         print(f"Preparing {layer}", flush=True)
         rendered = kube("kustomize", "--load-restrictor", "LoadRestrictionsNone", ROOT / "deploy/k8s" / layer, capture=True)
         docs = [d for d in yaml.safe_load_all(rendered) if d]
+        if layer == "observability":
+            # Install only the exporter and its Redis alias; the full observability stack is optional.
+            docs = [d for d in docs if (d["kind"], d["metadata"]["name"]) in {
+                ("Service", "checkout-redis"), ("Service", "checkout-redis-exporter"),
+                ("Deployment", "checkout-redis-exporter"),
+            }]
         images = set()
         for doc in docs:
             pod = doc.get("spec", {}).get("template", {}).get("spec", {})
@@ -179,6 +187,8 @@ def stack():
             if local:
                 ids = [run(["docker", "image", "inspect", "--format", "{{.Id}}", image], capture=True).strip() for image in local]
                 pod["metadata"].setdefault("annotations", {})["mesh.ecommerce/local-image-ids"] = ",".join(ids)
+        if layer == "services":
+            kube("-n", "data", "delete", "job", "kafka-connect-init", "--ignore-not-found")
         apply(docs)
     # k8s namespaces/ServiceAccounts may have been updated by kustomize: retain ambient enrollment and token rules.
     for name in ("00-namespaces.yaml", "10-serviceaccounts.yaml", "80-networkpolicies.yaml"):
@@ -198,6 +208,7 @@ def validate():
     # Kubernetes + Istio admission validate the actual schemas of the installed versions.
     for path in sorted((MESH / "generated").glob("*.yaml")):
         kube("apply", "--dry-run=server", "-f", path)
+    kube("apply", "--dry-run=server", "-f", MESH / "checkout-redis-exporter-policy.yaml")
     run([tool("istioctl"), "--kubeconfig", CONFIG, "--context", CONTEXT,
          "analyze", "--all-namespaces", "--failure-threshold", "Error"])
 

@@ -77,7 +77,20 @@ spec:
           image: oliver006/redis_exporter:v1.94.0
           env:
             - name: REDIS_ADDR
-              value: redis://checkout-redis:6379
+              value: rediss://checkout-redis:6379
+            - name: REDIS_USER
+              value: exporter
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: checkout-redis-exporter
+                  key: password
+            - name: REDIS_EXPORTER_TLS_CA_CERT_FILE
+              value: /run/data-trust/ca.crt
+          volumeMounts:
+            - name: data-trust
+              mountPath: /run/data-trust
+              readOnly: true
           ports:
             - name: metrics
               containerPort: 9121
@@ -87,6 +100,10 @@ spec:
               memory: 16Mi
             limits:
               memory: 64Mi
+      volumes:
+        - name: data-trust
+          secret:
+            secretName: data-server-trust
 ---
 apiVersion: v1
 kind: Service

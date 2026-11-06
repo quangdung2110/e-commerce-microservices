@@ -22,6 +22,14 @@ INTERVAL_SECONDS="${INTERVAL_SECONDS:-5}"
 
 log() { echo "[kafka-connect-init] $*"; }
 
+connect_curl() {
+  if [ -n "${CONNECT_CLIENT_CERT:-}" ]; then
+    curl --cert "$CONNECT_CLIENT_CERT" --key "${CONNECT_CLIENT_KEY:?}" "$@"
+  else
+    curl "$@"
+  fi
+}
+
 connector_name() {
   sed -n 's/^[[:space:]]*"name":[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
@@ -33,23 +41,23 @@ render() {
 
 # 0 khi connector và mọi task đều RUNNING.
 is_running() {
-  status="$(curl -sf "$CONNECT_URL/connectors/$1/status")" || return 1
+  status="$(connect_curl -sf "$CONNECT_URL/connectors/$1/status")" || return 1
   echo "$status" | grep -q '"connector":{"state":"RUNNING"' || return 1
   echo "$status" | grep -q '"tasks":\[{' || return 1
   ! echo "$status" | grep -q '"state":"\(FAILED\|UNASSIGNED\|PAUSED\)"'
 }
 
 is_failed() {
-  curl -sf "$CONNECT_URL/connectors/$1/status" | grep -q '"state":"FAILED"'
+  connect_curl -sf "$CONNECT_URL/connectors/$1/status" | grep -q '"state":"FAILED"'
 }
 
 exists() {
-  [ "$(curl -s -o /dev/null -w '%{http_code}' "$CONNECT_URL/connectors/$1")" = "200" ]
+  [ "$(connect_curl -s -o /dev/null -w '%{http_code}' "$CONNECT_URL/connectors/$1")" = "200" ]
 }
 
 # 0 khi config đang lưu trong Connect khác artifact (so sánh JSON, không theo thứ tự khoá).
 drifted() {
-  current="$(curl -sf "$CONNECT_URL/connectors/$1/config")" || return 1
+  current="$(connect_curl -sf "$CONNECT_URL/connectors/$1/config")" || return 1
   render "$2" | python3 -c '
 import json, sys
 want = {k: v if isinstance(v, str) else json.dumps(v) for k, v in json.load(sys.stdin)["config"].items()}
@@ -62,13 +70,13 @@ sys.exit(0 if want != have else 1)
 
 create() {
   render "$2" |
-    curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    connect_curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
       --data-binary @- "$CONNECT_URL/connectors"
 }
 
 update() {
   render "$2" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)["config"]))' |
-    curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+    connect_curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
       --data-binary @- "$CONNECT_URL/connectors/$1/config"
 }
 
@@ -104,7 +112,7 @@ while :; do
     if exists "$name"; then
       if is_failed "$name"; then
         log "$name is FAILED, recreating"
-        curl -s -o /dev/null -X DELETE "$CONNECT_URL/connectors/$name"
+        connect_curl -s -o /dev/null -X DELETE "$CONNECT_URL/connectors/$name"
         log "$name create -> HTTP $(create "$name" "$file")"
       fi
     else

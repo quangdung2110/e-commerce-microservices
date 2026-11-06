@@ -22,6 +22,7 @@ fi
 # Spec của Job không sửa được; các Job ở đây idempotent nên chạy lại mỗi lần apply.
 case "$layer" in
   infra)
+    python "$root/data_credentials.py" --context "$context"
     kubectl -n data delete job minio-init kafka-topics-init postgres-roles-init --ignore-not-found >/dev/null 2>&1 || true
     # Lớp này từng có Service LoadBalancer cho cổng host (host-ports.yaml); mesh ADR-002 bỏ chúng.
     kubectl -n data delete service postgres-external redis-external kafka-external kafka-connect-external \

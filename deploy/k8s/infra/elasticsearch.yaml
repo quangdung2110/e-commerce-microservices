@@ -39,22 +39,36 @@ spec:
             - name: discovery.type
               value: single-node
             - name: xpack.security.enabled
+              value: "true"
+            - name: xpack.security.autoconfiguration.enabled
               value: "false"
+            - name: xpack.security.http.ssl.enabled
+              value: "true"
+            - name: xpack.security.http.ssl.certificate
+              value: tls/tls.crt
+            - name: xpack.security.http.ssl.key
+              value: tls/tls.key
+            - name: SEARCH_PROBE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-server
+                  key: probe-password
             - name: ES_JAVA_OPTS
               value: -Xms1g -Xmx1g
           ports:
             - name: http
               containerPort: 9200
           startupProbe:
-            httpGet:
-              path: /_cluster/health
-              port: 9200
+            exec: &searchHealthProbe
+              command:
+                - sh
+                - -ec
+                - 'curl -fsS --cacert config/tls/ca.crt --user "search-probe:$SEARCH_PROBE_PASSWORD" "https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s" >/dev/null'
             periodSeconds: 10
             failureThreshold: 30
+            timeoutSeconds: 5
           readinessProbe:
-            httpGet:
-              path: /_cluster/health
-              port: 9200
+            exec: *searchHealthProbe
             periodSeconds: 10
             timeoutSeconds: 5
           resources:
@@ -66,6 +80,28 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /usr/share/elasticsearch/data
+            - name: security
+              mountPath: /usr/share/elasticsearch/config/tls
+              readOnly: true
+            - name: security
+              mountPath: /usr/share/elasticsearch/config/users
+              subPath: users
+              readOnly: true
+            - name: security
+              mountPath: /usr/share/elasticsearch/config/users_roles
+              subPath: users_roles
+              readOnly: true
+            - name: roles
+              mountPath: /usr/share/elasticsearch/config/roles.yml
+              subPath: roles.yml
+              readOnly: true
+      volumes:
+        - name: security
+          secret:
+            secretName: elasticsearch-server
+        - name: roles
+          configMap:
+            name: elasticsearch-file-roles
   volumeClaimTemplates:
     - metadata:
         name: data

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mở các cổng host của docker-compose (psql :15432, Redis :6379, Kafka :29092, Connect :8084, cổng
-# service 8081…8096…) trên 127.0.0.1 bằng `kubectl port-forward`, để script và công cụ local dùng được
-# không đổi. Cụm không mở LoadBalancer cho chúng (mesh ADR-002): LoadBalancer của Docker Desktop nghe
+# service 8081…8096…) trên 127.0.0.1 bằng `kubectl port-forward`. Connect và Elasticsearch dùng HTTPS
+# với xác thực như mô tả trong README. Cụm không mở LoadBalancer cho chúng (mesh ADR-002): Docker Desktop nghe
 # trên mọi interface của máy, mà service tin header danh tính và hạ tầng không xác thực mạnh.
 # Ctrl+C để đóng. Gateway (8088) và frontend (3000) vẫn là LoadBalancer, không cần script này.
 #

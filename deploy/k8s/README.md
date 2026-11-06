@@ -20,7 +20,8 @@ Istio vẫn ở [deploy/mesh](../mesh/README.md) và chưa được cài.
 - Image phải có sẵn: `docker compose build` (gồm `minio`, `frontend` và các service; `payment-service`,
   `notification-service` nằm trong profile nên build thêm bằng `docker compose --profile payment
   --profile notification build payment-service notification-service`).
-- Python có PyYAML để chạy `generate.py`.
+- Python có PyYAML để chạy `generate.py`. Hạ tầng cần OpenSSL hỗ trợ `pkcs12 -jdktrust`
+  để tạo CA, chứng chỉ TLS và truststore Java cho local. Trên Windows có thể dùng OpenSSL của Git for Windows.
 - Không chạy song song với `docker compose up`: trùng cổng host và không đủ RAM cho hai bản. Ba lớp dùng
   khoảng 10,7 GB trong 15 GB của VM Docker Desktop khi đã ổn định (đo 2026-10-21).
 
@@ -37,6 +38,8 @@ bash deploy/k8s/port-forward-observability.sh   # mở UI, giữ terminal; Ctrl+
 Lần đầu, các JVM cùng khởi động mất 3–6 phút; startupProbe cho tối đa 10 phút. `apply.sh`:
 
 - từ chối chạy khi context hiện tại không phải `docker-desktop` (đặt `ALLOW_ANY_CONTEXT=1` nếu chủ ý);
+- với lớp `infra`: chạy `data_credentials.py` để cấp Secret theo context. Script tái dùng bộ credential
+  local trong `.tools/k8s-data-security/`, ngoài Git. Giữ bộ này trong vùng riêng tư của máy triển khai;
 - build bằng `kubectl kustomize --load-restrictor LoadRestrictionsNone`, vì `configMapGenerator` đọc file
   gốc ngoài thư mục (`init-db.sh`, `infra/minio/`, `go/services/*/configs`, migration, config Traefik…).
   Sửa các file đó rồi apply lại là đủ: ConfigMap đổi hash và pod được tạo lại;
@@ -57,6 +60,7 @@ Lần đầu, các JVM cùng khởi động mất 3–6 phút; startupProbe cho 
 | Label `traefik.*` | `services/routes.yml` cho file provider của Traefik, cạnh `dynamic.yml` gốc |
 | `deploy/mesh/topology.yaml` | Cổng của Service và tên cổng |
 | `deploy/mesh/generated/41-authorizationpolicies-ecommerce.yaml` | `services/networkpolicies.yaml`: default deny ingress cho `ecommerce`/`edge`, mỗi workload chỉ nhận từ pod caller trong ma trận mesh + Prometheus |
+| `config/data-client-security.yaml` | Bản vá Kustomize cho thông tin xác thực TLS của Checkout, Search và Job đăng ký connector |
 
 Bảng trong `generate.py` chỉ giữ những gì compose không nói: namespace, bộ nhớ, probe cho service compose
 không có healthcheck, alias DNS, và `auth-migrate`. Script dừng với lỗi khi một service compose chưa được
@@ -84,10 +88,10 @@ Trong cụm, mỗi namespace có Service `ExternalName` trùng tên compose (`po
 |---|---|---|
 | PostgreSQL | `postgres.data:5432` | `localhost:15432` |
 | Redis (mật khẩu: Secret `redis-credentials`) | `redis.data:6379` | `localhost:6379` |
-| Redis của Checkout | `checkout-redis.data:6379` | — |
+| Redis của Checkout | `rediss://checkout-redis.data:6379` (ACL riêng cho Checkout, exporter và probe) | — |
 | Kafka | `kafka.data.svc.cluster.local:9092` | `localhost:29092` |
-| Kafka Connect | `kafka-connect.data:8083` | `localhost:8084` |
-| Elasticsearch | `elasticsearch.data:9200` | `localhost:9200` |
+| Kafka Connect | `https://kafka-connect.data:8083` (mTLS) | `https://localhost:8084` (mTLS) |
+| Elasticsearch | `https://elasticsearch.data:9200` (Basic auth) | `https://localhost:9200` (Basic auth) |
 | MinIO | `minio.data:9000` (console 9001) | `localhost:9000`, `localhost:9001` |
 | Temporal / UI | `temporal.data:7233` / `temporal-ui.data:8080` | `localhost:7233` / `localhost:8233` |
 | Service nghiệp vụ | `<tên>.ecommerce:<cổng topology>` | Cổng host như compose: product 8082 (gRPC 9091), search 8081, review 8087, product-detail-bff 8093, promotion 8085, inventory 8094, order 8095, auth 8086, payment 8089, checkout 8096, notification 8091/8092 |
@@ -101,12 +105,26 @@ UI observability dùng script riêng (compose cũng chỉ bind loopback cho chú
 | Grafana (`admin` / `local-observability`), Prometheus, Alertmanager, Loki, Jaeger | `bash deploy/k8s/port-forward-observability.sh` | http://localhost:3001, :9090, :9093, :3100, :16686 (như compose) |
 
 **NetworkPolicy**: `services/networkpolicies.yaml` (sinh) và `infra/networkpolicies.yaml` chặn ingress mặc định; mỗi workload ở
-`ecommerce`/`edge` chỉ nhận từ caller trong ma trận mesh (runtime contract §5.2) và Prometheus, namespace `data` chỉ nhận từ các
-namespace của dự án. `kubectl port-forward` không đi qua NetworkPolicy. Cụm kubeadm của Docker Desktop **không thực thi**
+`ecommerce`/`edge` chỉ nhận từ caller trong ma trận mesh (runtime contract §5.2) và Prometheus. Checkout Redis,
+Elasticsearch, Kafka Connect và ZooKeeper có allowlist theo workload/cổng riêng trong `data`.
+`kubectl port-forward` không đi qua NetworkPolicy. Cụm kubeadm của Docker Desktop **không thực thi**
 NetworkPolicy, nên ở đây chúng là cấu hình sẵn cho cụm có CNI thực thi (Calico, Cilium…). Khi cài mesh, thay bộ này bằng
-`deploy/mesh/generated/80-networkpolicies.yaml`: traffic L7 đi qua waypoint nên nguồn không còn là pod caller.
+`deploy/mesh/generated/80-networkpolicies.yaml` cho lớp `services`: traffic L7 đi qua waypoint nên nguồn không còn là pod caller.
 Listener nội bộ ở cổng riêng chỉ mở cho caller nội bộ (`INTERNAL_LISTENERS` trong `generate.py`, mesh ADR-004): Auth `internal`
 (8081) chỉ Notification, User `internal` (8083) chỉ Checkout; Traefik, gateway-auth và Prometheus chỉ tới cổng public.
+
+Kafka Connect dùng một worker local. Cổng REST gốc bind loopback trong pod, Service trỏ vào proxy mTLS.
+Để quản trị qua `port-forward-dev.sh`, dùng thư mục `connect-admin` mà script cấp credential in ra.
+Giới hạn quyền Kubernetes `pods/portforward` và `pods/exec` trong `data` cho người vận hành được ủy quyền.
+
+```bash
+curl --cacert "$connect_admin/ca.crt" --cert "$connect_admin/tls.crt" \
+  --key "$connect_admin/tls.key" https://localhost:8084/connectors
+```
+
+Elasticsearch qua port-forward vẫn yêu cầu CA và credential phù hợp với thao tác. CA local có trong
+Secret `ecommerce/data-server-trust` (key `ca.crt`). Chứng chỉ bootstrap local có hạn một năm.
+Hạ tầng triển khai cần vòng đời Secret và chứng chỉ riêng.
 
 **IP client** (mesh ADR-004): `config/traefik.yml` tin `X-Forwarded-For`/`X-Real-Ip` từ pod CIDR `10.1.0.0/16` (frontend; pod IP
 không cố định), Auth tin `X-Real-Ip` từ cùng dải (`AUTH_SECURITY_TRUSTED_PROXIES` trong `generate.py`). Service LoadBalancer dùng

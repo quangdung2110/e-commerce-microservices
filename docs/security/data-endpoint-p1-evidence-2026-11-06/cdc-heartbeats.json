@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-11-06T15:40:49.012555+07:00",
+  "heartbeat_end_offset_delta": {
+    "__debezium-heartbeat.inventory-db": 1,
+    "__debezium-heartbeat.order-db": 1,
+    "__debezium-heartbeat.payment-db": 1,
+    "__debezium-heartbeat.product-db": 1,
+    "__debezium-heartbeat.promotion-db": 1
+  },
+  "all_five_configured_heartbeat_topics_advanced": true
+}

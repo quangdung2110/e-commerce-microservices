@@ -628,6 +628,7 @@ def render():
         "kind": "Kustomization",
         "labels": [{"pairs": {"app.kubernetes.io/part-of": "ecommerce"}, "includeSelectors": False}],
         "resources": [name for name in files if name.endswith(".yaml")],
+        "patches": [{"path": "../config/data-client-security.yaml"}],
         "configMapGenerator": build.configmaps,
     }
     files["kustomization.yaml"] = HEADER + yaml.safe_dump(kustomization, sort_keys=False, width=1000)

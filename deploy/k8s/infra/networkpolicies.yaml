@@ -1,9 +1,5 @@
-# Hạ tầng dùng chung chỉ nhận kết nối từ namespace của dự án (mesh ADR-002). PostgreSQL, Kafka
-# Connect, Elasticsearch, MinIO và Temporal không có xác thực mạnh ở local (REST của Connect không
-# xác thực), nên pod ở namespace khác không được tới. Kafka xác thực SASL/SCRAM + ACL (mesh ADR-003);
-# ZooKeeper không xác thực mà giữ credential SCRAM và ACL của Kafka, nên chỉ broker tới được nó.
-# `kubectl port-forward` đi qua kubelet, không qua NetworkPolicy, nên công cụ local vẫn dùng được.
-# Chỉ có tác dụng khi CNI thực thi NetworkPolicy (Docker Desktop kubeadm thì không).
+# Các đích nhạy cảm có allowlist riêng. Quyền allow giữa các NetworkPolicy cộng dồn.
+# kubectl port-forward đi qua kubelet nên các endpoint vẫn cần tự xác thực client.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,7 +18,7 @@ spec:
     matchExpressions:
       - key: app
         operator: NotIn
-        values: [zookeeper]
+        values: [zookeeper, checkout-redis, kafka-connect, elasticsearch]
   policyTypes:
     - Ingress
   ingress:
@@ -32,6 +28,69 @@ spec:
               - key: kubernetes.io/metadata.name
                 operator: In
                 values: [data, ecommerce, edge, observability]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: checkout-redis-clients
+spec:
+  podSelector:
+    matchLabels:
+      app: checkout-redis
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ecommerce
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: checkout-service
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: checkout-redis-exporter
+      ports:
+        - port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka-connect-registrar
+spec:
+  podSelector:
+    matchLabels:
+      app: kafka-connect
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              batch.kubernetes.io/job-name: kafka-connect-init
+      ports:
+        - port: 8443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elasticsearch-clients
+spec:
+  podSelector:
+    matchLabels:
+      app: elasticsearch
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ecommerce
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: search-service
+      ports:
+        - port: 9200
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

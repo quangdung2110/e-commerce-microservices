@@ -31,6 +31,15 @@ resources:
 # trên mọi interface của máy. Công cụ local dùng deploy/k8s/port-forward-dev.sh (bind 127.0.0.1).
 
 configMapGenerator:
+  - name: checkout-redis-acl
+    files:
+      - checkout-redis.acl
+  - name: kafka-connect-rest-proxy
+    files:
+      - default.conf=kafka-connect-rest.conf
+  - name: elasticsearch-file-roles
+    files:
+      - roles.yml=elasticsearch-roles.yaml
   - name: postgres-init
     files:
       - init-db.sh=../../../init-db.sh
