@@ -65,6 +65,20 @@ kubectl --kubeconfig .tools/mesh/kubeconfig get pods -A
 
 Docker Compose vẫn là runtime không có mesh. Không áp kết luận test local cho production hoặc Compose.
 
+## Kiểm chứng egress local
+
+Chạy `py deploy/mesh/local.py install` để đồng bộ waypoint, ServiceEntry và NetworkPolicy. Sau khi
+`py deploy/mesh/verify_live.py` đã tạo các pod kiểm thử, chạy:
+
+```powershell
+py deploy/mesh/verify_egress.py --test-waypoint-outage
+```
+
+Phép thử dùng TLS handshake với xác minh chứng chỉ và đối chiếu bộ đếm của waypoint. Kết quả nằm ở
+`.tools/mesh/p2-egress-verification/egress-results.json`. Cờ `--test-waypoint-outage` tạm scale waypoint
+egress về 0 rồi khôi phục replica và kiểm tra lại Stripe. Pod plaintext ở `ecommerce` kiểm đường egress.
+Pod plaintext ở `edge` kiểm lớp mTLS đích độc lập với policy egress của `ecommerce`.
+
 ## Cài đặt trên cluster khác
 
 Thứ tự: Gateway API CRDs (`versions.yaml`) → `helm/base` → `helm/istiod` → `helm/cni` → `helm/ztunnel` → `generated/00-…` đến `80-…`. Đưa namespace vào ambient

@@ -216,10 +216,16 @@ là chính sách khởi điểm, phải được load test xác nhận và ghi v
 
 ## 8. Egress
 
-`meshConfig.outboundTrafficPolicy.mode: REGISTRY_ONLY`. Mọi đích ngoài cluster được khai báo
-bằng `ServiceEntry`: Stripe API (Payment), SMTP/email provider (Notification), nhà cung cấp
-khác khi có. Đích trong `data` (ngoài mesh) là Kubernetes Service bình thường, không cần
-`ServiceEntry`. Không có egress gateway ở đợt 1.
+Trên kind local, `NetworkPolicy` mặc định chặn egress từ pod trong `ecommerce`, rồi mở DNS,
+HBONE và các đích/cổng nội bộ cần thiết. Chỉ pod của waypoint `ecommerce-egress` được mở
+TCP/443 tới Internet. Waypoint mặc định từ chối và cấp quyền theo danh tính mTLS trên từng
+`ServiceEntry`. Payment được phép tới `api.stripe.com:443` với TLS xuyên suốt tới Stripe.
+Notification dùng Mailpit và LocalStack trong cluster. AWS SES/SQS mặc định đóng trên local.
+Đích trong `data` (ngoài mesh) dùng Kubernetes Service. `REGISTRY_ONLY` vẫn được cấu hình;
+NetworkPolicy chịu trách nhiệm chặn đường ra trực tiếp.
+
+Kindnet dùng hàng đợi nftables có cờ `bypass`. Phạm vi kiểm chứng là pod dùng mạng của cluster
+khi bộ thực thi NetworkPolicy hoạt động, kể cả khi waypoint egress dừng.
 
 ## 9. Quy ước khả năng quan sát
 

@@ -266,10 +266,28 @@ class IdentityAndTransportTest(unittest.TestCase):
         self.assertGreaterEqual(docs["HorizontalPodAutoscaler"]["spec"]["minReplicas"], 2)
         self.assertEqual(1, docs["PodDisruptionBudget"]["spec"]["minAvailable"])
 
-    def test_egress_is_declared_for_stripe_and_the_email_provider(self):
-        hosts = {h for d in load_all("60-serviceentries.yaml") for h in d["spec"]["hosts"]}
-        self.assertIn("api.stripe.com", hosts)
-        self.assertTrue(any(h.startswith("email.") for h in hosts))
+    def test_local_stripe_egress_is_restricted_to_the_payment_principal(self):
+        entry, = load_all("60-serviceentries.yaml")
+        self.assertEqual(["api.stripe.com"], entry["spec"]["hosts"])
+        self.assertEqual("ecommerce-egress", entry["metadata"]["labels"]["istio.io/use-waypoint"])
+        policies = {d["metadata"]["name"]: d["spec"] for d in load_all("61-egress-authorizationpolicies.yaml")}
+        deny = policies["egress-deny-all"]
+        self.assertEqual("ecommerce-egress", deny["targetRefs"][0]["name"])
+        self.assertNotIn("rules", deny)
+        stripe = policies["allow-egress-stripe-api"]
+        self.assertEqual([{"group": "networking.istio.io", "kind": "ServiceEntry", "name": "stripe-api"}], stripe["targetRefs"])
+        self.assertEqual([{"from": [{"source": {"principals": [principal("ecommerce/payment-service")]}}],
+                           "to": [{"operation": {"ports": ["443"]}}]}], stripe["rules"])
+
+    def test_only_the_egress_waypoint_has_an_external_network_allow_rule(self):
+        policies = {d["metadata"]["name"]: d["spec"] for d in load_all("80-networkpolicies.yaml")}
+        self.assertEqual({"podSelector": {}, "policyTypes": ["Egress"], "egress": []}, policies["default-deny-egress"])
+        external = [p for p in policies.values() if any("ipBlock" in peer for rule in p.get("egress", []) for peer in rule["to"])]
+        self.assertEqual([policies["allow-egress-waypoint-https"]], external)
+        self.assertEqual({"matchLabels": {"gateway.networking.k8s.io/gateway-name": "ecommerce-egress"}}, external[0]["podSelector"])
+        self.assertEqual([{"protocol": "TCP", "port": 443}], external[0]["egress"][0]["ports"])
+
+    def test_istiod_mesh_defaults(self):
         values = yaml.safe_load((MESH / "helm" / "istiod.values.yaml").read_text(encoding="utf-8"))
         self.assertEqual("REGISTRY_ONLY", values["meshConfig"]["outboundTrafficPolicy"]["mode"])
         self.assertEqual(0, values["meshConfig"]["defaultHttpRetryPolicy"]["attempts"])

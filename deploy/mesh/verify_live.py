@@ -20,7 +20,8 @@ from local import CONFIG, CONTEXT, MESH, ROOT, apply, guard, kube, run, tool
 IMAGE = "ecommerce-mesh-probe:local"
 CALLERS = {"checkout": ("ecommerce", "checkout-service"), "order": ("ecommerce", "order-service"),
            "finance": ("ecommerce", "finance-ops"), "scraper": ("observability", "prometheus"),
-           "plain": ("ecommerce", "checkout-service"), "gateway": ("edge", "traefik")}
+           "plain": ("ecommerce", "checkout-service"), "gateway": ("edge", "traefik"),
+           "inbound-plain": ("edge", "traefik")}
 
 
 def request(caller, spec):
@@ -36,7 +37,7 @@ def prepare():
     pods = []
     for name, (namespace, account) in CALLERS.items():
         labels = {"app.kubernetes.io/name": f"mesh-probe-{name}", "mesh.ecommerce/test": "p1"}
-        if name == "plain":
+        if name in ("plain", "inbound-plain"):
             labels["istio.io/dataplane-mode"] = "none"
         pods.append({"apiVersion": "v1", "kind": "Pod", "metadata": {
             "name": f"mesh-probe-{name}", "namespace": namespace, "labels": labels}, "spec": {
@@ -113,7 +114,8 @@ def main():
         # Service-scoped grants intentionally do not authorize direct workload addressing.
         check(f"{service} Pod IP closed even to order", "order", {"target": f"http://{ip}:8080{path}", "identity": "order-service"}, [403], "RBAC")
         check(f"{service} Pod IP forged order denied", "checkout", {"target": f"http://{ip}:8080{path}", "identity": "order-service"}, [403], "RBAC")
-        check(f"{service} plaintext forged order denied", "plain", {"target": f"http://{ip}:8080{path}", "identity": "order-service"}, ["CONNECTION_REJECTED"])
+        # Use a source outside ecommerce's egress policy to test the destination's mTLS rejection.
+        check(f"{service} plaintext forged order denied", "inbound-plain", {"target": f"http://{ip}:8080{path}", "identity": "order-service"}, ["CONNECTION_REJECTED"])
         check(f"{service} scraper legitimate metrics", "scraper", http(service, "/actuator/prometheus", "prometheus"), [200])
         check(f"{service} scraper forged order denied", "scraper", http(service, path, "order-service"), [403], "RBAC")
         check(f"{service} scraper Pod IP forged order denied", "scraper", {"target": f"http://{ip}:8080{path}", "identity": "order-service"}, [403], "RBAC")

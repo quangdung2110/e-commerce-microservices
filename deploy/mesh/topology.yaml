@@ -69,11 +69,10 @@ health_checks:
     - {path: /actuator/health, callers: [edge/traefik]}
     - {path: /actuator/health/readiness, callers: [ecommerce/checkout-service]}
 
-# Egress (runtime-contract section 8). Everything else outside the cluster is blocked by REGISTRY_ONLY.
+# Local external providers (runtime-contract section 8). Notification uses Mailpit and LocalStack here.
+egress_waypoint: ecommerce-egress
 egress:
   - {name: stripe-api,  host: api.stripe.com,                      port: 443, owner: payment-service}
-  - {name: aws-ses,     host: email.ap-southeast-1.amazonaws.com,  port: 443, owner: notification-service}
-  - {name: aws-sqs,     host: sqs.ap-southeast-1.amazonaws.com,    port: 443, owner: notification-service}
 
 # Outlier detection and connection pool are starting values, to be confirmed by load test (runtime-contract section 7).
 destination_rule:

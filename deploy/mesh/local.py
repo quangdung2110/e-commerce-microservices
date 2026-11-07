@@ -131,13 +131,20 @@ def install():
              "-f", MESH / f"helm/{chart}.values.yaml"])
     # Establish enforcement before any application workload is deployed.
     for filename in ("00-namespaces.yaml", "10-serviceaccounts.yaml", "20-peerauthentication.yaml",
-                     "30-waypoint.yaml", "40-authorizationpolicies-l4.yaml", "41-authorizationpolicies-ecommerce.yaml"):
+                     "30-waypoint.yaml", "40-authorizationpolicies-l4.yaml", "41-authorizationpolicies-ecommerce.yaml",
+                     "61-egress-authorizationpolicies.yaml"):
         kube("apply", "-f", MESH / "generated" / filename)
     kube("-n", "ecommerce", "rollout", "status", "deployment/ecommerce-waypoint", "--timeout=180s")
     # HPA needs a metrics-server to scale; keep the required minimum even without one on kind.
     kube("-n", "ecommerce", "scale", "deployment/ecommerce-waypoint", "--replicas=2")
+    egress_waypoint = yaml.safe_load((MESH / "topology.yaml").read_text(encoding="utf-8"))["egress_waypoint"]
+    kube("-n", "ecommerce", "wait", "--for=condition=Programmed", f"gateway/{egress_waypoint}", "--timeout=180s")
+    kube("-n", "ecommerce", "rollout", "status", f"deployment/{egress_waypoint}", "--timeout=180s")
+    # Remove obsolete generated entries without touching ServiceEntries managed by other tooling.
+    kube("-n", "ecommerce", "apply", "-f", MESH / "generated/60-serviceentries.yaml", "--prune",
+         "-l", "app.kubernetes.io/managed-by=deploy-mesh-generate", "--prune-allowlist=networking.istio.io/v1/ServiceEntry")
     kube("apply", "-f", MESH / "generated/80-networkpolicies.yaml")
-    for name in ("50-virtualservices.yaml", "51-destinationrules.yaml", "60-serviceentries.yaml", "70-telemetry.yaml"):
+    for name in ("50-virtualservices.yaml", "51-destinationrules.yaml", "70-telemetry.yaml"):
         kube("apply", "-f", MESH / "generated" / name)
 
 

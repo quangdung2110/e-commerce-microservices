@@ -17,6 +17,22 @@ spec:
     port: 15008
     protocol: HBONE
 ---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ecommerce-egress
+  namespace: ecommerce
+  labels:
+    app.kubernetes.io/part-of: ecommerce-mesh
+    app.kubernetes.io/managed-by: deploy-mesh-generate
+    istio.io/waypoint-for: service
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+  - name: mesh
+    port: 15008
+    protocol: HBONE
+---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

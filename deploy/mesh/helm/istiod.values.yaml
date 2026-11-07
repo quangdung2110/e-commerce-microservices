@@ -10,8 +10,7 @@ global:
     image: docker.io/istio/proxyv2@sha256:eb74eacea98d3fb1e239ea84016085155478586a554158676b9b67d960151084
 
 meshConfig:
-  # Egress is declared with ServiceEntry (generated/60-serviceentries.yaml). Verify on the first cluster whether ztunnel enforces
-  # REGISTRY_ONLY in ambient mode; if it does not, an egress control outside the mesh is needed (mesh ADR-001, open item).
+  # Local egress is enforced by NetworkPolicy and the egress waypoint's per-provider authorization.
   outboundTrafficPolicy:
     mode: REGISTRY_ONLY
 

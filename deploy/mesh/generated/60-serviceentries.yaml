@@ -9,55 +9,10 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ecommerce-mesh
     app.kubernetes.io/managed-by: deploy-mesh-generate
-  annotations:
-    mesh.ecommerce/owner: payment-service
+    istio.io/use-waypoint: ecommerce-egress
 spec:
   hosts:
   - api.stripe.com
-  location: MESH_EXTERNAL
-  resolution: DNS
-  exportTo:
-  - .
-  ports:
-  - number: 443
-    name: tls
-    protocol: TLS
----
-apiVersion: networking.istio.io/v1
-kind: ServiceEntry
-metadata:
-  name: aws-ses
-  namespace: ecommerce
-  labels:
-    app.kubernetes.io/part-of: ecommerce-mesh
-    app.kubernetes.io/managed-by: deploy-mesh-generate
-  annotations:
-    mesh.ecommerce/owner: notification-service
-spec:
-  hosts:
-  - email.ap-southeast-1.amazonaws.com
-  location: MESH_EXTERNAL
-  resolution: DNS
-  exportTo:
-  - .
-  ports:
-  - number: 443
-    name: tls
-    protocol: TLS
----
-apiVersion: networking.istio.io/v1
-kind: ServiceEntry
-metadata:
-  name: aws-sqs
-  namespace: ecommerce
-  labels:
-    app.kubernetes.io/part-of: ecommerce-mesh
-    app.kubernetes.io/managed-by: deploy-mesh-generate
-  annotations:
-    mesh.ecommerce/owner: notification-service
-spec:
-  hosts:
-  - sqs.ap-southeast-1.amazonaws.com
   location: MESH_EXTERNAL
   resolution: DNS
   exportTo:

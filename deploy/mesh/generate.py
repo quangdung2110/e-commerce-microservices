@@ -245,13 +245,19 @@ def peer_authentication() -> list[dict]:
     ]
 
 
+def waypoint_gateway(name: str, namespace: str, traffic: str) -> dict:
+    return {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway",
+            "metadata": meta(name, namespace, {"istio.io/waypoint-for": traffic}),
+            "spec": {"gatewayClassName": "istio-waypoint",
+                     "listeners": [{"name": "mesh", "port": 15008, "protocol": "HBONE"}]}}
+
+
 def waypoint(topology: dict) -> list[dict]:
     spec = topology["waypoint"]
     name, namespace = spec["name"], spec["namespace"]
     return [
-        {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway",
-         "metadata": meta(name, namespace, {"istio.io/waypoint-for": "all"}),
-         "spec": {"gatewayClassName": "istio-waypoint", "listeners": [{"name": "mesh", "port": 15008, "protocol": "HBONE"}]}},
+        waypoint_gateway(name, namespace, "all"),
+        waypoint_gateway(topology["egress_waypoint"], namespace, "service"),
         {"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": meta(name, namespace),
          "spec": {"minAvailable": 1,
                   "selector": {"matchLabels": {"gateway.networking.k8s.io/gateway-name": name}}}},
@@ -442,10 +448,23 @@ def destination_rules(topology: dict) -> list[dict]:
 
 def service_entries(topology: dict) -> list[dict]:
     return [{"apiVersion": ISTIO_NETWORKING, "kind": "ServiceEntry",
-             "metadata": {**meta(entry["name"], "ecommerce"), "annotations": {"mesh.ecommerce/owner": entry["owner"]}},
+             "metadata": meta(entry["name"], "ecommerce", {"istio.io/use-waypoint": topology["egress_waypoint"]}),
              "spec": {"hosts": [entry["host"]], "location": "MESH_EXTERNAL", "resolution": "DNS", "exportTo": ["."],
                       "ports": [{"number": entry["port"], "name": "tls", "protocol": "TLS"}]}}
             for entry in topology["egress"]]
+
+
+def egress_policies(topology: dict) -> list[dict]:
+    docs = [authz("egress-deny-all", "ecommerce", {
+        "action": "ALLOW", "targetRefs": [{"group": "gateway.networking.k8s.io", "kind": "Gateway",
+                                           "name": topology["egress_waypoint"]}]})]
+    for entry in topology["egress"]:
+        owner = principal(f"ecommerce/{entry['owner']}")
+        docs.append(authz(f"allow-egress-{entry['name']}", "ecommerce", {
+            "action": "ALLOW", "targetRefs": [{"group": "networking.istio.io", "kind": "ServiceEntry", "name": entry["name"]}],
+            "rules": [{"from": [{"source": {"principals": [owner]}}],
+                       "to": [{"operation": {"ports": [str(entry["port"])]}}]}]}))
+    return docs
 
 
 def telemetry(versions: dict) -> list[dict]:
@@ -455,9 +474,38 @@ def telemetry(versions: dict) -> list[dict]:
                       "accessLogging": [{"providers": [{"name": "envoy"}]}]}}]
 
 
-def network_policies() -> list[dict]:
+def network_policies(topology: dict) -> list[dict]:
     def selector(*names: str) -> dict:
         return {"namespaceSelector": {"matchExpressions": [{"key": "kubernetes.io/metadata.name", "operator": "In", "values": list(names)}]}}
+
+    def to_pods(namespace: str, label: str, name: str, *ports: int) -> dict:
+        return {"to": [{**selector(namespace), "podSelector": {"matchLabels": {label: name}}}],
+                "ports": [{"protocol": "TCP", "port": port} for port in ports]}
+
+    def egress(name: str, pods: dict, rules: list[dict]) -> dict:
+        return {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": meta(name, "ecommerce"),
+                "spec": {"podSelector": pods, "policyTypes": ["Egress"], "egress": rules}}
+
+    gateway_label = "gateway.networking.k8s.io/gateway-name"
+    app_label = "app.kubernetes.io/name"
+    dns = to_pods("kube-system", "k8s-app", "kube-dns", 53)
+    dns["ports"].append({"protocol": "UDP", "port": 53})
+    local = [
+        dns,
+        {"to": [selector("ecommerce", "observability")], "ports": [{"protocol": "TCP", "port": 15008}]},
+        to_pods("observability", app_label, "otel-collector", 4317, 4318),
+        to_pods("edge", app_label, "traefik", 80),
+        to_pods("edge", app_label, "frontend", 3000),
+        *[to_pods("data", "app", name, port) for name, port in {
+            "postgres": 5432, "redis": 6379, "checkout-redis": 6379, "kafka": 9092,
+            "elasticsearch": 9200, "minio": 9000, "temporal": 7233,
+        }.items()],
+    ]
+    public_https = {
+        "to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8",
+                                                        "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16"]}}],
+        "ports": [{"protocol": "TCP", "port": 443}],
+    }
     return [
         {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": meta("default-deny-ingress", "ecommerce"),
          "spec": {"podSelector": {}, "policyTypes": ["Ingress"]}},
@@ -465,6 +513,12 @@ def network_policies() -> list[dict]:
         {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": meta("allow-mesh-and-edge", "ecommerce"),
          "spec": {"podSelector": {}, "policyTypes": ["Ingress"],
                   "ingress": [{"from": [selector("edge", "ecommerce", "observability", "istio-system")]}]}},
+        egress("default-deny-egress", {}, []),
+        egress("allow-local-egress", {}, local),
+        egress("allow-waypoint-control-plane", {"matchExpressions": [{"key": gateway_label, "operator": "In",
+               "values": [topology["waypoint"]["name"], topology["egress_waypoint"]]}]},
+               [to_pods("istio-system", "app", "istiod", 15012)]),
+        egress("allow-egress-waypoint-https", {"matchLabels": {gateway_label: topology["egress_waypoint"]}}, [public_https]),
     ]
 
 
@@ -515,8 +569,9 @@ def build() -> dict[str, str]:
         "50-virtualservices.yaml": dump(virtual_services(topology, policy)),
         "51-destinationrules.yaml": dump(destination_rules(topology)),
         "60-serviceentries.yaml": dump(service_entries(topology)),
+        "61-egress-authorizationpolicies.yaml": dump(egress_policies(topology)),
         "70-telemetry.yaml": dump(telemetry(versions)),
-        "80-networkpolicies.yaml": dump(network_policies()),
+        "80-networkpolicies.yaml": dump(network_policies(topology)),
         "coverage-report.md": coverage_report(rules),
     }
 
