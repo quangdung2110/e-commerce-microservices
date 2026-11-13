@@ -3,6 +3,7 @@ package com.ecommerce.order.integration;
 import com.ecommerce.order.support.AbstractIntegrationTest;
 import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
+import com.ecommerce.order.workflow.WorkflowNames;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
@@ -13,8 +14,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 
 /** WF-ORDER-007/008/008a/010 against PostgreSQL and in-memory Temporal. */
 class RefundFlowIT extends AbstractIntegrationTest {
@@ -167,6 +173,8 @@ class RefundFlowIT extends AbstractIntegrationTest {
         refundEvent(orderId, "refund.succeeded", Map.of());
         awaitStatus(orderId, "REFUNDED");
         await("scope closed", () -> "COMPLETED".equals(finalization(orderId)));
+        temporal.getWorkflowClient().newUntypedWorkflowStub(WorkflowNames.buyerRefund(orderId))
+                .getResult(15, TimeUnit.SECONDS, Void.class);
         refundEvent(orderId, "refund.reversed", Map.of("reason_code", "REFUND_REVERSED_BY_PROVIDER"));
         awaitStatus(orderId, "RETURN_REQUESTED");
         awaitCase(orderId, "MANUAL_VERIFICATION_REQUIRED");
@@ -176,6 +184,53 @@ class RefundFlowIT extends AbstractIntegrationTest {
         // The frozen close reason survives the reversal; Inventory is not reopened.
         assertThat(fakes.callsFor(orderId).stream().filter(c -> c.startsWith("inventory.closeScope")).toList())
                 .containsExactly("inventory.closeScope:" + orderId + ":REFUNDED");
+    }
+
+    @Test
+    void reversalDeliveredDuringSuccessActivityIsAppliedBeforeWorkflowCloses() throws Exception {
+        Placed placed = completed();
+        long orderId = placed.orderId();
+        assertThat(returnAC(placed).status()).isEqualTo(202);
+        awaitCase(orderId, "WAITING_INVENTORY_SCOPE_INSPECTION");
+        inspectionCompleted(orderId, new long[][]{{placed.lines().get(0), 2, 2}, {placed.lines().get(2), 3, 3}});
+        await("refund bound", () -> jdbc.queryForObject(
+                "SELECT refund_transaction_id FROM order_refund_cases WHERE order_id = ?", String.class, orderId) != null);
+
+        CountDownLatch successCommitted = new CountDownLatch(1);
+        CountDownLatch completeSuccessActivity = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            String result = (String) invocation.callRealMethod();
+            successCommitted.countDown();
+            if (!completeSuccessActivity.await(25, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Test did not release the refund success activity");
+            }
+            return result;
+        }).when(orderActivities).applyRefundResult(eq(orderId),
+                argThat(attributes -> attributes != null && "SUCCEEDED".equals(attributes.get("result"))));
+
+        String workflowId = WorkflowNames.buyerRefund(orderId);
+        try {
+            refundEvent(orderId, "refund.succeeded", Map.of());
+            assertThat(successCommitted.await(15, TimeUnit.SECONDS)).isTrue();
+            assertThat(orderStatus(orderId)).isEqualTo("REFUNDED");
+
+            refundEvent(orderId, "refund.reversed", Map.of("reason_code", "REFUND_REVERSED_BY_PROVIDER"));
+            await("reversal signalled to the open refund workflow", () -> jdbc.queryForObject("""
+                    SELECT count(*) FROM order_workflow_messages
+                    WHERE order_id = ? AND target_workflow_id = ? AND payload->>'result' = 'REVERSED'
+                      AND status = 'DELIVERED' AND delivery_outcome = 'SIGNALLED'
+                    """, Integer.class, orderId, workflowId) == 1);
+        } finally {
+            completeSuccessActivity.countDown();
+        }
+
+        temporal.getWorkflowClient().newUntypedWorkflowStub(workflowId).getResult(15, TimeUnit.SECONDS, Void.class);
+        assertThat(orderStatus(orderId)).isEqualTo("RETURN_REQUESTED");
+        assertThat(order(orderId).get("payment_status")).isEqualTo("REFUND_FAILED");
+        assertThat(jdbc.queryForObject("SELECT case_status FROM order_refund_cases WHERE order_id = ?",
+                String.class, orderId)).isEqualTo("MANUAL_VERIFICATION_REQUIRED");
+        assertThat(obligation(reconciliationCase(orderId), "REFUND_REVERSAL")).isNotNull();
+        assertThat(fakes.callsFor(orderId).stream().filter(call -> call.startsWith("payment.refund"))).hasSize(1);
     }
 
     @Test

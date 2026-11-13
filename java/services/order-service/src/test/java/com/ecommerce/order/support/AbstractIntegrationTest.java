@@ -3,6 +3,7 @@ package com.ecommerce.order.support;
 import com.ecommerce.order.messaging.FulfillmentIntake;
 import com.ecommerce.order.messaging.InspectionIntake;
 import com.ecommerce.order.messaging.PaymentIntake;
+import com.ecommerce.order.service.OrderActivitiesImpl;
 import com.ecommerce.order.web.dto.CheckoutDtos.CheckoutOrderSubmissionRequest;
 import com.ecommerce.order.worker.Reconcilers;
 import com.ecommerce.order.worker.WorkflowDispatcher;
@@ -22,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -90,6 +92,8 @@ public abstract class AbstractIntegrationTest {
     protected FakeRemotes fakes;
     @Autowired
     protected TestWorkflowEnvironment temporal;
+    @SpyBean
+    protected OrderActivitiesImpl orderActivities;
     @Autowired
     protected PaymentIntake payments;
     @Autowired
