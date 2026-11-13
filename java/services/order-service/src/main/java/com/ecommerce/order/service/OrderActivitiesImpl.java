@@ -96,8 +96,8 @@ public class OrderActivitiesImpl implements OrderActivities {
     }
 
     @Override
-    public void completeCancellation(long orderId) {
-        checkout.completeCancellation(orderId);
+    public Outcome completeCancellation(long orderId) {
+        return checkout.completeCancellation(orderId);
     }
 
     @Override

@@ -55,7 +55,7 @@ public interface OrderActivities {
     Outcome releaseInventory(long orderId);
 
     @ActivityMethod(name = "CancelOrderActivity")
-    void completeCancellation(long orderId);
+    Outcome completeCancellation(long orderId);
 
     @ActivityMethod(name = "CommitInventoryActivity")
     Outcome commitInventory(long orderId);

@@ -11,7 +11,7 @@ public final class ActivityResults {
     private ActivityResults() {
     }
 
-    /** Remote command outcome: ACCEPTED, REJECTED or UNKNOWN (+ error code). */
+    /** Remote command outcome or CAPTURED when checkout compensation discovers a capture. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Outcome(String kind, String errorCode) {
 
@@ -27,6 +27,10 @@ public final class ActivityResults {
             return new Outcome("UNKNOWN", code);
         }
 
+        public static Outcome captured() {
+            return new Outcome("CAPTURED", null);
+        }
+
         @JsonIgnore
         public boolean isAccepted() {
             return "ACCEPTED".equals(kind);
@@ -40,6 +44,11 @@ public final class ActivityResults {
         @JsonIgnore
         public boolean isUnknown() {
             return "UNKNOWN".equals(kind);
+        }
+
+        @JsonIgnore
+        public boolean isCaptured() {
+            return "CAPTURED".equals(kind);
         }
     }
 
@@ -68,7 +77,7 @@ public final class ActivityResults {
         }
     }
 
-    /** NON_CAPTURE, CAPTURED, PENDING or NO_PAYMENT. */
+    /** NON_CAPTURE, CAPTURED, PENDING, NO_PAYMENT or CANCELLED. */
     public record CancelResult(String result) {
     }
 

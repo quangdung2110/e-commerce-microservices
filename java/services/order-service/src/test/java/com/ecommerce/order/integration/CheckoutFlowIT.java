@@ -1,5 +1,8 @@
 package com.ecommerce.order.integration;
 
+import com.ecommerce.order.common.CanonicalJson;
+import com.ecommerce.order.service.CheckoutSaga;
+import com.ecommerce.order.store.CheckpointStore;
 import com.ecommerce.order.support.AbstractIntegrationTest;
 import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
@@ -10,6 +13,7 @@ import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SpecVersion;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.nio.file.Files;
@@ -25,6 +29,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** WF-ORDER-004/005/006/006a/009/011 end to end against PostgreSQL and in-memory Temporal. */
 class CheckoutFlowIT extends AbstractIntegrationTest {
+
+    @Autowired
+    private CheckpointStore checkpoints;
+    @Autowired
+    private CheckoutSaga checkout;
 
     @Test
     void completedEventUsesAttributesFromLegacyPurchaseSnapshotWhenLabelIsAbsent() throws Exception {
@@ -235,6 +244,44 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(outbox(orderId, "com.ecommerce.order.paid.v1")).hasSize(1);
         assertThat(fakes.callsFor(orderId)).noneMatch(c -> c.startsWith("inventory.release"));
         assertThat(order(orderId).get("cancel_reason")).isNull();
+    }
+
+    @Test
+    void latePendingCancelPreservesCaptureAndLegacyCheckpointIsRecheckedBeforeRelease() throws Exception {
+        long orderId = placeOrder(Fixtures.submission(UUID.randomUUID().toString(), user(),
+                Fixtures.defaultLines(), 0, null));
+        String txn = activeTxn(orderId);
+        jdbc.update("UPDATE orders SET status = 'CANCELLING', cancel_reason = 'USER_CANCEL' WHERE id = ?", orderId);
+
+        var key = new CheckpointStore.Key(orderId, "CHECKOUT", "CANCELLING", "PAYMENT_CANCEL", txn, 0);
+        var request = mapper.createObjectNode().put("order_id", Long.toString(orderId)).put("reason", "BUYER_CANCELLED");
+        var checkpoint = checkpoints.freeze(key, "order-" + orderId + "-payment-cancel-" + txn, request.toString(),
+                CanonicalJson.digest(request));
+        var pending = mapper.createObjectNode().put("order_id", Long.toString(orderId)).put("transaction_id", txn)
+                .put("outcome", "CANCEL_PENDING").put("financial_state_version", 1);
+        var captured = pending.deepCopy().put("outcome", "ALREADY_SUCCEEDED").put("financial_state_version", 2);
+        captured.putObject("amount").put("amount_minor", (long) order(orderId).get("final_amount_minor"));
+        checkpoints.record(checkpoint.id(), "ACCEPTED", null, captured.toString(), CanonicalJson.digest(captured));
+        checkpoints.record(checkpoint.id(), "UNKNOWN", "CANCEL_PENDING", pending.toString(), CanonicalJson.digest(pending));
+
+        var stored = checkpoints.find(key).orElseThrow();
+        assertThat(stored.accepted()).isTrue();
+        assertThat(stored.errorCode()).isNull();
+        assertThat(mapper.readTree(stored.responseJson()).path("outcome").asText()).isEqualTo("ALREADY_SUCCEEDED");
+        assertThat(stored.responseDigest()).isEqualTo(CanonicalJson.digest(captured));
+
+        // Recreate a checkpoint written by the old code and simulate cleanup already queued in Temporal.
+        jdbc.update("UPDATE order_saga_checkpoints SET response = CAST(? AS jsonb), response_digest = ? WHERE id = ?",
+                pending.toString(), CanonicalJson.digest(pending), checkpoint.id());
+        fakes.behaviour.put("cancel:" + orderId, "CANCEL_PENDING");
+        assertThat(checkout.releaseInventory(orderId).isUnknown()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("CANCELLING");
+
+        fakes.behaviour.put("cancel:" + orderId, "ALREADY_SUCCEEDED");
+        assertThat(checkout.releaseInventory(orderId).isCaptured()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("PAID");
+        assertThat(checkpoints.find(key).orElseThrow().responseJson()).contains("ALREADY_SUCCEEDED");
+        assertThat(fakes.callsFor(orderId)).noneMatch(call -> call.startsWith("inventory.release:"));
     }
 
     @Test

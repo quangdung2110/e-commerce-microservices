@@ -481,10 +481,16 @@ public class CheckoutSaga {
      * ALREADY_SUCCEEDED applies T3.2 atomically; CANCEL_PENDING/unknown keeps waiting.
      */
     public CancelResult cancelPayment(long orderId) {
-        OrderRow order = orders.find(orderId).orElseThrow();
+        return cancelPayment(orders.find(orderId).orElseThrow());
+    }
+
+    private CancelResult cancelPayment(OrderRow order) {
+        long orderId = order.id();
+        if (order.capturedTransactionId() != null) {
+            return new CancelResult("CAPTURED");
+        }
         if (order.status() != OrderStatus.CANCELLING) {
-            return new CancelResult(order.status() == OrderStatus.CANCELLED ? "NON_CAPTURE"
-                    : order.capturedTransactionId() != null ? "CAPTURED" : "PENDING");
+            return new CancelResult(order.status() == OrderStatus.CANCELLED ? "CANCELLED" : "PENDING");
         }
         String txn = order.activeTransactionId();
         if (txn == null) {
@@ -494,25 +500,32 @@ public class CheckoutSaga {
         ObjectNode body = json.object();
         body.put("order_id", Ids.wire(orderId));
         body.put("reason", reason.paymentCancelReason());
-        CheckpointStore.Key key = new CheckpointStore.Key(orderId, LANE, "CANCELLING", "PAYMENT_CANCEL", txn, 0);
-        // CANCEL_PENDING is not durable: re-ask Payment with the same key until resolved.
-        RemoteResult result = remote.execute(key, "order-" + orderId + "-payment-cancel-" + txn, body,
+        RemoteResult result = remote.execute(paymentCancelKey(orderId, txn),
+                "order-" + orderId + "-payment-cancel-" + txn, body,
                 cp -> payment.cancel(txn, cp.commandId(), WorkflowNames.checkout(order.checkoutToken()),
                         json.read(cp.requestJson())),
-                r -> "CANCEL_PENDING".equals(r.body().path("outcome").asText())
-                        ? new RemoteResult(RemoteResult.Kind.UNKNOWN, r.httpStatus(), "CANCEL_PENDING", r.body()) : r,
                 r -> {
-                    if (r.isAccepted() && !"ALREADY_SUCCEEDED".equals(r.body().path("outcome").asText())) {
+                    String outcome = paymentCancelOutcome(r.body(), orderId, txn);
+                    return isFinalPaymentCancelOutcome(outcome) ? r
+                            : new RemoteResult(RemoteResult.Kind.UNKNOWN, r.httpStatus(), outcome, r.body());
+                },
+                r -> {
+                    if (r.isAccepted() && confirmsNonCapture(paymentCancelOutcome(r.body(), orderId, txn))) {
                         attempts.markTerminal(txn, "CANCELED", "ORDER_CANCEL", clock.instant());
                     }
-                });
+                },
+                r -> r.isAccepted() ? isFinalPaymentCancelOutcome(paymentCancelOutcome(r.body(), orderId, txn))
+                        : r.body() == null || !"CANCEL_PENDING".equals(r.body().path("outcome").asText()));
         if (result.isAccepted()) {
-            if ("ALREADY_SUCCEEDED".equals(result.body().path("outcome").asText())) {
+            String outcome = paymentCancelOutcome(result.body(), orderId, txn);
+            if ("ALREADY_SUCCEEDED".equals(outcome)) {
                 long amount = result.body().path("amount").path("amount_minor").asLong();
                 Applied applied = markPaid(orderId, txn, amount);
                 return new CancelResult(applied.is(Applied.ANOMALY) ? "PENDING" : "CAPTURED");
             }
-            return new CancelResult("NON_CAPTURE");
+            if (confirmsNonCapture(outcome)) {
+                return new CancelResult("NON_CAPTURE");
+            }
         }
         if (result.isRejected()) {
             log.error("Payment rejected cancel for order {} txn {}: {}", orderId, txn, result.errorCode());
@@ -520,7 +533,57 @@ public class CheckoutSaga {
         return new CancelResult("PENDING");
     }
 
+    private static CheckpointStore.Key paymentCancelKey(long orderId, String txn) {
+        return new CheckpointStore.Key(orderId, LANE, "CANCELLING", "PAYMENT_CANCEL", txn, 0);
+    }
+
+    private static String paymentCancelOutcome(JsonNode body, long orderId, String txn) {
+        if (body == null || !txn.equals(body.path("transaction_id").textValue())
+                || !Ids.wire(orderId).equals(body.path("order_id").textValue())) {
+            return "INVALID_CANCEL_RESPONSE";
+        }
+        String outcome = body.path("outcome").asText();
+        return switch (outcome) {
+            case "CANCELED", "ALREADY_NON_CAPTURED", "CANCEL_PENDING" -> outcome;
+            case "ALREADY_SUCCEEDED" -> {
+                JsonNode amount = body.path("amount").path("amount_minor");
+                yield amount.isIntegralNumber() && amount.canConvertToLong() && amount.longValue() > 0
+                        ? outcome : "INVALID_CANCEL_RESPONSE";
+            }
+            default -> "INVALID_CANCEL_RESPONSE";
+        };
+    }
+
+    private static boolean confirmsNonCapture(String outcome) {
+        return "CANCELED".equals(outcome) || "ALREADY_NON_CAPTURED".equals(outcome);
+    }
+
+    private static boolean isFinalPaymentCancelOutcome(String outcome) {
+        return confirmsNonCapture(outcome) || "ALREADY_SUCCEEDED".equals(outcome);
+    }
+
+    /** Rechecks payment before cleanup, including workflows with a previously recorded NON_CAPTURE. */
+    private Outcome cancellationCleanupGuard(OrderRow order) {
+        String txn = order.activeTransactionId();
+        if (order.status() == OrderStatus.CANCELLING && order.capturedTransactionId() == null && txn != null
+                && checkpoints.find(paymentCancelKey(order.id(), txn)).filter(CheckpointRow::accepted)
+                .map(row -> paymentCancelOutcome(json.read(row.responseJson()), order.id(), txn))
+                .filter(CheckoutSaga::confirmsNonCapture).isPresent()) {
+            return Outcome.accepted();
+        }
+        return switch (cancelPayment(order).result()) {
+            case "NON_CAPTURE", "NO_PAYMENT", "CANCELLED" -> Outcome.accepted();
+            case "CAPTURED" -> Outcome.captured();
+            default -> Outcome.unknown("PAYMENT_CANCEL_UNRESOLVED");
+        };
+    }
+
     public Outcome releasePromotion(long orderId, String promotionId) {
+        OrderRow order = orders.find(orderId).orElseThrow();
+        Outcome guard = cancellationCleanupGuard(order);
+        if (!guard.isAccepted() || order.status() == OrderStatus.CANCELLED) {
+            return guard;
+        }
         Optional<CheckpointRow> reserve = checkpoints.find(
                 new CheckpointStore.Key(orderId, LANE, "PRE_PAYMENT", "PROMOTION_RESERVE", promotionId, 0));
         if (reserve.isEmpty() || reserve.get().rejected()) {
@@ -552,6 +615,11 @@ public class CheckoutSaga {
     }
 
     public Outcome releaseInventory(long orderId) {
+        OrderRow order = orders.find(orderId).orElseThrow();
+        Outcome guard = cancellationCleanupGuard(order);
+        if (!guard.isAccepted() || order.status() == OrderStatus.CANCELLED) {
+            return guard;
+        }
         Optional<CheckpointRow> reserve = checkpoints.find(reserveKey(orderId));
         if (reserve.isEmpty() || reserve.get().rejected()) {
             return Outcome.accepted();
@@ -565,7 +633,6 @@ public class CheckoutSaga {
                 return replay;
             }
         }
-        OrderRow order = orders.find(orderId).orElseThrow();
         ObjectNode body = json.object();
         body.put("reason", CancelReason.valueOf(order.cancelReason()).inventoryReleaseReason());
         RemoteResult result = remote.execute(
@@ -586,11 +653,18 @@ public class CheckoutSaga {
     }
 
     /** T3.1 after Payment non-capture and both cleanup receipts are proven. */
-    public void completeCancellation(long orderId) {
-        tx.executeWithoutResult(s -> {
+    public Outcome completeCancellation(long orderId) {
+        Outcome guard = cancellationCleanupGuard(orders.find(orderId).orElseThrow());
+        if (!guard.isAccepted()) {
+            return guard;
+        }
+        return tx.execute(s -> {
             OrderRow order = orders.lock(orderId).orElseThrow();
+            if (order.capturedTransactionId() != null) {
+                return Outcome.captured();
+            }
             if (order.status() != OrderStatus.CANCELLING) {
-                return;
+                return Outcome.accepted();
             }
             Instant now = clock.instant();
             orders.update(orderId, Map.of("status", OrderStatus.CANCELLED, "cancelled_at", now, "saga_phase", "CLOSED"));
@@ -606,6 +680,7 @@ public class CheckoutSaga {
             submissions.transition(UUID.fromString(order.checkoutToken()), "FAILED",
                     json.write(problems.submissionFailure("ORDER_CANCELLED_DURING_PREPARATION")));
             meters.counter("order.lifecycle", "transition", "CANCELLED").increment();
+            return Outcome.accepted();
         });
     }
 
