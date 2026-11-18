@@ -18,6 +18,7 @@
   },
   "overrides": {
     "simple-git": "4.0.1",
-    "jsonpath-plus": "10.4.0"
+    "jsonpath-plus": "10.4.0",
+    "@simple-git/argv-parser": "2.0.1"
   }
 }

@@ -30,6 +30,7 @@
         <lombok.version>1.18.32</lombok.version>
         <jackson-bom.version>2.22.3</jackson-bom.version>
         <tomcat.version>10.1.62</tomcat.version>
+        <postgresql.version>42.7.12</postgresql.version>
     </properties>
 
     <dependencyManagement>

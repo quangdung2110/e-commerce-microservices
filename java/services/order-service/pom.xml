@@ -29,6 +29,7 @@
         <netty.version>4.1.137.Final</netty.version>
         <tomcat.version>10.1.62</tomcat.version>
         <grpc.version>1.75.0</grpc.version>
+        <postgresql.version>42.7.12</postgresql.version>
     </properties>
 
     <dependencyManagement>
