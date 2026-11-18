@@ -47,8 +47,9 @@ def drill(policy):
         network_created = True
         docker("run", "-d", "--name", container, "--network", prefix, "--memory", "512m", "--cpus", "1", "-e", "POSTGRES_PASSWORD", POSTGRES, env=env)
         container_created = True
+        # The image initializes with a socket-only server before the final server starts.
         for _ in range(120):
-            if docker("exec", container, "pg_isready", "-U", "postgres", check=False).returncode == 0:
+            if docker("exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", check=False).returncode == 0:
                 break
             time.sleep(0.5)
         else:

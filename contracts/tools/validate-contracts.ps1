@@ -160,6 +160,11 @@ $serviceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringCo
 }
 
 Write-Host 'Checking CloudEvents examples...'
+$jsonValidationOptions = @{}
+# Newer PowerShell versions require opt-in to resolve relative schema files.
+if ((Get-Command Test-Json).Parameters.ContainsKey('FetchExternalReference')) {
+    $jsonValidationOptions.FetchExternalReference = $true
+}
 $requiredCloudEventFields = @(
     'specversion', 'id', 'type', 'source', 'subject', 'time',
     'datacontenttype', 'dataschema', 'data'
@@ -198,7 +203,7 @@ Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json'
                     ConvertFrom-Json -Depth 100).PSObject.Properties['$id']
                 if ($schemaId -and $schemaId.Value -match '^https?://') {
                     Add-ContractWarning ("Skipped JSON Schema validation of {0}: Test-Json cannot resolve a schema with an absolute `$id ({1})." -f $display, $schemaId.Value)
-                } elseif (-not (Test-Json -Json $rawEvent -SchemaFile $schemaPath -ErrorAction SilentlyContinue)) {
+                } elseif (-not (Test-Json -Json $rawEvent -SchemaFile $schemaPath @jsonValidationOptions -ErrorAction SilentlyContinue)) {
                     Add-ContractError "CloudEvent example does not match $($event.dataschema): $display"
                 }
             }

@@ -345,12 +345,14 @@ class PreviewApiTest extends AbstractCheckoutTest {
     void clientErrorsDoNotOpenTheCircuit() {
         UPSTREAMS.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(urlPathMatching(CART_PATH))
                 .willReturn(problem(403, "FORBIDDEN")));
+        long rejectedBefore = calls(Dependency.CART, "4xx");
+        long shortCircuitedBefore = calls(Dependency.CART, "circuit_open");
         for (int i = 0; i < 25; i++) {
             preview(newUser()).expectStatus().isEqualTo(503);
         }
         assertThat(guard.isOpen(Dependency.CART)).isFalse();
-        assertThat(calls(Dependency.CART, "4xx")).isGreaterThanOrEqualTo(25);
-        assertThat(calls(Dependency.CART, "circuit_open")).isZero();
+        assertThat(calls(Dependency.CART, "4xx") - rejectedBefore).isEqualTo(25);
+        assertThat(calls(Dependency.CART, "circuit_open")).isEqualTo(shortCircuitedBefore);
     }
 
     @Test
