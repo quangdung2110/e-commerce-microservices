@@ -19,6 +19,9 @@ FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# The runtime starts node directly. Keep the build-time npm CLI out of the final image.
+RUN rm -rf /usr/local/lib/node_modules/npm && rm -f /usr/local/bin/npm /usr/local/bin/npx
+
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
