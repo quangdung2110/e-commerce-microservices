@@ -94,18 +94,19 @@ public abstract class AbstractCheckoutTest {
 
     static {
         UPSTREAMS.start();
-        UPSTREAMS.stubFor(get(urlEqualTo("/actuator/health/readiness"))
-                .willReturn(aResponse().withStatus(200).withBody("{\"status\":\"UP\"}")));
-        UPSTREAMS.stubFor(post(urlEqualTo(PROMOTION_OPTIONS_PATH)).willReturn(json(200, Fixtures.voucherOptions(List.of()))));
-        // Cart's real contract returns an empty snapshot for an absent user. Exercise the
-        // response/templating path of this fake during startup too, rather than its default 404.
-        UPSTREAMS.stubFor(get(urlEqualTo("/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot"))
-                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{\"items\":[]}")));
         REDIS.start();
     }
 
     @DynamicPropertySource
     static void environment(DynamicPropertyRegistry registry) {
+        // A new context runs application warm-up before JUnit resets the fixtures.
+        UPSTREAMS.resetAll();
+        PRODUCT.reset();
+        stubPromotionReadiness();
+        // Cart's real contract returns an empty snapshot for an absent user. Exercise the
+        // response/templating path of this fake during startup too, rather than its default 404.
+        UPSTREAMS.stubFor(get(urlEqualTo("/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{\"items\":[]}")));
         String http = "http://localhost:" + UPSTREAMS.port();
         registry.add("checkout.redis-url", () -> "redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379));
         registry.add("checkout.endpoints.cart-base-url", () -> http);
