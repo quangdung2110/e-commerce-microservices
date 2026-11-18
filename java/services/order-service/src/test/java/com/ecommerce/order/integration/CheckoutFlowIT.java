@@ -356,6 +356,7 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         // Dispatch alone never delivers (Inventory physical dispatch is not delivery).
         Map<String, Object> first = jdbc.queryForMap(
                 "SELECT sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE id = ?", lines.get(0));
+        Instant beforeFirstDispatch = workflowNow().minusSeconds(3600);
         dispatch(orderId, lines.get(0), (String) first.get("allocated_warehouse_id"), (String) first.get("sku_id"),
                 ((Number) first.get("quantity")).intValue());
         assertThat(lineStatus(lines.get(0))).isEqualTo("DISPATCHED");
@@ -368,10 +369,10 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
         assertThat(confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "A"), deliveryLine(lines.get(0), "B")))
                 .body().path("code").asText()).isEqualTo("INVALID_DELIVERY_CONFIRMATION");
         Response future = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
-                "delivered_at", Instant.now().plusSeconds(3600).toString(), "delivery_reference", "TRK-F")));
+                "delivered_at", workflowNow().plusSeconds(3600).toString(), "delivery_reference", "TRK-F")));
         assertThat(future.status()).isEqualTo(422);
         Response beforeDispatch = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
-                "delivered_at", Instant.now().minusSeconds(3600).toString(), "delivery_reference", "TRK-B")));
+                "delivered_at", beforeFirstDispatch.toString(), "delivery_reference", "TRK-B")));
         assertThat(beforeDispatch.status()).isEqualTo(422);
         assertThat(call(admin(MockMvcRequestBuilders.post("/api/v1/admin/orders/424242424/delivery-confirmations"))
                 .contentType("application/json").content(mapper.writeValueAsString(

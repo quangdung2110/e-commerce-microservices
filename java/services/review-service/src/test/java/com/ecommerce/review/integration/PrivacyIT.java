@@ -297,8 +297,8 @@ class PrivacyIT extends AbstractReviewIT {
 
         assertThat(requestStatus(subject)).isEqualTo("PURGED");
         assertThat(privacyService.countOverdue()).isZero();
-        assertThat(jdbc.sql("SELECT failure_detail FROM privacy_erasure_requests").query(String.class).single())
-                .isNull();
+        assertThat(jdbc.sql("SELECT failure_detail IS NULL FROM privacy_erasure_requests").query(Boolean.class).single())
+                .isTrue();
         assertThat(jdbc.sql("SELECT owner_user_id IS NULL AND owner_erased_at IS NOT NULL "
                 + "FROM review_eligibilities WHERE id = ?").param(eligibilityId).query(Boolean.class).single())
                 .isTrue();

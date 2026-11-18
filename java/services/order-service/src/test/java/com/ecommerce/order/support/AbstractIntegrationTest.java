@@ -279,6 +279,10 @@ public abstract class AbstractIntegrationTest {
 
     // ------------------------------------------------------------------ Inventory facts and Admin delivery confirmation
 
+    protected Instant workflowNow() {
+        return Instant.ofEpochMilli(temporal.currentTimeMillis());
+    }
+
     protected void dispatchAll(long orderId) throws Exception {
         for (Map<String, Object> line : jdbc.queryForList("""
                 SELECT id, sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE order_id = ? ORDER BY id
@@ -295,7 +299,7 @@ public abstract class AbstractIntegrationTest {
         ObjectNode data = event.putObject("data");
         data.put("order_id", Long.toString(orderId)).put("order_line_id", Long.toString(lineId)).put("sku_id", sku)
                 .put("quantity", quantity).put("warehouse_id", warehouse).put("handover_reference", "HO-" + lineId)
-                .put("handed_over_at", Instant.now().toString()).put("reservation_revision", 3);
+                .put("handed_over_at", workflowNow().toString()).put("reservation_revision", 3);
         fulfillment.handleDispatch(Long.toString(orderId), mapper.writeValueAsString(event));
     }
 
@@ -312,7 +316,7 @@ public abstract class AbstractIntegrationTest {
     }
 
     protected Map<String, Object> deliveryLine(long lineId, String reference) {
-        return Map.of("order_line_id", Long.toString(lineId), "delivered_at", Instant.now().toString(),
+        return Map.of("order_line_id", Long.toString(lineId), "delivered_at", workflowNow().toString(),
                 "delivery_reference", reference);
     }
 

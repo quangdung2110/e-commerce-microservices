@@ -108,7 +108,7 @@ func startPostgres(ctx context.Context) (testcontainers.Container, error) {
 
 	testDBConf = config.DatabaseConfig{
 		Host:             host,
-		Port:             mapped.Int(),
+		Port:             int(mapped.Num()),
 		Name:             "auth_db",
 		Username:         "postgres",
 		Password:         "postgres",
@@ -144,7 +144,7 @@ func startRedis(ctx context.Context) (testcontainers.Container, error) {
 
 	testRedisConf = config.RedisConfig{
 		Host:             host,
-		Port:             mapped.Int(),
+		Port:             int(mapped.Num()),
 		DB:               0,
 		PoolSize:         8,
 		MinIdleConns:     1,
