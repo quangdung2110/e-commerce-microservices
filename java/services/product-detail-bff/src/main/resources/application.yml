@@ -1,7 +1,10 @@
 spring:
+  http:
+    codecs:
+      preferred-json-mapper: jackson2
   application:
     name: product-detail-bff
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     # Contract đánh dấu nhiều field nullable là bắt buộc (description, summary,
     # availability_observed_at...), nên null phải được serialize.
@@ -67,9 +70,19 @@ pdp:
     require-https: ${PDP_MEDIA_REQUIRE_HTTPS:true}
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
   otlp:
+    metrics:
+      export:
+        enabled: false
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

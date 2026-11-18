@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: promotion-service
 
@@ -31,7 +34,7 @@ spring:
 
   # JSON snake_case theo contracts/http/promotion/v1/openapi.yaml. Request reader phải
   # bỏ qua unknown optional field (compatible additions) nên không fail-on-unknown.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: always
     serialization:
@@ -144,6 +147,14 @@ promotion:
     enabled: ${WORKERS_ENABLED:true}
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
   metrics:
     distribution:
       percentiles-histogram:
@@ -151,9 +162,11 @@ management:
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
-  otlp:
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

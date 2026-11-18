@@ -3,7 +3,7 @@ package com.ecommerce.search.integration;
 import com.ecommerce.search.dto.SearchDtos;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.test.context.TestPropertySource;
 import java.util.HashMap;
 import java.util.List;

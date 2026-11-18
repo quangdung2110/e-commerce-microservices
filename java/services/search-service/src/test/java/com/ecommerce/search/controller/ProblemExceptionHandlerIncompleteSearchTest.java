@@ -105,7 +105,7 @@ class ProblemExceptionHandlerIncompleteSearchTest {
 
     private static void assertIs504WithoutRetryAfter(ResponseEntity<Object> response) {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
-        assertThat(response.getHeaders().containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(response.getHeaders().containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
     }
 
     /** The exception the low-level REST client raises for a non-2xx answer, with the body attached as it is on the wire. */

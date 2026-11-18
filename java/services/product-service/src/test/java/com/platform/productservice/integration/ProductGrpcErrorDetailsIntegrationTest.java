@@ -20,7 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.test.context.TestPropertySource;
 
@@ -39,20 +39,16 @@ import static org.mockito.Mockito.when;
  * in the status details, so a caller reads {@code reason} and {@code retryable} instead of free text.
  */
 @TestPropertySource(properties = {
-        "grpc.server.in-process-name=product-error-details",
-        "product.internal.grpc-clients=cart-service",
-        // The connection policy of application.yml (contracts ADR-007) is for the Netty server; the in-process transport used here
-        // rejects it at startup, so it is cleared for this test only.
-        "grpc.server.max-connection-age=",
-        "grpc.server.max-connection-age-grace=",
-        "grpc.server.permit-keep-alive-time="
+        "spring.grpc.server.enabled=true",
+        "spring.grpc.server.inprocess.name=product-error-details",
+        "product.internal.grpc-clients=cart-service"
 })
 class ProductGrpcErrorDetailsIntegrationTest extends AbstractCatalogIntegrationTest {
 
     private static final Metadata.Key<String> IDENTITY =
             Metadata.Key.of("x-service-identity", Metadata.ASCII_STRING_MARSHALLER);
 
-    @MockBean
+    @MockitoBean
     private SkuRepository skus;
 
     private ManagedChannel channel;

@@ -1,8 +1,8 @@
 package com.ecommerce.review.config;
 
 import com.ecommerce.review.repository.OutboxRepository;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.stereotype.Component;
 
 /**

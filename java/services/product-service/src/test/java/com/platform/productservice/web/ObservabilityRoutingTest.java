@@ -16,7 +16,7 @@ class ObservabilityRoutingTest {
     static class MissingResource {
         @GetMapping("/routing-probe")
         String read() throws NoResourceFoundException {
-            throw new NoResourceFoundException(HttpMethod.GET, "missing");
+            throw new NoResourceFoundException(HttpMethod.GET, "/routing-probe", "missing");
         }
     }
 

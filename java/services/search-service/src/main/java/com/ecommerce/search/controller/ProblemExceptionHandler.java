@@ -204,7 +204,7 @@ public class ProblemExceptionHandler extends ResponseEntityExceptionHandler {
         HttpHeaders headers = new HttpHeaders();
         headers.putAll(extraHeaders);
         headers.remove(HttpHeaders.CONTENT_TYPE);
-        if (status == HttpStatus.SERVICE_UNAVAILABLE && code.retryable() && !headers.containsKey(HttpHeaders.RETRY_AFTER)) {
+        if (status == HttpStatus.SERVICE_UNAVAILABLE && code.retryable() && !headers.containsHeader(HttpHeaders.RETRY_AFTER)) {
             headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(RETRY_AFTER_SECONDS));
         }
         return ResponseEntity.status(status).headers(headers).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(body);

@@ -1,5 +1,9 @@
 # Integration test dùng Testcontainers PostgreSQL; URL do test inject.
 spring:
+  # gRPC service được gọi trực tiếp qua bean, không mở port.
+  grpc:
+    server:
+      enabled: false
   jpa:
     hibernate:
       ddl-auto: validate
@@ -11,11 +15,6 @@ spring:
     bootstrap-servers: localhost:9092
     listener:
       auto-startup: false
-
-# gRPC service được gọi trực tiếp qua bean, không mở port.
-grpc:
-  server:
-    port: -1
 
 product:
   export:

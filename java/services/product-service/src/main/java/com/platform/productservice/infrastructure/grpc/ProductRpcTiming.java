@@ -3,14 +3,16 @@ package com.platform.productservice.infrastructure.grpc;
 import io.grpc.*;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import net.devh.boot.grpc.server.interceptor.GrpcGlobalServerInterceptor;
+import org.springframework.grpc.server.GlobalServerInterceptor;
+import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.TimeUnit;
 
 /** Correlates server handling with Checkout transport time without logging SKU IDs or bodies. */
-@GrpcGlobalServerInterceptor
+@Component
+@GlobalServerInterceptor
 public final class ProductRpcTiming implements ServerInterceptor {
     private static final Logger log = LoggerFactory.getLogger(ProductRpcTiming.class);
     private static final Metadata.Key<String> REQUEST_ID = Metadata.Key.of("x-request-id", Metadata.ASCII_STRING_MARSHALLER);

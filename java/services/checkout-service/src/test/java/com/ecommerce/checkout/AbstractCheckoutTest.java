@@ -17,8 +17,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
+import org.springframework.boot.micrometer.metrics.test.autoconfigure.AutoConfigureMetrics;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -53,9 +55,11 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  * its own user, so tests share Redis without sharing an active pointer.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureObservability
+@AutoConfigureWebTestClient
+@AutoConfigureMetrics
+@AutoConfigureTracing
 @org.springframework.boot.autoconfigure.ImportAutoConfiguration(exclude =
-        org.springframework.boot.actuate.autoconfigure.tracing.otlp.OtlpAutoConfiguration.class)
+        org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.otlp.OtlpTracingAutoConfiguration.class)
 @Import(AbstractCheckoutTest.TestClockConfig.class)
 @TestPropertySource(properties = {
         "checkout.keys.token-hmac-keys=" + AbstractCheckoutTest.HMAC_KEYS,

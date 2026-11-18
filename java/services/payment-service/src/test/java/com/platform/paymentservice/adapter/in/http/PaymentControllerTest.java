@@ -14,8 +14,8 @@ import com.platform.paymentservice.application.service.RefundPaymentService;
 import com.platform.paymentservice.domain.PaymentStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -36,10 +36,10 @@ class PaymentControllerTest {
     private static final String TXN = "TXN_01K5V7M4R8Q2K7V6W5X1Y0ZABE";
 
     @Autowired MockMvc mvc;
-    @MockBean InitiatePaymentService initiate;
-    @MockBean PaymentClientDataService clientData;
-    @MockBean CancelPaymentService cancel;
-    @MockBean RefundPaymentService refund;
+    @MockitoBean InitiatePaymentService initiate;
+    @MockitoBean PaymentClientDataService clientData;
+    @MockitoBean CancelPaymentService cancel;
+    @MockitoBean RefundPaymentService refund;
 
     @Test
     void certified_create_rejection_returns_identity_bound_422_without_client_data() throws Exception {

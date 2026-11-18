@@ -31,7 +31,7 @@ class ProblemExceptionHandlerRetryAfterTest {
         ResponseEntity<Object> response = handler.onElasticsearchFailure(new SocketTimeoutException("read timed out"), request);
 
         assertThat(response.getStatusCode()).isNotEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
-        assertThat(response.getHeaders().containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(response.getHeaders().containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
     }
 
     @Test
@@ -39,6 +39,6 @@ class ProblemExceptionHandlerRetryAfterTest {
         ResponseEntity<Object> response = handler.onUnexpected(new IllegalStateException("bug"), request);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(response.getHeaders().containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(response.getHeaders().containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
     }
 }

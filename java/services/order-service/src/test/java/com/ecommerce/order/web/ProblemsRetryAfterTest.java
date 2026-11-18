@@ -37,7 +37,7 @@ class ProblemsRetryAfterTest {
     void nothingElseGetsTheHeader() {
         for (ErrorCode code : ErrorCode.values()) {
             if (code.status() != 503 && code.status() != 429) {
-                assertThat(respond(code, null).getHeaders().containsKey(HttpHeaders.RETRY_AFTER)).as(code.name()).isFalse();
+                assertThat(respond(code, null).getHeaders().containsHeader(HttpHeaders.RETRY_AFTER)).as(code.name()).isFalse();
             }
         }
     }

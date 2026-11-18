@@ -1,5 +1,9 @@
 # Chạy local với PostgreSQL/Kafka của docker-compose ở repo root.
 spring:
+  grpc:
+    server:
+      reflection:
+        enabled: true
   datasource:
     url: jdbc:postgresql://localhost:15432/product_service
     username: postgres
@@ -26,6 +30,3 @@ product:
     cursor-secret: ${EXPORT_CURSOR_SECRET:dev-export-cursor-secret}
 
 # grpcurl tiện dụng khi chạy local; mặc định tắt ở mọi profile khác (Product ADR-022).
-grpc:
-  server:
-    reflection-service-enabled: true

@@ -13,7 +13,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.data.redis.RedisConnectionFailureException;
 
 import java.time.Duration;
@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class PauseGateCloseFailureIntegrationTest extends AbstractPromotionIntegrationTest {
 
-    @SpyBean
+    @MockitoSpyBean
     RuntimeStore runtime;
     @Autowired
     ClaimService claims;

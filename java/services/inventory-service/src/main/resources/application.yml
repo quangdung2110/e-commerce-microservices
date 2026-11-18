@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: inventory-service
 
@@ -21,7 +24,7 @@ spring:
 
   # JSON is snake_case per contracts/http/inventory/**. Every request schema is
   # additionalProperties: false, so an unknown field is a 400 INVALID_REQUEST.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     # Nullable required fields (next_cursor, availability_revision) stay as explicit null;
     # optional fields are omitted per DTO with @JsonInclude(NON_NULL).
@@ -92,12 +95,22 @@ inventory:
     retention-interval: PT1H
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
-  otlp:
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

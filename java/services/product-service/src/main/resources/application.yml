@@ -1,4 +1,26 @@
 spring:
+  grpc:
+    server:
+      health:
+        actuator:
+          enabled: false
+      port: ${GRPC_PORT:9091}
+      # Reflection lộ toàn bộ schema cho bất kỳ ai tới được cổng gRPC; chỉ bật ở profile dev
+      # hoặc bằng PRODUCT_GRPC_REFLECTION=true khi cần grpcurl (Product ADR-022).
+      reflection:
+        enabled: ${PRODUCT_GRPC_REFLECTION:false}
+      # Kết nối của Cart/Checkout là HTTP/2 dài hạn: không có giới hạn tuổi thì pod Product mới không bao giờ
+      # nhận RPC từ client đã kết nối, và không có keepalive thì kết nối chết im lặng không bị phát hiện.
+      # max-connection-age cộng ngẫu nhiên +-10%; client kết nối lại và phân giải DNS lại sau GOAWAY.
+      # permit-keep-alive-time phải nhỏ hơn chu kỳ ping 30 giây của client (contracts ADR-007).
+      keep-alive:
+        max-age: ${GRPC_SERVER_MAX_CONNECTION_AGE:5m}
+        max-age-grace: ${GRPC_SERVER_MAX_CONNECTION_AGE_GRACE:30s}
+        permit-time: ${GRPC_SERVER_PERMIT_KEEP_ALIVE_TIME:20s}
+        permit-without-calls: false
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: product-service
 
@@ -31,7 +53,7 @@ spring:
 
   # JSON field name của HTTP contract là snake_case; unknown field bị từ chối vì
   # OpenAPI đặt additionalProperties: false.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: always
     serialization:
@@ -59,21 +81,6 @@ server:
     threads:
       max: 200
       min-spare: 10
-
-grpc:
-  server:
-    port: ${GRPC_PORT:9091}
-    # Reflection lộ toàn bộ schema cho bất kỳ ai tới được cổng gRPC; chỉ bật ở profile dev
-    # hoặc bằng PRODUCT_GRPC_REFLECTION=true khi cần grpcurl (Product ADR-022).
-    reflection-service-enabled: ${PRODUCT_GRPC_REFLECTION:false}
-    # Kết nối của Cart/Checkout là HTTP/2 dài hạn: không có giới hạn tuổi thì pod Product mới không bao giờ
-    # nhận RPC từ client đã kết nối, và không có keepalive thì kết nối chết im lặng không bị phát hiện.
-    # max-connection-age cộng ngẫu nhiên +-10%; client kết nối lại và phân giải DNS lại sau GOAWAY.
-    # permit-keep-alive-time phải nhỏ hơn chu kỳ ping 30 giây của client (contracts ADR-007).
-    max-connection-age: ${GRPC_SERVER_MAX_CONNECTION_AGE:5m}
-    max-connection-age-grace: ${GRPC_SERVER_MAX_CONNECTION_AGE_GRACE:30s}
-    permit-keep-alive-time: ${GRPC_SERVER_PERMIT_KEEP_ALIVE_TIME:20s}
-    permit-keep-alive-without-calls: false
 
 # Cấu hình riêng của service. Không có mục cache/inventory/scheduler:
 # thiết kế hiện hành không có các workload đó.
@@ -125,6 +132,14 @@ product:
     retry-backoff: 500ms
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
   metrics:
     distribution:
       percentiles-histogram:
@@ -132,9 +147,11 @@ management:
   tracing:
     sampling:
       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
-  otlp:
+  opentelemetry:
     tracing:
-      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

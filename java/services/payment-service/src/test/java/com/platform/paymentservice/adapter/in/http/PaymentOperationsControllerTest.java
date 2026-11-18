@@ -7,8 +7,8 @@ import com.platform.paymentservice.application.port.out.FinancialOperationsQuery
 import com.platform.paymentservice.application.service.ReconciliationOperationsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -28,9 +28,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(PaymentOperationsController.class)
 class PaymentOperationsControllerTest {
     @Autowired MockMvc mvc;
-    @MockBean WebhookReplayService replays;
-    @MockBean FinancialOperationsQueryPort financialQueries;
-    @MockBean ReconciliationOperationsService reconciliation;
+    @MockitoBean WebhookReplayService replays;
+    @MockitoBean FinancialOperationsQueryPort financialQueries;
+    @MockitoBean ReconciliationOperationsService reconciliation;
 
     @Test
     void schedules_replay_with_required_attribution() throws Exception {

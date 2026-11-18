@@ -3,7 +3,7 @@ package com.ecommerce.search.config;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
@@ -49,7 +49,7 @@ public class KafkaConsumerConfig {
 
     @Bean
     public ConsumerFactory<String, String> searchConsumerFactory(MeterRegistry meterRegistry) {
-        Map<String, Object> config = kafkaProperties.buildConsumerProperties(null);
+        Map<String, Object> config = kafkaProperties.buildConsumerProperties();
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);

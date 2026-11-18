@@ -56,7 +56,7 @@ class GlobalExceptionHandlerTest {
                 DomainException.of(ErrorCode.PRODUCT_NOT_FOUND, "missing"), request);
 
         assertThat(response.getStatusCode().value()).isEqualTo(404);
-        assertThat(response.getHeaders().containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(response.getHeaders().containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
         assertThat(response.getBody().getProperties()).containsEntry("retryable", false);
     }
 }

@@ -21,7 +21,7 @@ class RetryAfterHeaderTest {
 
     @Test
     void a503ThatIsNotRetryableCarriesNone() {
-        assertThat(applied(503, false).containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(applied(503, false).containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
     }
 
     @Test
@@ -32,7 +32,7 @@ class RetryAfterHeaderTest {
 
     @Test
     void otherStatusesCarryNone() {
-        assertThat(applied(500, true).containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
-        assertThat(applied(400, false).containsKey(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(applied(500, true).containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
+        assertThat(applied(400, false).containsHeader(HttpHeaders.RETRY_AFTER)).isFalse();
     }
 }

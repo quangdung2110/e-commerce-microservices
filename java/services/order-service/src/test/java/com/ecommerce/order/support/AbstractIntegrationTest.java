@@ -21,9 +21,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import static org.assertj.core.api.Assertions.assertThat;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -92,7 +92,7 @@ public abstract class AbstractIntegrationTest {
     protected FakeRemotes fakes;
     @Autowired
     protected TestWorkflowEnvironment temporal;
-    @SpyBean
+    @MockitoSpyBean
     protected OrderActivitiesImpl orderActivities;
     @Autowired
     protected PaymentIntake payments;

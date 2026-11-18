@@ -20,7 +20,7 @@ Giá trị mặc định lấy từ `application.yml`; profile `prod` chỉ đ�
 |---|---|---|
 | `server.port` | `SERVER_PORT` | `8081` (compose map host `8082:8081`) |
 | `grpc.server.port` | `GRPC_PORT` | `9091` |
-| `grpc.server.reflection-service-enabled` | `PRODUCT_GRPC_REFLECTION` | `false` (`true` ở profile `dev`); bật tạm trên Compose để dùng `grpcurl` |
+| `spring.grpc.server.reflection.enabled` | `PRODUCT_GRPC_REFLECTION` | `false` (`true` ở profile `dev`); bật tạm trên Compose để dùng `grpcurl` |
 | `product.internal.grpc-clients` | (yml) | `cart-service`, `checkout-service`: allowlist `x-service-identity` của `ProductService`; counter `product.grpc.server.identity_rejected{reason}` |
 | `warmup.timeout` / `warmup.rounds` | `PRODUCT_WARMUP_TIMEOUT` / `PRODUCT_WARMUP_ROUNDS` | `30s` / `3` (1–10 vòng đọc khi startup) |
 | `spring.datasource.url` / `username` / `password` | `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` | `jdbc:postgresql://localhost:15432/product_service` / `postgres` / `postgres` (chỉ cho dev) |

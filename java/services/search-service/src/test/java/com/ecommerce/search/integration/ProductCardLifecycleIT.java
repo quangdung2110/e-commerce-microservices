@@ -9,7 +9,7 @@ import com.ecommerce.search.service.ProductCardReadiness;
 import com.ecommerce.search.worker.productcards.ProductCardProjector;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;

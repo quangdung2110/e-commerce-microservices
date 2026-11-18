@@ -25,7 +25,7 @@ import com.platform.productservice.service.support.CategoryTreeService;
 import com.platform.productservice.service.support.VariantNameResolver;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
-import net.devh.boot.grpc.server.service.GrpcService;
+import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -47,7 +47,7 @@ import java.util.stream.Collectors;
  * stock status hay {@code OUT_OF_STOCK}. Cart có thể giữ SKU hết hàng; quyết
  * định cuối cùng về tồn kho là reservation tại Inventory.
  */
-@GrpcService
+@Service
 @RequiredArgsConstructor
 public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductServiceImplBase {
 

@@ -113,7 +113,7 @@ public class ProblemExceptionHandler {
     public ResponseEntity<Map<String, Object>> onMethodValidation(HandlerMethodValidationException e,
                                                                   HttpServletRequest request) {
         List<ReviewException.FieldError> errors = new ArrayList<>();
-        e.getAllValidationResults().forEach(result -> {
+        e.getParameterValidationResults().forEach(result -> {
             String parameter = result.getMethodParameter().getParameterName();
             String field = parameter == null ? "request" : wireName(parameter);
             result.getResolvableErrors().forEach(error -> errors.add(new ReviewException.FieldError(

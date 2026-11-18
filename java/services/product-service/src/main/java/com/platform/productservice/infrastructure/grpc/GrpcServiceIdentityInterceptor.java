@@ -7,7 +7,8 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.micrometer.core.instrument.MeterRegistry;
-import net.devh.boot.grpc.server.interceptor.GrpcGlobalServerInterceptor;
+import org.springframework.grpc.server.GlobalServerInterceptor;
+import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -26,7 +27,8 @@ import java.util.function.Supplier;
  * {@code PERMISSION_DENIED}. Only {@code ProductService} is checked, so the health and any other service on
  * the same port are untouched. The value is attribution, not proof of identity.
  */
-@GrpcGlobalServerInterceptor
+@Component
+@GlobalServerInterceptor
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public final class GrpcServiceIdentityInterceptor implements ServerInterceptor {
 

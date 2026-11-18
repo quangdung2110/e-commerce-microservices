@@ -21,7 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -271,7 +271,7 @@ public class ReindexCatchUp {
      * and leaving a committed group behind would confuse the main indexer's monitoring.
      */
     private KafkaConsumer<String, String> createConsumer(String groupSuffix) {
-        Map<String, Object> config = new HashMap<>(kafkaProperties.buildConsumerProperties(null));
+        Map<String, Object> config = new HashMap<>(kafkaProperties.buildConsumerProperties());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, "search-reindex-" + groupSuffix);
         config.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);

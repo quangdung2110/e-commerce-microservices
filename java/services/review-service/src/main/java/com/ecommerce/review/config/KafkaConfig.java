@@ -4,7 +4,7 @@ import com.ecommerce.review.messaging.InboundEvents;
 import com.ecommerce.review.metrics.ReviewMetrics;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -30,12 +30,12 @@ public class KafkaConfig {
 
     @Bean
     public ConsumerFactory<String, String> consumerFactory(KafkaProperties properties) {
-        return new DefaultKafkaConsumerFactory<>(properties.buildConsumerProperties(null));
+        return new DefaultKafkaConsumerFactory<>(properties.buildConsumerProperties());
     }
 
     @Bean
     public KafkaTemplate<String, String> deadLetterKafkaTemplate(KafkaProperties properties) {
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(properties.buildProducerProperties(null)));
+        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(properties.buildProducerProperties()));
     }
 
     /**

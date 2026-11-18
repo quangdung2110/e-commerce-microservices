@@ -63,7 +63,7 @@ final class UpstreamHttp {
     static ExchangeFilterFunction timeoutHeader() {
         return (request, next) -> Mono.deferContextual(context -> {
             Duration timeout = context.getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, null);
-            if (timeout == null || request.headers().containsKey(TIMEOUT_HEADER)) {
+            if (timeout == null || request.headers().containsHeader(TIMEOUT_HEADER)) {
                 return next.exchange(request);
             }
             long millis = Math.max(1, Math.min(MAX_TIMEOUT_MS, timeout.toMillis()));

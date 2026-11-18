@@ -1,8 +1,8 @@
 package com.ecommerce.search.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.stereotype.Component;
 import com.ecommerce.search.service.ProductCardReadiness;

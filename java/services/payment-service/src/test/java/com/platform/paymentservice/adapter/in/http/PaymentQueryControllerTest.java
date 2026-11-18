@@ -4,8 +4,8 @@ import com.platform.paymentservice.application.port.out.PaymentQueryPort;
 import com.platform.paymentservice.application.service.PaymentQueryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -26,7 +26,7 @@ class PaymentQueryControllerTest {
     private static final String RFD = "RFD_01K5V7M4R8Q2K7V6W5X1Y0ZABF";
 
     @Autowired MockMvc mvc;
-    @MockBean PaymentQueryService queries;
+    @MockitoBean PaymentQueryService queries;
 
     @Test
     void a_database_failure_is_a_retryable_503_with_retry_after() throws Exception {
