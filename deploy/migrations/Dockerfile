@@ -8,7 +8,7 @@ FROM flyway/flyway:13.12.2-alpine@sha256:f5b9740a05ef38fc31356dcf2e7796dafc693ea
 # Patch the shared libraries and remove plugins for engines this runner never uses.
 USER root
 ADD --chmod=0644 --checksum=sha256:b530942257fb935f8b2cfaa5f8eb5bd59c555fd8e8d01b8ce98912e077ea606c https://repo.maven.apache.org/maven2/com/google/guava/guava/33.7.2-jre/guava-33.7.2-jre.jar /flyway/drivers/gcp/guava-33.7.2-jre.jar
-ADD --chmod=0644 --checksum=sha256:2d137aa308c78932878952fe3624ea090ecfe644414b8b23e71a305f425698c5 https://repo.maven.apache.org/maven2/com/microsoft/sqlserver/mssql-jdbc/13.2.1.jre11/mssql-jdbc-13.2.1.jre11.jar /flyway/drivers/mssql-jdbc-13.2.1.jre11.jar
+ADD --chmod=0644 --checksum=sha256:e36f5237c1267983e5b88dc2169f6b9d7e50eceec6dc1ca31018e3877e14af66 https://repo.maven.apache.org/maven2/com/microsoft/sqlserver/mssql-jdbc/13.4.0.jre11/mssql-jdbc-13.4.0.jre11.jar /flyway/drivers/mssql-jdbc-13.4.0.jre11.jar
 RUN rm /flyway/drivers/gcp/guava-33.5.0-jre.jar /flyway/drivers/mssql-jdbc-12.10.2.jre11.jar \
        /flyway/drivers/databricks-jdbc-3.4.2.jar /flyway/lib/flyway/flyway-database-databricks-13.12.2.jar \
        /flyway/lib/flyway/flyway-database-nc-couchbase-13.12.2.jar \
