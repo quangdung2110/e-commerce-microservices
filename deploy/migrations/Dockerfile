@@ -1,7 +1,11 @@
 # SQL is versioned and signed with application releases; never mounted from the runner.
-FROM migrate/migrate:v4.20.1@sha256:76cc2074cb6642631f34a898ced71e6aeaa6b1a4d78c4daa743275a22e0c5be7 AS gomigrate
-FROM flyway/flyway:13.10.0-alpine@sha256:c0c2592aa3ab9edf4dde3939d36df3d5f6ee27b8dcc51924ad8bca2470d24fdd
-COPY --from=gomigrate /usr/local/bin/migrate /usr/local/bin/migrate
+FROM golang:1.26.11-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab AS gomigrate
+# The deployment Job only migrates PostgreSQL. Build just that database driver.
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+
+
+FROM flyway/flyway:13.12.2-alpine@sha256:f5b9740a05ef38fc31356dcf2e7796dafc693ea289546e82c7699d37f83349af
+COPY --from=gomigrate /out/migrate /usr/local/bin/migrate
 COPY java/services/product-service/src/main/resources/db/migration/ /sql/java/product-service/
 COPY java/services/review-service/src/main/resources/db/migration/ /sql/java/review-service/
 COPY java/services/promotion-service/src/main/resources/db/migration/ /sql/java/promotion-service/

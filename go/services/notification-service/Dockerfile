@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY services/notification-service/ .
 RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o notification-service ./cmd/server \
  && CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o notifctl ./cmd/notifctl
 
-FROM alpine:3.20
+FROM alpine:3.23
 
 RUN apk --no-cache add ca-certificates tzdata wget
 

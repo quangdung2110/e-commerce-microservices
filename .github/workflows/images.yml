@@ -31,6 +31,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
+          pull: true
           tags: ci/${{ matrix.name }}:${{ github.sha }}
           outputs: type=docker,dest=${{ github.workspace }}/ci-artifacts/image.tar
           provenance: false

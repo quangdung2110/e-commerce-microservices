@@ -6,7 +6,7 @@
 # Traefik khong nap plugin nao.
 # =============================================================================
 
-FROM traefik:v3.7.1
+FROM traefik:v3.7.14
 
 # Install additional tools for debugging
 RUN apk add --no-cache \
