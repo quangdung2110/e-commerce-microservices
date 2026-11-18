@@ -1,7 +1,21 @@
 # Approved exceptions to contracts/tools/check-breaking.sh (contracts ADR-008).
-#
-# One line per waived contract file: the path under contracts/, whitespace, then the ADR that approves the break.
-# Example:
-#   http/review/internal/v1/openapi.yaml    ADR-004
-# A waiver applies to every pull request while the line exists, so remove it in the next change.
-# Prefer a new major version directory over a waiver (conventions/compatibility.md).
+# Format: contract path, base SHA-256, candidate SHA-256, approving ADR path(s).
+# Each entry matches only those two snapshots. Remove it after they merge.
+
+# Require caller identity and the signature described in the mesh decision.
+http/auth/internal/v1/openapi.yaml 5c59a4a918ddbb8b9b9c3bfab7c62c655f59cab0e1615fdeb9559596a536e710 480cb03d2662a3c30f9637e899e6ccfd3db90a590c08fe8ddb440e6fe12ffab3 contracts/decisions/ADR-004-service-identity-allowlist.md docs/mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md
+
+# Document the caller identity already checked on the Checkout snapshot.
+http/cart/v1/openapi.yaml bf398a5a8e782caa96a9ac4fa5099c202767b0d06223f23d2ded3430964d757f 109da1864ca0cd639cd3362320ed3f4da89bc24cae16cf2490742990fb36df85 contracts/decisions/ADR-004-service-identity-allowlist.md
+
+# Document the service identity requirement on Notification internal routes.
+http/notification/internal/v1/openapi.yaml 389518e24cda44e3feb7bc442d72ad19c199532505af1a4bb4f7289cd8337dd8 2bba8b1da7e8bf4fb1df7bfd63a80ddb2c356cfda3a0f75ba8a959823e88f6c2 contracts/decisions/ADR-004-service-identity-allowlist.md
+
+# Require Finance Ops identity and validated manual correction evidence.
+http/payment/internal/v1/openapi.yaml 4bda257335432647e12487fbfe365b6d5ccbaf44590dc9cd5c481553880aa99f dc2a0ae585952942bfb2594aca0048c241b447ed65be336fac0f37a1bc3e4ae6 docs/payment/decisions/ADR-028-finance-ops-caller-allowlist.md docs/payment/decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md
+
+# Document the 128-character financial correlation ID and the certified 422 response.
+http/payment/v1/openapi.yaml 48eb678c9345e2acc675caea15ddabafb8bf16aa232fd3814b5a86089ac551b3 d7a878aebb0f3338598363e975523e80d535cbee2fafbbe62467501ebf8cb8d0 docs/payment/decisions/ADR-025-request-correlation-and-caller-deadline.md docs/payment/decisions/ADR-024-certified-create-non-acceptance.md
+
+# Apply the existing technical-cancellation key format to the right header.
+http/promotion/v1/openapi.yaml d9011ca422da5025886a2f6edae81f7cb17378938c1e8ed14a2c4689916a8d7c 102cfe59b49d368acb52c039bbf3b723757352f96f1faca33057ce83bc8c7b22 docs/promotion/decisions/ADR-019-post-implementation-audit-corrections.md

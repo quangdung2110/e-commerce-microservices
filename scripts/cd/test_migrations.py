@@ -34,7 +34,7 @@ def verify(image, output=None, previous_image=None):
         docker("run", "-d", "--name", database, "--network", prefix, "--network-alias", "database", "-e", "POSTGRES_PASSWORD", POSTGRES, env=env)
         pg_created = True
         for _ in range(60):
-            if docker("exec", database, "pg_isready", "-U", "postgres", check=False).returncode == 0:
+            if docker("exec", database, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", check=False).returncode == 0:
                 break
             time.sleep(1)
         else:
