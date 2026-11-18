@@ -62,7 +62,7 @@ spec:
       enableServiceLinks: false
       containers:
       - name: api-gateway
-        image: traefik:v3.7.1
+        image: traefik:v3.7.19
         imagePullPolicy: IfNotPresent
         env:
         - name: TZ

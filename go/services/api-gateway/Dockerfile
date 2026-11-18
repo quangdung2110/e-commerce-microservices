@@ -6,10 +6,10 @@
 # Traefik khong nap plugin nao.
 # =============================================================================
 
-FROM traefik:v3.7.14
+FROM traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
 
 # Install additional tools for debugging
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache && apk add --no-cache \
     curl \
     tzdata \
     ca-certificates
