@@ -18,6 +18,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"net/http"
 	"os"
 	"os/signal"
@@ -62,6 +63,7 @@ import (
 	deliverworker "github.com/ecommerce/notification-service/internal/workers/deliver"
 	outboxworker "github.com/ecommerce/notification-service/internal/workers/outbox"
 	"github.com/ecommerce/notification-service/internal/workers/partition"
+	"github.com/ecommerce/notification-service/internal/workers/providerwatch"
 	"github.com/ecommerce/notification-service/internal/workers/purge"
 	"github.com/ecommerce/notification-service/internal/workers/reaper"
 	trackworker "github.com/ecommerce/notification-service/internal/workers/track"
@@ -110,6 +112,11 @@ func run(configPath string) error {
 		return err
 	}
 	defer func() { _ = logger.Sync() }()
+	shutdownTelemetry, err := obs.Init("notification-service")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -126,7 +133,6 @@ func run(configPath string) error {
 	if a.render, err = templates.Load(a.catalog, a.metrics); err != nil {
 		return err
 	}
-	a.ready["templates"] = func(context.Context) error { return nil }
 	// Privacy keyring: HMAC of Order subjects and deleted user ids (09-data-model.md §3, §10).
 	if a.keyring, err = cfg.Keyring(); err != nil {
 		return err
@@ -307,7 +313,6 @@ func (a *app) startConsumers(ctx context.Context) error {
 		started++
 	}
 	a.logger.Info("consumers started", zap.Int("count", started))
-	a.ready["kafka"] = func(context.Context) error { return nil }
 	return nil
 }
 
@@ -394,6 +399,23 @@ func (a *app) startDeliver(ctx context.Context) error {
 	if reaperStore != nil {
 		r := reaper.New(reaperStore.Deliveries(), reaperStore.Ordering(), a.control, cfg.Deliver.ReaperInterval, cfg.Jobs.MetricsInterval, a.clk, a.metrics, a.logger)
 		a.spawn("reaper", func() error { r.Run(ctx); return nil })
+
+		// Provider watchdog (06-backpressure.md §5, D-23): health-probes a quiet
+		// half-open breaker and pauses bulk email after a long outage.
+		var health port.HealthChecker
+		if hc, ok := sender.(port.HealthChecker); ok {
+			health = hc
+		}
+		wd := providerwatch.New(providerwatch.Config{
+			ProbeInterval:  cfg.Deliver.HealthProbeInterval,
+			ProbeIdle:      cfg.Deliver.HealthProbeIdle,
+			ProbeTimeout:   cfg.Email.ConnectTimeout + cfg.Email.SendTimeout,
+			AutoPauseAfter: cfg.Deliver.BreakerAutoPauseAfter,
+		}, providerwatch.Deps{
+			Breaker: providerBreaker, Health: health, Lanes: a.control, Audit: reaperStore.Ops(),
+			Provider: sender.Provider(), Clock: a.clk, Metrics: a.metrics, Logger: a.logger,
+		})
+		a.spawn("provider watchdog", func() error { wd.Run(ctx); return nil })
 	}
 	a.logger.Info("deliver pools started", zap.Int("lanes", len(lanes)), zap.String("provider", providerName))
 	return nil
@@ -417,7 +439,6 @@ func (a *app) startTrack(ctx context.Context) error {
 		verifier := sqs.NewVerifier(cfg.Track.VerifySignature, cfg.Track.AllowedCertHosts, cfg.Track.MaxClockSkew, a.clk, nil)
 		poller := sqs.NewPoller(cfg.Track, client, store, verifier, a.clk, a.metrics, a.logger)
 		a.spawn("sqs poller", func() error { return poller.Run(ctx) })
-		a.ready["sqs"] = func(context.Context) error { return nil }
 	}
 	worker := trackworker.New(cfg.Track, store, tracksvc.New(cfg.Track, a.clk, a.metrics, a.logger), a.clk, a.metrics, a.logger)
 	a.spawn("track worker", func() error { return worker.Run(ctx) })
@@ -476,28 +497,19 @@ func (a *app) startHTTP(ctx context.Context) error {
 		Ops:    handler.NewOpsHandler(opsSvc, a.clk),
 		Health: health,
 	})
-	internalSrv, err := api.NewInternalServer(cfg, internal)
-	if err != nil {
-		return err
-	}
-	a.serve("internal listener", ctx, internalSrv, cfg.Internal.MutualTLSEnabled())
+	a.serve("internal listener", ctx, api.NewInternalServer(cfg, internal))
 
 	if cfg.App.RunsRole(config.RoleAPI) {
 		inboxSvc := inbox.New(store.Inbox(), unread, a.clk, a.metrics)
 		public := router.NewPublic(router.PublicDeps{Config: cfg, Logger: a.logger, Inbox: handler.NewInboxHandler(inboxSvc)})
-		a.serve("public listener", ctx, api.NewPublicServer(cfg, public), false)
+		a.serve("public listener", ctx, api.NewPublicServer(cfg, public))
 	}
 	return nil
 }
 
-func (a *app) serve(name string, ctx context.Context, srv *http.Server, tls bool) {
+func (a *app) serve(name string, ctx context.Context, srv *http.Server) {
 	a.spawn(name, func() error {
-		var err error
-		if tls {
-			err = srv.ListenAndServeTLS("", "")
-		} else {
-			err = srv.ListenAndServe()
-		}
+		err := srv.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

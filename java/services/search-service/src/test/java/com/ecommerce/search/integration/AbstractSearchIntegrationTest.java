@@ -2,9 +2,13 @@ package com.ecommerce.search.integration;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import com.ecommerce.search.config.SearchProperties;
+import com.ecommerce.search.worker.productcards.ProductCardProjector;
+import com.ecommerce.search.repository.es.ProductCardIndex;
+import com.ecommerce.search.repository.es.IndexAdmin;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -26,6 +30,7 @@ import java.io.IOException;
  * {@code icu_tokenizer} and {@code icu_folding}, so the {@code analysis-icu} plugin has to
  * be present or index creation fails outright.
  */
+@AutoConfigureTestRestTemplate
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("test")
 public abstract class AbstractSearchIntegrationTest {
@@ -45,7 +50,8 @@ public abstract class AbstractSearchIntegrationTest {
                     .asCompatibleSubstituteFor("docker.elastic.co/elasticsearch/elasticsearch"))
             .withEnv("xpack.security.enabled", "false")
             .withEnv("discovery.type", "single-node")
-            .withEnv("ES_JAVA_OPTS", "-Xms1g -Xmx1g");
+            .withEnv("ES_JAVA_OPTS", "-Xms1g -Xmx1g")
+            .withStartupTimeout(java.time.Duration.ofMinutes(3));
 
     static final KafkaContainer KAFKA = new KafkaContainer(
             DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
@@ -66,10 +72,19 @@ public abstract class AbstractSearchIntegrationTest {
 
     @Autowired
     protected SearchProperties properties;
+    @Autowired private ProductCardProjector cards;
+    @Autowired private ProductCardIndex cardIndex;
+    @Autowired private IndexAdmin indices;
 
     /** Leaves every test with an empty projection but the aliases still in place. */
     @BeforeEach
     void clearProjection() throws IOException {
+        // Previous test cursors have ended. Keep this class's out-of-band fixture writes
+        // deterministic without hundreds of old test-only generations accumulating.
+        var current = cardIndex.currentGeneration();
+        for (String index : indices.versionedIndices(ProductCardIndex.ALIAS)) {
+            if (!current.filter(index::equals).isPresent()) indices.deleteIndex(index);
+        }
         deleteAll(properties.aliases().productsWrite());
         deleteAll(properties.aliases().categoriesWrite());
         refreshAll();
@@ -87,5 +102,11 @@ public abstract class AbstractSearchIntegrationTest {
         client.indices().refresh(builder -> builder.index(
                 properties.aliases().products(),
                 properties.aliases().categories()));
+        // Test fixtures often write directly to ES and do not maintain indexed_at. Publish
+        // a complete private projection through the production builder after those writes.
+        try (var prepared = cards.prepareForCutover(indices.resolveAlias(properties.aliases().products()).orElseThrow(), () -> {})) {
+            cardIndex.publish(prepared.index());
+            prepared.published();
+        }
     }
 }

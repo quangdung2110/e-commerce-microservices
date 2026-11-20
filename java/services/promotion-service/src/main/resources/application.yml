@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: promotion-service
 
@@ -31,13 +34,15 @@ spring:
 
   # JSON snake_case theo contracts/http/promotion/v1/openapi.yaml. Request reader phải
   # bỏ qua unknown optional field (compatible additions) nên không fail-on-unknown.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: always
     serialization:
       write-dates-as-timestamps: false
     deserialization:
       fail-on-unknown-properties: false
+      # Reject decimal JSON for VND, basis points and quantities, including treeToValue PATCHes.
+      accept-float-as-int: false
 
   data:
     redis:
@@ -50,6 +55,13 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:
       auto-offset-reset: earliest
+
+    listener:
+      observation-enabled: true
+
+
+    template:
+      observation-enabled: true
 
 server:
   port: ${SERVER_PORT:8085}
@@ -73,8 +85,14 @@ promotion:
     identity-header: X-Service-Identity
     calculation-clients:
       - checkout-service
+    options-clients:
+      - checkout-service
+    # reservations/confirmations/cancellations; technical-cancellations không thuộc nhóm này.
     allocation-clients:
       - order-service
+    # technical-cancellations (deprecated, legacy migration only): chỉ workload migrator, Order bị 403.
+    legacy-migration-clients:
+      - promotion-legacy-migrator
   product:
     # Validate Product đồng bộ khi tạo/sửa markdown rule (WF-PROMO-001 bước 2).
     validation-enabled: ${PRODUCT_VALIDATION_ENABLED:true}
@@ -83,6 +101,8 @@ promotion:
     timeout: 2s
   snapshot:
     ttl: 3600s
+  discovery:
+    batch-size: ${PROMOTION_DISCOVERY_BATCH_SIZE:200}
   claim:
     pending-stale-after: 5m
     # Duration dùng trong @Scheduled phải là ISO-8601 (PT..); Boot vẫn bind vào java.time.Duration.
@@ -103,6 +123,7 @@ promotion:
     fallback-interval: PT15S
     batch-size: 100
     fallback-lookback: 1d
+    emit-batch-size: ${PROMOTION_SCHEDULE_EMIT_BATCH_SIZE:200}
   reconciliation:
     interval: PT5M
     recent-window: 15m
@@ -126,6 +147,26 @@ promotion:
     enabled: ${WORKERS_ENABLED:true}
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -135,6 +176,9 @@ management:
       show-details: when_authorized
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,promotionRuntime,voucherReadWarmup
   health:
     readinessstate:
       enabled: true
@@ -147,4 +191,5 @@ logging:
     com.platform.promotionservice: INFO
     org.springframework.kafka: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{request_id:-},%X{trace_id:-}] - %msg%n"

@@ -69,8 +69,8 @@ const (
 )
 
 var (
-	e2eOnce    sync.Once
-	e2eShared  *e2eEnv
+	e2eOnce     sync.Once
+	e2eShared   *e2eEnv
 	e2eSetupErr error
 )
 
@@ -101,6 +101,23 @@ type e2eEnv struct {
 	containers []testcontainers.Container
 }
 
+// quiesceE2E stops the shared e2e workers. They keep polling notification_delivery
+// for as long as the process lives, so a Postgres test that inserts a row and
+// claims it a moment later races with them on a slow machine and sees a row
+// already SENDING. Go runs the e2e files first (alphabetical), so stopping them
+// before the first claim-based Postgres test costs nothing; an e2e test that
+// runs afterwards is skipped instead of talking to a dead environment.
+var e2eQuiesced atomic.Bool
+
+func quiesceE2E() {
+	if e2eShared == nil {
+		return
+	}
+	e2eQuiesced.Store(true)
+	e2eShared.cancel()
+	e2eShared.wg.Wait()
+}
+
 func e2eTeardown() {
 	if e2eShared == nil {
 		return
@@ -124,6 +141,9 @@ func e2eTeardown() {
 
 func e2e(t *testing.T) *e2eEnv {
 	t.Helper()
+	if e2eQuiesced.Load() {
+		t.Skip("e2e workers were stopped by an earlier Postgres test (run the e2e tests first)")
+	}
 	e2eOnce.Do(func() { e2eShared, e2eSetupErr = startE2E() })
 	if e2eSetupErr != nil {
 		t.Fatalf("e2e setup: %v", e2eSetupErr)
@@ -568,10 +588,10 @@ type mailpitMessage struct {
 }
 
 type mailpitDetail struct {
-	ID      string            `json:"ID"`
-	Subject string            `json:"Subject"`
-	HTML    string            `json:"HTML"`
-	Text    string            `json:"Text"`
+	ID      string `json:"ID"`
+	Subject string `json:"Subject"`
+	HTML    string `json:"HTML"`
+	Text    string `json:"Text"`
 	Headers map[string][]string
 }
 
@@ -671,24 +691,24 @@ func (e *e2eEnv) waitDeliveryStatus(t *testing.T, requestID uuid.UUID, ch entity
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		found := func() bool {
-		d, ok := e.deliveries(t, requestID)[ch]
-		if !ok {
-			return false
-		}
-		last = string(d.Status)
-		if d.SkipReason != nil {
-			last += " skip=" + *d.SkipReason
-		}
-		if d.LastErrorCode != nil {
-			last += " err=" + *d.LastErrorCode
-		}
-		for _, s := range statuses {
-			if d.Status == s {
-				got = d
-				return true
+			d, ok := e.deliveries(t, requestID)[ch]
+			if !ok {
+				return false
 			}
-		}
-		return false
+			last = string(d.Status)
+			if d.SkipReason != nil {
+				last += " skip=" + *d.SkipReason
+			}
+			if d.LastErrorCode != nil {
+				last += " err=" + *d.LastErrorCode
+			}
+			for _, s := range statuses {
+				if d.Status == s {
+					got = d
+					return true
+				}
+			}
+			return false
 		}()
 		if found {
 			return got
@@ -766,7 +786,7 @@ func requestEvent(user uuid.UUID, o requestOpts) (string, []byte) {
 	ev := map[string]any{
 		"specversion": "1.0", "id": o.id, "type": "com.ecommerce.notification.requested.v1", "source": "/services/order",
 		"subject": o.subject, "time": time.Now().UTC().Format(time.RFC3339), "datacontenttype": "application/json",
-		"dataschema": "/contracts/events/notification/v1/schemas/notification-requested.schema.json",
+		"dataschema":    "/contracts/events/notification/v1/schemas/notification-requested.schema.json",
 		"correlationid": "e2e-" + o.id, "sequence": o.sequence, "data": data,
 	}
 	if o.sequence < 0 {
@@ -782,7 +802,7 @@ func cartEvent(user uuid.UUID, cartID string, cycle int) (string, []byte) {
 		"specversion": "1.0", "id": id, "type": "com.ecommerce.cart.abandoned.v1", "source": "/services/cart",
 		"subject": "carts/" + cartID, "time": time.Now().UTC().Format(time.RFC3339), "datacontenttype": "application/json",
 		"dataschema": "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json",
-		"data": map[string]any{"cart_id": cartID, "user_id": user.String(), "abandonment_cycle": cycle, "occurred_at": time.Now().UTC().Format(time.RFC3339)},
+		"data":       map[string]any{"cart_id": cartID, "user_id": user.String(), "abandonment_cycle": cycle, "occurred_at": time.Now().UTC().Format(time.RFC3339)},
 	}
 	b, _ := json.Marshal(ev)
 	return id, b

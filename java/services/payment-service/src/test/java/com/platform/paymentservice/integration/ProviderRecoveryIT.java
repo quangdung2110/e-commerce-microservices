@@ -29,6 +29,38 @@ class ProviderRecoveryIT extends AbstractPaymentIT {
     private static final String KEY = "recovery-command-key-0001";
 
     @Test
+    void worker_first_dispatch_can_complete_a_certified_no_create_without_review() {
+        MutableClock clock = new MutableClock(START.plusSeconds(46));
+        InitiatePaymentCommand command = new InitiatePaymentCommand(KEY, 42, 1,
+                new Money(1, "VND"), UUID.fromString("00000000-0000-4000-8000-000000000042"),
+                null, "corr-recovery");
+        ProviderOperation requested = new ProviderOperation(OP, TXN, null,
+                com.platform.paymentservice.domain.ProviderOperationType.CREATE, "pay:create:" + TXN,
+                KEY, "{}", com.platform.paymentservice.domain.ProviderOperationStatus.REQUESTED,
+                null, 0, null, null, START.plus(Duration.ofDays(1)), START);
+        // API crashed after TX1, before markDispatched/provider call. The worker owns the first dispatch.
+        initiatePayments.prepare(command, "a".repeat(64), requested, "crashed-api", START,
+                Duration.ofSeconds(45), START.plusSeconds(900), START.plus(Duration.ofDays(1)));
+        LocalAesGcmSecretCipher cipher = new LocalAesGcmSecretCipher("local-v1",
+                "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.US_ASCII), java.util.Map.of());
+        ProviderRecoveryService service = new ProviderRecoveryService(providerRecovery,
+                providerOperations, new FixedProvider(new ProviderOperationResult.Rejected(
+                "req-small", "{\"error_code\":\"amount_too_small\",\"http_status\":400}", true)),
+                initiatePayments, cancelPayments, refundPayments, cipher, new FixedIds(), clock,
+                Duration.ofSeconds(45), Duration.ofHours(23), Duration.ofSeconds(30),
+                Duration.ofMinutes(5), 20, Duration.ofSeconds(30));
+        assertThat(service.recover("worker", 10)).isEqualTo(1);
+        assertThat(service.recover("worker", 10)).isZero();
+        assertThat(jdbc.queryForObject("SELECT response_code FROM payment_idempotency WHERE idempotency_key=?", Integer.class, KEY)).isEqualTo(422);
+        assertThat(jdbc.queryForObject("SELECT status FROM provider_operations WHERE id=?", String.class, OP)).isEqualTo("PROVIDER_REJECTED");
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM provider_operations WHERE id=?", Integer.class, OP)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT requires_manual_review FROM payment_transactions WHERE id=?", Boolean.class, TXN)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_review_cases", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_status_history", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
+    }
+
+    @Test
     void recovery_binds_create_aggregate_history_outbox_and_command_atomically() {
         MutableClock clock = new MutableClock(START);
         FixedIds ids = new FixedIds();

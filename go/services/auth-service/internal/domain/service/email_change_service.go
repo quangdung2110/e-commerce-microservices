@@ -11,6 +11,7 @@ import (
 	"github.com/ecommerce/auth-service/internal/common/constants"
 	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/common/secret"
+	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 	"github.com/ecommerce/auth-service/internal/domain/vo"
 )
@@ -166,23 +167,30 @@ func (s *EmailChangeService) Confirm(ctx context.Context, cmd ConfirmEmailChange
 		return err
 	}
 
-	previousRecipient := recipientOf(account)
 	now := s.clock.Now()
-	if err := account.ChangeEmail(newEmail, now); err != nil {
-		return err
-	}
-	if err := s.accounts.Update(ctx, account); err != nil {
-		// The address may have been claimed between the pre-check and here; the
-		// repository reports that as a conflict.
+	// The code is already consumed, so a lost race reloads the row and changes
+	// that one. The address may also have been claimed between the pre-check and
+	// here; the repository reports that as a conflict.
+	var previousRecipient string
+	account, _, err = updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		previousRecipient = recipientOf(a)
+		if err := a.ChangeEmail(newEmail, now); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 
-	if _, err := s.revoker.RevokeAllSessions(ctx, account.ID); err != nil {
-		return err
-	}
+	// The address is already committed and the code is consumed, so this request
+	// cannot be repeated. The warning to the previous address is sent whether or
+	// not the session revocation succeeds (ADR-006); a revocation failure is still
+	// reported to the caller afterwards.
+	_, revokeErr := s.revoker.RevokeAllSessions(ctx, account.ID)
 
 	// The warning goes to the previous address, which is the one that would
 	// notice an unauthorized change.
 	s.notifier.EmailChanged(ctx, account.ID, previousRecipient, now)
-	return nil
+	return revokeErr
 }

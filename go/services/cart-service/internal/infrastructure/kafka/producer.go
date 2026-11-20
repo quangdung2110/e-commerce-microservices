@@ -1,5 +1,5 @@
 // Package kafka carries CART_ABANDONED out to Notification and brings
-// com.ecommerce.order.paid.v1 in from Order.
+// com.ecommerce.order.paid.v1 in from Order and com.ecommerce.auth.user-deleted.v1 in from Auth.
 package kafka
 
 import (
@@ -27,6 +27,10 @@ type ProducerConfig struct {
 	RequiredAcks string
 	Timeout      time.Duration
 	TLSEnabled   bool
+	// SASLUsername and SASLPassword are the service's SCRAM principal (mesh
+	// ADR-003); empty keeps PLAINTEXT.
+	SASLUsername string
+	SASLPassword string
 }
 
 // Producer publishes sealed CloudEvents.
@@ -51,6 +55,7 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	saramaCfg.Producer.Partitioner = sarama.NewHashPartitioner
 	saramaCfg.Producer.Timeout = cfg.Timeout
 	saramaCfg.Net.TLS.Enable = cfg.TLSEnabled
+	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 
 	producer, err := sarama.NewSyncProducer(cfg.Brokers, saramaCfg)
 	if err != nil {
@@ -103,7 +108,10 @@ func (p *Producer) PublishDeadLetter(ctx context.Context, key string, payload []
 
 // Ready reports whether the producer has a usable broker connection.
 func (p *Producer) Ready(ctx context.Context) error {
-	client, err := sarama.NewClient(p.cfg.Brokers, sarama.NewConfig())
+	clientCfg := sarama.NewConfig()
+	clientCfg.Net.TLS.Enable = p.cfg.TLSEnabled
+	applySASL(clientCfg, p.cfg.SASLUsername, p.cfg.SASLPassword)
+	client, err := sarama.NewClient(p.cfg.Brokers, clientCfg)
 	if err != nil {
 		return fmt.Errorf("kafka is unreachable: %w", err)
 	}

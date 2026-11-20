@@ -72,6 +72,11 @@ type MarkAbandonedResult struct {
 	AbandonmentCycle int64  `json:"abandonment_cycle"`
 }
 
+// PurgeResult reports whether the privacy purge found anything to delete.
+type PurgeResult struct {
+	Purged bool `json:"purged"`
+}
+
 // DueCart is one overdue entry of a bucket's abandonment index.
 type DueCart struct {
 	UserToken string
@@ -95,6 +100,10 @@ type CartStore interface {
 
 	// MarkAbandoned transitions one cart and emits its outbox entry.
 	MarkAbandoned(ctx context.Context, cmd MarkAbandonedCommand) (MarkAbandonedResult, error)
+
+	// PurgeCart deletes the whole cart of a deleted account (USER_DELETED). It
+	// is idempotent and never emits an event.
+	PurgeCart(ctx context.Context, id domain.Identity) (PurgeResult, error)
 
 	// DueCarts lists overdue members of one bucket's abandonment index.
 	DueCarts(ctx context.Context, bucket int, now time.Time, limit int) ([]DueCart, error)
@@ -121,6 +130,11 @@ type OutboxStore interface {
 
 	// Read fetches undelivered entries for the relay consumer group.
 	Read(ctx context.Context, bucket, count int) ([]domain.OutboxRecord, error)
+
+	// PendingCount reports how many entries the relay group has read but not
+	// acked. The relay does not read new entries while any remain, so a newer
+	// entry can never be published ahead of one that failed earlier.
+	PendingCount(ctx context.Context, bucket int) (int64, error)
 
 	// Ack marks an entry delivered. It is only called after Kafka has
 	// acknowledged the produce.

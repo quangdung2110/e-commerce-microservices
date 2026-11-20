@@ -1,0 +1,56 @@
+# Login role riêng của từng service trên PostgreSQL dùng chung (mesh ADR-004): cùng script và danh
+# sách với postgres-init của docker-compose (infra/postgres/service-roles.sh, service-roles.txt).
+# Mỗi role sở hữu database của mình và mọi object trong đó; service không dùng superuser. Idempotent;
+# deploy/k8s/apply.sh xoá Job cũ trước mỗi lần apply vì spec của Job không sửa được. Pod service
+# (và init container *-migrate) khởi động trước Job này sẽ lỗi đăng nhập rồi tự thử lại.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-roles-init
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: postgres-roles-init
+    spec:
+      enableServiceLinks: false
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          command: ["/bin/sh", "/scripts/service-roles.sh"]
+          env:
+            - name: PGHOST
+              value: postgres.data.svc.cluster.local
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: ROLES_FILE
+              value: /scripts/service-roles.txt
+          # PG_PASSWORD_<SERVICE> của mọi dòng trong service-roles.txt.
+          envFrom:
+            - secretRef:
+                name: postgres-service-credentials
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: postgres-roles

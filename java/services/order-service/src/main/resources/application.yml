@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: order-service
 
@@ -21,7 +24,7 @@ spring:
 
   # JSON is snake_case per contracts/http/order/**; request schemas are
   # additionalProperties: false, so an unknown field is a 400.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: always
     serialization:
@@ -49,13 +52,44 @@ spring:
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       max-poll-records: 50
     listener:
+      observation-enabled: true
       ack-mode: manual_immediate
+
+
+    template:
+      observation-enabled: true
 
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
 
+logging:
+  pattern:
+    # request_id and trace_id are put in the MDC by RequestCorrelationFilter (contracts ADR-002);
+    # both are empty for work that has no inbound request, such as Temporal activities.
+    level: "%5p [%X{request_id:-},%X{trace_id:-}]"
+
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -84,10 +118,23 @@ order:
     clock-skew-safety: 30s
     # HTTP waits until PAYMENT_READY or this budget, then 503 retryable (mesh timeout 15s).
     submit-wait: 12s
+    # ADR-027: per-replica HTTP waiters; one dedicated LISTEN session outside Hikari.
+    waiter:
+      max-waiters: ${ORDER_SUBMISSION_MAX_WAITERS:512}
+      response-threads: ${ORDER_SUBMISSION_RESPONSE_THREADS:16}
+      batch-size: 256
+      recovery-interval: 1s
+      reconnect-delay: 1s
   refund:
     inspection-wait: 30d
   search:
     default-window: 90d
+  fulfillment:
+    # Alert/metric threshold only (order.fulfillment.delivery_confirmation_overdue): a line
+    # dispatched this long ago without an Admin delivery confirmation. It never auto-delivers.
+    delivery-confirmation-overdue: 7d
+    # Tolerance for a delivered_at slightly ahead of the server clock.
+    delivered-at-future-skew: 5m
   notification:
     frontend-base-url: ${ORDER_FRONTEND_BASE_URL:http://localhost:3000}
     payment-method-label: "Thanh toán trực tuyến"
@@ -107,24 +154,34 @@ order:
     promotion-base-url: ${PROMOTION_BASE_URL:http://localhost:8085}
     payment-base-url: ${PAYMENT_BASE_URL:http://localhost:8089}
     connect-timeout: 2s
+    # Default; the per-provider values below override it. Each stays at least 1 s under the mesh
+    # timeout of the routes Order calls (docs/mesh/runtime-contract.md section 7, Order ADR-023):
+    # Inventory and Promotion 10 s, Payment 15 s.
     read-timeout: 10s
+    inventory-read-timeout: 8s
+    promotion-read-timeout: 8s
+    payment-read-timeout: 10s
+    # Calls in flight to one provider at once. More are not sent and come back as UNKNOWN BULKHEAD_FULL,
+    # which the saga replays later; it keeps one slow provider from taking every worker thread (Order ADR-024).
+    max-concurrent: 64
   kafka:
     consumers-enabled: ${ORDER_CONSUMERS_ENABLED:true}
     payment-topic: t.payment.events.v2
     inventory-topic: t.inventory.order.events.v1
-    delivery-topic: t.delivery.order.events.v1
     order-topic: t.order.events
     notification-topic: t.notification.transactional.v1
     payment-group: order-payment-consumer
     inventory-ship-group: order-inventory-ship-consumer
     inventory-return-group: order-inventory-return-consumer
-    delivery-group: order-delivery-consumer
     receipt-group: order-outbox-receipt-observer
   workers:
     enabled: ${WORKERS_ENABLED:true}
     instance-id: ${HOSTNAME:order-local}
     dispatch-interval: PT0.2S
     dispatch-batch-size: 50
+    dispatch-threads: ${ORDER_DISPATCH_THREADS:8}
+    dispatch-ack-batch-size: ${ORDER_DISPATCH_ACK_BATCH_SIZE:50}
+    dispatch-ack-interval: ${ORDER_DISPATCH_ACK_INTERVAL:PT0.02S}
     lease: PT30S
     reconcile-interval: PT30S
   outbox:

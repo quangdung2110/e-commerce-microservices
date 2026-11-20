@@ -6,8 +6,8 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
  * Product Detail BFF: read composition của PDP (docs/product-detail-bff). Không có
- * database, Kafka hay cache bền; mọi dữ liệu đến từ Product, Inventory và Review theo
- * từng request.
+ * database, Kafka hay cache bền; Inventory và Review được gọi theo từng request, catalog
+ * Product được giữ in-process tối đa một TTL ngắn (ADR-011).
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan

@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,13 +36,35 @@ func (f *fakeTx) WithinTx(ctx context.Context, fn func(ctx context.Context) erro
 type fakeProfileRepo struct {
 	mu       sync.Mutex
 	profiles map[uuid.UUID]entity.Profile
+	// deletions is the retention table GetActive consults, like the NOT EXISTS of
+	// the SQL adapter.
+	deletions *fakeDeletionRepo
 	// updates counts writes, so a test can prove a no-op patch wrote nothing.
-	updates int
+	updates  int
 	failWith error
 }
 
-func newProfileRepo() *fakeProfileRepo {
-	return &fakeProfileRepo{profiles: map[uuid.UUID]entity.Profile{}}
+func newProfileRepo(deletions *fakeDeletionRepo) *fakeProfileRepo {
+	return &fakeProfileRepo{profiles: map[uuid.UUID]entity.Profile{}, deletions: deletions}
+}
+
+func (f *fakeProfileRepo) GetActive(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	profile, err := f.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	deleted, err := f.deletions.ExistsForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if deleted {
+		return nil, apperr.ErrProfileNotFound
+	}
+	return profile, nil
+}
+
+func (f *fakeProfileRepo) GetActiveForUpdate(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
+	return f.GetActive(ctx, userID)
 }
 
 func (f *fakeProfileRepo) Insert(_ context.Context, profile *entity.Profile) (bool, error) {
@@ -111,6 +134,9 @@ type fakeAddressRepo struct {
 	addresses map[uuid.UUID]entity.Address
 	// locks counts LockUser calls, so a test can prove mutations serialize.
 	locks int
+	// afterList runs once ListByUser has taken its snapshot and before it
+	// returns, which is where a concurrent mutation would land in production.
+	afterList func()
 }
 
 func newAddressRepo() *fakeAddressRepo {
@@ -126,8 +152,6 @@ func (f *fakeAddressRepo) LockUser(_ context.Context, _ uuid.UUID) error {
 
 func (f *fakeAddressRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]*entity.Address, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-
 	owned := make([]*entity.Address, 0, len(f.addresses))
 	for _, address := range f.addresses {
 		if address.UserID != userID {
@@ -142,6 +166,12 @@ func (f *fakeAddressRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]*en
 		}
 		return owned[i].CreatedAt.After(owned[j].CreatedAt)
 	})
+	hook := f.afterList
+	f.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 	return owned, nil
 }
 
@@ -307,6 +337,22 @@ func (f *fakePreferencesRepo) Update(_ context.Context, preferences *entity.Pref
 	return nil
 }
 
+func (f *fakePreferencesRepo) DisableMarketing(_ context.Context, userID uuid.UUID) (*entity.Preferences, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	preferences, ok := f.preferences[userID]
+	if !ok || !preferences.MarketingEnabled {
+		return nil, nil
+	}
+	f.updates++
+	preferences.MarketingEnabled = false
+	preferences.UpdatedAt = preferences.UpdatedAt.Add(time.Second)
+	f.preferences[userID] = preferences
+	copied := preferences
+	return &copied, nil
+}
+
 func (f *fakePreferencesRepo) DeleteForUser(_ context.Context, userID uuid.UUID) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -444,15 +490,22 @@ type fakeAddressCache struct {
 	mu sync.Mutex
 	// entries holds what a previous Put stored, keyed by user.
 	entries map[uuid.UUID][]*entity.Address
+	// epochs advance on every Invalidate, like the Redis counter, so a fill that
+	// raced with a mutation is refused.
+	epochs map[uuid.UUID]int
 	// unavailable makes every operation behave like a Redis outage.
 	unavailable bool
 	gets        int
 	puts        int
+	refused     int
 	invalidated int
 }
 
 func newAddressCache() *fakeAddressCache {
-	return &fakeAddressCache{entries: map[uuid.UUID][]*entity.Address{}}
+	return &fakeAddressCache{
+		entries: map[uuid.UUID][]*entity.Address{},
+		epochs:  map[uuid.UUID]int{},
+	}
 }
 
 func (f *fakeAddressCache) Get(_ context.Context, userID uuid.UUID) ([]*entity.Address, bool) {
@@ -467,13 +520,27 @@ func (f *fakeAddressCache) Get(_ context.Context, userID uuid.UUID) ([]*entity.A
 	return addresses, ok
 }
 
-func (f *fakeAddressCache) Put(_ context.Context, userID uuid.UUID, addresses []*entity.Address) error {
+func (f *fakeAddressCache) Epoch(_ context.Context, userID uuid.UUID) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.unavailable {
+		return ""
+	}
+	return strconv.Itoa(f.epochs[userID])
+}
+
+func (f *fakeAddressCache) Put(_ context.Context, userID uuid.UUID, addresses []*entity.Address, epoch string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	f.puts++
 	if f.unavailable {
 		return apperr.ErrDependencyUnavailable
+	}
+	if epoch != strconv.Itoa(f.epochs[userID]) {
+		f.refused++
+		return nil
 	}
 	f.entries[userID] = addresses
 	return nil
@@ -484,6 +551,7 @@ func (f *fakeAddressCache) Invalidate(_ context.Context, userID uuid.UUID) error
 	defer f.mu.Unlock()
 
 	f.invalidated++
+	f.epochs[userID]++
 	delete(f.entries, userID)
 	if f.unavailable {
 		return apperr.ErrDependencyUnavailable

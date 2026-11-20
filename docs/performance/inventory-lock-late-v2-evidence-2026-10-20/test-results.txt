@@ -1,0 +1,34 @@
+Inventory test runs for ADR-034 (2026-10-20), maven:3.9-eclipse-temurin-21 + Testcontainers postgres:16-alpine.
+
+== after ADR-034 (HEAD 02afb196 plus ADR-034 and the staged observability files of 2026-10-18)
+Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.487 s -- in com.ecommerce.inventory.common.RequestCorrelationTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.203 s -- in com.ecommerce.inventory.domain.DomainRulesTest
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 26.66 s -- in com.ecommerce.inventory.integration.AdminOperationsIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.801 s -- in com.ecommerce.inventory.integration.AuditCorrectionsIT
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.993 s -- in com.ecommerce.inventory.integration.AvailabilityExportIT
+Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.549 s -- in com.ecommerce.inventory.integration.ConcurrencyIT
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.471 s -- in com.ecommerce.inventory.integration.LockLateConcurrencyIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.780 s -- in com.ecommerce.inventory.integration.RefundReturnIT
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.544 s -- in com.ecommerce.inventory.integration.ReservationWorkflowIT
+Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.006 s -- in com.ecommerce.inventory.web.ProblemsRetryAfterTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.116 s -- in com.ecommerce.inventory.web.RequestCorrelationFilterTest
+Tests run: 62, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+
+== mutant 'dirty-every' (ConcurrencyIT, LockLateConcurrencyIT, ReservationWorkflowIT)
+   every guarded stock update, not only the last one, also writes the dirty marks
+  LockLateConcurrencyIT.sameSkuInTwoWarehousesDoesNotDeadlockAndMarksDirtyOncePerCommand:156 
+ but was: 503
+Tests run: 15, Failures: 1, Errors: 0, Skipped: 0
+expected: 200
+
+== mutant 'replacement-ignored' (ConcurrencyIT, LockLateConcurrencyIT, ReservationWorkflowIT)
+   the executor ignores the replacement outcome a last step returns
+  ConcurrencyIT.hotSkuNeverOversells:45 
+  LockLateConcurrencyIT.acceptedAndRejectedReservesReplayTheStoredResult:259 
+  LockLateConcurrencyIT.rejectAllNamesEveryUnavailableLineAndLeavesNoTrace:217 
+  LockLateConcurrencyIT.scarceSkuNeverOversellsUnderReserveCommitAndRelease:39 
+  LockLateConcurrencyIT.shortfallFoundInTheLastStepStoresRejectAll:193 
+  ReservationWorkflowIT.reserveIsAllOrNothingAndReplaysTheSameReceipt:48 
+Tests run: 15, Failures: 6, Errors: 0, Skipped: 0
+

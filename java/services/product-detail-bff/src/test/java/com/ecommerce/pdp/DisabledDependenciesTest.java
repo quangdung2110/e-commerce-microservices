@@ -14,12 +14,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Cờ {@code PDP_INVENTORY_ENABLED}/{@code PDP_REVIEW_ENABLED} (ADR-007): trước rollout gate
  * BFF không gọi dependency bị tắt, outcome là {@code disabled} để SLO degrade và alert không
- * tính nó. Review tắt thì không cần token.
+ * tính nó. Review tắt thì không gọi Review.
  */
 @TestPropertySource(properties = {
         "pdp.inventory.enabled=false",
-        "pdp.review.enabled=false",
-        "pdp.review.service-token="
+        "pdp.review.enabled=false"
 })
 class DisabledDependenciesTest extends AbstractPdpTest {
 

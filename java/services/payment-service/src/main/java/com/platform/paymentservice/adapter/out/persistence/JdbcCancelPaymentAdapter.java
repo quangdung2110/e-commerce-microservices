@@ -186,7 +186,8 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                                payment_transaction_id=:payment_id
                          WHERE id=:inbox_id AND status='PROCESSING' AND lease_owner=:owner
                            AND lease_token=:lease_token
-                        """).param("now", timestamp(now))
+                   AND lease_expires_at > :now
+                """).param("now", timestamp(now))
                         .param("provider_object_id", payment.get("provider_transaction_id"))
                         .param("payment_id", decline.transactionId()).param("inbox_id", decline.inboxId())
                         .param("owner", owner).param("lease_token", decline.inboxLeaseToken()).update();
@@ -254,7 +255,8 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                            lease_owner=NULL, lease_expires_at=NULL, updated_at=:completed_at
                      WHERE id=:operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner=:owner AND lease_token=:lease_token
-                    """).param("provider_object_id", completion.providerObjectId())
+                   AND lease_expires_at > :completed_at
+                """).param("provider_object_id", completion.providerObjectId())
                     .param("provider_result", completion.sanitizedProviderResultJson())
                     .param("provider_request_id", completion.providerRequestId())
                     .param("completed_at", timestamp(completion.completedAt()))
@@ -301,7 +303,8 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                            lease_owner=NULL, lease_expires_at=NULL, updated_at=:recorded_at
                      WHERE id=:operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner=:owner AND lease_token=:lease_token
-                    """).param("provider_result", unknown.sanitizedProviderResultJson())
+                   AND lease_expires_at > :recorded_at
+                """).param("provider_result", unknown.sanitizedProviderResultJson())
                     .param("provider_request_id", unknown.providerRequestId())
                     .param("next_retry_at", timestamp(unknown.nextRetryAt()))
                     .param("recorded_at", timestamp(unknown.recordedAt()))
@@ -326,7 +329,8 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                            lease_owner=NULL, lease_expires_at=NULL, updated_at=:recorded_at
                      WHERE id=:operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner=:owner AND lease_token=:lease_token
-                    """).param("provider_result", review.sanitizedProviderResultJson())
+                   AND lease_expires_at > :recorded_at
+                """).param("provider_result", review.sanitizedProviderResultJson())
                     .param("provider_request_id", review.providerRequestId())
                     .param("recorded_at", timestamp(review.recordedAt()))
                     .param("operation_id", review.operationId()).param("owner", review.owner())
@@ -514,6 +518,7 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                        lease_owner=NULL, lease_expires_at=NULL, last_heartbeat_at=:completed_at
                  WHERE idempotency_key=:key AND action='CANCEL' AND status='IN_PROGRESS'
                    AND lease_owner=:owner AND lease_token=:lease_token
+                   AND lease_expires_at > :completed_at
                 """).param("payment_id", completion.transactionId()).param("response_body", response(result))
                 .param("completed_at", timestamp(completion.completedAt()))
                 .param("key", completion.idempotencyKey()).param("owner", completion.owner())
@@ -529,6 +534,7 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                        lease_owner=NULL, lease_expires_at=NULL, last_heartbeat_at=:now
                  WHERE idempotency_key=:key AND action='CANCEL' AND status='IN_PROGRESS'
                    AND lease_owner=:owner AND lease_token=:token
+                   AND lease_expires_at > :now
                 """).param("payment_id", paymentId).param("response_body", response)
                 .param("now", timestamp(now)).param("key", key).param("owner", owner)
                 .param("token", token).update();
@@ -540,6 +546,7 @@ public final class JdbcCancelPaymentAdapter implements CancelPaymentPort {
                 UPDATE payment_idempotency SET lease_expires_at=:now, last_heartbeat_at=:now
                  WHERE idempotency_key=:key AND action='CANCEL' AND status='IN_PROGRESS'
                    AND lease_owner=:owner AND lease_token=:token
+                   AND lease_expires_at > :now
                 """).param("now", timestamp(now)).param("key", key)
                 .param("owner", owner).param("token", token).update();
     }

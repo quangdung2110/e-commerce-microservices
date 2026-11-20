@@ -13,9 +13,9 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/logging"
 )
 
-// ReadinessCheck is one dependency probe, keyed by name (postgres, redis,
-// kafka, templates, sqs — 14-observability.md §8). The set of checks depends
-// on the role the process runs, so main wires them.
+// ReadinessCheck is one dependency probe, keyed by name. Only postgres is wired:
+// the other dependencies degrade by design and are observed through metrics
+// (14-observability.md §8), so main registers nothing else.
 type ReadinessCheck func(ctx context.Context) error
 
 // HealthHandler serves /livez and /readyz.

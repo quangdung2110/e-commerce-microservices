@@ -7,14 +7,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Component;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Builds the {@code CheckoutOrderSubmissionRequest} from a snapshot (interfaces.md, "Mapping sang Order
  * submission"). The result is serialized once, stored encrypted at claim time and replayed byte for
  * byte on every later attempt, so every call carries the same {@code Idempotency-Key} and body.
  *
- * <p>What is intentionally absent: {@code variant_name} (Product has no variant label yet),
- * {@code province_name}/{@code district_name}/{@code ward_name} (User snapshot has none), and the
+ * <p>The variant label is derived from purchase snapshot attributes, never from a later catalog read.
+ * What is intentionally absent: {@code province_name}/{@code district_name}/{@code ward_name} (User snapshot has none), and the
  * address ID. {@code user_ack_degraded_pricing} is always {@code false}.
  */
 @Component
@@ -60,6 +62,7 @@ public class OrderPayloadFactory {
             node.put("snapshot_image_url", media.orderUrl(item.imageStorageKey()));
             ObjectNode attributes = node.putObject("snapshot_attributes");
             item.variantAttributes().forEach(attributes::put);
+            node.put("variant_name", variantName(item.variantAttributes()));
         }
 
         ObjectNode pricing = root.putObject("pricing");
@@ -93,5 +96,17 @@ public class OrderPayloadFactory {
 
     private ObjectNode money(long amount) {
         return mapper.createObjectNode().put("amount_minor", amount).put("currency", "VND");
+    }
+
+    static String variantName(Map<String, String> attributes) {
+        String label = attributes.entrySet().stream()
+                .filter(e -> e.getValue() != null && !e.getValue().isBlank())
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> e.getKey() + ": " + e.getValue().strip())
+                .collect(Collectors.joining(" / "));
+        if (label.isEmpty()) return null;
+        int end = Math.min(label.length(), 255);
+        if (end < label.length() && Character.isHighSurrogate(label.charAt(end - 1))) end--;
+        return label.substring(0, end);
     }
 }

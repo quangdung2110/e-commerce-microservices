@@ -1,0 +1,4 @@
+# Raw output and jar copies of scripts/ci/pdp-bench.sh; the numbers that matter are copied into
+# docs/performance/pdp-catalog-cache-benchmark-2026-10-17.md with their evidence summary.
+results/
+jars/

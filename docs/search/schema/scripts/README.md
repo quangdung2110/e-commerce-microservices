@@ -8,6 +8,7 @@ mapping trong thư mục cha; không được tự sửa bản copy trong consum
 |---|---|---|---|
 | `catalog_upsert.painless` | `_update` từng `sku_id` | `scripted_upsert: true`, `upsert: {}` | `catalog_revision` |
 | `catalog_tombstone.painless` | `_update` từng `sku_id` | Không | `catalog_revision` |
+| `reindex_tombstone_copy.painless` | `_update` từng `sku_id`/`category_id`, chỉ vào candidate reindex | Có, chỉ tombstone nguồn đã xác nhận | `catalog_revision`/`category_revision`; giữ `deleted_at`, cùng/older tombstone là no-op |
 | `availability_patch.painless` | `_update` từng `sku_id` | Không | `availability_revision` |
 | `review_metrics_patch.painless` | `_update_by_query` theo `product_id` | Không | `review_revision` |
 | `category_upsert.painless` | `_update` từng `category_id` | `scripted_upsert: true`, `upsert: {}` | `category_revision` |

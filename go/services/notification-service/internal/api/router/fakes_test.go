@@ -434,7 +434,9 @@ func (d *fakeDeliveries) MarkFinal(context.Context, uuid.UUID, string, entity.De
 func (d *fakeDeliveries) MarkDeliveredInApp(context.Context, uuid.UUID, string, string, time.Time) (bool, error) {
 	return false, nil
 }
-func (d *fakeDeliveries) ReapExpiredLeases(context.Context, time.Time) (int64, error) { return 0, nil }
+func (d *fakeDeliveries) ReapExpiredLeases(context.Context, time.Time) (map[entity.Lane]int64, error) {
+	return nil, nil
+}
 func (d *fakeDeliveries) TransitionTracked(context.Context, uuid.UUID, entity.DeliveryStatus, time.Time, string) (bool, error) {
 	return false, nil
 }

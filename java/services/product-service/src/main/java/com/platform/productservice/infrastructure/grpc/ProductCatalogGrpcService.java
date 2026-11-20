@@ -22,10 +22,10 @@ import com.platform.productservice.infrastructure.persistence.ProductMediaReposi
 import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
 import com.platform.productservice.service.support.CategoryTreeService;
-import io.grpc.Status;
+import com.platform.productservice.service.support.VariantNameResolver;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
-import net.devh.boot.grpc.server.service.GrpcService;
+import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -47,7 +47,7 @@ import java.util.stream.Collectors;
  * stock status hay {@code OUT_OF_STOCK}. Cart có thể giữ SKU hết hàng; quyết
  * định cuối cùng về tồn kho là reservation tại Inventory.
  */
-@GrpcService
+@Service
 @RequiredArgsConstructor
 public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductServiceImplBase {
 
@@ -64,6 +64,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
     private final SkuRepository skuRepository;
     private final ProductMediaRepository mediaRepository;
     private final CategoryTreeService categoryTree;
+    private final VariantNameResolver variantNames;
 
     @Override
     @Transactional(readOnly = true)
@@ -72,9 +73,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
         try {
             skuId = UUID.fromString(request.getSkuId());
         } catch (IllegalArgumentException e) {
-            responseObserver.onError(Status.INVALID_ARGUMENT
-                    .withDescription("sku_id must be a UUID")
-                    .asRuntimeException());
+            responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.SKU_ID_INVALID,
+                    "sku_id must be a UUID", Map.of(), "sku_id"));
             return;
         }
 
@@ -105,7 +105,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
         } else {
             List<ProductMediaEntity> media =
                     mediaRepository.findByProductIdOrderBySortOrderAscMediaIdAsc(product.getProductId());
-            response.setSku(toProto(product, sku.get(), media, categoryIds(product, new HashMap<>())));
+            response.setSku(toProto(product, sku.get(), media, categoryIds(product, new HashMap<>()),
+                    variantNames.resolve(List.of(sku.get())).getOrDefault(skuId, "")));
         }
         responseObserver.onNext(response.build());
         responseObserver.onCompleted();
@@ -117,9 +118,9 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                              StreamObserver<GetBatchSkusResponse> responseObserver) {
         Set<String> requestedIds = new LinkedHashSet<>(request.getSkuIdsList());
         if (requestedIds.size() > MAX_BATCH_SIZE) {
-            responseObserver.onError(Status.INVALID_ARGUMENT
-                    .withDescription("at most " + MAX_BATCH_SIZE + " sku_ids per request")
-                    .asRuntimeException());
+            responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.BATCH_TOO_LARGE,
+                    "at most " + MAX_BATCH_SIZE + " sku_ids per request",
+                    Map.of("max_batch_size", String.valueOf(MAX_BATCH_SIZE)), "sku_ids"));
             return;
         }
 
@@ -129,9 +130,8 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
             try {
                 skuIds.add(UUID.fromString(raw));
             } catch (IllegalArgumentException e) {
-                responseObserver.onError(Status.INVALID_ARGUMENT
-                        .withDescription("sku_id must be a UUID: " + raw)
-                        .asRuntimeException());
+                responseObserver.onError(ProductGrpcErrors.exception(ProductGrpcError.SKU_ID_INVALID,
+                        "sku_id must be a UUID: " + raw, Map.of(), "sku_ids"));
                 return;
             }
         }
@@ -150,6 +150,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
                 : mediaRepository.findByProductIdInOrderBySortOrderAscMediaIdAsc(productIds).stream()
                         .collect(Collectors.groupingBy(ProductMediaEntity::getProductId));
 
+        Map<UUID, String> names = variantNames.resolve(skus.values());
         Map<UUID, List<String>> ancestry = new HashMap<>();
         for (UUID skuId : skuIds) {
             SkuEntity sku = skus.get(skuId);
@@ -161,7 +162,7 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
             } else {
                 response.putSkus(skuId.toString(), toProto(product, sku,
                         mediaByProduct.getOrDefault(product.getProductId(), List.of()),
-                        categoryIds(product, ancestry)));
+                        categoryIds(product, ancestry), names.getOrDefault(skuId, "")));
             }
         }
 
@@ -176,11 +177,12 @@ public class ProductCatalogGrpcService extends ProductServiceGrpc.ProductService
     }
 
     private Sku toProto(ProductEntity product, SkuEntity sku, List<ProductMediaEntity> media,
-                         List<String> categoryIds) {
+                         List<String> categoryIds, String variantName) {
         Sku.Builder builder = Sku.newBuilder()
                 .setSkuId(sku.getSkuId().toString())
                 .setProductId(product.getProductId().toString())
                 .setProductName(product.getName())
+                .setVariantName(variantName)
                 .setPrice(money(sku.getSellingPriceVnd()))
                 .setBasePrice(money(sku.getBasePriceVnd()))
                 .setStatus(sku.getStatus() == com.platform.productservice.domain.enums.SkuStatus.ACTIVE

@@ -122,7 +122,7 @@ func (f *fakeSMTP) handle(conn net.Conn) {
 		case upper == "QUIT":
 			reply("221 bye")
 			return
-		case upper == "RSET":
+		case upper == "RSET", upper == "NOOP":
 			reply("250 OK")
 		default:
 			reply("500 unrecognised")
@@ -350,4 +350,19 @@ func TestChooseEncoding(t *testing.T) {
 	assert.Equal(t, "quoted-printable", chooseEncoding("mostly ascii with é"))
 	assert.Equal(t, "base64", chooseEncoding("ĐặngThịHồngNhung"))
 	assert.Equal(t, "quoted-printable", chooseEncoding(""))
+}
+
+// HealthCheck proves the server answers without sending any mail.
+func TestSender_HealthCheck(t *testing.T) {
+	f := newFakeSMTP(t)
+	s := newSender(f, telemetry.New())
+	require.NoError(t, s.HealthCheck(context.Background()))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	assert.Empty(t, f.messages, "a health check never sends mail")
+	assert.Empty(t, f.rcpts)
+
+	require.NoError(t, f.ln.Close())
+	err := s.HealthCheck(context.Background())
+	require.Error(t, err, "an unreachable server is unhealthy")
 }

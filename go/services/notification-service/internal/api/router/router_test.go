@@ -313,12 +313,24 @@ func TestStatusIdentityAndTimeline(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestInternalRejectsHeaderOutsideDevelopment(t *testing.T) {
-	cfg := devConfig()
-	cfg.App.Env = "staging"
-	h := newHarness(t, cfg)
-	rec := do(h.internal, http.MethodGet, "/internal/v1/notifications/deliveries?subject=x", map[string]string{constants.HeaderServiceIdentity: "order-service"}, nil)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+func TestInternalIdentityIsHeaderAllowlistInEveryEnvironment(t *testing.T) {
+	// The mesh authenticates the caller; the application only checks the
+	// X-Service-Identity allowlist, in every environment (decisions.md D-21).
+	for _, env := range []string{"development", "staging", "production"} {
+		cfg := devConfig()
+		cfg.App.Env = env
+		h := newHarness(t, cfg)
+		path := "/internal/v1/notifications/deliveries?subject=x"
+
+		rec := do(h.internal, http.MethodGet, path, nil, nil)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "%s: missing header", env)
+		rec = do(h.internal, http.MethodGet, path, map[string]string{constants.HeaderServiceIdentity: "checkout-service"}, nil)
+		assert.Equal(t, http.StatusForbidden, rec.Code, "%s: identity outside the allowlist", env)
+		rec = do(h.internal, http.MethodGet, path, map[string]string{constants.HeaderServiceIdentity: "order-service"}, nil)
+		assert.Equal(t, http.StatusOK, rec.Code, "%s: allowlisted identity", env)
+		rec = do(h.internal, http.MethodGet, "/internal/v1/notifications/ops/lanes/bulk", map[string]string{constants.HeaderServiceIdentity: "order-service"}, nil)
+		assert.Equal(t, http.StatusForbidden, rec.Code, "%s: a status principal cannot reach ops", env)
+	}
 }
 
 // ---- ops ------------------------------------------------------------------

@@ -87,20 +87,14 @@ public final class ReconciliationService {
                 counts.scanned++;
                 reconcilePayment(run, payment, counts);
             }
-            int remaining = limit - counts.scanned;
-            if (remaining > 0) {
-                Instant successSince = windowTo.minus(refundSuccessLookback);
-                for (var refund : persistence.findRefunds(windowFrom, windowTo, successSince, remaining)) {
-                    counts.scanned++;
-                    reconcileRefund(run, refund, counts);
-                }
+            Instant successSince = windowTo.minus(refundSuccessLookback);
+            for (var refund : persistence.findRefunds(windowFrom, windowTo, successSince, limit)) {
+                counts.scanned++;
+                reconcileRefund(run, refund, counts);
             }
-            remaining = limit - counts.scanned;
-            if (remaining > 0) {
-                for (var dispute : persistence.findDisputes(windowFrom, windowTo, remaining)) {
-                    counts.scanned++;
-                    reconcileDispute(run, dispute, counts);
-                }
+            for (var dispute : persistence.findDisputes(windowFrom, windowTo, limit)) {
+                counts.scanned++;
+                reconcileDispute(run, dispute, counts);
             }
             persistence.complete(run.id(), null, counts.snapshot(), clock.now());
             return Outcome.COMPLETED;
@@ -119,20 +113,26 @@ public final class ReconciliationService {
         if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
             throw new IllegalStateException(unavailable.errorCode());
         if (lookup instanceof ProviderCurrentFactPort.ReviewRequired review) {
-            drift(dispute.paymentId(), null, review.evidenceJson(), counts, now);
+            drift(run, dispute.paymentId(), null, review.evidenceJson(), counts, now);
             return;
         }
-        if (lookup instanceof ProviderCurrentFactPort.NoTransition) return;
+        if (lookup instanceof ProviderCurrentFactPort.NoTransition) {
+            persistence.owned(run.id(), () -> persistence.recordDisputeObservation(dispute.id(), dispute.version(), now));
+            return;
+        }
         StripeWebhookEvent fact = ((ProviderCurrentFactPort.CurrentFact) lookup).event();
         if (!dispute.providerDisputeId().equals(fact.providerDisputeId())
                 || !matches(fact, dispute.amountMinor(), dispute.currency())) {
-            drift(dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
+            drift(run, dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
             return;
         }
         DisputeTrigger trigger = disputeTrigger(fact);
-        if (disputeMatches(dispute.status(), trigger)) return;
+        if (disputeMatches(dispute.status(), trigger)) {
+            persistence.owned(run.id(), () -> persistence.recordDisputeObservation(dispute.id(), dispute.version(), now));
+            return;
+        }
         if (run.autoCorrectionFrozen()) {
-            drift(dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
+            drift(run, dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
             return;
         }
         try {
@@ -158,12 +158,12 @@ public final class ReconciliationService {
             List<CommitBatch.OutboxRecord> outbox = financial
                     ? List.of(disputeOutbox(dispute, transition.transitionId(), version, now))
                     : List.of();
-            commits.commit(new CommitBatch(paymentChange, null, disputeChange, List.of(history),
-                    outbox, null, null, null, List.of()));
+            persistence.owned(run.id(), () -> { commits.commit(new CommitBatch(paymentChange, null, disputeChange, List.of(history),
+                    outbox, null, null, null, List.of())); return null; });
             counts.corrected++;
             counts.drift++;
         } catch (InvalidTransitionException invalid) {
-            drift(dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
+            drift(run, dispute.paymentId(), null, evidence(dispute.status().name(), fact, now), counts, now);
         }
     }
 
@@ -177,31 +177,31 @@ public final class ReconciliationService {
         if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
             throw new IllegalStateException(unavailable.errorCode());
         if (lookup instanceof ProviderCurrentFactPort.ReviewRequired review) {
-            drift(payment.id(), null, review.evidenceJson(), counts, now);
+            drift(run, payment.id(), null, review.evidenceJson(), counts, now);
             return;
         }
         if (lookup instanceof ProviderCurrentFactPort.NoTransition noTransition) {
-            persistence.recordPaymentObservation(payment.id(), payment.version(),
-                    noTransition.providerStatus(), now);
+            persistence.owned(run.id(), () -> persistence.recordPaymentObservation(payment.id(), payment.version(),
+                    noTransition.providerStatus(), now));
             return;
         }
         StripeWebhookEvent fact = ((ProviderCurrentFactPort.CurrentFact) lookup).event();
         if (!payment.providerTransactionId().equals(fact.paymentIntentId())
                 || !matches(fact, payment.amountMinor(), payment.currency())) {
-            drift(payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
+            drift(run, payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
             return;
         }
         if (paymentMatches(payment.status(), fact.eventType())) {
-            persistence.recordPaymentObservation(payment.id(), payment.version(), fact.providerStatus(), now);
+            persistence.owned(run.id(), () -> persistence.recordPaymentObservation(payment.id(), payment.version(), fact.providerStatus(), now));
             return;
         }
         if (run.autoCorrectionFrozen()) {
-            drift(payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
+            drift(run, payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
             return;
         }
         PaymentTrigger trigger = paymentTrigger(fact.eventType());
         if (trigger == null) {
-            drift(payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
+            drift(run, payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
             return;
         }
         try {
@@ -219,13 +219,13 @@ public final class ReconciliationService {
                     ? List.of(paymentOutbox(payment, transition.to(), version, now)) : List.of();
             List<CommitBatch.JournalRecord> journals = transition.to() == PaymentStatus.SUCCESS
                     ? List.of(captureJournal(payment, fact, now)) : List.of();
-            commits.commit(new CommitBatch(change, null, null, List.of(history), outbox,
-                    null, null, null, journals));
+            persistence.owned(run.id(), () -> { commits.commit(new CommitBatch(change, null, null, List.of(history), outbox,
+                    null, null, null, journals)); return null; });
             counts.corrected++;
             counts.drift++;
             if (transition.to() == PaymentStatus.SUCCESS) counts.captured += payment.amountMinor();
         } catch (InvalidTransitionException invalid) {
-            drift(payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
+            drift(run, payment.id(), null, evidence(payment.status().name(), fact, now), counts, now);
         }
     }
 
@@ -239,28 +239,28 @@ public final class ReconciliationService {
         if (lookup instanceof ProviderCurrentFactPort.TemporarilyUnavailable unavailable)
             throw new IllegalStateException(unavailable.errorCode());
         if (lookup instanceof ProviderCurrentFactPort.ReviewRequired review) {
-            drift(refund.paymentId(), refund.id(), review.evidenceJson(), counts, now);
+            drift(run, refund.paymentId(), refund.id(), review.evidenceJson(), counts, now);
             return;
         }
         if (lookup instanceof ProviderCurrentFactPort.NoTransition noTransition) {
             // A refund we already booked as SUCCESS must not be pending at Stripe: look at it.
             if (refund.status() == RefundStatus.SUCCESS
                     && "pending".equalsIgnoreCase(noTransition.providerStatus())) {
-                drift(refund.paymentId(), refund.id(), write(List.of(Map.of(
+                drift(run, refund.paymentId(), refund.id(), write(List.of(Map.of(
                         "refund_transaction_id", refund.id(),
                         "db_status", refund.status().name(),
                         "provider_status", "pending",
                         "observed_at", now.toString()))), counts, now);
                 return;
             }
-            persistence.recordRefundObservation(refund.id(), refund.version(),
-                    noTransition.providerStatus(), now);
+            persistence.owned(run.id(), () -> persistence.recordRefundObservation(refund.id(), refund.version(),
+                    noTransition.providerStatus(), now));
             return;
         }
         StripeWebhookEvent fact = ((ProviderCurrentFactPort.CurrentFact) lookup).event();
         if (!refund.providerRefundId().equals(fact.providerRefundId())
                 || !matches(fact, refund.amountMinor(), refund.currency())) {
-            drift(refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
+            drift(run, refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
             return;
         }
         // ADR-022: classify by Refund.status, not by the synthetic event type.
@@ -269,10 +269,10 @@ public final class ReconciliationService {
                 && refund.status() != RefundStatus.SUCCESS) {
             // Not final while PROCESSING (a human decides); already FAILED/REVERSED needs nothing.
             if (refund.status() == RefundStatus.PROCESSING)
-                drift(refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now),
+                drift(run, refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now),
                         counts, now);
-            else persistence.recordRefundObservation(refund.id(), refund.version(),
-                    fact.providerStatus(), now);
+            else persistence.owned(run.id(), () -> persistence.recordRefundObservation(refund.id(), refund.version(),
+                    fact.providerStatus(), now));
             return;
         }
         boolean successFact = outcome == RefundProviderOutcome.SUCCEEDED;
@@ -282,11 +282,11 @@ public final class ReconciliationService {
         if ((successFact && refund.status() == RefundStatus.SUCCESS)
                 || (failedFact && (refund.status() == RefundStatus.FAILED
                 || refund.status() == RefundStatus.REVERSED))) {
-            persistence.recordRefundObservation(refund.id(), refund.version(), fact.providerStatus(), now);
+            persistence.owned(run.id(), () -> persistence.recordRefundObservation(refund.id(), refund.version(), fact.providerStatus(), now));
             return;
         }
         if (run.autoCorrectionFrozen()) {
-            drift(refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
+            drift(run, refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
             return;
         }
         try {
@@ -329,20 +329,20 @@ public final class ReconciliationService {
                     ? new CommitBatch.ReviewCaseRecord(ids.nextReviewCaseId(), refund.paymentId(),
                     refund.id(), reversal ? "REFUND_REVERSED" : "REFUND_FAILED_AFTER_ACCEPT",
                     evidence(refund.status().name(), fact, now), "RECONCILIATION", now) : null;
-            commits.commit(new CommitBatch(paymentChange, refundChange, null, history,
-                    List.of(outbox), review, null, null, journals));
+            persistence.owned(run.id(), () -> { commits.commit(new CommitBatch(paymentChange, refundChange, null, history,
+                    List.of(outbox), review, null, null, journals)); return null; });
             counts.corrected++;
             counts.drift++;
             if (successFact) counts.refunded += refund.amountMinor();
             if (review != null) counts.reviews++;
         } catch (InvalidTransitionException invalid) {
-            drift(refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
+            drift(run, refund.paymentId(), refund.id(), evidence(refund.status().name(), fact, now), counts, now);
         }
     }
 
-    private void drift(String paymentId, String refundId, String evidence,
+    private void drift(ReconciliationPort.Run run, String paymentId, String refundId, String evidence,
                        MutableCounts counts, Instant now) {
-        persistence.openDrift(paymentId, refundId, ids.nextReviewCaseId(), evidence, now);
+        persistence.owned(run.id(), () -> persistence.openDrift(paymentId, refundId, ids.nextReviewCaseId(), evidence, now));
         counts.drift++;
         counts.reviews++;
     }
@@ -481,7 +481,7 @@ public final class ReconciliationService {
                 && (status == PaymentStatus.SUCCESS || status == PaymentStatus.REFUNDING
                 || status == PaymentStatus.REFUNDED))
                 || ("payment_intent.canceled".equals(eventType)
-                && (status == PaymentStatus.CANCELED || status == PaymentStatus.EXPIRED));
+                && (status == PaymentStatus.CANCELED || status == PaymentStatus.EXPIRED || status == PaymentStatus.FAILED));
     }
 
     private static PaymentTrigger paymentTrigger(String eventType) {

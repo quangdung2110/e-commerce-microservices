@@ -34,5 +34,7 @@ defined here.
 The provider is implemented in `java/services/inventory-service`; the contracts are
 `implemented` and become `verified` only when consumer contract tests satisfy
 [contract adoption](../../ADOPTION.md). Inventory checks `X-Service-Identity` against a
-per-path allowlist: a missing header is `401`, another service `403`
-([Inventory ADR-027](../../../docs/inventory/decisions/ADR-027-pre-implementation-contract-corrections.md)).
+per-path allowlist, evaluated on the decoded request path: a missing header is `401`, another
+service `403`
+([Inventory ADR-027](../../../docs/inventory/decisions/ADR-027-pre-implementation-contract-corrections.md),
+[ADR-028](../../../docs/inventory/decisions/ADR-028-post-implementation-audit-corrections.md)).

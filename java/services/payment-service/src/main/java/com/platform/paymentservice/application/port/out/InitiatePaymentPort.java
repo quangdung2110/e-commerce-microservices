@@ -66,5 +66,6 @@ public interface InitiatePaymentPort {
             String providerRequestId,
             String sanitizedProviderResultJson,
             boolean reviewRequired,
+            boolean noPaymentCreated,
             Instant recordedAt) {}
 }

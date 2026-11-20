@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-data
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -175,9 +175,11 @@ Unique `(user_id,promotion_id)` bảo đảm một quyền sở hữu. Partial u
 `used_order_id WHERE used_order_id IS NOT NULL` bảo đảm một platform voucher cho một
 order. CHECK buộc `USED` có order/amount/time và `SAVED/EXPIRED` không có usage fields.
 
-Confirm chuyển `SAVED → USED`. Buyer selected-line hay Admin pre-dispatch refund không mutate row. Legacy,
-capability/proof-gated `cancel-confirmed` chuyển `USED → SAVED` và xóa usage fields nếu `NOW() < expired_at`;
-nếu đã hết hạn thì chuyển `USED → EXPIRED`.
+Confirm chuyển `SAVED → USED`, và cả `EXPIRED → USED` khi wallet bị lazy-normalize sau Reserve trong lúc
+Payment chạy (reservation tạo khi còn hạn là authority; PROMO-BR-026). `EXPIRED` chỉ do truy vấn của user ghi
+(`UPDATE ... WHERE status='SAVED' AND expired_at <= now`), không có batch. Buyer selected-line hay Admin
+pre-dispatch refund không mutate row. Legacy, capability/proof-gated `cancel-confirmed` chuyển `USED → SAVED` và
+xóa usage fields nếu `NOW() < expired_at`; nếu đã hết hạn thì chuyển `USED → EXPIRED`.
 
 ### 3.6 `markdown_rules`
 
@@ -234,8 +236,8 @@ tombstone đến trước rule commit hoặc sau rule commit đều không để
 | `order_id`                | `BIGINT NOT NULL`, logical Order reference                                                                        |
 | `wallet_id`               | `BIGINT NOT NULL REFERENCES user_coupon_wallets(id)`                                                              |
 | `request_hash`            | `CHAR(64) NOT NULL`, SHA-256 canonical request                                                                    |
-| `migration_record_id`     | `UUID NULL`; required only for `CANCEL_CONFIRMED`, must equal `X-Legacy-Migration-Proof`                           |
-| `pre_watermark_evidence_sha256` | `CHAR(64) NULL`; required only for `CANCEL_CONFIRMED`, immutable audited evidence digest                      |
+| `migration_record_id`     | `UUID NULL`; required only for `CANCEL_CONFIRMED`, must equal `X-Legacy-Migration-Proof` (migration `V2`)           |
+| `pre_watermark_evidence_sha256` | `CHAR(64) NULL`; required only for `CANCEL_CONFIRMED`, immutable audited evidence digest, lưu chữ thường (migration `V2`) |
 | `amount_vnd`              | `BIGINT NOT NULL CHECK (amount_vnd >= 0)`; confirm lấy từ fenced reservation, legacy cleanup lấy từ wallet USED after proof validation |
 | `result_code`             | stable business result để replay                                                                                  |
 | `resulting_wallet_status` | `USED`, `SAVED` hoặc `EXPIRED` theo operation                                                                     |
@@ -249,9 +251,14 @@ Unique `(operation_type,promotion_id,order_id)` ngăn hai idempotency key khác 
 cùng final business transition. Receipt không có durable `PENDING`: row, wallet và budget
 chỉ hiện ra cùng lúc khi transaction commit. Cùng key + cùng request hash trả
 `response_payload`; cùng key khác hash trả `IDEMPOTENCY_PAYLOAD_MISMATCH`.
-`CHECK` requires both migration-proof fields for `CANCEL_CONFIRMED` and both NULL for
-`CONFIRM`; the request hash includes them. A legacy command may not be replayed with a
-different proof record/digest.
+`CHECK chk_receipts_migration_proof` (migration `V2__legacy_migration_proof.sql`) requires both
+migration-proof fields for `CANCEL_CONFIRMED` and both NULL for `CONFIRM`; the request hash includes
+them. A legacy command may not be replayed with a different proof record/digest. Ràng buộc được thêm
+`NOT VALID`: receipt `CANCEL_CONFIRMED` tạo trước `V2` (khi route chưa có guard) không có proof và không thể
+bịa lại, nên được miễn; mọi dòng mới đều bị kiểm. Promotion không có registry để tra cứu bản ghi migration:
+bằng chứng của guard là header = `migration_record_id` + allowlist workload, còn tính "đã duyệt" của record và
+digest là trách nhiệm của quy trình migration phía caller; Promotion chỉ lưu chúng bất biến trên receipt để
+audit.
 
 Receipt là command history tối thiểu, không phải usage/refund ledger. Nó giữ response,
 migration proof reference và original order/amount sau khi legacy cleanup clear usage fields trên wallet.
@@ -295,9 +302,16 @@ Outbox dedup chỉ bảo vệ một outbound business event; nó không thay
 `promotion_command_receipts` cho inbound retry/response replay hay Redis finalize trigger
 và có retention riêng.
 
-Markdown `source_revision` lấy từ PostgreSQL sequence. Transaction acquire advisory lock
+Markdown `source_revision` lấy từ PostgreSQL sequence `markdown_source_revision_seq` (toàn cục, không theo product;
+đơn điệu tăng theo product vì lấy sau advisory lock; hai worker thật sự tranh nhau cùng cause/product cũng
+tiêu thụ một giá trị nên có khoảng trống). Transaction acquire advisory lock
 theo `product_id`, tính current-state snapshot hiện hành, cấp revision rồi insert outbox; Product
 chỉ apply revision mới hơn.
+
+Đường scheduler START/END kiểm `dedup_key` của cả lô bằng một query (`dedup_key IN (...)`, unique index)
+**trước** khi lock/tính/cấp revision, nên retry hoặc worker chạy trùng không còn tiêu sequence cho product
+đã phát (ADR-021). Query này là bộ lọc không khoá; tính duy nhất vẫn do unique `dedup_key` +
+`ON CONFLICT DO NOTHING` bảo đảm.
 
 ## 4. Index và query pattern
 
@@ -307,7 +321,8 @@ chỉ apply revision mới hơn.
 | campaign `(publication_status,start_time,end_time)`                                       | fallback scan/rebuild schedule                                  |
 | promotion `(campaign_id,is_enabled)`                                                      | discovery/admin load                                            |
 | wallet `(user_id,status,expired_at)`                                                      | voucher tray/lazy expiry                                        |
-| wallet unique `(user_id,promotion_id)`                                                    | save/claim idempotency                                          |
+| wallet `(promotion_id,status)`                                                            | reconciliation/đếm wallet theo promotion và trạng thái          |
+| wallet unique `(user_id,promotion_id)`                                                    | save/claim idempotency; anti-join loại ownership trước public keyset paging |
 | wallet partial unique `used_order_id`                                                     | một voucher/order                                               |
 | claim `(promotion_id,status,id)`                                                          | preload/rebuild claim pool                                      |
 | markdown `(product_id,is_enabled)`                                                        | tính current-state snapshot theo product                        |
@@ -329,7 +344,13 @@ chỉ apply revision mới hơn.
 acquire product advisory lock và reject nếu `catalog_product_tombstones` đã có row, rồi
 mutate campaign/child và tăng `campaigns.revision`. Published definition không update
 in-place. Publish/pause/cancel tăng revision, tạo outbox nếu cần, commit; sau commit
-invalidate cache/ZADD schedule. Fallback scanner sửa side effect mất.
+invalidate cache/ZADD schedule. Fallback scanner sửa side effect mất. Snapshot PUBLISH/PAUSE/CANCEL nằm
+trong transaction của lệnh admin (nguyên tử với đổi trạng thái campaign, không chia lô).
+- Scheduler START/END (ADR-021): không có transition ghi DB. Với mỗi member, worker duyệt rule bằng keyset
+`id > afterId` theo `promotion.schedule.emit-batch-size` và chạy **mỗi lô một transaction**: đọc lại campaign
+(`revision`/`publication_status` phải khớp member, nếu không dừng và coi member lỗi thời), lọc product đã
+có dedup key, rồi với từng product còn lại lấy advisory lock, tính snapshot, cấp `source_revision`, insert
+outbox. Lô lỗi rollback riêng lô đó; các lô sau vẫn chạy. `ZREM` chỉ chạy sau khi không còn lô lỗi.
 - Claim persistence path: API hoặc pending worker validate immutable pending identity,
 `acquired_at_ms` và revision-at-acquisition, rồi guarded claim + wallet insert + claimed
 counter trong một transaction; API chỉ trả success và pending chỉ bị xóa sau commit.
@@ -339,18 +360,22 @@ bác claim đã linearize đúng hạn. Retry preflight durable claim/wallet tr�
 terminal watermark theo max catalog revision, rồi lock affected rules theo deterministic
 order. Dùng watermark lớn nhất để update rule khi `source_product_revision IS NULL OR source_product_revision < watermark`. Duplicate/stale event vẫn repair được rule bất
 thường nhưng không lùi watermark. Operational overlay không bump campaign revision/claim
-gate. Sau commit mới invalidate product-scoped snapshots; không insert markdown INACTIVE
-về Product đã xóa.
+gate. Không có cache nào theo product để invalidate (markdown rule không nằm trong Redis; snapshot voucher theo
+promotion không đổi vì voucher definition không đổi) nên consumer chỉ commit rồi ack; không insert markdown
+INACTIVE về Product đã xóa.
 - Confirm: preflight receipt theo key và business identity; durable hit replay response mà
 không cần reservation. Với command mới, Redis preparation fence đổi reservation
 `RESERVED→CONFIRMING` và gia hạn grace nhưng chưa move counter. Một DB transaction commit
-command receipt (`redis_finalized_at NULL`), guarded wallet `SAVED→USED` và durable used
-counter; không ghi outbox. Sau commit Redis finalizer mới move reserved→used rồi set
+command receipt (`redis_finalized_at NULL`), guarded wallet `SAVED→USED` (hoặc `EXPIRED→USED` nếu wallet bị
+lazy-normalize sau Reserve) và durable used counter; không ghi outbox. Transaction kiểm receipt trước, rồi
+khoá wallet, rồi kiểm receipt lần nữa: một bản trùng vừa commit trong lúc chờ khoá là replay, không phải
+state không nhất quán. Sau commit Redis finalizer mới move reserved→used rồi set
 `redis_finalized_at`. Redis miss recheck receipt trước khi trả not-found; missing runtime
 evidence chỉ enqueue reconciliation, không increment mù.
 - Pre-payment cancel: Redis release; wallet không đổi.
-- Legacy `cancel-confirmed` (dedicated migrator + proof): một DB transaction commit command receipt (`redis_finalized_at NULL`),
-giảm durable used counter và chuyển wallet về `SAVED`/`EXPIRED`; không ghi outbox. Sau
+- Legacy `cancel-confirmed` (dedicated migrator + proof): một DB transaction commit command receipt (`redis_finalized_at NULL`,
+kèm `migration_record_id` và digest bằng chứng), giảm durable used counter và chuyển wallet về `SAVED`/`EXPIRED`
+(cùng kiểm receipt trước và sau khi khoá wallet như Confirm); không ghi outbox. Sau
 commit trigger DB-first Redis projection repair rồi set `redis_finalized_at`; không
 decrement Redis trước DB hoặc replay delta mù.
 - Customer refund: không có Promotion transaction.
@@ -368,8 +393,8 @@ source of truth, có thể rebuild/reconcile như mô tả ở phần 8.
 | Snapshot             | `promo:{promotion_id}:snapshot`               | STRING JSON    | 3600s                            | metadata + AST + campaign revision                                                                        |
 | Snapshot             | `promo:rules:version`                         | STRING counter | none                             | cache version fence                                                                                       |
 | Claim/budget runtime | `promo:{promotion_id}:runtime`                | HASH scalar    | rebuild từ PostgreSQL; không TTL | total/reserved/used quantity + VND, cùng `claim_enabled`, `claim_revision`, `opens_at_ms`, `closes_at_ms` |
-| Claim                | `promo:{promotion_id}:claim_pool`             | SET            | campaign lifecycle               | `SPOP` claim IDs                                                                                          |
-| Claim                | `promo:{promotion_id}:claimed_users`          | HASH           | promotion lifecycle              | user → claim ID                                                                                           |
+| Claim                | `promo:{promotion_id}:claim_pool`             | SET            | không TTL; chưa có cleanup (§8)  | `SPOP` claim IDs                                                                                          |
+| Claim                | `promo:{promotion_id}:claimed_users`          | HASH           | không TTL; chưa có cleanup (§8)  | user → claim ID                                                                                           |
 | Claim                | `promo:{promotion_id}:pending_claims:data`    | HASH           | đến DB ack                       | claim payload                                                                                             |
 | Claim                | `promo:{promotion_id}:pending_claims:index`   | ZSET           | đến DB ack                       | stale deadline → claim ID                                                                                 |
 | Reservation          | `promo:{promotion_id}:reservation:{order_id}` | STRING         | 15m + grace                      | reservation payload                                                                                       |
@@ -402,8 +427,10 @@ Claim API truyền expected campaign revision nhưng Lua quyết định bằng 
 hiện hành trong `runtime` và Redis server time, không dùng application timestamp. Gate
 mismatch trả `CLAIM_GATE_STALE`; ngoài interval trả `CAMPAIGN_NOT_ACTIVE`. Public save
 không dùng gate này mà kiểm phase bằng PostgreSQL clock trong transaction.
-Redis–PostgreSQL clock drift có metric/alert; startup/recovery rebuild runtime claim fields
-và claim pool từ current PostgreSQL definition/claim rows.
+Redis–PostgreSQL clock drift chưa có metric/alert tự động (so `TIME` Redis với `now()` PostgreSQL thủ công theo
+RB-03A, xem `operations.md`); startup/recovery rebuild runtime claim fields và claim pool từ current PostgreSQL
+definition/claim rows. Rebuild nạp pool **trước** rồi mới ghi claim-gate fields: Lua kiểm gate trước `SPOP` nên
+pool đang nạp dở không bị claim và request đầu không nhận `OUT_OF_STOCK` oan.
 
 Campaign schedule member là
 `{campaign_id}:{campaign_revision}:{START|END}`, score là epoch milliseconds. Schedule
@@ -428,7 +455,10 @@ durable duy nhất cho replay final command; Redis không cần applied marker h
 lock riêng. Script bounded, trả structured result và reserve phải rollback các mutation đã
 áp dụng nếu command giữa chừng lỗi.
 
-Script versioned trong `src/main/resources/lua/` với result code cụ thể:
+Script versioned trong `src/main/resources/lua/` với result code cụ thể. `LuaScripts` đọc mỗi file đúng một lần lúc
+khởi động và tạo `DefaultRedisScript` từ chuỗi; không dùng script dựa trên `Resource`, vì nó stat file/jar bên trong
+khối `synchronized` toàn cục ở mỗi lần thực thi và làm mọi claim xếp hàng sau một I/O (đo 12,7 s so với 0,12 s cho
+1000 claim đồng thời):
 
 | Script | File | Result codes |
 |---|---|---|
@@ -452,6 +482,9 @@ NULL` là durable trigger để finalizer/repair chạy lại sau crash. Outbox 
 markdown snapshot.
 - Campaign ZSET rebuild lúc startup/failover và được DB fallback scan bổ sung.
 - Pending claim không trả lại pool; API success chỉ sau DB commit và cleanup chỉ sau commit.
+- Known gap: `claim_pool`, `claimed_users` và `runtime` không có TTL và chưa có job dọn sau khi campaign kết thúc;
+  chỉ pending (`pending_claims:data/index`) được dọn sau DB ack. `claimed_users` cố ý giữ sau ack để chặn claim
+  lần hai. Cleanup tự động cần chốt retention/audit window riêng trước khi triển khai.
 - Claim worker persist theo `acquired_at_ms`/revision-at-acquisition đã ghi atomically với
 SPOP; xử lý sau campaign end hoặc pause/cancel không biến acquisition hợp lệ thành failure.
 - Runtime claim fields/pool rebuild khi Redis loss; stale gate revision không được fail-open.

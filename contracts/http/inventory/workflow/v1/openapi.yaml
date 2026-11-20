@@ -60,7 +60,10 @@ paths:
         ORDER_SAGA only. Returns RESERVED or REJECT_ALL. allocation_plan_id is stored for
         audit and never looked up; Inventory revalidates exactly the submitted lines and
         warehouses under locks. One line is never split between warehouses and no
-        alternate warehouse is selected when the plan is stale.
+        alternate warehouse is selected when the plan is stale. An order_id that already has
+        a root is 409 RESERVATION_ALREADY_EXISTS under any other command ID, also when two
+        Reserve commands for the order race; REJECT_ALL is only returned for an order
+        without a root.
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -232,6 +235,9 @@ paths:
         selected line is DISPATCHED; otherwise durable 409 REFUND_SCOPE_LINE_NOT_DISPATCHED
         with no scope created. A second
         refund_request_id for the same order is rejected even after the first scope is terminal.
+        Registering the same (order_id, refund_request_id) with identical lines under a new
+        command ID returns the existing scope with outcome REGISTERED and its current
+        scope_revision; it never creates a second scope (Inventory ADR-018, ADR-028).
       x-authorized-callers: [order-service]
       security: [{ serviceIdentity: [] }]
       parameters:
@@ -272,7 +278,7 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/CorrelationId'
         - $ref: '#/components/parameters/CausationId'
-      responses: { '200': { $ref: '#/components/responses/RefundScopeCancelledSuccess' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
+      responses: { '200': { $ref: '#/components/responses/RefundScopeCancelledSuccess' }, '400': { $ref: '#/components/responses/BadRequest' }, '401': { $ref: '#/components/responses/Unauthorized' }, '403': { $ref: '#/components/responses/Forbidden' }, '409': { $ref: '#/components/responses/Conflict' }, '503': { $ref: '#/components/responses/Unavailable' } }
 
   /internal/inventory/v1/refund-scopes/{refund_scope_id}/close:
     post:
@@ -337,6 +343,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /internal/inventory/v1/reservations/{order_id}:
     get:
@@ -355,6 +362,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /internal/inventory/v1/refund-scopes/{refund_scope_id}:
     get:
@@ -369,6 +377,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
 components:
   securitySchemes:

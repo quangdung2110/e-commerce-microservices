@@ -6,7 +6,10 @@ date: 2026-08-27
 decision_owners:
   - Auth Service team
 supersedes: null
-evidence: []
+evidence:
+  - go/services/auth-service/internal/domain/service/key_lifecycle_service.go
+  - go/services/auth-service/internal/infrastructure/redis/jwks_notifier.go
+  - go/services/auth-service/test/unit/service/key_lifecycle_test.go
 ---
 
 # ADR-003 — Publish JWKS with key-rotation overlap
@@ -35,4 +38,8 @@ unknown `kid`.
 
 ## Migration impact and verification
 
-Cần JWKS contract, secure key storage, overlap/rollback test và key-age metric.
+Đã implement: worker `key-rotation` (mặc định 30 ngày) và `key-retirement` (key `PHASE_OUT`
+chỉ `RETIRED` sau `keys.retirement_delay`, mặc định 24h, và cấu hình bị từ chối nếu ngắn hơn
+access TTL). Private key mã hóa AES-256-GCM bằng master key cấp qua secret. Tín hiệu
+invalidation là `{"type":"all"}` trên `auth:jwks:update`. Chưa có metric key-age (service
+chưa export Prometheus metric).

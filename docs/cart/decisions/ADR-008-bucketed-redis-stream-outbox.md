@@ -16,7 +16,9 @@ evidence:
 
 ## Status
 
-`Accepted`. Thay thế [ADR-003](./ADR-003-global-sharded-stream.md).
+`Accepted`. Thay thế [ADR-003](./ADR-003-global-sharded-stream.md). 64 bucketed stream vẫn là
+thiết kế hiện hành; [ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md) chỉ điều
+chỉnh các chi tiết không còn đúng (phạm vi event và cold store).
 
 ## Context
 

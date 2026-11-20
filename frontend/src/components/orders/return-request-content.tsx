@@ -18,8 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { useOrder, useOrderCommand } from "@/hooks/use-orders";
 import { RETURN_REASONS } from "@/lib/labels/order";
-import { orderLines } from "@/lib/order";
-import { problemMessage } from "@/lib/api/problem";
+import { isManualReviewOperation, operationFailureMessage, orderLines } from "@/lib/order";
 
 export function ReturnRequestContent({ orderId }: { orderId: string }) {
   const router = useRouter();
@@ -64,8 +63,7 @@ export function ReturnRequestContent({ orderId }: { orderId: string }) {
             router.push(`/orders/${orderId}`);
             return;
           }
-          const message = result.operation?.failure ? problemMessage({ problem: result.operation.failure }) : "Yêu cầu trả hàng chưa thể hoàn tất.";
-          setFormError(message);
+          setFormError(operationFailureMessage(result.operation, "Yêu cầu trả hàng chưa thể hoàn tất."));
         },
       }
     );
@@ -140,7 +138,7 @@ export function ReturnRequestContent({ orderId }: { orderId: string }) {
         {command.isError ? <ErrorState error={command.error} /> : null}
         <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <Link href={`/orders/${orderId}`} className="focus-ring inline-flex h-11 items-center justify-center rounded-lg px-5 text-[15px] font-medium text-foreground hover:bg-accent">Quay lại</Link>
-          <Button type="submit" disabled={command.isPending || selected.length === 0}>
+          <Button type="submit" disabled={command.isPending || selected.length === 0 || isManualReviewOperation(command.data?.operation)}>
             {command.isPending ? <LoaderCircle className="animate-spin" aria-hidden /> : null}
             {command.isPending ? "Đang gửi yêu cầu…" : "Gửi yêu cầu trả hàng"}
           </Button>

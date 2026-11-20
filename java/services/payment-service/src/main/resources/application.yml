@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: payment-service
   datasource:
@@ -27,8 +30,33 @@ spring:
       properties:
         max.partition.fetch.bytes: 393216
     listener:
+      observation-enabled: true
       ack-mode: manual_immediate
+
+    template:
+      observation-enabled: true
+
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -101,3 +129,15 @@ payment:
     refund-success-lookback: P35D
     batch-size: 500
     auto-correction-frozen: false
+  # Callers per route group (X-Service-Identity); the mesh is the real boundary
+  # (contracts ADR-004, Payment ADR-026, ADR-028). An empty list rejects every caller.
+  identity:
+    # /v1/payments/** (except the webhook) and /v1/refunds/**
+    allowed-callers: ${PAYMENT_ALLOWED_CALLERS:order-service}
+    # /internal/v1/payment/** (Finance Ops, contracts/http/payment/internal/v1)
+    operations-callers: ${PAYMENT_OPERATIONS_CALLERS:finance-ops,accounting-ops}
+
+logging:
+  pattern:
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    level: "%5p [%X{request_id:-},%X{trace_id:-}]"

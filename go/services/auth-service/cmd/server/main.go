@@ -4,14 +4,12 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -61,6 +59,11 @@ func run(configPath string) error {
 		return fmt.Errorf("build logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
+	shutdownTelemetry, err := obs.Init("auth-service")
+	if err != nil {
+		return err
+	}
+	defer shutdownTelemetry()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -152,7 +155,7 @@ func run(configPath string) error {
 		lockoutPolicy, sessionPolicy, toRule(cfg.Security.RateLimit.LoginPerAccount), logger)
 
 	sessionService := service.NewSessionService(
-		accounts, refreshTokens, tokenService, revoker, systemClock, sessionPolicy, logger)
+		accounts, refreshTokens, tokenService, revoker, notifier, systemClock, sessionPolicy, logger)
 
 	passwordService := service.NewPasswordService(
 		accounts, resets, hasher, limiter, revoker, notifier, systemClock, passwordPolicy,
@@ -233,13 +236,6 @@ func run(configPath string) error {
 			WriteTimeout: cfg.Server.WriteTimeout,
 			IdleTimeout:  cfg.Server.IdleTimeout,
 		}
-		if cfg.Internal.MutualTLSEnabled() {
-			tlsConfig, err := newMutualTLSConfig(cfg.Internal)
-			if err != nil {
-				return err
-			}
-			internalServer.TLSConfig = tlsConfig
-		}
 	}
 
 	// Workers.
@@ -262,17 +258,9 @@ func run(configPath string) error {
 
 	if internalServer != nil {
 		go func() {
-			logger.Info("internal API listening",
-				zap.String("addr", internalServer.Addr),
-				zap.Bool("mtls", internalServer.TLSConfig != nil),
-			)
-			var err error
-			if internalServer.TLSConfig != nil {
-				err = internalServer.ListenAndServeTLS(cfg.Internal.TLSCertFile, cfg.Internal.TLSKeyFile)
-			} else {
-				err = internalServer.ListenAndServe()
-			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// Plain HTTP on purpose: the mesh terminates mTLS (ADR-007).
+			logger.Info("internal API listening", zap.String("addr", internalServer.Addr))
+			if err := internalServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErrors <- fmt.Errorf("internal server: %w", err)
 			}
 		}()
@@ -320,26 +308,6 @@ func newPublisher(cfg config.KafkaConfig, logger *zap.Logger) (port.EventPublish
 		if err := publisher.Close(); err != nil {
 			logger.Error("could not close the Kafka producer", zap.Error(err))
 		}
-	}, nil
-}
-
-// newMutualTLSConfig requires and verifies a client certificate signed by the
-// configured CA, which is how the internal API authenticates Notification
-// Service.
-func newMutualTLSConfig(cfg config.InternalConfig) (*tls.Config, error) {
-	caPEM, err := os.ReadFile(cfg.ClientCAFile)
-	if err != nil {
-		return nil, fmt.Errorf("read internal client CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("internal client CA does not contain a certificate")
-	}
-
-	return &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ClientAuth: tls.RequireAndVerifyClientCert,
-		ClientCAs:  pool,
 	}, nil
 }
 

@@ -42,6 +42,10 @@ type AppConfig struct {
 
 func (a AppConfig) IsProduction() bool { return a.Env == "production" }
 
+// IsDevelopment is true only for a local run. Every other environment, staging
+// included, must carry real secrets (see validateSecrets).
+func (a AppConfig) IsDevelopment() bool { return a.Env == "development" || a.Env == "dev" }
+
 type ServerConfig struct {
 	ReadTimeout     time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout    time.Duration `mapstructure:"write_timeout"`
@@ -50,22 +54,26 @@ type ServerConfig struct {
 }
 
 // InternalConfig configures the cluster-internal server that serves the
-// notification delivery API. It is never exposed through the public gateway and
-// requires mTLS whenever certificates are configured.
+// notification delivery and notification contact APIs. It is never exposed
+// through the public gateway. Transport security and caller admission belong to
+// the service mesh (mTLS plus an AuthorizationPolicy per principal and path);
+// the application only checks the X-Service-Identity header against
+// AllowedCallers as defence in depth (ADR-007).
 type InternalConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	TLSCertFile  string `mapstructure:"tls_cert_file"`
-	TLSKeyFile   string `mapstructure:"tls_key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
-	// AllowedClientCN restricts which verified peer certificate may call the
-	// internal API. Empty means any certificate signed by the client CA.
-	AllowedClientCN string `mapstructure:"allowed_client_cn"`
-}
-
-func (i InternalConfig) MutualTLSEnabled() bool {
-	return i.TLSCertFile != "" && i.TLSKeyFile != "" && i.ClientCAFile != ""
+	Enabled bool   `mapstructure:"enabled"`
+	Host    string `mapstructure:"host"`
+	Port    int    `mapstructure:"port"`
+	// AllowedCallers lists the service identities that may resolve a delivery or
+	// a contact.
+	AllowedCallers []string `mapstructure:"allowed_callers"`
+	// SigningKey authenticates the caller without a mesh: every request carries
+	// X-Service-Signature, an HMAC-SHA256 under this key shared with
+	// Notification (mesh ADR-004). Empty disables the check, which only
+	// development accepts.
+	SigningKey string `mapstructure:"signing_key"`
+	// SignatureTolerance bounds the clock difference and the replay window of
+	// a signed request.
+	SignatureTolerance time.Duration `mapstructure:"signature_tolerance"`
 }
 
 type DatabaseConfig struct {
@@ -113,6 +121,10 @@ type KafkaConfig struct {
 	PublishMaxAttempts int           `mapstructure:"publish_max_attempts"`
 	PublishBackoff     time.Duration `mapstructure:"publish_backoff"`
 	PublishTimeout     time.Duration `mapstructure:"publish_timeout"`
+	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
+	// username keeps PLAINTEXT, for tests and a standalone broker.
+	SASLUsername string `mapstructure:"sasl_username"`
+	SASLPassword string `mapstructure:"sasl_password"`
 	// Enabled allows a local run without a broker. Publish failures are still
 	// logged and counted so the reconciliation gap of ADR-005 stays visible.
 	Enabled bool `mapstructure:"enabled"`
@@ -174,7 +186,9 @@ type RateLimitConfig struct {
 	OtpPerAccount      RateLimitRule `mapstructure:"otp_per_account"`
 	PasswordResetPerIP RateLimitRule `mapstructure:"password_reset_per_ip"`
 	RefreshPerIP       RateLimitRule `mapstructure:"refresh_per_ip"`
-	InternalPerClient  RateLimitRule `mapstructure:"internal_per_client"`
+	// InternalPerResource is applied per (calling service, delivery or user id) on
+	// the internal listener.
+	InternalPerResource RateLimitRule `mapstructure:"internal_per_resource"`
 }
 
 type PasswordPolicyConfig struct {
@@ -187,8 +201,14 @@ type SecurityConfig struct {
 	Lockout        LockoutConfig        `mapstructure:"lockout"`
 	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
 	PasswordPolicy PasswordPolicyConfig `mapstructure:"password_policy"`
-	// TrustedProxies tells gin which hops may set X-Forwarded-For.
+	// TrustedProxies tells gin which hops may set the client IP headers: the
+	// gateway address only.
 	TrustedProxies []string `mapstructure:"trusted_proxies"`
+	// ClientIPHeaders are read, in order, when the request comes from a trusted
+	// proxy. Traefik sets X-Real-Ip to the client it saw (or keeps the one the
+	// frontend, its only trusted hop, forwarded), so X-Real-Ip names the browser
+	// whether or not the request went through Next (mesh ADR-004).
+	ClientIPHeaders []string `mapstructure:"client_ip_headers"`
 }
 
 type OTPConfig struct {
@@ -276,6 +296,15 @@ func (k KeysConfig) PreviousMasterKeys() (map[int16][]byte, error) {
 	return out, nil
 }
 
+func hasName(names []string) bool {
+	for _, name := range names {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func decodeKey(encoded string) ([]byte, error) {
 	if encoded == "" {
 		return nil, fmt.Errorf("is required")
@@ -331,6 +360,9 @@ func (c *Config) Validate() error {
 	if c.JWT.Issuer == "" {
 		problems = append(problems, "jwt.issuer is required")
 	}
+	if c.Kafka.SASLUsername != "" && c.Kafka.SASLPassword == "" {
+		problems = append(problems, "kafka.sasl_password is required with kafka.sasl_username")
+	}
 	if c.JWT.Audience == "" {
 		problems = append(problems, "jwt.audience is required")
 	}
@@ -371,13 +403,49 @@ func (c *Config) Validate() error {
 	if c.App.IsProduction() && !c.Refresh.CookieSecure {
 		problems = append(problems, "refresh.cookie_secure must be true in production")
 	}
-	if c.App.IsProduction() && c.Internal.Enabled && !c.Internal.MutualTLSEnabled() {
-		problems = append(problems, "internal API requires mTLS certificates in production")
+	if c.Internal.Enabled && !hasName(c.Internal.AllowedCallers) {
+		// The internal API returns recipient addresses and, for verification and
+		// reset templates, the secret itself, so an empty allowlist would refuse
+		// every caller and is a misconfigured deployment rather than a valid
+		// "closed" mode.
+		problems = append(problems, "internal.allowed_callers must name at least one service when the internal API is enabled")
+	}
+	if c.Internal.Enabled && c.Internal.Port == c.App.Port {
+		problems = append(problems, "internal.port must differ from app.port")
+	}
+	if c.Internal.SignatureTolerance <= 0 {
+		problems = append(problems, "internal.signature_tolerance must be positive")
+	}
+	if !c.App.IsDevelopment() {
+		problems = append(problems, c.secretProblems()...)
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// secretProblems rejects, outside development, a secret that is missing, short,
+// a committed development value or a placeholder (security review 2026-10-22,
+// H1): the master key decrypts every private JWT key in auth.jwt_keys, and the
+// signing key is the only proof of the caller of the internal API without a
+// mesh.
+func (c *Config) secretProblems() []string {
+	var problems []string
+	if p := secretProblem("keys.master_key (AUTH_KEYS_MASTER_KEY)", c.Keys.MasterKeyBase64, 32); p != "" {
+		problems = append(problems, p)
+	}
+	for version, key := range c.Keys.PreviousMasterKeysBase64 {
+		if p := secretProblem("keys.previous_master_keys["+version+"]", key, 32); p != "" {
+			problems = append(problems, p)
+		}
+	}
+	if c.Internal.Enabled {
+		if p := secretProblem("internal.signing_key (AUTH_INTERNAL_SIGNING_KEY)", c.Internal.SigningKey, 32); p != "" {
+			problems = append(problems, p)
+		}
+	}
+	return problems
 }
 
 func setDefaults(v *viper.Viper) {
@@ -394,6 +462,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("internal.enabled", true)
 	v.SetDefault("internal.host", "0.0.0.0")
 	v.SetDefault("internal.port", 8081)
+	v.SetDefault("internal.allowed_callers", []string{"notification-service"})
+	v.SetDefault("internal.signing_key", "")
+	v.SetDefault("internal.signature_tolerance", "60s")
 
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 5432)
@@ -424,6 +495,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.publish_max_attempts", 3)
 	v.SetDefault("kafka.publish_backoff", "200ms")
 	v.SetDefault("kafka.publish_timeout", "5s")
+	v.SetDefault("kafka.sasl_username", "")
+	v.SetDefault("kafka.sasl_password", "")
 
 	v.SetDefault("jwt.issuer", "https://auth.ecommerce.local")
 	v.SetDefault("jwt.audience", "ecommerce-api")
@@ -447,6 +520,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.lockout.max_failed_attempts", 5)
 	v.SetDefault("security.lockout.lock_duration", "15m")
 	v.SetDefault("security.lockout.counter_reset_after", "1h")
+	v.SetDefault("security.trusted_proxies", []string{})
+	v.SetDefault("security.client_ip_headers", []string{"X-Real-IP"})
 	v.SetDefault("security.password_policy.min_length", 12)
 	v.SetDefault("security.password_policy.max_length", 128)
 	v.SetDefault("security.rate_limit.login_per_ip.limit", 20)
@@ -461,8 +536,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.rate_limit.password_reset_per_ip.window", "1h")
 	v.SetDefault("security.rate_limit.refresh_per_ip.limit", 60)
 	v.SetDefault("security.rate_limit.refresh_per_ip.window", "5m")
-	v.SetDefault("security.rate_limit.internal_per_client.limit", 600)
-	v.SetDefault("security.rate_limit.internal_per_client.window", "1m")
+	v.SetDefault("security.rate_limit.internal_per_resource.limit", 120)
+	v.SetDefault("security.rate_limit.internal_per_resource.window", "1m")
 
 	v.SetDefault("otp.ttl", "5m")
 	v.SetDefault("otp.max_attempts", 5)

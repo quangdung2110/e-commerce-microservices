@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Order Service Public API
-  version: 1.0.0
+  version: 1.1.1
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -123,7 +123,7 @@ paths:
       operationId: requestMyOrderReturn
       summary: Submit the one lifetime Buyer return request
       description: >-
-        Every order line must already be DELIVERED by verified Delivery proof and the
+        Every order line must already be DELIVERED (Admin delivery confirmation, Order ADR-021) and the
         order must be COMPLETED. Release 1 has no return time window after completion.
         The selected set may be a proper subset of the order, but each selected line must
         use its complete ordered quantity. A new idempotency key never bypasses the
@@ -369,6 +369,45 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /api/v1/admin/orders/{order_id}/delivery-confirmations:
+    post:
+      tags: [Admin Orders]
+      operationId: confirmDeliveryAsAdmin
+      summary: Confirm that dispatched lines reached the customer
+      description: >-
+        The only way a line becomes DELIVERED (Order ADR-021). Inventory physical dispatch
+        only moves a line to DISPATCHED. Each requested line must be DISPATCHED; the request
+        is all-or-nothing and runs synchronously under the order lock. The confirmation that
+        delivers the last line completes the order and emits order.completed.v1 in the same
+        transaction. The command is idempotent by line state: repeating a line with the same
+        delivery_reference and delivered_at is a 200 no-op, a different reference or time is
+        409 DELIVERY_ALREADY_CONFIRMED. delivered_at must not precede the line's physical
+        dispatch nor lie in the future beyond the configured clock tolerance. The Admin's
+        user ID is stored with the confirmation. No Idempotency-Key is used.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeliveryConfirmationRequest' }
+      responses:
+        '200':
+          description: Every requested line is DELIVERED (newly or already, with the same record).
+          headers:
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryConfirmationResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /api/v1/admin/order-operations/{operation_id}:
@@ -872,6 +911,54 @@ components:
           description: order_line_id values must be unique; enforced by the provider.
         reason_code: { type: string, minLength: 1, maxLength: 100 }
         reason_details: { type: [string, 'null'], maxLength: 1000 }
+    DeliveryLineConfirmation:
+      type: object
+      additionalProperties: false
+      required: [order_line_id, delivered_at, delivery_reference]
+      properties:
+        order_line_id: { $ref: '#/components/schemas/EntityId' }
+        delivered_at:
+          type: string
+          format: date-time
+          description: When the goods reached the customer; not before the line's physical dispatch.
+        delivery_reference:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Carrier receipt or tracking reference; several lines of one shipment may share it.
+    DeliveryConfirmationRequest:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/DeliveryLineConfirmation' }
+          description: order_line_id values must be unique; enforced by the provider.
+    DeliveryConfirmationResult:
+      type: object
+      additionalProperties: false
+      required: [order_id, order_status, order_completed, lines]
+      properties:
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        order_status: { $ref: '#/components/schemas/OrderStatus' }
+        order_completed:
+          type: boolean
+          description: True when the order is COMPLETED after this call.
+        lines:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [order_line_id, fulfillment_status, delivered_at, delivery_reference]
+            properties:
+              order_line_id: { $ref: '#/components/schemas/EntityId' }
+              fulfillment_status: { type: string, const: DELIVERED }
+              delivered_at: { type: string, format: date-time }
+              delivery_reference: { type: string, minLength: 1, maxLength: 128 }
     AdminPreDispatchRefundRequest:
       type: object
       additionalProperties: false
@@ -938,6 +1025,11 @@ components:
     OrderOperation:
       type: object
       additionalProperties: false
+      description: >-
+        Public projection of an asynchronous command. MANUAL_REVIEW_REQUIRED means the outcome
+        is waiting for a person (for example Finance after a failed refund), not that the client
+        should retry; its failure problem code is REFUND_MANUAL_REVIEW_REQUIRED for refund and
+        return commands, and the client must not send a new command for the same intent.
       required:
         - operation_id
         - operation_type

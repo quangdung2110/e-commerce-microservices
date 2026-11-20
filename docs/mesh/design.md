@@ -1,6 +1,6 @@
 # Thiết kế kiến trúc Service Mesh
 
-> **Trạng thái:** `target/proposed`. Tài liệu này giải thích kiến trúc; hành vi vận hành bắt buộc
+> **Trạng thái:** `target/proposed` (manifest sinh từ runtime contract có ở [`deploy/mesh`](../../deploy/mesh/README.md), chưa áp dụng lên cluster). Tài liệu này giải thích kiến trúc; hành vi vận hành bắt buộc
 > nằm trong [runtime-contract.md](runtime-contract.md), lý do lựa chọn nằm trong
 > [technology_choice.md](technology_choice.md).
 
@@ -98,7 +98,7 @@ Ba quy tắc:
 2. **`X-Service-Identity`** do caller đặt bằng chính ServiceAccount name của nó. Mesh **không**
    xác minh nội dung header; mesh xác minh principal và chỉ cho principal được phép chạm tới path.
    Ứng dụng dùng header cho log/audit/problem detail và allowlist defense-in-depth
-   (Product `reindex-clients`, Promotion `TrustedIdentityFilter`, Review static bearer token),
+   (Product `reindex-clients` và `grpc-clients`, Promotion `TrustedIdentityFilter`, Review `pdp-callers`/`export-callers`, Payment `allowed-callers`; [contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md)),
    không bao giờ coi nó là bằng chứng authorization duy nhất.
 3. **Từ chối ở mesh** là `403` từ waypoint (`text/plain`, body `RBAC: access denied`), xảy ra
    trước khi request tới ứng dụng. `401`/`403` `application/problem+json` trong các contract
@@ -130,7 +130,7 @@ từng tài liệu service.
 |---|---|---|
 | Retry lỗi connect-level (`connect-failure`, `refused-stream`, gRPC `unavailable`) | Chỉ trên route idempotent khai báo tường minh | Không lặp lại cùng điều kiện |
 | Retry business (`409`, `503` có `Retry-After`, `202 CLAIM_PENDING`) | Không | Có, theo idempotency key/natural key của contract |
-| Timeout | Ngân sách ngoài: ≥ deadline ứng dụng + 1 giây | Deadline thực, ngắn hơn mesh |
+| Timeout | Ngân sách ngoài: ≥ deadline ứng dụng + 1 giây | Deadline thực, ngắn hơn mesh; gửi cho provider qua `X-Request-Timeout-Ms` hoặc deadline gRPC ([contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) |
 | Outlier detection / connection pool | Có, per DestinationRule | Circuit breaker business (resilience4j) nếu service đã có |
 | Cân bằng tải | Per-request cho HTTP/1.1, HTTP/2, gRPC | Không |
 
@@ -146,6 +146,12 @@ báo port với `name: grpc` và `appProtocol: grpc` để waypoint xử lý HTT
 theo request; `cart-service` (và Checkout khi có runtime) gọi qua tên Service, không qua
 headless Service hay IP pod. `AuthorizationPolicy` cho gRPC dùng `paths` dạng
 `/ecommerce.product.v1.ProductService/*`.
+
+Client không dựa hoàn toàn vào waypoint ([contracts ADR-007](../../contracts/decisions/ADR-007-grpc-channel-balancing-and-keepalive.md)):
+Cart và Checkout dial `dns:///` với `round_robin` và keepalive 30 giây, còn Product đóng kết nối sau 5 phút (grace 30 giây,
+`permit-keep-alive-time` 20 giây) để client phân giải lại. Với Service ClusterIP sau waypoint, DNS chỉ trả một địa chỉ ảo nên
+`round_robin` không đổi gì và waypoint vẫn cân bằng theo request. Ở cụm **chưa** có waypoint, cổng gRPC của Product phải là
+Service headless (`clusterIP: None`) để DNS liệt kê từng pod; nếu không, mọi RPC của một pod client vào một pod Product.
 
 ## Traefik trong mesh
 

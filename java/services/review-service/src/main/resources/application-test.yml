@@ -16,7 +16,7 @@ review:
     author-alias-hmac: test-review-author-alias-secret
     privacy-guard-hmac: test-review-privacy-guard-secret
   internal:
-    pdp-tokens: test-pdp-token
-    export-tokens: test-export-token
+    pdp-callers: product-detail-bff
+    export-callers: search-service
   scheduler:
     enabled: false

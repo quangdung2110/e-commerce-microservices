@@ -12,6 +12,40 @@ class RetentionTrimmerIT extends AbstractPaymentIT {
     private static final Instant NOW = Instant.parse("2026-09-25T10:00:00Z");
 
     @Test
+    void latest_freeze_survives_the_technical_retention_period() {
+        reconciliation.setFreeze(true, "finance-ops", "INC-old", NOW.minusSeconds(800L * 86400));
+        reconciliation.setFreeze(false, "finance-ops", "INC-new", NOW.minusSeconds(790L * 86400));
+        retention.trim(new RetentionPort.Policy(15, 90, 12, 12, 7, "payment_outbox_slot"), NOW, 100);
+        assertThat(reconciliation.currentFreeze(true)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reconciliation_runs WHERE lane='CONTROL'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void expired_command_slot_survives_until_its_provider_operation_is_terminal() {
+        String key = "retention-active-command";
+        jdbc.update("""
+                INSERT INTO payment_transactions
+                  (id,order_id,payment_attempt_number,user_id,amount_minor,currency,status,expires_at)
+                VALUES ('TXN_RETENTION_ACTIVE',999,1,?,100,'VND','INITIATING',now()+interval '15 minutes')
+                """, UUID.randomUUID());
+        idempotency.claim(key, com.platform.paymentservice.application.IdempotencyAction.INITIATE,
+                "f".repeat(64), "old-worker", NOW.minusSeconds(86400), java.time.Duration.ofSeconds(45), NOW.minusSeconds(1));
+        var operation = new com.platform.paymentservice.domain.ProviderOperation("POP_RETENTION_ACTIVE", "TXN_RETENTION_ACTIVE", null,
+                com.platform.paymentservice.domain.ProviderOperationType.CREATE, "pay:create:TXN_RETENTION_ACTIVE", key,
+                "{}", com.platform.paymentservice.domain.ProviderOperationStatus.REQUESTED, null, 0, null, null,
+                NOW.plusSeconds(7 * 86400), NOW);
+        var claim = (com.platform.paymentservice.application.port.out.ProviderOperationClaim.Acquired)
+                providerOperations.createOrClaim(operation, "recovery-worker", NOW, java.time.Duration.ofSeconds(45));
+        var policy = new RetentionPort.Policy(15, 90, 12, 12, 7, "payment_outbox_slot");
+        retention.trim(policy, NOW, 100);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_idempotency WHERE idempotency_key=?", Integer.class, key)).isEqualTo(1);
+        assertThat(providerOperations.finish(operation.id(), "recovery-worker", claim.leaseToken(),
+                new com.platform.paymentservice.application.port.out.ProviderOperationResult.Rejected(null, "{}"), NOW, null)).isTrue();
+        retention.trim(policy, NOW, 100);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_idempotency WHERE idempotency_key=?", Integer.class, key)).isZero();
+    }
+
+    @Test
     void trims_eligible_technical_data_but_fails_closed_without_cdc_watermark() {
         jdbc.update("""
                 INSERT INTO payment_transactions

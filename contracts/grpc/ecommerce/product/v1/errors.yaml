@@ -1,0 +1,43 @@
+# Error catalog of ecommerce.product.v1.ProductService (contracts ADR-006).
+#
+# Every non-OK status returned by Product's own code carries google.rpc.ErrorInfo with
+# domain = `domain` below, reason = one of the entries, and metadata `retryable`.
+# Statuses produced by the gRPC runtime or the mesh (DEADLINE_EXCEEDED, CANCELLED, a connect failure)
+# carry no details and are not listed.
+# Adding a reason is compatible; renaming or removing one is breaking.
+version: 1
+domain: ecommerce.product.v1
+errors:
+  - reason: SERVICE_IDENTITY_MISSING
+    status: UNAUTHENTICATED
+    retryable: false
+    description: x-service-identity metadata is absent or empty.
+
+  - reason: SERVICE_IDENTITY_NOT_ALLOWED
+    status: PERMISSION_DENIED
+    retryable: false
+    description: The caller is not in product.internal.grpc-clients.
+
+  - reason: SKU_ID_INVALID
+    status: INVALID_ARGUMENT
+    retryable: false
+    details: [BadRequest]
+    description: sku_id is not a UUID. The BadRequest violation names sku_id (GetSku) or sku_ids (GetBatchSkus).
+
+  - reason: BATCH_TOO_LARGE
+    status: INVALID_ARGUMENT
+    retryable: false
+    details: [BadRequest]
+    metadata: [max_batch_size]
+    description: More than 100 unique sku_ids in GetBatchSkus.
+
+  - reason: CATALOG_STORE_UNAVAILABLE
+    status: UNAVAILABLE
+    retryable: true
+    details: [RetryInfo]
+    description: Product cannot read its database. RetryInfo.retry_delay is 2 seconds.
+
+  - reason: INTERNAL_ERROR
+    status: INTERNAL
+    retryable: false
+    description: Unexpected failure; the cause is only in Product's log.

@@ -1,0 +1,175 @@
+1. Thiết kế Idempotency cho Consumer
+
+A. Khóa chính kết hợp (consumer_name, event_id)
+Multi-consumer: Review Service có nhiều logic consumer khác nhau. Đưa consumer_name vào PK giúp consumer dùng chung một bảng mà không bị xung đột khi xử lý 1 event
+Chuẩn hóa CloudEvent: event_id là UUID của event. Khi Kafka gửi lại event, event_id không đổi -> vi phạm PK -> nhận biết được duplicate
+
+B. Transactional
+Việc INSERT vào bảng được thực thi trong cùng 1 Database Transaction với logic cập nhật nghiệp vụ, đảm bảo cả 2 cùng được commit hoặc rollback
+
+C. Tính toán vòng đời lưu trữ Chuẩn
+Quy định REVIEW_EVENT_RECEIPT_RETENTION_DAYS >= Kafka retention + margin
+Điều này giải quyết triệt để rủi ro "Ghost Replay": Nếu bạn xóa receipt quá sớm (ví dụ sau 2 ngày) trong khi Kafka retention là 7 ngày, khi DevOps tua lại offset về ngày thứ 3, hệ thống sẽ tưởng message chưa từng xử lý và chạy lại 
+→ phá vỡ idempotency. Việc giữ receipt lâu hơn Kafka retention đảm bảo replay trong khoảng an toàn luôn được nhận diện
+
+
+2. Lưu ý ở Producer
+Producer có khả năng sinh 2 event_id khác nhau cho cùng 1 sự kiện ở tầng logic ứng dụng. Chính vì thế, chúng ta có thể áp dụng các chốt chặn sau:
+
+2.1 Transactional Outbox Pattern + CDC
+Khi có thay đổi nghiệp vụ, code ứng dựng ghi dữ liệu nghiệp vụ và ghi luôn bản ghi event vào bảng outbox trong cùng 1 Database Transaction
+Tại thời điểm này, event_id được sinh ra duy nhất một lần và lưu cố định vào Postgres
+Thay vì ứng dụng tự gọi Kafka, Debezium CDC (Kafka Connect) sẽ đọc Transaction Log (WAL) của Postgres để publish lên Kafka
+    Dù mạng đứt, Debezium crash hay restart bao nhiêu lần, nó chỉ đọc lại đúng dòng đó từ DB và giữ nguyên event_id ban đầu
+
+
+
+
+3. Thiết kế Upload File cho Review Media 
+
+Bước 1: Xin cấp quyền tải lên File (Frontend - Review Service)
+Frontend gọi API: POST /api/v1/reviews/media/upload-urls
+Body (JSON): Chú ý là Frontend CHƯA HỀ gửi file ảnh ở bước này! Frontend chỉ gửi bản "khai báo thông số" của bức ảnh:
+json
+{
+  "media_type": "IMAGE",          // Loại: "IMAGE" (ảnh) hoặc "VIDEO" (video)
+  "content_type": "image/jpeg",   // Định dạng chuẩn MIME của file
+  "byte_size": 2450100,           // Dung lượng chính xác của ảnh (tính bằng byte, ~2.4MB)
+  "checksum": "sha256:abc123xyz"  // (Tùy chọn) Mã băm để chống file bị hỏng khi truyền
+}
+Review Service nhận được và thực hiện các bước sau:
++ Thêm một dòng vào bảng review_media_assets để quản lý vòng đời cho file này
+    id (gọi là asset_id): Sinh một mã ngẫu nhiên dạng UUID (ví dụ: 9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d)
+    upload_state: Đặt trạng thái ban đầu là 'ISSUED'
+    Thiết lập thời hạn hết hạn: expires_at = now() + 15 phút
++ Dùng Secret Key sinh Presigned PUT URL:
+    Review Service dùng chìa khóa bí mật (Secret Key) của mình để tạo ra một đường link upload trực tiếp (PUT) lên Object Storage
+    Link này gửi về để Frontend dùng làm địa chỉ đích (Destination URL) mà gửi trực tiếp file ảnh từ máy của người dùng lên thẳng kho Object Storage (ở Bước 2)
+    Quá trình ký này là tính toán mã hóa cục bộ trong bộ nhớ (In-memory Cryptographic Signing), hoàn toàn KHÔNG gọi mạng sang S3
+
+
+Cụ thể hơn ở Presigned Upload URL:
++ Secret Access Key: Chuỗi này được cấu hình ở đúng 2 nơi bí mật: Trong máy chủ Review Service và Trong hệ thống phân quyền của Object Storage
++ Review Service lấy các thông tin:
+    Cho phép hành động gì: PUT
+    Cho phép ghi vào file nào: /raw/2026/09/uuid.jpg
+    Hết hạn lúc nào: 15 phút nữa
+    Nó dùng Secret Key bí mật kết hợp với các thông tin trên, chạy qua một "máy xay toán học" một chiều gọi là HMAC-SHA256.
+    Kết quả ra một chuỗi chữ ký số: ví dụ d2f5a8...
+    Review Service dán cái đuôi &X-Amz-Signature=d2f5a8... vào link rồi đưa cho Frontend.
+
+
+
+
+Bước 2: Direct Upload (Frontend - Object Storage)
+Frontend lấy đường dẫn upload.url đã nhận từ Bước 1 và bắn trực tiếp toàn bộ dữ liệu file ảnh/video lên Object Storage bằng một lệnh HTTP PUT
+Object Storage nhận được sẽ:
+    Kiểm tra chữ ký số (X-Amz-Signature):
+        Storage dùng Secret Key nội bộ để tính lại chữ ký và so khớp với X-Amz-Signature trên URL.
+        Đảm bảo đường link do đúng hệ thống cấp, chưa bị ai sửa đổi tham số
+    Kiểm tra thời hạn (X-Amz-Expires):
+        So sánh thời điểm upload hiện tại với thời điểm cấp (X-Amz-Date + 15 phút).
+        Nếu quá 15 phút, S3 từ chối ngay với mã 403 Forbidden (Request has expired)
+    Lưu trữ: Nếu tất cả hợp lệ, Storage sẽ hút toàn bộ luồng dữ liệu (stream) và ghi an toàn vào đĩa lưu trữ đám mây
+Storage trả về cho Frontend mã HTTP:
+    200 OK (hoặc 204 No Content).
+
+
+
+
+Bước 3: Tạo Review và Xác thực gắn kết (Frontend - Review Service - Object Storage)
+
+
+Giai đoạn 1: Frontend gửi yêu cầu tạo Review
+Frontend gọi API:
+Endpoint: POST /api/v1/reviews
+Body (JSON):
+json
+{
+  "eligibility_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",  // Mã chứng minh khách hàng đã mua sản phẩm này
+  "rating": 5,                                               // 5 sao
+  "content": "Áo mặc rất vừa vặn, vải mát...",               // Lời bình
+  "media_asset_ids": [
+    "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"                 // Mã asset_id đã upload thành công ở Bước 1
+  ]
+}
+
+
+Giai đoạn 2: Pre-Transaction Verification (Kiểm tra metadata NGOÀI Transaction DB)
+
+Với mỗi asset_id được gửi lên, Review Service thực hiện:
+
+Kiểm tra quyền sở hữu: Tìm asset trong DB. Nếu asset_id không tồn tại hoặc thuộc quyền sở hữu của user khác -> Báo lỗi ngay 409 INVALID_MEDIA_REFERENCE. (Dùng chung 1 mã lỗi để hacker không thể dò quét xem ID file của người khác có tồn tại hay không).
+Kiểm tra thời hạn: Asset có bị quá hạn 15 phút (expires_at) chưa?
+Bắn lệnh HEAD Object sang Object Storage:
+    Thay vì tải cả file nặng về, Review Service chỉ gọi lệnh HEAD (chỉ đọc vài byte thông tin header).
+    Kiểm tra xem file có thực sự nằm trên S3 chưa? (Nếu client chưa upload xong hoặc upload lỗi ở Bước 2, S3 sẽ trả về 404).
+    Kiểm tra Content-Type thực tế trên S3 có đúng chuẩn đã đăng ký không.
+    Kiểm tra Content-Length thực tế có đúng với dung lượng byte_size khai báo không.
+    Nếu có bất kỳ điểm nào không khớp -> Trả về lỗi 409 MEDIA_NOT_VERIFIED (nghĩa là file có lỗi, người dùng có thể upload lại file khác để thử lại).
+
+
+Giai đoạn 3: Mở Database Transaction
+    Khóa và Chuyển trạng thái Asset
+    Khóa quyền đánh giá
+    Lưu nội dung bài Review
+    Gắn ảnh vào bài Review
+    Ghi sự kiện Outbox
+
+
+
+Bước 4: Hiển thị Review cho người mua khác (Public Read)
+Frontend gọi: GET /api/v1/reviews/products/PROD_123
+Review Service:
+    Query các review có trạng thái APPROVED.
+    Batch-load các media liên kết từ review_media.
+    Hệ thống sẽ tự động sinh ngay các Presigned GET URL ngắn hạn (TTL 5 phút) cho các file vừa gắn để Frontend có thể hiển thị ảnh/video lên màn hình cho người dùng xem ngay lập tức
+
+
+Cụ thể bước 4:
+Bước 1: Khách hàng B lướt xem sản phẩm
+Trình duyệt của khách hàng B gửi request: GET /api/v1/reviews/products/{product_id}
+
+Bước 2: Review Service truy vấn DB
+Review Service vào PostgreSQL tìm tất cả các review của sản phẩm này:
+    Chỉ lấy các review đang có trạng thái APPROVED (đã duyệt, không bị vi phạm/ẩn).
+    Nối bảng review_media để lấy ra danh sách các object_key (đường dẫn nội bộ của các bức ảnh/video thuộc các review đó).
+
+
+
+
+4. Transaction-scoped subject lock (xử lý Race Condition)
+Giải thích cụ thể:
+Transaction-scoped subject lock là một cơ chế khóa phân tán/đồng thời ở mức giao dịch cơ sở dữ liệu được áp dụng riêng cho từng người dùng cụ thể (user_id)
+
+Sự kiện USER_DELETED (từ Auth Service) được gửi qua Kafka phân vùng theo user_id.
+Sự kiện ORDER_COMPLETED (từ Order Service) được gửi qua Kafka phân vùng theo order_id.
+Do khác topic và partition key, Kafka hoàn toàn không đảm bảo thứ tự thời gian giữa hai sự kiện này. Ngoài ra, người dùng có thể đang gọi trực tiếp các API như viết review, tải ảnh, hoặc gửi báo cáo
+
+Giả sử User yêu cầu xóa tài khoản, nhưng cùng lúc đó đơn hàng của họ vừa hoàn thành:
+Luồng Order Consumer: Nhận ORDER_COMPLETED, mở transaction, kiểm tra: "User này có Deletion Guard trong privacy_erasure_requests chưa?" ->  Chưa có! (do Privacy consumer chưa xử lý xong)
+Luồng Privacy Consumer: Mở transaction -> Tìm tất cả review cũ để đổi tên thành "Khách hàng ẩn danh" -> Ghi Deletion Guard vào privacy_erasure_requests 
+Luồng Order Consumer: Tiếp tục chạy câu lệnh tiếp theo sau bước kiểm tra: Thực hiện INSERT vào bảng review_eligibilities với cột owner_user_id = 'user-123' -> COMMIT
+
+
+Thiết kế này gần như KHÔNG ảnh hưởng tiêu cực đến hiệu suất:
++ Lưu lượng đọc bài đánh giá trên trang sản phẩm (PDP) chiếm tới 95% – 99% tổng lưu lượng của Review Service:
+    Không lấy Lock: Khách xem đánh giá là luồng đọc công khai, không thực hiện subject_lock
++ Ở các luồng ghi (Order consumer, tạo/sửa review, upload media, report), việc thêm subject_match_key và subject_lock chỉ gồm 3 bước
+    1. Tính HMAC-SHA-256
+    2. Xin Subject Lock
+    3. Tra cứu Deletion Guard
+
+
+
+5. Asynchronous Self-Consumption qua Outbox & Kafka
+Thay vì cập nhật bảng điểm tổng hợp (product_rating_aggregates) ngay trong cùng 1 transaction khi user tạo/sửa review, chúng ta có thể cập nhật nó bất đồng bộ qua Kafka
+Lý do: 
+5.1 Tránh tắc nghẽn khóa trên dòng nóng
+Mỗi khi một khách hàng viết review, hệ thống phải cập nhật dòng của sản phẩm đó trong bảng product_rating_aggregates (cộng thêm 1 sao, tính lại điểm trung bình...). Để bảo đảm tính đúng đắn, câu lệnh UPDATE product_rating_aggregates WHERE product_id = ... sẽ khóa độc quyền (row-level lock / FOR UPDATE) dòng của sản phẩm đó
+5.2 Đảm bảo phiên bản đơn điệu (review_revision) cho Search Service
+Kafka topic t.review.events sử dụng partition key là product_id. Điều này bảo đảm toàn bộ event liên quan đến cùng 1 sản phẩm sẽ đi vào cùng 1 partition theo đúng thứ tự thời gian
+Consumer (Rating Aggregator) đọc tuần tự theo từng sản phẩm, dễ dàng tăng review_revision một cách đơn điệu và phát event REVIEW_METRICS_UPDATED sang Search Service
+5.3 Kiến trúc mở rộng (Event-Driven)
+Nếu sau này hệ thống có thêm các service khác cần lắng nghe khi có review mới, ví dụ:
+    Loyalty / Rewards Service: Tặng điểm/xu khi khách hàng để lại đánh giá.

@@ -1,0 +1,3 @@
+# Raw output of scripts/ci/search-bench.sh; the numbers that matter are copied into
+# docs/performance/search-scale-benchmark.md.
+results/

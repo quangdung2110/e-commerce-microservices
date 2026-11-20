@@ -3,11 +3,13 @@ import { Star } from "lucide-react";
 import type { SearchItem } from "@/lib/api/search";
 import { formatVND } from "@/lib/format";
 import { StorefrontImage } from "./storefront-image";
+import { isShowcaseIllustration } from "@/lib/storefront-collection";
 
 export function ProductCard({ product }: { product: SearchItem }) {
   return <Link href={`/products/${encodeURIComponent(product.product_slug)}?sku=${encodeURIComponent(product.sku_id)}`} className="focus-ring group flex min-w-0 flex-col gap-3 rounded-xl">
     <div className="relative aspect-square overflow-hidden rounded-xl bg-surface-2">
       <StorefrontImage src={product.thumbnail_url} alt={product.name} className="size-full object-contain" />
+      {isShowcaseIllustration(product.thumbnail_url) && <span className="absolute bottom-2 right-2 rounded-md bg-surface-overlay px-2 py-1 text-caption text-muted-foreground">Ảnh minh họa</span>}
       {product.discount_percentage > 0 && <span className="absolute left-3 top-3 rounded-md bg-surface-overlay px-2 py-1 text-caption">Giảm {product.discount_percentage}%</span>}
     </div>
     <div className="space-y-2">

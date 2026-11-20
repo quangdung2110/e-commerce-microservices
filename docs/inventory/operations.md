@@ -49,8 +49,16 @@ Metrics use bounded labels only (command/event type, result class, caller surfac
 | Search freshness > 30 s / > 60 s, or readiness-suppressed facts grow | Warning / page: Inventory + Search | Repair readiness/projector, replay or snapshot bootstrap. |
 | Availability Read API latency/error or BFF `UNKNOWN` rate breaches its agreed budget | Warning / page: Inventory + Storefront | Repair read endpoint/projector/cache; BFF continues to degrade rather than replaying data. |
 | Any `RESERVED` root > 60 min | Operational page: Order | Order decides explicit outcome; no Inventory cleanup. |
-| `503 INVENTORY_BUSY` > 1% of mutation attempts for 5 min, or latency breach for 10 min | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
+| `503 INVENTORY_BUSY` > 1% of mutation attempts for 5 min (`InventoryCommandBusy`) | High: Inventory + Platform | Reduce contention/capacity pressure without bypassing validation. |
+| Reserve p95 > 200 ms or p99 > 500 ms on the Reserve route for 10 min (`InventoryReserveLatencySloBreach`) | High: Inventory + Platform | Check pool pending and `stock_position` lock waits; find the hot SKU ([runbook](../observability/runbook.md#inventoryreservelatencyslobreach)). Adding replicas does not help one hot row. |
+| Average Hikari pending > 10 per instance for 5 min (`InventoryDbPoolSaturated`) | Warning: Inventory + Platform | Early queueing signal: connections held by lock waits or a slow primary. |
 | Audit failure, privileged anomaly, direct-write attempt | Security page | Deny/contain, preserve evidence, investigate. |
+
+The busy rate alone does not detect a hot SKU. Callers queue for a pool connection and each lock wait stays far below
+`lock_timeout`, so `INVENTORY_BUSY` stays at 0 while Reserve latency reaches seconds; the latency and pool alerts cover
+that case ([ADR-032](decisions/ADR-032-reserve-saturation-alerts.md),
+[baseline benchmark](../performance/inventory-reserve-hot-sku-baseline-2026-10-19.md)). The three rules live in
+[`infra/observability/rules.yml`](../../infra/observability/rules.yml).
 
 Refund-scope/quarantine age is dashboarded but has no automatic closure threshold:
 Order owns return-window policy and Operations owns inspection cadence. A terminal
@@ -69,7 +77,7 @@ close/cancel recovery, not an Inventory age-based cleanup.
 | Daily | Replay movement ledger from last verified checkpoint and compare current state. | SEV-1; preserve state/ledger snapshot. |
 | Every 5 minutes | Identify `RESERVED` roots older than 60 minutes. | Alert Order; do not mutate. |
 | Daily | Order compares active orders/refunds and financially terminal Buyer cases with unresolved scope finalization to Inventory command/state queries. | Recover the same frozen command or audited Order exception; no direct DB write or second Payment refund. |
-| Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF known-state rate and oldest pending-work age, readiness-suppressed facts, and Search applied sequence versus export watermark. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
+| Continuous | Recompute sampled `SkuAvailabilityState`, monitor dirty/fan-out backlog, BFF known-state rate and oldest pending-work age, readiness-suppressed facts, and Search applied sequence versus export watermark. Inventory implements the first two parts: every `inventory.workers.availability-audit-interval` (default 1 minute) the next `availability-audit-batch-size` (default 500) state rows, in `sku_id` order and wrapping around, are compared with stock truth in one snapshot (rows with a dirty mark or an unfinished fan-out are skipped), published as `inventory_integrity_availability_mismatches` plus an error log; `inventory_availability_readiness_suppressed` counts states with no active Search registration. Backlog and age gauges are `inventory_availability_dirty_backlog` and `inventory_availability_oldest_pending_seconds`; the known-state rate is `inventory_availability_reads_total{status}`. The Search-applied-sequence comparison belongs to Search. | Repair projector/read model; Search then replay/bootstrap if its export copy needs recovery. |
 | Pre/post recovery | Bucket scan, ledger replay, identity, outbox/export, and consumer checks. | Writes stay closed until all pass. |
 
 Reconciliation detects only: it publishes metrics and error logs and never mutates state. Correction requires ADMIN reason/evidence and normal command audit. For a `RESERVED` order, Order first cancels it through its Admin pre-payment cancellation (whole-root `ADMIN_CANCELLED` release); for a `COMMITTED` undispatched order it uses its Admin pre-dispatch refund (`ReleaseCommittedOrderBeforeDispatch`); a dispatched case is a manual Order incident. Inventory has no exception release. A systemic ledger/state mismatch requires incident recovery, never compensating adjustment.
@@ -83,13 +91,13 @@ Reconciliation detects only: it publishes metrics and error logs and never mutat
   retains the original command checkpoint and durable recovery work after retry
   exhaustion. Reconciliation compares the specific command result and current
   reservation state separately ([ADR-020](decisions/ADR-020-command-receipts-and-minimal-order-events.md)).
-- Public/export events are retained at least 30 days; an undelivered record stays beyond ordinary cleanup. If retention/capacity becomes unsafe, stop accepting new mutations before dropping evidence.
+- Public/export events are retained 30 days (`published_event` by the hourly retention pass, both Kafka topics by `retention.ms` = 30 days set at provisioning — a floor and a ceiling, ADR-028); an unsequenced or undelivered record stays beyond ordinary cleanup. Platform provisions `t.inventory.stock.events.v1` and `t.inventory.order.events.v1` explicitly; broker auto-creation (local compose) uses the broker default and does not meet this. If retention/capacity becomes unsafe, stop accepting new mutations before dropping evidence.
 - Order owns an inbox/dedupe record and DLQ. DLQ preserves the original event, attempt/error history, and replay goes through the normal inbox path. Operators never synthesize a replacement fact.
 - Search relies on per-SKU `availability_revision`, does not use a DLQ or Inventory inbox, and never upserts a missing Product document. It uses a 24-hour per-SKU snapshot session plus ordered change feed; after `410 REPLAY_WINDOW_EXPIRED` it must bootstrap availability again in its existing Product index.
 
 ## 5. Security and audit
 
-Service calls use authenticated workload identity and encrypted transport, both enforced by the service mesh (mTLS plus per-principal, per-path `AuthorizationPolicy` — [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); the caller-set `X-Service-Identity` header is attribution only. ADMIN arrives only through the gateway with role `ADMIN` from `X-User-Roles`; MFA is a production release gate that depends on an Auth/gateway MFA assertion ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)). Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
+Service calls use authenticated workload identity and encrypted transport, both enforced by the service mesh (mTLS plus per-principal, per-path `AuthorizationPolicy` — [mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); the caller-set `X-Service-Identity` header is attribution plus a per-path allowlist inside Inventory as defense-in-depth (`401` missing, `403` another service), never the authority; it is evaluated on the decoded request path ([interfaces.md](interfaces.md), ADR-028). ADMIN arrives only through the gateway with role `ADMIN` from `X-User-Roles`; MFA is a production release gate that depends on an Auth/gateway MFA assertion ([ADR-024](decisions/ADR-024-admin-surface-and-error-catalog.md)). Primary data, backups, audit, and outbox are encrypted at rest. No direct-write credential exists for operational correction; time-bounded, individually attributable break-glass access is read-only and reviewed.
 
 Audit retains actor/effective role, command and operation identity, reason/evidence reference, before/after values, timestamp, correlation/causation IDs, and result for at least seven years. Events/logs omit credentials, raw evidence contents, and unnecessary customer PII. Compliance/Legal validation of retention/evidence remains a production-release gate.
 
@@ -111,3 +119,15 @@ failed quarantine. See [Order runbook](../order/operations.md) and
 [Order ADR-013](../order/decisions/ADR-013-durable-refund-scope-finalization.md).
 
 Backup restore integrity is tested monthly. Full failover/restore, outbox/consumer replay, access/audit review, and discrepancy exercises run quarterly. Any failed drill blocks claiming the corresponding RPO/RTO target until remediated.
+
+## Request ID, trace ID and caller deadline
+
+Per [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) and [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), plus [ADR-030](./decisions/ADR-030-request-correlation-and-caller-deadline.md). Log lines written
+while a request is served carry `request_id` and `trace_id` (put in the MDC by `RequestCorrelationFilter` and shown by
+`logging.pattern.level`); background work has neither. A missing or malformed `X-Request-Id` is replaced, never a `400`,
+and the effective one is returned in the response.
+
+The counter `http.server.caller_deadline_exceeded{route}` counts requests that finished after the caller
+stopped waiting (`X-Request-Timeout-Ms`), with a WARN line `request outlived the caller deadline`. A steady
+rise means Inventory answers slower than its callers' timeouts: look at the route's p99 first, then at the
+caller's timeout. The alert threshold is set from load-test p99, not in advance. `X-Correlation-ID` is unchanged: it is the business flow ID stored with commands, separate from the request ID.

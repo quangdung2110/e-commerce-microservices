@@ -6,7 +6,9 @@ date: 2026-08-27
 decision_owners:
   - Auth Service team
 supersedes: null
-evidence: []
+evidence:
+  - go/services/auth-service/internal/infrastructure/redis
+  - go/services/auth-service/test/integration/redis_store_test.go
 ---
 
 # ADR-004 — Store ephemeral security state in Redis
@@ -36,4 +38,8 @@ consume và runbook rõ ràng.
 
 ## Migration impact and verification
 
-Cần key naming, TTL, monitoring, Redis-failure test và quyết định backup/fallback.
+Đã implement: mọi adapter Redis đi qua `mapError` và trả `DEPENDENCY_UNAVAILABLE` khi Redis lỗi
+(fail closed); OTP, reset token, rate limit và worker lock dùng Lua script nguyên tử (4 script
+được integration test bằng Redis thật). Key naming nằm ở `keybuilder`. Chưa có monitoring
+Redis riêng và không có fallback: Redis lỗi thì login, refresh, đăng ký, reset và thu hồi
+đều thất bại.

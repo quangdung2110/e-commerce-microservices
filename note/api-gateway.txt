@@ -1,0 +1,74 @@
+Khác hoàn toàn với các luồng API thông thường (Request -> Response -> Đóng kết nối), còn có 2 luồng đặc biệt là Webhook và Websocket. Chính vì thế API Gateway áp dụng cơ chế xử lý đặc thù riêng cho từng loại
+1. Luồng Webhook bên thứ ba (ví dụ Stripe Webhook)
+Vấn đề cần giải quyết:
++ Không có JWT của hệ thống: Webhook được gửi từ Server của Stripe, không hề có Token mà Auth Service cung cấp
++ Nguy cơ thanh toán trùng lặp: nếu Gateway tự ý retry, có thể khiến Payment Service xử lý một đơn hàng nhiều lần
+Cách API Gateway xử lý:
++ Bypass JWT: Gateway cấu hình rule riêng cho endpoint này, không cần gọi sang Auth Service, request được chuyển thẳng vào trong
++ Zero Retry: Nếu Payment Service phản hồi chậm hoặc timeout, Gateway không bao giờ tự ý retry
++ Bảo vệ Edge: Áp dụng profile rate limit riêng (ví dụ 50 req/s, burst 100)
+2. Luồng Websocket (ví dụ Chat Service)
+Vấn đề cần giải quyết:
++ Websocket là kết nối song song kéo dài, khác hẳn với HTTP
++ Cần xác thực danh tính User trước khi thực hiện nâng cấp kết nối Upgrade
++ Không thể gọi đến Auth Service để kiểm tra Token trên từng frame
+Cách API Gateway xử lý:
+2.1 Xác thực tại bước Handshake (HTTP Upgrade):
+Khi Client gửi request bắt đầu: GET /ws/... kèm header Upgrade: websocket và Token JWT (qua header Authorization hoặc query param)
+Gateway chặn lại ở bước này và gọi gateway-auth để kiểm tra Token (chữ ký, hạn, Redis denylist)
+Nếu Token sai/bị revoke: Gateway trả về 401 Unauthorized ngay lập tức, từ chối nâng cấp kết nối
+Nếu Token hợp lệ: Gateway gắn X-User-Id và chuyển tiếp cho Chat Service hoàn tất bắt tay (Handshake)
+2.2 Cấu hình Timeout riêng biệt
+Route /ws/** tại Gateway được cấu hình timeout cực dài (ví dụ: 3600s hoặc vô hạn) kết hợp cơ chế TCP Keep-Alive / Ping-Pong
+2.3 Chống spam mở kết nối (Handshake Rate Limit):
+Áp dụng profile websocket-handshake (chỉ cho phép tối đa 5 lần handshake / phút / user) để chống bot spam mở hàng nghìn kết nối liên tục làm cạn kiệt socket server
+Xử lý khi User bị Đổi Mật Khẩu / Khóa Tài Khoản giữa chừng:
+2.4 Vì Gateway không đọc từng frame sau khi đã bắt tay, nếu User bị Ban tài khoản khi đang mở chat:
+Auth Service sẽ bắn event t.auth.events (USER_REVOKED) vào Kafka.
+Chat Service nghe Kafka event, tìm đúng kết nối socket của User đó trong RAM và chủ động đóng (Close Socket) từ phía server
+
+
+
+Phân tích chi tiết 2 nhánh đúng theo thiết kế:
+1. Nhánh Metrics: Mô hình "KÉO" (Pull Model) độc lập
+Prometheus tự chủ động đi thu thập (scrape).
+Cứ mỗi chu kỳ (ví dụ 15 giây), Prometheus sẽ tự gọi vào endpoint nội bộ http://api-gateway:8090/metrics để lấy các chỉ số về CPU, RAM, RPS, 4xx, 5xx...
+Nhánh này không cần đi qua OTel Collector để đảm bảo tính độc lập cao nhất (ngay cả khi OTel Collector bị nghẽn thì Prometheus vẫn lấy được số liệu giám sát).
+2. Nhánh Traces & Logs: Mô hình "ĐẨY" (Push Model) qua OTel Collector
+Traces: API Gateway và gateway-auth gom các Spans và bắn (Push) trực tiếp qua giao thức OTLP gRPC vào cổng 4317 của OpenTelemetry Collector ➔ OTel Collector lọc, sample và đẩy về Jaeger
+Logs: Gateway in log JSON ra console (stdout). OTel Collector (hoặc log collector đi kèm) thu nhận các dòng log này và đẩy về Loki
+
+
+
+
+Redis đóng vai trò là cầu nối trạng thái thời gian thực giữa Auth Service (bên ghi) và Gateway Auth (bên đọc)
+A. Phía Auth Service (bên ghi)
++ Khi User Logout (1 thiết bị): Auth Service ghi key: SET auth:denylist:{jti} 1 EX {remaining_seconds}
++ Khi User Đổi mật khẩu / Admin Ban / Force Logout toàn bộ máy: Auth Service ghi mốc thời gian: SET auth:revoked_before:{user_id} {current_timestamp} EX {token_ttl}
++ Khi Key Rotation (Xoay khóa JWKS định kỳ): Auth Service phát tín hiệu: PUBLISH auth:jwks:update '{"event": "JWKS_UPDATED"}'
+B. Phía Gateway Auth (bên đọc)
+Khi có request gửi kèm JWT đi qua Gateway
+1. Verify chữ ký: Dùng JWKS Public Key (lưu ở RAM)
+2. Kiểm tra Denylist đơn lẻ: Check nhanh Redis EXISTS auth:denylist:{jti} → Nếu tồn tại → Chặn ngay lập tức (401 Unauthorized)
+3. Kiểm tra Thu hồi diện rộng: Check Redis GET auth:revoked_before:{user_id} → Nếu jwt.iat <= revoked_before → Chặn ngay lập tức (401 Unauthorized)
+4. Lắng nghe xoay khóa: Subscribe channel auth:jwks:update để tự động làm mới bộ Public Key trong bộ nhớ đệm
+
+
+
+
+Cách verify chữ ký sử dụng JWKS
+Bước 1: Trích xuất kid từ Header của JWT
+Lý do: trước khi gửi access token về client, chúng ta thêm trường kid và lấy Private Key từ bảng jwt_keys trong Auth DB để ký
+Bước 2: Lấy Public Key tương ứng từ JWKS Cache trong bộ nhớ RAM của gateway-auth
+Khi cache miss: 
++ gateway-auth gửi request đến Auth Service: GET /.well-known/jwks.json
++ Lưu vào Cache để phục vụ cho các request tiếp theo.
+Bước 3: Xác thực chữ ký Toán học
+Bước 4: Kiểm tra tính hợp lệ của các Claim
++ exp (Expiration Time): Token còn trong thời hạn sử dụng hay đã hết hạn?
++ nbf (Not Before) / iat (Issued At): Token đã đến thời điểm được phép dùng chưa?
++ iss (Issuer): Có đúng do auth-service phát hành không?
+Bước 5: Kiểm tra trạng thái Thu hồi trên Redis (Denylist)
++ Check jti có nằm trong auth:denylist:{jti} không (Đăng xuất đơn lẻ).
++ Check iat có nhỏ hơn auth:revoked_before:{user_id} không (Đổi mật khẩu / Bị Ban)
+Nếu tất cả các bước trên đều pass, Gateway sẽ gắn thông tin User vào Header (X-User-Id, X-User-Roles...) và chuyển tiếp (forward) request an toàn đến các Service nghiệp vụ phía sau.

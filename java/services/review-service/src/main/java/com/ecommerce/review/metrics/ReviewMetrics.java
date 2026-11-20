@@ -52,6 +52,15 @@ public class ReviewMetrics {
         counter("review_privacy_guard_blocked_total", "operation", operation).increment();
     }
 
+    /**
+     * One failed delivery of a {@code USER_DELETED} record. The listener retries without a
+     * time limit, and a deletion that cannot be applied has no privacy request row for the
+     * overdue gauge to count, so this counter is the only signal that the stall exists.
+     */
+    public void privacyConsumerFailure() {
+        counter("review_privacy_consumer_failure_total").increment();
+    }
+
     public void exportSession(String result) {
         counter("review_export_session_total", "result", result).increment();
     }

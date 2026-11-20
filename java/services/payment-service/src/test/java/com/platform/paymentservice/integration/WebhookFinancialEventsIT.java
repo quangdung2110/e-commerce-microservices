@@ -324,7 +324,7 @@ class WebhookFinancialEventsIT extends AbstractPaymentIT {
         var json = JsonMapper.builder().findAndAddModules().build();
         var handler = new StripeWebhookEventHandler(new StripeWebhookEventParser(json),
                 webhookPayments, webhookProcessing, commits, new PaymentStateMachine(), ids, json,
-                currentFacts, null);
+                currentFacts, null, () -> NOW);
         return new WebhookProcessorService(webhookProcessing, handler, cipher, ids,
                 (ClockPort) () -> NOW, Duration.ofMinutes(1), Duration.ofSeconds(30), 8);
     }

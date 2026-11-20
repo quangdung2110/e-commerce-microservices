@@ -71,6 +71,16 @@ public class ReservationStore {
                 line.warehouseId(), line.state().name(), ts(line.committedAt()));
     }
 
+    /**
+     * Serializes Reserve commands that carry different command IDs for the same order, so the
+     * loser sees the winner's committed root ({@code RESERVATION_ALREADY_EXISTS}) instead of
+     * evaluating the stock the winner already took and answering {@code REJECT_ALL}.
+     */
+    public void lockOrderKey(String orderId) {
+        jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended('order-reserve:' || ?, 0))",
+                Object.class, orderId);
+    }
+
     public Optional<Root> find(String orderId) {
         return jdbc.query("SELECT " + ROOT_COLUMNS + " FROM order_reservation WHERE order_id = ?", ROOT, orderId)
                 .stream().findFirst();
@@ -133,13 +143,17 @@ public class ReservationStore {
                 dispatch.actorId(), Timestamp.from(now));
     }
 
-    /** Admin dispatch queue: committed, undispatched lines at a warehouse, oldest commit first. */
+    /** Admin dispatch queue: committed, undispatched lines (one warehouse or all), oldest commit first. */
     public List<Line> dispatchQueue(String warehouseId, Instant afterCommittedAt, String afterOrderId,
                                     String afterOrderLineId, int limit) {
         StringBuilder sql = new StringBuilder("SELECT " + LINE_COLUMNS + " FROM reservation_line l "
                 + "LEFT JOIN physical_dispatch d ON d.order_id = l.order_id AND d.order_line_id = l.order_line_id "
-                + "WHERE l.warehouse_id = ? AND l.state = 'COMMITTED'");
-        List<Object> args = new ArrayList<>(List.of(warehouseId));
+                + "WHERE l.state = 'COMMITTED'");
+        List<Object> args = new ArrayList<>();
+        if (warehouseId != null) {
+            sql.append(" AND l.warehouse_id = ?");
+            args.add(warehouseId);
+        }
         if (afterCommittedAt != null) {
             sql.append(" AND (l.committed_at, l.order_id, l.order_line_id) > (?, ?, ?)");
             args.add(Timestamp.from(afterCommittedAt));

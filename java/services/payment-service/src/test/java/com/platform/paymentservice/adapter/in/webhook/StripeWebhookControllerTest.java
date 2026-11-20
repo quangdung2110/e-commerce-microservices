@@ -5,8 +5,8 @@ import com.platform.paymentservice.application.service.WebhookIngressService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -24,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = "payment.stripe.webhook-max-bytes=8")
 class StripeWebhookControllerTest {
     @Autowired MockMvc mvc;
-    @MockBean WebhookIngressService ingress;
+    @MockitoBean WebhookIngressService ingress;
 
     @Test
     void passes_the_exact_request_bytes_and_returns_200_only_for_accepted_delivery() throws Exception {
@@ -62,6 +62,7 @@ class StripeWebhookControllerTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(post("/v1/payments/webhook/stripe")
                         .header("Stripe-Signature", "t=1,v1=sig").content("{}"))
-                .andExpect(status().isServiceUnavailable());
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Retry-After", "2"));
     }
 }

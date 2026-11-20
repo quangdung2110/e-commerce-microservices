@@ -36,6 +36,13 @@ Một receipt row rẻ hơn chi phí sự cố và biến replay/rebalance thàn
 - Reconciliation vẫn tồn tại nhưng chỉ phát hiện corruption, missing/malformed event
   hoặc bug; không còn là biện pháp thường xuyên sửa duplicate delivery.
 - Receipt retention phải dài hơn Kafka retention cộng replay safety margin.
+- Reconciliation hằng ngày so sánh `reviews` với aggregate tại một thời điểm, trong khi
+  aggregate luôn trễ vài giây so với `reviews`. Một review vừa tạo mà event của nó chưa được
+  aggregator xử lý sẽ bị reconciliation coi là drift: nó ghi giá trị đã tính cả review đó
+  rồi event đến muộn cộng thêm một lần nữa. Giới hạn đã biết và được chấp nhận: reconciliation
+  chạy lúc 02:15 khi tải thấp, và lần chạy kế tiếp tự sửa sai lệch (kèm tăng revision). Nó
+  không phải đường thường xuyên sửa aggregate; xem
+  [operations.md mục 6](../operations.md#6-runbooks).
 
 ## Verification
 

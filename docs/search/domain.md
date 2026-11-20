@@ -2,12 +2,13 @@
 doc_id: search-domain
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
 evidence:
   - docs/search/schema
-verified_against_commit: null
+  - java/services/search-service/src/main/java/com/ecommerce/search/domain
+  - java/services/search-service/src/main/java/com/ecommerce/search/common/ErrorCode.java
 ---
 
 # Search Service — Domain Model
@@ -30,7 +31,11 @@ verified_against_commit: null
 | Tombstone | Document đã bị xóa ở upstream nhưng còn giữ lại để chặn zombie update | Soft delete nghiệp vụ |
 | Purge | Xóa vật lý document tombstone sau cửa sổ bảo vệ | Tombstone |
 | Read alias / write alias | Alias phục vụ đọc / phục vụ ghi trên cùng index versioned | Tên index vật lý |
-| Cursor | Chuỗi base64 mã hóa sort values của hit cuối | Số trang |
+| Cursor | Chuỗi opaque, có chữ ký HMAC (generation 2), mang PIT id, vị trí Product kế tiếp, category id đã resolve và fingerprint của query đã chuẩn hóa (trừ `size`); chỉ hợp lệ với đúng query đã sinh ra nó | Số trang, hay sort values của hit cuối (cursor SKU `search_after` cũ đã bị gỡ) |
+| Run lease | Lease `full-reindex` mà process đang chạy một reindex giữ và gia hạn; hết hạn nghĩa là run bị bỏ rơi | Lock nghiệp vụ |
+| Control request | Request gộp, lưu bền, của mọi `catalog-reindex-requested` chưa được một run hoàn tất thỏa mãn | Event Kafka |
+| Retired index | Index versioned đã ngừng được alias phục vụ, kèm thời điểm ngừng; đồng hồ để dọn index cũ tính từ đây | Index vừa tạo |
+| Tail replay | Đọc lại, vào index mới sau cutover, stretch mà live indexer đã áp dụng vào index cũ sau khi catch-up hội tụ | Catch-up |
 | Suggestion weight | Điểm xếp hạng pre-compute của một gợi ý | `_score` |
 | Facet count | Số DISTINCT `product_id` khớp một filter | `doc_count` theo SKU |
 
@@ -64,8 +69,11 @@ chỉ tham chiếu chúng qua identifier và snapshot.
 | Query | Autocomplete | Buyer qua Gateway | Query layer |
 | Query | Duyệt cây danh mục | Buyer qua Gateway | Query layer |
 | Query | Đọc facet của một danh mục | Buyer qua Gateway | Query layer |
-| Command | Trigger full reindex | Admin qua Gateway | Reindex job |
-| Query | Đọc trạng thái một lần reindex | Admin qua Gateway | Reindex job |
+| Command | Trigger full reindex | Admin qua Gateway; hoặc hệ thống khi Product phát `catalog-reindex-requested` | Reindex job |
+| Command | Hủy một reindex run | Admin qua Gateway | Reindex job |
+| Command | Rollback một reindex run đã hoàn tất | Admin qua Gateway | Reindex run service |
+| Query | Đọc trạng thái một lần reindex, hoặc liệt kê các lần | Admin qua Gateway | Reindex run service |
+| Command nội bộ | Resume / đánh dấu bỏ rơi một run mất owner; dọn index cũ | Watchdog, scheduler | Reindex job, index cleanup |
 | Command nội bộ | Apply event catalog/availability/review | Kafka consumer | Indexing worker |
 | Command nội bộ | Import availability/rating snapshot khi full reindex | Reindex job | Reindex writer |
 | Command nội bộ | Rebuild suggestion, recompute count, purge tombstone | Scheduler | Job tương ứng |
@@ -91,6 +99,10 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-BR-013` | Rating snapshot chỉ apply sau catalog build và dùng cùng `review_revision` với event replay | Full reindex | Rating thiếu hoặc event cũ ghi đè snapshot |
 | `SEARCH-BR-014` | Suggestion dedupe theo `(type, scope, language, text_normalized)`; `PRODUCT` và `CATEGORY` cùng text không hợp nhất | Rebuild suggestion | Dropdown mất phân loại hoặc lặp term cùng loại |
 | `SEARCH-BR-015` | Weight suggestion tính sau dedupe; nhóm Product trùng tên lấy điểm cao nhất, không cộng dồn theo số Product/SKU | Rebuild suggestion | Nhiều entity trùng tên làm lệch ranking |
+| `SEARCH-BR-016` | Câu trả lời của Elasticsearch có `timed_out` hoặc shard lỗi không bao giờ được trả cho buyer hay ghi vào `product_count`; nó là `SEARCH_TIMEOUT` | Mọi truy vấn và job tổng hợp | Facet/số đếm thiếu trông như đầy đủ |
+| `SEARCH-BR-017` | Index mới nhận alias sau count/sample/smoke verification và chuẩn bị cards; năm alias chuyển trong một lệnh (ADR-029) | Cutover reindex | Cutover thiếu dữ liệu hoặc lẫn thế hệ SKU/Category/cards |
+| `SEARCH-BR-018` | Một run chưa kết thúc có đúng một owner sống (lease); owner chết thì run được resume hoặc đánh dấu bỏ rơi, không chặn trigger vĩnh viễn | Reindex | Hai run song song, hoặc `REINDEX_ALREADY_RUNNING` mãi mãi |
+| `SEARCH-BR-019` | Một `catalog-reindex-requested` đến sau khi run bắt đầu làm run `SUPERSEDED`; request chỉ bị xóa bởi run `COMPLETED` bắt đầu sau nó | Reindex | Cutover index mang category path cũ, hoặc mất một thay đổi cây |
 
 ## 5. Invariants
 
@@ -103,7 +115,7 @@ Buyer không có command nào trên Search. Mọi thay đổi dữ liệu đến
 | `SEARCH-INV-003` | `cardinality` aggregation trên `product_id` trong mọi facet |
 | `SEARCH-INV-004` | Painless guard script trong [`schema/scripts`](./schema/scripts/README.md) |
 | `SEARCH-INV-005` | Availability dùng readiness handshake + `availability_patch` không upsert; missing document không ACK. Review cũng không `scripted_upsert` |
-| `SEARCH-INV-006` | Cửa sổ tombstone của purger dài hơn retention của topic |
+| `SEARCH-INV-006` | `search.tombstone.protection-window` (45 ngày) dài hơn thời gian dài nhất một record đã consume còn nằm trên broker: retention dài nhất 30 ngày (`t.inventory.stock.events.v1`) + `segment.ms` mặc định 7 ngày + biên; `TombstoneProtectionWindowTest` ([ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md), thay con số của [ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)) |
 | `SEARCH-INV-007` | Client chỉ được cấu hình tên alias, không cấu hình tên index |
 
 Test bắt buộc cho từng invariant được liệt kê ở [Workflows](./workflows.md).
@@ -127,27 +139,38 @@ Trạng thái hiển thị của một document `INDEXED` phụ thuộc `product
 
 ### Reindex run
 
-`STARTED` → `BUILDING` → `CATCHING_UP` → `CUTOVER` → `COMPLETED`. Từ bất kỳ pha
-nào có thể sang `FAILED`, hoặc sang `SUPERSEDED` khi một `catalog-reindex-requested`
-mới tới trong Build/Catch-up; sau `CUTOVER` có thể sang `ROLLED_BACK` bằng alias swap
-ngược. `COMPLETED`, `FAILED`, `ROLLED_BACK` và `SUPERSEDED` là bốn trạng thái kết
-thúc. Chỉ một run được phép ở trạng thái chưa kết thúc tại một thời điểm.
+`STARTED` → `BUILDING` → `CATCHING_UP` → `CUTOVER` → `COMPLETED`. `CUTOVER` gồm bước kiểm tra index mới
+(số document, sample diff, smoke query), chuẩn bị cards rồi chuyển năm alias (ADR-029). Từ `BUILDING` hoặc `CATCHING_UP`
+có thể sang `SUPERSEDED` khi một `catalog-reindex-requested` mới tới sau khi run bắt đầu (cũng được kiểm
+ngay trước khi swap), sang `CANCELLED` khi admin hủy, và từ bất kỳ pha nào sang `FAILED` (lỗi,
+kiểm tra không đạt, hết hạn, hoặc `RUN_ABANDONED` khi owner chết và hết lượt resume). `COMPLETED` có thể
+sang `ROLLED_BACK` bằng một lệnh rollback (alias swap ngược về index đã bị thay). `COMPLETED`, `FAILED`,
+`ROLLED_BACK`, `SUPERSEDED` và `CANCELLED` là năm trạng thái kết thúc. Chỉ một run được phép ở trạng
+thái chưa kết thúc tại một thời điểm.
+
+Bên trong, run đi qua các stage `CREATE_INDICES`, `BUILD_CATEGORIES`, `BUILD_CATALOG`, `BUILD_AVAILABILITY`,
+`BUILD_RATING`, `CATCH_UP`, `VERIFY`, `CUTOVER`, `DONE`; stage hiện tại và cursor của nó được lưu ở mỗi trang
+nên một run bị bỏ rơi được resume từ đó (tối đa 3 lần). Một run `CANCELLED` hoặc `SUPERSEDED` đã xóa các index
+nó dựng; `FAILED` cũng vậy trừ khi các alias đã chuyển.
 
 ### Suggestion build
 
 `BUILDING` → `VALIDATING` → `SWAPPED`. Từ `BUILDING` hoặc `VALIDATING` có thể sang
 `ABORTED` khi scan/bulk/PIT lỗi, source alias đổi hoặc validation gate không đạt;
-`ABORTED` giữ nguyên alias cũ nên API suggest không gián đoạn. Sau `SWAPPED` có thể
-sang `ROLLED_BACK` bằng alias swap ngược về version trước.
+`ABORTED` giữ nguyên alias cũ nên API suggest không gián đoạn. Sau `SWAPPED`, version vừa bị thay là
+rollback version và luôn được giữ; quay lại nó là một lệnh `_aliases` thủ công theo runbook
+([Operations §10](./operations.md#10-runbooks)). Code không đặt trạng thái `ROLLED_BACK` cho suggestion build.
 
 ## 7. Authorization rules
 
 - Bốn API storefront v2 là anonymous read-only qua Gateway. Search không nhận
   identity claim ở đường này, không lọc theo user và không có dữ liệu riêng tư
   trong index.
-- Reindex là admin API `/api/v2/search/reindex-runs`, yêu cầu identity và role
-  `ADMIN` do Gateway inject sau JWT verification. Service phải từ chối identity
-  header nếu endpoint có thể bị bypass Gateway.
+- Reindex là admin API `/api/v2/search/reindex-runs` (tạo, liệt kê, đọc, hủy, rollback), yêu cầu
+  identity và role `ADMIN` do Gateway inject sau JWT verification: thiếu identity là `401 UNAUTHORIZED`,
+  thiếu role là `403 FORBIDDEN`. Actor audit lấy từ identity đó. Run do control event tự khởi chạy có
+  actor `system:catalog-control`. Service phải từ chối identity header nếu endpoint có thể bị bypass
+  Gateway.
 - `/internal/v1` chỉ dành cho service-to-service qua mTLS; không dùng nó cho
   admin reindex và không có shared-secret fallback.
 
@@ -155,19 +178,25 @@ sang `ROLLED_BACK` bằng alias swap ngược về version trước.
 
 | Error code | Điều kiện | Retryable | Interface mapping |
 |---|---|---|---|
-| `INVALID_QUERY_PARAMETER` | Tham số sai kiểu hoặc ngoài range | No | HTTP 400 |
-| `INVALID_CURSOR` | Cursor không decode được hoặc không khớp bộ tham số | No | HTTP 400 |
+| `INVALID_QUERY_PARAMETER` | Tham số sai kiểu, ngoài range, vượt giới hạn độ dài/số lượng, token `filter` không phải giá trị facet, `category` không khớp category nào, body không đọc được | No | HTTP 400 |
+| `INVALID_CURSOR` | Cursor không decode được, sai chữ ký, quá hạn, quá dài hoặc không khớp bộ tham số | No | HTTP 400 |
+| `UNAUTHORIZED` | Gọi admin reindex mà không có trusted identity | No | HTTP 401 |
 | `FORBIDDEN` | Gọi admin reindex mà role không phải `ADMIN` | No | HTTP 403 |
 | `CATEGORY_NOT_FOUND` | Facet cho category không tồn tại trong index | No | HTTP 404 |
-| `REINDEX_ALREADY_RUNNING` | Đã có một run chưa kết thúc | Yes, sau khi run cũ xong | HTTP 409 |
 | `REINDEX_RUN_NOT_FOUND` | `run_id` không tồn tại | No | HTTP 404 |
+| `REINDEX_ALREADY_RUNNING` | Đã có một run chưa kết thúc (hoặc một run bị bỏ rơi vừa được resume) | Yes, sau khi run cũ xong | HTTP 409 |
+| `REINDEX_PRECONDITION_FAILED` | Cluster `red` hoặc thiếu dung lượng đĩa cho một index thứ hai | Yes, khi cluster hồi phục | HTTP 409 |
+| `REINDEX_RUN_NOT_CANCELLABLE` | Run đã kết thúc hoặc đang `CUTOVER` | No | HTTP 409 |
+| `REINDEX_ROLLBACK_UNAVAILABLE` | Run không `COMPLETED`, không thay index nào, không phải cutover mới nhất, index trước đã bị dọn, hoặc có run khác đang chạy | No | HTTP 409 |
 
 Tất cả error response dùng `application/problem+json` theo RFC 9457, với extension
-`code`, `trace_id`, `retryable` và `errors[]`; không dùng legacy response shape.
+`code`, `trace_id` (luôn có), `retryable` và `errors[]`; không dùng legacy response shape.
 Các lỗi sau là lỗi hạ tầng, không phải domain error, và không được dùng để suy ra
 kết luận nghiệp vụ: `ELASTICSEARCH_UNAVAILABLE` (HTTP 503), `SEARCH_TIMEOUT`
-(HTTP 504), `INTERNAL_ERROR` (HTTP 500). Kết quả rỗng là kết quả hợp lệ, không
-phải lỗi.
+(HTTP 504), `INTERNAL_ERROR` (HTTP 500). Lỗi giao thức khi gọi lệch route/method/media type:
+`NOT_FOUND` (404), `METHOD_NOT_ALLOWED` (405), `NOT_ACCEPTABLE` (406), `UNSUPPORTED_MEDIA_TYPE` (415);
+không bao giờ `500`. Kết quả rỗng là kết quả hợp lệ, không phải lỗi. Bảng đầy đủ kèm cách client xử
+lý ở [Interfaces §7](./interfaces.md#7-error-catalog).
 
 ## 9. Business examples
 
@@ -183,8 +212,13 @@ phải lỗi.
   chính SKU đó tới muộn: document đang tombstone nên event bị bỏ qua và ghi metric,
   không làm `is_deleted` trở lại `false`.
 - **Đổi cây danh mục.** Product phát `catalog-reindex-requested` sau rename, đổi
-  slug hoặc move category. Search coalesce request rồi reindex category trước,
-  Product sau; Product không fan-out toàn subtree trong write transaction.
+  slug hoặc move category. Search lưu bền request (gộp theo root category), đợi nó yên lặng 2 phút rồi tự
+  khởi chạy một run: export category trước, Product sau; Product không fan-out toàn subtree trong write
+  transaction. Hai lần sửa liền nhau chỉ tốn một run; một lần sửa đến giữa lúc run đang chạy làm run đó
+  `SUPERSEDED` và request vẫn còn để run kế tiếp xử lý.
+- **Run bị crash.** Process đang reindex chết giữa Build. Lease của nó hết hạn sau tối đa 2 phút; replica
+  nào giành được lease sẽ resume từ stage đã lưu thay vì bắt đầu lại, và sau ba lần resume vẫn không xong
+  thì run là `FAILED` với `RUN_ABANDONED`, index dở bị xóa và trigger mới được nhận.
 
 ## Product result semantics
 

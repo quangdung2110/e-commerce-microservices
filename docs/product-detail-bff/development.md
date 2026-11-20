@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-development
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -22,8 +22,7 @@ Micrometer Tracing bridge OpenTelemetry. Module `java/services/product-detail-bf
 gốc `com.ecommerce.pdp`. Pipeline request không được gọi blocking I/O; BlockHound chạy
 trong test.
 
-Response dependency đọc theo tolerant reader: bỏ qua field không biết; thiếu field bắt
-buộc, sai kiểu/enum/giới hạn hoặc vi phạm ràng buộc tham chiếu mới là sai contract.
+Response dependency đọc theo tolerant reader: bỏ qua field không biết; thiếu field bắt buộc, sai kiểu/enum/giới hạn (kể cả độ dài chuỗi) hoặc vi phạm ràng buộc tham chiếu mới là sai contract. Field bắt buộc nhưng nullable (`description`, `alt_text`, `value_label`, `thumbnail_storage_key`...) mà vắng mặt được đọc như `null`.
 
 ## Chạy local
 
@@ -33,8 +32,8 @@ qua gateway tại `http://localhost:8088/api/v1/storefront/products/{slug}`:
 
 | Thành phần local | Giá trị |
 |---|---|
-| Inventory | `PDP_INVENTORY_ENABLED=false`: chưa có Inventory service, mọi SKU `UNKNOWN` với outcome `disabled` |
-| Review | `PDP_REVIEW_SERVICE_TOKEN=dev-product-detail-bff-token`, khớp `REVIEW_INTERNAL_PDP_TOKENS` của review-service |
+| Inventory | `PDP_INVENTORY_ENABLED=false` dù `inventory-service` đã chạy trong compose, vì cờ chỉ bật sau rollout gate ([README](./README.md#trạng-thái-rollout)): mọi SKU `UNKNOWN` với outcome `disabled`. Đặt `PDP_INVENTORY_ENABLED=true` và `PDP_INVENTORY_BASE_URL=http://inventory-service:8080` để thử availability thật |
+| Review | Không cần secret: BFF gửi `X-Service-Identity: product-detail-bff`, nằm trong `REVIEW_INTERNAL_PDP_CALLERS` mặc định của review-service |
 | Media ("CDN" local) | Bucket MinIO `product-media` (anonymous read) phát qua gateway tại `http://localhost:8088/media/<storage_key>`; `PDP_MEDIA_REQUIRE_HTTPS=false` |
 | Placeholder | `http://localhost:8088/media/placeholder/product.svg`, file nằm ở `infra/minio/product-media/` và được `minio-init` upload |
 
@@ -55,20 +54,18 @@ Review theo đúng contract, kể cả khi test bật Inventory.
 
 ## Test bắt buộc
 
-Product nhiều SKU với trạng thái Inventory mixed; batch tối đa 500 SKU;
-Inventory thiếu một item và trả item cho SKU không yêu cầu (SKU khác giữ kết quả, metric
-`contract_violation` mức item tăng); Inventory trả `UNKNOWN`; Inventory timeout/5xx/circuit
+Product nhiều SKU với trạng thái Inventory mixed; Product đủ 500 SKU vẫn chỉ phát đúng một Inventory batch;
+Inventory thiếu một item và trả item cho SKU không yêu cầu (SKU khác giữ kết quả, counter `pdp_inventory_item_violations_total` tăng và có dòng log kèm `request_id`); Inventory trả `UNKNOWN`; Inventory timeout/5xx/circuit
 open; Product trả `404` (gồm Product `HIDDEN`) thì `404` kèm `no-store`; Product timeout;
 slug sai pattern hoặc dài hơn 180 trả `404` `no-store` mà không gọi Product;
-Order Reserve thất bại sau khi PDP đã hiện `IN_STOCK`; Review có aggregate 0; Review có
+Review có aggregate 0; Review có
 preview; Review timeout/5xx; và response Inventory/Review/Product sai contract (gồm
-Inventory trùng `sku_id`); field thừa trong response dependency không làm lỗi.
+Inventory trùng `sku_id`); field thừa trong response dependency không làm lỗi. Kịch bản Order Reserve thất bại sau khi PDP đã hiện `IN_STOCK` là test liên service của Checkout/Order, không thuộc bộ test của BFF vì BFF không bao giờ gọi Reserve.
 
 Test header và cấu hình theo [ADR-007](./decisions/ADR-007-hot-path-clarifications.md):
 `X-Request-Id` hợp lệ được chuyển tiếp; thiếu, ngắn hơn 8, dài hơn 128 hoặc có ký tự lạ thì
 được thay bằng trace ID và không bao giờ tới Inventory/Review; Review nhận
-`Authorization: Bearer` đúng token và `preview_limit` theo cấu hình; thiếu
-`PDP_REVIEW_SERVICE_TOKEN` khi Review bật thì không ready; cờ `PDP_INVENTORY_ENABLED=false`
+`X-Service-Identity: product-detail-bff` (không có `Authorization`) và `preview_limit` theo cấu hình; cờ `PDP_INVENTORY_ENABLED=false`
 / `PDP_REVIEW_ENABLED=false` không phát request nào tới dependency, outcome `disabled`,
 không tính SLO degrade.
 
@@ -78,8 +75,9 @@ category nhiều cấp giữ đúng `path`; thuộc tính `SELECT` có `value_la
 Product và cấp SKU map đúng `sku_id`; `url`/`thumbnail_url` dựng đúng từ CDN base URL và
 percent-encode storage key; SKU không ảnh nhận URL placeholder; không field storage key nào
 lọt ra public response; media trỏ SKU không có, variant value không có option, trùng
-`sku_id`/`media_id` đều trả `503` và ghi `contract_violation`; thiếu CDN base URL hoặc URL
-placeholder thì BFF không ready.
+`sku_id`/`media_id`, storage key hay thumbnail key có segment `.`/`..`/rỗng và chuỗi vượt giới hạn contract Product đều trả `503` và ghi `contract_violation`; thiếu CDN base URL hoặc URL placeholder thì BFF không ready.
+
+Test biên và status theo [ADR-008](./decisions/ADR-008-post-implementation-audit-corrections.md): status ngoài contract (`429`, `3xx`, `404` của Inventory/Review, `404` không phải của Product) tính vào circuit breaker còn `400`/`401`/`403` thì không, với cả ba dependency; readiness `UP` khi cả ba circuit đang mở và về `OUT_OF_SERVICE` khi graceful shutdown bắt đầu; đường dẫn rỗng, có `/` cuối hoặc nhiều segment dưới prefix PDP trả `404` problem `no-store` mà không gọi dependency; dòng log cảnh báo dependency và cảnh báo item Inventory mang `request_id`/`trace_id`.
 
 Test resilience theo [ADR-004](./decisions/ADR-004-resilience-budget-and-mesh-split.md)
 và ADR-007: chèn độ trễ trước pha Product để deadline còn dưới 100 ms thì trả `503` mà
@@ -93,11 +91,20 @@ theo đúng mapping và không tính vào circuit breaker; `400`/`401`/`403` t�
 được map đúng, phát alert và không tính vào circuit breaker; client hủy request thì mọi
 call con bị hủy; mọi response degrade, `404` và `503` mang `Cache-Control: no-store`.
 
+Test catalog cache theo [ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)
+(`CatalogCacheTest`, `CatalogCachePropertiesValidationTest`): lượt hai trong TTL không gọi
+Product nhưng vẫn gọi Inventory và Review; hết TTL thì gọi lại; `404` và lỗi Product không
+được giữ; tồn kho luôn mới; 20 request đồng thời cùng slug tạo một lời gọi Product; hủy
+request khởi tạo không làm hỏng request đang chờ; TTL ngoài 1–60 giây hoặc trần dưới 1 MB
+thì không khởi động. Các test còn lại chạy với cache tắt (`AbstractPdpTest`) để giữ kiểm
+chứng một lời gọi Product mỗi request; benchmark trước/sau ở
+[docs/performance](../performance/pdp-catalog-cache-benchmark-2026-10-17.md).
+
 ## Definition of Done
 
 Public OpenAPI và cả ba internal dependency contract có contract
 test; BFF gửi đúng một Inventory batch call sau khi Product trả SKU; mTLS/service
-identity, Review bearer token, `traceparent`, request ID đã chuẩn hóa (`X-Request-Id` cho
+identity, `traceparent`, request ID đã chuẩn hóa (`X-Request-Id` cho
 Product/Review, `X-Correlation-ID` cho Inventory) được truyền; Inventory failure map đúng `UNKNOWN`; Review failure map đúng `UNAVAILABLE`;
 `404`/`503` là `application/problem+json`; public response không chứa storage key;
 observability/circuit breaker/resilience test pass; load test (gồm Product 500 SKU, 5 020

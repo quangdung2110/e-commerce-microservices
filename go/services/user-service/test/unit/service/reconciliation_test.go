@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	apperr "github.com/ecommerce/user-service/internal/common/errors"
 	"github.com/ecommerce/user-service/internal/common/constants"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
 	"github.com/ecommerce/user-service/internal/domain/event"
 	"github.com/ecommerce/user-service/internal/domain/port"
 )

@@ -35,7 +35,7 @@ describe("useReviewMediaUploader", () => {
     act(() => { result.current.add([png("a.png"), png("b.png")]); });
     await waitFor(() => expect(result.current.items.every((item) => item.status === "ready")).toBe(true));
 
-    expect(reviewApi.issueUpload).toHaveBeenCalledWith({ media_type: "IMAGE", content_type: "image/png", byte_size: 1024 });
+    expect(reviewApi.issueUpload).toHaveBeenCalledWith({ media_type: "IMAGE", content_type: "image/png", byte_size: 1024 }, expect.any(AbortSignal));
     expect(result.current.assetIds).toEqual(["asset-1", "asset-2"]);
     expect(result.current.isUploading).toBe(false);
   });

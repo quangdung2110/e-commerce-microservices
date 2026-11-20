@@ -13,6 +13,9 @@ evidence:
 
 # ADR-003 — Một address mặc định và hard delete address
 
+> Cập nhật: quy tắc "không thể xóa address đang là default" chỉ còn áp dụng khi address
+> book có address khác; xem [ADR-012](./ADR-012-delete-last-address.md).
+
 ## Bối cảnh
 
 Address book cần checkout behavior mang tính xác định. Đơn hàng lịch sử phải giữ

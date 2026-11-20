@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Payment Service API
-  version: 1.0.0
+  version: 1.1.0
   license:
     name: MIT
     identifier: MIT
@@ -42,9 +42,25 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/InitiatePaymentResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '409': { $ref: '#/components/responses/Problem' }
-        '422': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '422':
+          description: >-
+            Idempotency mismatch, or PROVIDER_CREATE_NOT_ACCEPTED with an explicit
+            identity-bound no_payment_created proof. Only the latter certifies that
+            this command created no provider intent. Generic 503/PROVIDER_REQUEST_REJECTED
+            is NOT absence proof and must remain unresolved/manual review.
+          headers:
+            X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+            Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+          content:
+            application/problem+json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - $ref: '#/components/schemas/ProviderCreateNotAcceptedProblem'
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/{transactionId}:
     get:
       operationId: getPayment
@@ -62,8 +78,10 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/PaymentStatus' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/{transactionId}/client-data:
     get:
       operationId: getPaymentClientData
@@ -88,8 +106,10 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/PaymentClientData' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/{transactionId}/cancel:
     post:
       operationId: cancelPayment
@@ -114,10 +134,12 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/CancelPaymentResponse' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/{transactionId}/refund:
     post:
       operationId: initiateRefund
@@ -143,11 +165,13 @@ paths:
             Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
           content:
             application/json: { schema: { $ref: '#/components/schemas/RefundResponse' } }
-        '400': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem', description: 'VALIDATION_FAILED, ORDER_MISMATCH, PAYMENT_NOT_SUCCESS or REFUND_AMOUNT_EXCEEDED; retryable=false.' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/refunds/{refundTransactionId}:
     get:
       operationId: getRefund
@@ -165,8 +189,10 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/RefundStatus' } }
         '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem', description: 'UNAUTHENTICATED; X-Service-Identity is missing (contracts ADR-004); retryable=false.' }
+        '403': { $ref: '#/components/responses/Problem', description: 'FORBIDDEN; the caller is not on the allowlist (payment.identity.allowed-callers); retryable=false.' }
         '404': { $ref: '#/components/responses/Problem' }
-        '503': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /v1/payments/webhook/stripe:
     post:
       operationId: ingestStripeWebhook
@@ -199,6 +225,7 @@ paths:
         '503':
           description: Inbox, encryption, or Kafka unavailable; Stripe should retry with a fresh delivery.
           headers:
+            Retry-After: { $ref: '#/components/headers/RetryAfter' }
             Cache-Control: { $ref: '#/components/headers/NoStore' }
 components:
   securitySchemes:
@@ -229,14 +256,15 @@ components:
       required: true
       description: >-
         Required caller attribution. The value is not authentication evidence;
-        authorization uses the authenticated mesh principal.
+        authorization uses the authenticated mesh principal. Payment also checks the value against a
+        configured allowlist as defense-in-depth: missing is 401, not on the list is 403 (contracts ADR-004).
       schema: { type: string, const: order-service }
     CorrelationId:
       name: X-Correlation-Id
       in: header
       required: true
       description: Temporal Workflow ID propagated to logs, outbox headers, and the response.
-      schema: { type: string, minLength: 1, maxLength: 255 }
+      schema: { type: string, minLength: 1, maxLength: 128 }
     StripeSignature:
       name: Stripe-Signature
       in: header
@@ -244,10 +272,16 @@ components:
       description: Raw Stripe signature value, for example t=timestamp,v1=signature.
       schema: { type: string, minLength: 1 }
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     CorrelationId:
       description: Echo of the request X-Correlation-Id.
       required: true
-      schema: { type: string, minLength: 1, maxLength: 255 }
+      schema: { type: string, minLength: 1, maxLength: 128 }
     PrivateNoStore:
       description: Order-facing Payment responses must never be cached.
       required: true
@@ -484,6 +518,28 @@ components:
         evidence_due_at: { type: [string, 'null'], format: date-time }
         opened_at: { type: string, format: date-time }
         closed_at: { type: [string, 'null'], format: date-time }
+    ProviderCreateNotAcceptedProblem:
+      type: object
+      additionalProperties: false
+      required: [code, retryable, correlation_id, no_payment_created, transaction_id, provider_operation_id, order_id, payment_attempt_number]
+      description: >-
+        Frozen proof for the first CREATE dispatch rejected with Stripe HTTP 400
+        amount_too_small. The operation must still be REQUESTED, with attempt_count=1,
+        no prior dispatch/recovery and no bound provider object; Payment has no financial
+        fact/version. Persisted atomically with the command response, replayed without
+        another provider call. No FAILED/CANCELED transition or financial event is emitted.
+        The INITIATING audit row is inert because its CREATE is terminal PROVIDER_REJECTED.
+        Order validates order/attempt and both internal identities before compensating.
+        Legacy stored 503 failures are not upgraded or inferred to mean no intent exists.
+      properties:
+        code: { const: PROVIDER_CREATE_NOT_ACCEPTED }
+        retryable: { const: false }
+        correlation_id: { type: string, minLength: 1, maxLength: 128 }
+        no_payment_created: { const: true }
+        transaction_id: { $ref: '#/components/schemas/PaymentTransactionId' }
+        provider_operation_id: { type: string, pattern: '^POP_[0-9A-HJKMNP-TV-Z]{26}$' }
+        order_id: { $ref: '#/components/schemas/OrderId' }
+        payment_attempt_number: { type: integer, minimum: 1 }
     Problem:
       type: object
       additionalProperties: false
@@ -506,12 +562,26 @@ components:
             - PROVIDER_REQUEST_REJECTED
             - PROVIDER_UNAVAILABLE
             - DEPENDENCY_UNAVAILABLE
+            - UNAUTHENTICATED
+            - FORBIDDEN
         retryable: { type: boolean }
         correlation_id: { type: string, minLength: 1, maxLength: 255 }
   responses:
     Problem:
-      description: Domain or infrastructure failure; retryable is authoritative.
+      description: >-
+        Domain or infrastructure failure. retryable controls command repetition,
+        not proof of provider non-acceptance. A generic 503 with retryable=false
+        does not prove absence of a payment; only ProviderCreateNotAcceptedProblem
+        carries the certified no-create outcome.
       headers:
+        X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
+        Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
+      content:
+        application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } }
+    Unavailable:
+      description: Dependency unavailable or provider outcome unknown. retryable=true carries Retry-After; a 503 with retryable=false (PROVIDER_REQUEST_REJECTED) does not and does not prove absence of a payment.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
         X-Correlation-Id: { $ref: '#/components/headers/CorrelationId' }
         Cache-Control: { $ref: '#/components/headers/PrivateNoStore' }
       content:

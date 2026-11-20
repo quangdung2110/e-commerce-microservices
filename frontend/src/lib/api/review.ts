@@ -54,6 +54,6 @@ export const reviewApi = {
   patch: async (reviewId: string, body: PatchReviewRequest) =>
     (await api.patch<OwnerReview>(`${REVIEW_BASE}/${encodeURIComponent(reviewId)}`, body)).data,
 
-  issueUpload: async (body: IssueMediaUploadRequest) =>
-    (await api.post<IssuedMediaAsset>(`${REVIEW_BASE}/media/upload-urls`, body)).data,
+  issueUpload: async (body: IssueMediaUploadRequest, signal?: AbortSignal) =>
+    (await api.post<IssuedMediaAsset>(`${REVIEW_BASE}/media/upload-urls`, body, { signal })).data,
 };

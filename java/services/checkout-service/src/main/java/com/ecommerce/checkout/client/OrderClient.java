@@ -33,8 +33,9 @@ public class OrderClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public OrderClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "order", properties.endpoints().orderBaseUrl(),
+    public OrderClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "order", properties.endpoints().orderBaseUrl(),
                 Math.max(properties.bulkheads().orderPost(), properties.bulkheads().orderGet()));
         this.objectMapper = objectMapper;
     }

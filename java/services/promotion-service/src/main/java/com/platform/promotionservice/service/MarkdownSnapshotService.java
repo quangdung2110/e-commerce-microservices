@@ -10,6 +10,7 @@ import com.platform.promotionservice.infrastructure.event.MarkdownSnapshotEvents
 import com.platform.promotionservice.infrastructure.persistence.CampaignRepository;
 import com.platform.promotionservice.infrastructure.persistence.CatalogProductTombstoneRepository;
 import com.platform.promotionservice.infrastructure.persistence.MarkdownRuleRepository;
+import com.platform.promotionservice.infrastructure.persistence.OutboxEventRepository;
 import com.platform.promotionservice.infrastructure.persistence.PromotionJdbc;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,7 +19,9 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,6 +40,37 @@ public class MarkdownSnapshotService {
     private final CatalogProductTombstoneRepository tombstones;
     private final PromotionJdbc jdbc;
     private final MarkdownSnapshotEvents events;
+    private final OutboxEventRepository outbox;
+
+    /** Kết quả một lô: {@code emitted} đã insert outbox, {@code alreadyEmitted} bị bỏ qua vì dedup key đã có. */
+    public record BatchResult(int emitted, int alreadyEmitted) {
+    }
+
+    /**
+     * Phát snapshot cho một lô product của cùng cause (ADR-021). Dedup key được kiểm tra trước bằng một
+     * query; product đã có key bị bỏ qua mà không lấy advisory lock, không tính winner và không tiêu
+     * sequence. Đây chỉ là bước lọc nhanh không khoá: hai worker cùng thấy "chưa có" vẫn được
+     * {@code ON CONFLICT DO NOTHING} trong {@link #emit} chặn. Chạy trong transaction hiện tại.
+     */
+    @Transactional(propagation = Propagation.REQUIRED)
+    public BatchResult emitBatch(List<UUID> productIds, CampaignEntity cause, long causeRevision, ScheduleTrigger trigger) {
+        if (productIds.isEmpty()) {
+            return new BatchResult(0, 0);
+        }
+        Set<String> existing = new HashSet<>(outbox.findExistingDedupKeys(productIds.stream()
+                .map(id -> MarkdownSnapshotEvents.dedupKey(id, cause.getId(), causeRevision, trigger))
+                .toList()));
+        int emitted = 0;
+        int alreadyEmitted = 0;
+        for (UUID productId : productIds) {
+            if (existing.contains(MarkdownSnapshotEvents.dedupKey(productId, cause.getId(), causeRevision, trigger))) {
+                alreadyEmitted++;
+            } else if (emit(productId, cause, causeRevision, trigger)) {
+                emitted++;
+            }
+        }
+        return new BatchResult(emitted, alreadyEmitted);
+    }
 
     /**
      * Tính và ghi snapshot hiện hành của product do cause (campaign, revision, trigger).

@@ -477,7 +477,7 @@ public class RefundSaga {
     private void manualReview(CaseRow refundCase, String detail) {
         if (refundCase.operationId() != null) {
             operations.transition(refundCase.operationId(), OperationTypes.Status.MANUAL_REVIEW_REQUIRED, null,
-                    json.write(problems.operationProblem("INVALID_ORDER_TRANSITION", detail)));
+                    json.write(problems.operationProblem("REFUND_MANUAL_REVIEW_REQUIRED", detail)));
         }
     }
 

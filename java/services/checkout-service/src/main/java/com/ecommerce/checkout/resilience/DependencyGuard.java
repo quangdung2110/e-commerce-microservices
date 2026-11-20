@@ -1,6 +1,7 @@
 package com.ecommerce.checkout.resilience;
 
 import com.ecommerce.checkout.config.CheckoutProperties;
+import com.ecommerce.checkout.observability.Spans;
 import io.github.resilience4j.bulkhead.Bulkhead;
 import io.github.resilience4j.bulkhead.BulkheadConfig;
 import io.github.resilience4j.bulkhead.BulkheadFullException;
@@ -40,10 +41,16 @@ import java.util.function.Supplier;
 @Component
 public class DependencyGuard {
 
+    public static final String REQUEST_ID_KEY = "checkout.request-id";
+    /** Reactor context key holding the {@link Duration} a dependency call runs under (contracts ADR-003). */
+    public static final String EFFECTIVE_TIMEOUT_KEY = "checkout.effective-timeout";
+    public static final String TRACE_ID_KEY = "checkout.trace-id";
+
     private static final Logger log = LoggerFactory.getLogger(DependencyGuard.class);
 
     private final CheckoutProperties properties;
     private final MeterRegistry meterRegistry;
+    private final Spans spans;
     private final Map<Dependency, Guarded> guards = new EnumMap<>(Dependency.class);
 
     private record Guarded(Duration ceiling,
@@ -53,9 +60,10 @@ public class DependencyGuard {
                            AtomicLong openedAtNanos) {
     }
 
-    public DependencyGuard(CheckoutProperties properties, MeterRegistry meterRegistry) {
+    public DependencyGuard(CheckoutProperties properties, MeterRegistry meterRegistry, Spans spans) {
         this.properties = properties;
         this.meterRegistry = meterRegistry;
+        this.spans = spans;
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
         CheckoutProperties.Timeouts timeouts = properties.timeouts();
         CheckoutProperties.Bulkheads bulkheads = properties.bulkheads();
@@ -138,7 +146,7 @@ public class DependencyGuard {
             return Mono.just(recorded(dependency, CallResult.failure(Outcome.BUDGET_SKIPPED), Duration.ZERO));
         }
 
-        return Mono.defer(() -> {
+        Mono<CallResult<T>> guardedCall = Mono.deferContextual(context -> {
             long startedAt = System.nanoTime();
             return Mono.defer(request)
                     .switchIfEmpty(Mono.error(() -> new ContractViolationException("empty response")))
@@ -149,8 +157,27 @@ public class DependencyGuard {
                             ? new CallResult<>(Outcome.BUSINESS_REJECT, value, null, null)
                             : CallResult.success(value))
                     .onErrorResume(error -> Mono.just(classify(dependency, guarded, error)))
-                    .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
+                    // contracts ADR-003: the clients read the timeout this call actually runs under, to send it to
+                    // the provider (X-Request-Timeout-Ms for HTTP, the deadline for gRPC).
+                    .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
+                    .map(result -> {
+                        Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+                        if (result.outcome() != Outcome.SUCCESS && result.outcome() != Outcome.BUSINESS_REJECT) {
+                            log.warn("dependency call failed",
+                                    net.logstash.logback.argument.StructuredArguments.kv("dependency", dependency.tag()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("outcome", result.outcome().tag()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("duration_ms", elapsed.toMillis()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("budget_ms", timeout.toMillis()),
+                                    net.logstash.logback.argument.StructuredArguments.kv("request_id", context.getOrDefault(REQUEST_ID_KEY, "-")),
+                                    net.logstash.logback.argument.StructuredArguments.kv("trace_id", context.getOrDefault(TRACE_ID_KEY, "-")));
+                        }
+                        return recorded(dependency, result, elapsed);
+                    });
         });
+        // A call that is not sent (budget, above) has no span; the metric records it with zero duration.
+        return spans.in("checkout.dependency",
+                span -> guardedCall.doOnNext(result -> span.lowCardinalityKeyValue("outcome", result.outcome().tag())),
+                "dependency", dependency.tag());
     }
 
     private <T> CallResult<T> classify(Dependency dependency, Guarded guarded, Throwable error) {
@@ -169,8 +196,8 @@ public class DependencyGuard {
                 return CallResult.failure(Outcome.CLIENT_ERROR, status.code());
             }
             if (!status.isServerError()) {
-                log.warn("{} answered {}: identity, authorization or request configuration is wrong",
-                        dependency.tag(), status.status());
+                log.warn("{} answered {}{}: identity, authorization or request configuration is wrong",
+                        dependency.tag(), status.status(), status.code() == null ? "" : " " + status.code());
                 return CallResult.failure(Outcome.CLIENT_ERROR, status.code());
             }
             return CallResult.failure(Outcome.SERVER_ERROR, status.code());

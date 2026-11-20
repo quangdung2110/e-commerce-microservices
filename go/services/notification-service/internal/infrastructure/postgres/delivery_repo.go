@@ -251,8 +251,9 @@ func (r *DeliveryRepository) MarkDeliveredInApp(ctx context.Context, id uuid.UUI
 // ReapExpiredLeases is the reaper of 02-pipeline.md §5.4. The row keeps
 // attempt as incremented by Claim and carries lease_expired so the next
 // claimant applies the layer-C3 lane policy (04-idempotency.md §3).
-func (r *DeliveryRepository) ReapExpiredLeases(ctx context.Context, now time.Time) (int64, error) {
+func (r *DeliveryRepository) ReapExpiredLeases(ctx context.Context, now time.Time) (map[entity.Lane]int64, error) {
 	const query = `
+		WITH reaped AS (
 		UPDATE notification_delivery
 		SET    status          = 'RETRY',
 		       next_attempt_at = $1,
@@ -261,18 +262,36 @@ func (r *DeliveryRepository) ReapExpiredLeases(ctx context.Context, now time.Tim
 		       lease_until     = NULL,
 		       locked_by       = NULL,
 		       updated_at      = $1
-		WHERE  status = 'SENDING' AND lease_until < $1`
-	tag, err := r.q.Exec(ctx, query, now)
+		WHERE  status = 'SENDING' AND lease_until < $1
+		RETURNING lane
+		)
+		SELECT lane, count(*) FROM reaped GROUP BY lane`
+	rows, err := r.q.Query(ctx, query, now)
 	if err != nil {
-		return 0, mapError(err)
+		return nil, mapError(err)
 	}
-	return tag.RowsAffected(), nil
+	counts := map[entity.Lane]int64{}
+	_, err = collect(rows, func(rows pgx.Rows) (struct{}, error) {
+		var lane string
+		var n int64
+		if err := rows.Scan(&lane, &n); err != nil {
+			return struct{}{}, err
+		}
+		counts[entity.Lane(lane)] = n
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 // TransitionTracked applies a provider-reported status by rank
 // (03-tracking.md §5.1): SENT(1) < DELIVERED(2) < BOUNCED(3); every other
-// status ranks 0, so a late webhook recovers a FAILED(lease_expired)/RETRY/
-// SENDING row (04-idempotency.md §4 step 7). Equal rank refreshes the
+// status ranks 0, so a row below SENT is moved by the event. The caller selects
+// the row by provider_message_id, which a row that died before mark_sent never
+// had, so in practice a FAILED(lease_expired) row is not recovered by a webhook
+// (decisions.md D-22). Equal rank refreshes the
 // timestamp only; lower rank is ignored. SKIPPED/EXPIRED rows were never
 // handed to a provider, so a webhook for them is noise: never applied.
 func (r *DeliveryRepository) TransitionTracked(ctx context.Context, id uuid.UUID, to entity.DeliveryStatus, at time.Time, note string) (bool, error) {
@@ -455,7 +474,7 @@ func (r *DeliveryRepository) SkipPendingByUser(ctx context.Context, userID uuid.
 }
 
 func (r *DeliveryRepository) AnonymizeByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
-	tag, err := r.q.Exec(ctx, `UPDATE notification_delivery SET user_id = NULL, subject = NULL WHERE user_id = $1`, userID)
+	tag, err := r.q.Exec(ctx, `UPDATE notification_delivery SET user_id = NULL, subject = NULL, dedup_key = NULL, source_ref = NULL WHERE user_id = $1`, userID)
 	if err != nil {
 		return 0, mapError(err)
 	}

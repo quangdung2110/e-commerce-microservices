@@ -68,8 +68,12 @@ public sealed interface ProviderOperationResult {
         }
     }
 
-    record Rejected(String providerRequestId, String resultJson) implements ProviderOperationResult {
+    record Rejected(String providerRequestId, String resultJson, boolean noPaymentCreated) implements ProviderOperationResult {
         public Rejected { Objects.requireNonNull(resultJson); }
+        // Ordinary 4xx/idempotency errors are not proof that a CREATE had no side effect.
+        public Rejected(String providerRequestId, String resultJson) {
+            this(providerRequestId, resultJson, false);
+        }
     }
 
     record Unknown(String providerRequestId, String resultJson) implements ProviderOperationResult {

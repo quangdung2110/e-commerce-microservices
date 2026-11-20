@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-data
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -51,6 +51,7 @@ của cùng một user và không có hash tag.
 | `state` | plaintext | State machine ở [domain.md](./domain.md#state-machine) |
 | `expires_at` | plaintext (epoch ms) | Hạn logic của báo giá |
 | `claimed_at`, `attempt_started_at`, `revalidated_at`, `last_order_call_started_at`, `attempt_id` | plaintext | Điều phối submit/recovery. `claimed_at` neo cửa sổ retry 2 phút; `attempt_started_at` (đặt lúc claim và recovery claim) neo owner timeout |
+| `created_at`, `updated_at` | plaintext (epoch ms) | Lúc tạo báo giá và lần ghi trạng thái cuối; chỉ để vận hành, không có luật nào dựa vào chúng |
 | `snapshot` | ciphertext | Address (PII), line items, allocation plan, promotion, tổng tiền, `items_hash`, `pricing_hash` |
 | `key_version` | plaintext | Version khoá mã hoá đã dùng |
 

@@ -24,9 +24,10 @@ import java.util.UUID;
 /**
  * Attribute cấu hình và option.
  *
- * <p>Attribute/option không có event riêng ở v1 vì chưa có consumer được xác
- * nhận (docs/product/interfaces.md); thay đổi chỉ đi vào Category event qua
- * mapping category–attribute.
+ * <p>Attribute/option không có event riêng ở v1 (docs/product/interfaces.md). Thay đổi
+ * chỉ đi vào Category event: mapping category–attribute, và đổi tên attribute đã được
+ * map vì tên đó nằm trong {@code facet_definitions} (ADR-019). Option không nằm trong
+ * descriptor nên tạo/sửa/xóa option không phát event.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,6 +38,7 @@ public class AttributeService {
     private final CategoryAttributeRepository categoryAttributeRepository;
     private final ProductRepository productRepository;
     private final SkuRepository skuRepository;
+    private final CategoryCommandService categoryCommandService;
     private final CatalogAssembler assembler;
 
     @Transactional(readOnly = true)
@@ -98,10 +100,17 @@ public class AttributeService {
                     "Attribute " + attribute.getCode() + " still has SELECT options");
         }
 
+        boolean nameChanged = !attribute.getName().equals(request.name());
+
         attribute.setCode(request.code());
         attribute.setName(request.name());
         attribute.setValueType(request.valueType());
         attribute.setUpdatedAt(now);
+        if (nameChanged || codeChanged || typeChanged) {
+            // Code/type chỉ đổi được khi attribute chưa được map; đổi tên thì mọi category
+            // đang map nó phải phát lại snapshot vì facet_definitions mang tên này (ADR-019).
+            categoryCommandService.republishForAttribute(attributeId);
+        }
         return assembler.toAttribute(attribute, optionsOf(attributeId));
     }
 

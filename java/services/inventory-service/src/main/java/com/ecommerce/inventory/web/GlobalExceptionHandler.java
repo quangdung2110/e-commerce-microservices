@@ -54,7 +54,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<Object> invalidParameters(HandlerMethodValidationException e, HttpServletRequest request) {
         List<ApiException.FieldError> errors = new ArrayList<>();
-        e.getAllValidationResults().forEach(result -> result.getResolvableErrors().forEach(error ->
+        e.getParameterValidationResults().forEach(result -> result.getResolvableErrors().forEach(error ->
                 errors.add(new ApiException.FieldError(result.getMethodParameter().getParameterName(),
                         error.getDefaultMessage()))));
         return invalid("Request validation failed", errors, request);

@@ -255,3 +255,37 @@ func MessageID(deliveryID uuid.UUID, fromAddress string) string {
 	}
 	return deliveryID.String() + "@" + domain
 }
+
+var _ port.HealthChecker = (*Sender)(nil)
+
+// HealthCheck opens a session and answers NOOP, which proves the server is
+// accepting connections without sending any mail.
+func (s *Sender) HealthCheck(ctx context.Context) error {
+	addr := net.JoinHostPort(s.cfg.SMTP.Host, fmt.Sprint(s.cfg.SMTP.Port))
+	dialer := &net.Dialer{Timeout: s.cfg.ConnectTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("smtp: dial: %w", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(s.cfg.SendTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if s.cfg.SendTimeout > 0 {
+		_ = conn.SetDeadline(deadline)
+	}
+	client, err := smtp.NewClient(conn, s.cfg.SMTP.Host)
+	if err != nil {
+		return fmt.Errorf("smtp: greeting: %w", err)
+	}
+	defer client.Close()
+	if err := client.Hello(heloName); err != nil {
+		return fmt.Errorf("smtp: hello: %w", err)
+	}
+	if err := client.Noop(); err != nil {
+		return fmt.Errorf("smtp: noop: %w", err)
+	}
+	_ = client.Quit()
+	return nil
+}

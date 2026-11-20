@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { ProductDetail, AttributeScalar } from "@/lib/api/product-detail";
-import { scalarLabel, resolveSku, skuGallery } from "@/lib/product-detail";
+import { scalarLabel, resolveSku, skuGallery, pdpQuantity } from "@/lib/product-detail";
 import { formatISODate, formatVND } from "@/lib/format";
 import { Gallery } from "./gallery";
 import { AddToCartButton } from "./add-to-cart-button";
@@ -10,10 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
 
 const STOCK_LABELS = { IN_STOCK: "Còn hàng", OUT_OF_STOCK: "Tạm hết hàng", UNKNOWN: "Chưa xác định tình trạng hàng" } as const;
-export function ProductDetailPageContent({ product, preferredSku }: { product: ProductDetail; preferredSku?: string }) {
+export function ProductDetailPageContent({ product, preferredSku, preferredQuantity }: { product: ProductDetail; preferredSku?: string; preferredQuantity?: number }) {
   const first = product.skus.find((sku) => sku.sku_id === preferredSku) ?? product.skus[0];
   const [selected, setSelected] = useState<Record<string, AttributeScalar>>(first.variant_attributes);
-  const [quantity, setQuantity] = useState(1);
+  const [quantity, setQuantity] = useState(() => pdpQuantity(preferredQuantity));
   const [locked, setLocked] = useState(false);
   const sku = resolveSku(product, selected);
   const media = skuGallery(product, sku);

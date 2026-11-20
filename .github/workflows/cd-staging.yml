@@ -1,0 +1,101 @@
+name: CD Staging
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful main CI run containing a complete release-manifest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+  attestations: read
+
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+jobs:
+  configuration-required:
+    if: github.event_name == 'workflow_dispatch' && (vars.CD_ENABLED != 'true' || github.ref != 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo '::error::CD is disabled or this is not main. Complete the bootstrap and readiness requirements before enabling CD_ENABLED.'
+          exit 1
+
+  stage:
+    if: >-
+      vars.CD_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r deploy/checks/requirements.txt
+      - id: config
+        run: python scripts/cd/delivery.py preflight --config deploy/gitops/environments.json
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app
+        with:
+          app-id: ${{ secrets.GITOPS_APP_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: ${{ steps.config.outputs.owner }}
+          repositories: ${{ steps.config.outputs.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-actions: read
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.config.outputs.repository }}
+          token: ${{ steps.app.outputs.token }}
+          ref: main
+          path: gitops-checkout
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare immutable candidate and staging PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITOPS_TOKEN: ${{ steps.app.outputs.token }}
+          CI_RUN_ID: ${{ inputs.ci_run_id || github.event.workflow_run.id }}
+        run: python scripts/cd/delivery.py stage --config deploy/gitops/environments.json --gitops gitops-checkout --run-id "$CI_RUN_ID"
+      - name: Require exact Argo rollout, contract checks and sandbox E2E
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITOPS_TOKEN: ${{ steps.app.outputs.token }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          PROMETHEUS_AUTHORIZATION: ${{ secrets.PROMETHEUS_AUTHORIZATION }}
+        run: >-
+          python scripts/cd/verify_staging.py --config deploy/gitops/environments.json
+          --gitops gitops-checkout --candidate ci-artifacts/delivery/candidate.json
+          --output ci-artifacts/delivery/staging-proof.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-proof
+          overwrite: true
+          path: ci-artifacts/delivery/staging-proof.json
+          if-no-files-found: error
+          retention-days: 90

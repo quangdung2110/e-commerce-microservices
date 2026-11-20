@@ -53,24 +53,32 @@ func NewAddressService(
 // A cache hit is served as-is. On a miss, PostgreSQL answers and the result is
 // cached; an empty result is only cached once the profile is known to exist, so
 // a lookup for an unknown user cannot poison the cache with a 200.
+//
+// The cache epoch is read before PostgreSQL is: a mutation that commits and
+// invalidates while this read is in flight advances the epoch, and the fill
+// below is then refused instead of caching the list this reader already knows
+// is stale (ADR-002).
 func (s *AddressService) List(ctx context.Context, userID uuid.UUID) ([]*entity.Address, error) {
 	if cached, found := s.cache.Get(ctx, userID); found {
 		return cached, nil
 	}
+
+	epoch := s.cache.Epoch(ctx, userID)
 
 	addresses, err := s.addresses.ListByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 	if len(addresses) == 0 {
-		// An empty address book and a missing profile are indistinguishable
-		// from the address table alone, and the contract separates them.
-		if _, err := s.profiles.GetByID(ctx, userID); err != nil {
+		// An empty address book and a missing or deleted profile are
+		// indistinguishable from the address table alone, and the contract
+		// separates them.
+		if _, err := s.profiles.GetActive(ctx, userID); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := s.cache.Put(ctx, userID, addresses); err != nil {
+	if err := s.cache.Put(ctx, userID, addresses, epoch); err != nil {
 		logging.FromContext(ctx).Warn("address cache could not be filled", zap.Error(err))
 	}
 	return addresses, nil
@@ -93,9 +101,12 @@ func (s *AddressService) Create(ctx context.Context, userID uuid.UUID, input ent
 		if err := s.addresses.LockUser(txCtx, userID); err != nil {
 			return err
 		}
-		// The profile must exist: an address book without an owner would be
-		// orphaned data, and the foreign key would refuse it anyway.
-		if _, err := s.profiles.GetByID(txCtx, userID); err != nil {
+		// The profile must exist and must not be in its retention window: an
+		// address book without an owner would be orphaned data, and one added
+		// after the account was deleted would put PII back after the anonymization
+		// removed it (USER-INV-005). The anonymization takes the same per-user
+		// lock, so it cannot slip in between this check and the insert.
+		if _, err := s.profiles.GetActive(txCtx, userID); err != nil {
 			return err
 		}
 
@@ -196,9 +207,11 @@ func (s *AddressService) SetDefault(ctx context.Context, userID, addressID uuid.
 	return address, nil
 }
 
-// Delete hard-deletes an address. The current default is refused with 409: the
-// owner promotes a replacement first (USER-BR-004). Orders keep their own
-// snapshot, so nothing downstream changes (USER-INV-004).
+// Delete hard-deletes an address. The current default is refused with 409 while
+// other addresses exist: the owner promotes a replacement first (USER-BR-004).
+// The only address of a book may be deleted even though it is the default, so a
+// book can be emptied again. Orders keep their own snapshot, so nothing
+// downstream changes (USER-INV-004).
 func (s *AddressService) Delete(ctx context.Context, userID, addressID uuid.UUID) error {
 	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
 		if err := s.addresses.LockUser(txCtx, userID); err != nil {
@@ -209,7 +222,13 @@ func (s *AddressService) Delete(ctx context.Context, userID, addressID uuid.UUID
 		if err != nil {
 			return err
 		}
-		if err := current.EnsureDeletable(); err != nil {
+		// Counted under the per-user lock, so a concurrent create cannot change
+		// the answer between this check and the delete.
+		count, err := s.addresses.CountByUser(txCtx, userID)
+		if err != nil {
+			return err
+		}
+		if err := current.EnsureDeletable(count); err != nil {
 			return err
 		}
 		return s.addresses.Delete(txCtx, userID, addressID)

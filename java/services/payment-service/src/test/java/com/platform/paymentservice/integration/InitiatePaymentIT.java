@@ -161,6 +161,34 @@ class InitiatePaymentIT extends AbstractPaymentIT {
     }
 
     @Test
+    void first_create_amount_rejection_freezes_absence_proof_and_replays_without_review_or_financial_fact() {
+        CapturingProvider provider = new CapturingProvider(new ProviderOperationResult.Rejected(
+                "req_small", "{\"error_code\":\"amount_too_small\",\"http_status\":400}", true));
+        InitiatePaymentService service = service(provider);
+        assertThat(service.initiate(command(1), "api-1")).isInstanceOf(InitiatePaymentResult.NoPaymentCreated.class);
+        assertThat(service.initiate(command(1), "api-2")).isInstanceOf(InitiatePaymentResult.NoPaymentCreated.class);
+        assertThat(provider.calls).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT response_code FROM payment_idempotency WHERE idempotency_key=?", Integer.class, KEY)).isEqualTo(422);
+        assertThat(jdbc.queryForObject("SELECT response_body->>'code' FROM payment_idempotency WHERE idempotency_key=?", String.class, KEY)).isEqualTo("PROVIDER_CREATE_NOT_ACCEPTED");
+        assertThat(jdbc.queryForObject("SELECT (response_body->>'no_payment_created')::boolean FROM payment_idempotency WHERE idempotency_key=?", Boolean.class, KEY)).isTrue();
+        assertThat(jdbc.queryForObject("SELECT requires_manual_review FROM payment_transactions WHERE id=?", Boolean.class, TXN)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_transactions WHERE id=?", String.class, TXN)).isEqualTo("INITIATING");
+        assertThat(jdbc.queryForObject("SELECT financial_state_version FROM payment_transactions WHERE id=?", Long.class, TXN)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_review_cases", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_status_history", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_events", Integer.class)).isZero();
+    }
+
+    @Test
+    void malformed_absence_claim_is_fenced_and_cannot_complete_the_command() {
+        CapturingProvider provider = new CapturingProvider(new ProviderOperationResult.Rejected(
+                "req_other", "{\"error_code\":\"idempotency_error\",\"http_status\":400}", true));
+        assertThat(service(provider).initiate(command(1), "api-1")).isInstanceOf(InitiatePaymentResult.Fenced.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM payment_idempotency WHERE idempotency_key=?", String.class, KEY)).isEqualTo("IN_PROGRESS");
+        assertThat(jdbc.queryForObject("SELECT status FROM provider_operations WHERE id=?", String.class, OP)).isEqualTo("REQUESTED");
+    }
+
+    @Test
     void retry_after_ambiguous_response_reuses_the_same_operation_and_original_expiry() {
         MutableClock clock = new MutableClock(NOW);
         SequencedProvider provider = new SequencedProvider();

@@ -102,7 +102,7 @@ func newHarness(t *testing.T) *harness {
 	h.registration = service.NewRegistrationService(h.accounts, h.otps, fakeHasher{}, notifier, h.clock, policy, otpPolicy, logger)
 	h.auth = service.NewAuthenticationService(h.accounts, h.tokens, fakeHasher{}, h.limiter, tokenService, notifier,
 		h.clock, lockout, sessionPolicy, accountRule, logger)
-	h.sessions = service.NewSessionService(h.accounts, h.tokens, tokenService, revoker, h.clock, sessionPolicy, logger)
+	h.sessions = service.NewSessionService(h.accounts, h.tokens, tokenService, revoker, notifier, h.clock, sessionPolicy, logger)
 	h.passwords = service.NewPasswordService(h.accounts, h.resets, fakeHasher{}, h.limiter, revoker, notifier, h.clock,
 		policy, service.ResetPolicy{TTL: 15 * time.Minute, URLTemplate: "https://app.test/reset#token={token}"},
 		accountRule, logger)

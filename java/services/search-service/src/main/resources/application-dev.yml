@@ -2,7 +2,8 @@ spring:
   elasticsearch:
     uris: ${ES_URIS:http://localhost:9200}
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    # Host listener of the root compose broker (127.0.0.1 only); 9092 is not published.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:29092}
 
 search:
   # Local only: create the v1 indices and aliases from docs/search/schema at startup so a
@@ -10,11 +11,16 @@ search:
   bootstrap-indices: true
   cors:
     allowed-origins: "*"
+  # Without these two jobs a local stack never gets autocomplete suggestions and every
+  # category shows product_count 0, so they run on short schedules here (docs/search/development.md).
   suggestions:
-    rebuild-enabled: false
+    rebuild-enabled: true
+    rebuild-cron: "0 */15 * * * *"
   tombstone:
+    # Physical deletion stays off locally: a stray purge is the one job that cannot be undone.
     purge-enabled: false
-    product-count-enabled: false
+    product-count-enabled: true
+    product-count-cron: "0 */5 * * * *"
 
 logging:
   level:

@@ -7,8 +7,8 @@
 services:
   user-service:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: services/user-service/Dockerfile
     ports:
       - "8082:8082"
     environment:
@@ -42,8 +42,9 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # The initial schema is applied on first start of an empty volume.
+      # The schema is applied, in order, on first start of an empty volume.
       - ./migrations/0001_initial_user_schema.up.sql:/docker-entrypoint-initdb.d/0001_initial_user_schema.sql:ro
+      - ./migrations/0002_marketing_opt_in_default.up.sql:/docker-entrypoint-initdb.d/0002_marketing_opt_in_default.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

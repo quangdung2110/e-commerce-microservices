@@ -1,7 +1,10 @@
 spring:
+  http:
+    codecs:
+      preferred-json-mapper: jackson2
   application:
     name: checkout-service
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     # Contract fields that are required-but-nullable (promotion_id, client_secret...) must be
     # serialized as null.
@@ -26,6 +29,9 @@ server:
 # Defaults are the starting values of ADR-014; production values need an ADR and must keep
 # Checkout timeout < mesh timeout and deadline < Gateway wait - 1 s (CHK-INV-07).
 checkout:
+  client-warmup:
+    timeout: ${CHECKOUT_CLIENT_WARMUP_TIMEOUT:30s}
+    rounds: ${CHECKOUT_CLIENT_WARMUP_ROUNDS:3}
   redis-url: ${CHECKOUT_REDIS_URL:}
   keys:
     token-hmac-keys: ${CHECKOUT_TOKEN_HMAC_KEYS:}
@@ -99,6 +105,19 @@ checkout:
     require-https: ${CHECKOUT_MEDIA_REQUIRE_HTTPS:true}
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:

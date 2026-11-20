@@ -6,6 +6,11 @@ info:
     Contract đích cho User Service. User sở hữu profile, address book và
     preferences; không sở hữu email, credential, role hay trạng thái account.
 x-adoption-status: proposed
+servers:
+  - url: http://user-service:8082
+    description: Public listener, reached only through the API Gateway
+  - url: http://user-service:8083
+    description: Internal listener (checkout-snapshot), never routed through the gateway
 tags:
   - name: Profile
   - name: Addresses
@@ -104,8 +109,10 @@ paths:
       summary: Liệt kê address book của caller hiện tại
       description: >-
         Trả danh sách theo thứ tự address default trước, sau đó `created_at`
-        giảm dần. Server có thể phục vụ từ Redis cache-aside nhưng PostgreSQL là
-        nguồn chân lý.
+        giảm dần, tối đa 50 address (giới hạn của address book, nên danh sách
+        không phân trang). Server có thể phục vụ từ Redis cache-aside nhưng
+        PostgreSQL là nguồn chân lý. Account đã bị xóa (đang trong retention
+        window) trả `404 PROFILE_NOT_FOUND` như profile đã purge.
       security: [{ gatewayIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
       responses:
@@ -122,8 +129,9 @@ paths:
       operationId: createMyAddress
       summary: Tạo address mới cho caller hiện tại
       description: >-
-        Address đầu tiên của profile trở thành default. Operation này không có
-        idempotency key; client không được tự retry mù quáng sau timeout.
+        Address đầu tiên của profile trở thành default. Một profile giữ tối đa
+        50 address; vượt giới hạn trả `422 INVALID_ADDRESS`. Operation này không
+        có idempotency key; client không được tự retry mù quáng sau timeout.
       security: [{ gatewayIdentity: [] }]
       parameters: [{ $ref: '#/components/parameters/RequestId' }]
       requestBody:
@@ -174,7 +182,13 @@ paths:
     delete:
       tags: [Addresses]
       operationId: deleteMyAddress
-      summary: Hard-delete một address không phải default
+      summary: Hard-delete một address
+      description: >-
+        Address default chỉ xóa được khi nó là address duy nhất còn lại; khi
+        address book còn address khác, owner phải đặt address khác làm default
+        trước, nếu không nhận `409 DEFAULT_ADDRESS_CANNOT_BE_DELETED`. Xóa
+        address cuối cùng làm address book rỗng; address tạo sau đó lại trở
+        thành default.
       security: [{ gatewayIdentity: [] }]
       parameters:
         - $ref: '#/components/parameters/AddressId'
@@ -213,9 +227,12 @@ paths:
       operationId: getCheckoutAddressSnapshot
       summary: Resolve address snapshot cho Checkout Service
       description: >-
-        Endpoint nội bộ chỉ dành cho Checkout qua mTLS/service credential. User
-        xác minh address thuộc `user_id` trước khi trả snapshot; endpoint này
-        không đi qua public API Gateway.
+        Endpoint nội bộ chỉ dành cho Checkout, listener riêng không đi qua public
+        API Gateway. Service mesh thực thi mTLS và chỉ cho principal
+        `checkout-service` chạm path này; User thêm allowlist header
+        `X-Service-Identity` làm defense-in-depth (thiếu header `401`, service
+        không nằm trong allowlist `403`). User xác minh address thuộc `user_id`
+        trước khi trả snapshot, và rate limit theo cặp (service gọi, `user_id`).
       security: [{ checkoutService: [] }]
       parameters:
         - $ref: '#/components/parameters/UserId'
@@ -227,6 +244,7 @@ paths:
           headers: { Cache-Control: { $ref: '#/components/headers/PrivateNoStore' } }
           content: { application/json: { schema: { $ref: '#/components/schemas/CheckoutAddressSnapshot' } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/AddressNotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -246,7 +264,11 @@ components:
         mTLS/service credential dành riêng cho Checkout Service trên network nội
         bộ. Transport mTLS và allowlist principal checkout-service do service mesh thực
         thi (docs/mesh/runtime-contract.md mục 5.2); User không nhìn thấy chứng chỉ
-        caller. Caller gửi X-Service-Identity: checkout-service cho attribution.
+        caller và không tự kết thúc TLS. Caller bắt buộc gửi
+        `X-Service-Identity: checkout-service`; User kiểm giá trị đó với allowlist
+        cấu hình (`internal.allowed_callers`) như defense-in-depth, không coi header
+        là bằng chứng authorization duy nhất. Không có mesh (Docker Compose) header
+        này không được xác thực.
 
   parameters:
     RequestId:
@@ -266,6 +288,12 @@ components:
       schema: { $ref: '#/components/schemas/Uuid' }
 
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     PrivateNoStore:
       required: true
       description: Response chứa PII không được browser hoặc proxy cache.
@@ -282,8 +310,17 @@ components:
     Unauthorized:
       description: Thiếu hoặc không tin cậy được identity/service credential.
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    Forbidden:
+      description: >-
+        `X-Service-Identity` không nằm trong allowlist caller của listener nội bộ.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example: { type: 'https://errors.ecommerce.local/forbidden', title: 'Forbidden', status: 403, detail: 'This service identity may not resolve address snapshots.', instance: '/internal/v1/users/00000000-0000-0000-0000-000000000000/addresses/00000000-0000-0000-0000-000000000000/checkout-snapshot', code: FORBIDDEN }
     ProfileNotFound:
-      description: Profile chưa bootstrap hoặc đã bị purge.
+      description: >-
+        Profile chưa bootstrap, đã bị anonymize khi account bị xóa (đang chờ
+        purge) hoặc đã bị purge. Ba trường hợp không thể phân biệt từ phía client.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -311,6 +348,8 @@ components:
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     RateLimited:
       description: Gateway hoặc service tạm giới hạn request.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
     InternalError:
       description: Lỗi hạ tầng hoặc lỗi không mong muốn.
@@ -371,7 +410,11 @@ components:
         currency: { type: string, const: VND, readOnly: true }
         email_enabled: { type: boolean }
         in_app_enabled: { type: boolean }
-        marketing_enabled: { type: boolean }
+        marketing_enabled:
+          type: boolean
+          description: >-
+            Opt-in: mặc định `false` cho account mới và chỉ bật khi owner đồng ý.
+            User tự tắt cờ này khi Notification báo người dùng đánh dấu spam.
         updated_at: { $ref: '#/components/schemas/Timestamp' }
     NotificationPreferencesUpdateRequest:
       type: object
@@ -426,6 +469,7 @@ components:
       properties:
         addresses:
           type: array
+          maxItems: 50
           items: { $ref: '#/components/schemas/Address' }
     CheckoutAddressSnapshot:
       type: object

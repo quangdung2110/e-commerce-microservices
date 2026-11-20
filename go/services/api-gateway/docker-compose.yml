@@ -12,7 +12,7 @@ services:
   # API Gateway (Traefik v3.x)
   # =============================================================================
   traefik:
-    image: traefik:v3.7.1
+    image: traefik:v3.7.19
     container_name: api-gateway
     restart: unless-stopped
     security_opt:

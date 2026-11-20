@@ -1,0 +1,19 @@
+search_application:
+  cluster: [monitor]
+  indices:
+    - names:
+        - "products"
+        - "products_write"
+        - "products_v*"
+        - "categories"
+        - "categories_write"
+        - "categories_v*"
+        - "search_suggestions"
+        - "search_suggestions_v*"
+        - "search_jobs"
+        - "search_jobs_v*"
+        - "product_cards"
+        - "product_cards_v*"
+      privileges: [read, write, manage]
+search_probe:
+  cluster: [monitor]

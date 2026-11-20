@@ -51,6 +51,15 @@ public class PromotionCommandReceiptEntity {
     @Column(name = "request_hash", nullable = false, length = 64)
     private String requestHash;
 
+    /** Chỉ có với CANCEL_CONFIRMED: ID bản ghi migration đã duyệt, bằng header X-Legacy-Migration-Proof. */
+    @Column(name = "migration_record_id")
+    private UUID migrationRecordId;
+
+    /** Chỉ có với CANCEL_CONFIRMED: SHA-256 (chữ thường) của bằng chứng chưa vượt Payment financial watermark. */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "pre_watermark_evidence_sha256", length = 64)
+    private String preWatermarkEvidenceSha256;
+
     @Column(name = "amount_vnd", nullable = false)
     private long amountVnd;
 

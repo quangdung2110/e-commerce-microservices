@@ -3,6 +3,7 @@ package com.ecommerce.order.client;
 import com.ecommerce.order.config.OrderProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,10 +19,11 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Inventory.class)
-    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Inventory inventoryGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.inventoryBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("inventory", c.inventoryBaseUrl(), c.connectTimeout(), c.inventoryRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         String base = "/internal/inventory/v1";
         return new Gateways.Inventory() {
             @Override
@@ -84,10 +86,11 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Promotion.class)
-    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Promotion promotionGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.promotionBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("promotion", c.promotionBaseUrl(), c.connectTimeout(), c.promotionRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         String base = "/internal/v1/promotion-allocation";
         return new Gateways.Promotion() {
             @Override
@@ -109,14 +112,16 @@ public class HttpGateways {
 
     @Bean
     @ConditionalOnMissingBean(Gateways.Payment.class)
-    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper) {
+    public Gateways.Payment paymentGateway(OrderProperties properties, ObjectMapper mapper, MeterRegistry meters,
+            io.micrometer.observation.ObservationRegistry observations) {
         OrderProperties.Clients c = properties.clients();
-        HttpRemote http = new HttpRemote(c.paymentBaseUrl(), c.connectTimeout(), c.readTimeout(), mapper,
-                c.serviceName());
+        HttpRemote http = new HttpRemote("payment", c.paymentBaseUrl(), c.connectTimeout(), c.paymentRead(), mapper,
+                c.serviceName(), meters, c.maxConcurrentCalls(), observations);
         return new Gateways.Payment() {
             @Override
             public RemoteResult initiate(String key, String correlationId, JsonNode body) {
-                return http.post("/v1/payments/initiate", command(key, correlationId), body);
+                RemoteResult result = http.post("/v1/payments/initiate", command(key, correlationId), body);
+                return validateInitiationProof(result, body);
             }
 
             @Override
@@ -144,6 +149,23 @@ public class HttpGateways {
                 return http.get("/v1/refunds/" + enc(refundTxn), Map.of("X-Correlation-Id", correlationId));
             }
         };
+    }
+
+    /** Only the explicit, identity-bound no-CREATE proof may authorize compensation. */
+    static RemoteResult validateInitiationProof(RemoteResult result, JsonNode request) {
+        if (!"PROVIDER_CREATE_NOT_ACCEPTED".equals(result.errorCode())) return result;
+        JsonNode proof = result.body();
+        if (result.httpStatus() == 422 && result.isRejected() && proof != null
+                && proof.path("no_payment_created").isBoolean() && proof.path("no_payment_created").booleanValue()
+                && proof.path("retryable").isBoolean() && !proof.path("retryable").booleanValue()
+                && proof.path("order_id").isTextual()
+                && proof.path("order_id").asText().equals(request.path("order_id").asText())
+                && proof.path("payment_attempt_number").isIntegralNumber()
+                && proof.path("payment_attempt_number").canConvertToInt()
+                && proof.path("payment_attempt_number").asInt() == request.path("payment_attempt_number").asInt()
+                && proof.path("transaction_id").asText().matches("TXN_[0-9A-HJKMNP-TV-Z]{26}")
+                && proof.path("provider_operation_id").asText().matches("POP_[0-9A-HJKMNP-TV-Z]{26}")) return result;
+        return RemoteResult.unknown("INVALID_NO_PAYMENT_CREATED_PROOF");
     }
 
     private static Map<String, String> headers(Gateways.Command command) {

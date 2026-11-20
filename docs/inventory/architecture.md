@@ -71,7 +71,7 @@ flowchart LR
 
 ## 4. Concurrency model
 
-The `StockPosition` row is the stock contention unit. Every mutation has a defined transaction boundary and lock order in [data.md](data.md). Reserve locks the exact preview plan and validates all lines before any bucket changes. A conflicting command is serialised by row locks/guards; after two bounded internal retries it returns `503 INVENTORY_BUSY`, never an invented stock outcome.
+The `StockPosition` row is the stock contention unit. Every mutation has a defined transaction boundary and lock order in [data.md](data.md). Reservation commands take the position lock last, through one guarded update per position after their other writes, so a hot SKU is held only for the end of each transaction ([ADR-033](decisions/ADR-033-stock-position-lock-taken-last.md)); Reserve still accepts the exact preview plan as a whole or rejects every unavailable line. A conflicting command is serialised by row locks/guards; after two bounded internal retries it returns `503 INVENTORY_BUSY`, never an invented stock outcome.
 
 No distributed lock is required or accepted as correctness authority. Multi-item/multi-warehouse atomicity is provided by the relational transaction, not a compensating partial workflow.
 

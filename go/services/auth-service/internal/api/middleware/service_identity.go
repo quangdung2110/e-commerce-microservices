@@ -1,39 +1,59 @@
 package middleware
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/ecommerce/auth-service/internal/api/httpx"
+	"github.com/ecommerce/auth-service/internal/common/constants"
 	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 )
 
-// ServiceIdentity guards the internal delivery and contact APIs. Their responses
-// carry PII and may carry a secret, so only a peer whose client certificate the configured CA
-// signed may pass, and optionally only one specific common name.
-//
-// TLS termination itself is done by the server: this middleware checks the
-// verified peer chain the handshake produced. It never trusts a header.
-func ServiceIdentity(allowedCommonName string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		state := c.Request.TLS
-		if state == nil || len(state.VerifiedChains) == 0 {
-			httpx.WriteProblem(c, apperr.ErrUnauthorized.WithDetail("A verified service certificate is required."))
-			return
-		}
-		if allowedCommonName == "" {
-			c.Next()
-			return
-		}
+// ctxServiceIdentity is the gin key under which the admitted caller is kept for
+// the rate limiter and the access log.
+const ctxServiceIdentity = "service_identity"
 
-		for _, chain := range state.VerifiedChains {
-			if len(chain) == 0 {
-				continue
-			}
-			if chain[0].Subject.CommonName == allowedCommonName {
-				c.Next()
-				return
-			}
+// ServiceIdentity admits only the listed service identities on the internal
+// listener, whose responses carry a recipient address and, for verification and
+// reset templates, the secret itself.
+//
+// Who may reach the listener is decided by the mesh: Istio ambient terminates
+// mTLS and enforces an AuthorizationPolicy per principal and path, and the
+// application never sees the caller certificate. The header is therefore not
+// proof of identity; this check is defence in depth, so a route reached through
+// a misconfigured policy still refuses an unknown caller. A missing header is
+// 401, an identity outside the list is 403, matching User, Cart, Inventory and
+// Order (ADR-007).
+func ServiceIdentity(allowed []string) gin.HandlerFunc {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		if name = strings.TrimSpace(name); name != "" {
+			permitted[name] = struct{}{}
 		}
-		httpx.WriteProblem(c, apperr.ErrForbidden.WithDetail("This service identity may not call the internal API."))
 	}
+
+	return func(c *gin.Context) {
+		caller := strings.TrimSpace(c.GetHeader(constants.HeaderServiceIdentity))
+		if caller == "" {
+			httpx.WriteProblem(c, apperr.ErrUnauthorized.WithDetail("A service identity is required."))
+			return
+		}
+		if _, ok := permitted[caller]; !ok {
+			httpx.WriteProblem(c, apperr.ErrForbidden.WithDetail("This service identity may not call the internal API."))
+			return
+		}
+		c.Set(ctxServiceIdentity, caller)
+		c.Next()
+	}
+}
+
+// ServiceIdentityFrom returns the caller admitted by ServiceIdentity.
+func ServiceIdentityFrom(c *gin.Context) (string, bool) {
+	caller, ok := c.Get(ctxServiceIdentity)
+	if !ok {
+		return "", false
+	}
+	name, ok := caller.(string)
+	return name, ok
 }

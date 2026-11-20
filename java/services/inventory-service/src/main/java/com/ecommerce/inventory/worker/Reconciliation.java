@@ -42,6 +42,14 @@ public class Reconciliation {
     private final AtomicLong orphanReservations = new AtomicLong();
     private final AtomicLong bucketViolations = new AtomicLong();
     private final AtomicLong ledgerMismatches = new AtomicLong();
+    private final AtomicLong availabilityMismatches = new AtomicLong();
+    private final AtomicLong readinessSuppressed = new AtomicLong();
+    private String availabilityAuditCursor = "";
+
+    /** Result of one availability audit pass. */
+    public record AvailabilityAudit(int checked, int skippedPending, List<String> mismatchedSkus,
+                                    long readinessSuppressed) {
+    }
 
     public Reconciliation(JdbcTemplate jdbc, OutboxStore outbox, ReservationStore reservations, WriteGuard writeGuard,
                           TransactionTemplate transactions, Clock clock, InventoryProperties properties,
@@ -60,6 +68,8 @@ public class Reconciliation {
         meters.gauge("inventory_reservations_orphaned", orphanReservations);
         meters.gauge("inventory_integrity_bucket_violations", bucketViolations);
         meters.gauge("inventory_integrity_ledger_mismatches", ledgerMismatches);
+        meters.gauge("inventory_integrity_availability_mismatches", availabilityMismatches);
+        meters.gauge("inventory_availability_readiness_suppressed", readinessSuppressed);
     }
 
     /** Feeds outbox backpressure and the outbox/availability lag alerts. */
@@ -126,6 +136,53 @@ public class Reconciliation {
             log.error("SEV-1 integrity: {} stock positions differ from their movement ledger", n);
         }
         return n;
+    }
+
+    /**
+     * Continuous availability audit (operations.md §3): recomputes the warehouse-aware rule for
+     * the next batch of {@code SkuAvailabilityState} rows, in {@code sku_id} order and wrapping
+     * around, and reports every row whose stored boolean differs from stock truth. A row with a
+     * pending dirty mark, or covered by an unfinished warehouse fan-out, is expected to be stale
+     * and is skipped. One statement reads state, stock, warehouses and pending work from a single
+     * snapshot, so a mismatch is never produced by a concurrent command. Detection only.
+     */
+    public synchronized AvailabilityAudit auditAvailability() {
+        int batch = properties.workers().availabilityAuditBatchSize();
+        record Row(String skuId, boolean mismatch, boolean pending) {
+        }
+        List<Row> rows = jdbc.query("""
+                WITH batch AS (
+                    SELECT sku_id, is_in_stock FROM sku_availability_state
+                    WHERE sku_id > ? ORDER BY sku_id LIMIT ?
+                )
+                SELECT b.sku_id,
+                       b.is_in_stock <> EXISTS (
+                           SELECT 1 FROM stock_position p JOIN warehouse w ON w.warehouse_id = p.warehouse_id
+                           WHERE p.sku_id = b.sku_id AND p.available_to_sell > 0
+                             AND w.is_active AND w.operational_state <> 'OUTAGE') AS mismatch,
+                       (EXISTS (SELECT 1 FROM sku_availability_dirty d WHERE d.sku_id = b.sku_id)
+                        OR EXISTS (SELECT 1 FROM availability_fanout_job j
+                                   JOIN stock_position p ON p.warehouse_id = j.warehouse_id AND p.sku_id = b.sku_id
+                                   WHERE j.completed_at IS NULL)) AS pending
+                FROM batch b ORDER BY b.sku_id
+                """, (rs, i) -> new Row(rs.getString("sku_id"), rs.getBoolean("mismatch"), rs.getBoolean("pending")),
+                availabilityAuditCursor, batch);
+        availabilityAuditCursor = rows.size() < batch ? "" : rows.get(rows.size() - 1).skuId();
+
+        List<String> mismatched = rows.stream().filter(r -> r.mismatch() && !r.pending()).map(Row::skuId).toList();
+        int pending = (int) rows.stream().filter(Row::pending).count();
+        Long suppressed = jdbc.queryForObject("""
+                SELECT count(*) FROM sku_availability_state s
+                WHERE NOT EXISTS (SELECT 1 FROM search_projection_readiness r
+                                  WHERE r.sku_id = s.sku_id AND r.revoked_at IS NULL)
+                """, Long.class);
+        readinessSuppressed.set(suppressed == null ? 0 : suppressed);
+        availabilityMismatches.set(mismatched.size());
+        if (!mismatched.isEmpty()) {
+            log.error("availability integrity: {} SKU states differ from stock truth without pending work: {}",
+                    mismatched.size(), mismatched.stream().limit(20).toList());
+        }
+        return new AvailabilityAudit(rows.size() - pending, pending, mismatched, readinessSuppressed.get());
     }
 
     /**

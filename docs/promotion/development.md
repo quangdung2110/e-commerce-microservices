@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-development
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -23,8 +23,8 @@ JDK 21, Spring Boot 3.3 (đồng bộ với các service Java khác), Maven, Pos
 `wal_level=logical`, Redis 7 (standalone trong compose; Lua dùng hash tag nên chuyển Cluster
 không đổi script), Kafka và Debezium/Kafka Connect. Product được validate đồng bộ qua
 `GET /internal/v1/products/{id}/snapshot` (tắt bằng `promotion.product.validation-enabled=false`
-khi chạy độc lập). Checkout/Order chưa có client; test allocation dùng HTTP trực tiếp. Không
-cần Auth fixture vì Promotion không consume Auth event.
+khi chạy độc lập). Checkout (`PromotionClient`) và Order (`HttpGateways`) đã có client; test của
+Promotion gọi HTTP trực tiếp. Không cần Auth fixture vì Promotion không consume Auth event.
 
 Build và test khi máy không có JDK/Maven (dùng container Maven, Testcontainers qua Docker socket):
 
@@ -46,13 +46,15 @@ Integration test có thể trỏ vào dependency sẵn có bằng `TEST_DB_URL`,
 ## 2. Configuration
 
 Profile `dev` trỏ vào PostgreSQL/Redis/Kafka của docker-compose; `prod` nhận env `DB_URL`,
-`REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`. Property nghiệp vụ nằm dưới prefix
-`promotion.*` (`PromotionProperties`): `internal.calculation-clients`/`allocation-clients`,
-`product.*`, `snapshot.ttl`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size}`,
+`REDIS_HOST`, `KAFKA_BOOTSTRAP_SERVERS`, `PRODUCT_BASE_URL`; với broker compose thêm `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SASL_*` và `KAFKA_SASL_USERNAME`/`KAFKA_SASL_PASSWORD` của principal `promotion-service` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)). Property nghiệp vụ nằm dưới prefix
+`promotion.*` (`PromotionProperties`):
+`internal.{calculation,options,allocation,legacy-migration}-clients`, `admin.*`,
+`product.*`, `snapshot.ttl`, `discovery.batch-size`, `claim.{pending-stale-after,sweeper-interval,max-pool-size,pool-batch-size,pending-retry-after-seconds}`,
 `reservation.{business-ttl,cleanup-grace,sweeper-interval}`, `finalizer.{scan-interval,stale-after,batch-size}`,
-`schedule.{loop-interval,fallback-interval,batch-size,fallback-lookback}`,
+`schedule.{loop-interval,fallback-interval,batch-size,fallback-lookback,emit-batch-size}`,
 `reconciliation.{interval,recent-window,lock-ttl}`, `outbox.retention`, `receipt.retention`,
-`kafka.{product-topic,product-dlq-topic,group-id}`, `workers.enabled`, `kafka.consumer-enabled`.
+`kafka.{product-topic,product-dlq-topic,group-id,retry-attempts,retry-backoff,consumer-enabled}`,
+`workers.enabled`, `markdown.dataschema`. Bảng giá trị mặc định ở [operations.md §3](./operations.md#3-configuration).
 Mọi time UTC. Wire money dùng `{amount_minor,currency}`; persistence/Redis dùng integer
 VND và adapter kiểm `currency=VND` (`MoneyDto.requireVnd`). Secret đến từ environment/secret
 store, không commit credential. Không cấu hình `t.promotion.budget.events`.
@@ -66,29 +68,38 @@ store, không commit credential. Không cấu hình `t.promotion.budget.events`.
 | PostgreSQL | chín bảng, Product tombstone watermark/markdown invalidation, command receipt replay/hash/`redis_finalized_at`, wallet transitions, causal outbox/source revision |
 | Redis | runtime claim-gate fields time/revision, claim/reserve/cancel, Confirm-Prepare/finalize Lua, integer counters, hash slot |
 | Concurrency | 10.000 contender, exact claim boundary, duplicate claim, confirm/cancel/sweep races |
-| Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM |
+| Schedule | stale revision, delayed START, Redis loss, fallback/rebuild, commit-before-ZREM; phát theo lô (số transaction = số lô), lô lỗi cô lập và giữ member, retry chỉ phát phần thiếu và không tiêu sequence, hai worker cùng member (ADR-021) |
 | CDC/Kafka | outbox atomicity/causal dedup, ACTIVE/INACTIVE contract theo `contracts/events/promotion/v1`, Product tombstone consumer, stale revision; chứng minh confirm/legacy `cancel-confirmed`/claim không ghi outbox |
 | HTTP | Contract test mọi operation trong OpenAPI; AuthZ, discovery/suggestion/save/claim/calculate, allocation, no refund, stored response/mismatch, and legacy-migrator capability/proof denial/acceptance |
 | Reconciliation | expected DB state + valid reservations, one-way repair |
 | End-to-end | Publish→runtime claim fields/START/END→Product; Product delete→Promotion invalidation; save→reserve→confirm fence/DB/finalize→forward repair; assert Order identity is denied technical cleanup and only legacy-migrator with valid proof is accepted |
 
-Hiện có trong `src/test/java` (33 test, chạy bằng lệnh ở §1):
+Hiện có trong `src/test/java` (chạy bằng lệnh ở §1; số test thực tế xem Surefire report):
 
 | Test class | Bao phủ |
 |---|---|
 | `RuleEvaluatorTest`, `DomainRulesTest` | AST operators/missing/empty/numeric, validator reject, discount math, phase `[start,end)`, ba validity mode |
-| `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route |
+| `TrustedIdentityFilterTest` | Admin role, user identity, workload allowlist theo nhóm route; technical-cancellations chỉ `promotion-legacy-migrator` (Order/Checkout `403`, migrator không chạm route nào khác) |
+| `TrustedIdentityFilterPathTest` | Cùng các kiểm quyền đó với path mã hoá `%xx` / `;param`, kể cả technical-cancellations (MockMvc standalone, controller giả ở route thật) |
 | `MarkdownSnapshotContractTest` | CloudEvent ACTIVE (percentage/fixed) và INACTIVE hợp lệ với JSON Schema trong `contracts/`; causal dedup key |
 | `LuaScriptTest` (Redis Testcontainers) | Claim gate missing/disabled/stale/window, SPOP + pending, reserve replay/mismatch/exhausted, prepare fence, finalize move + no double move, cancel/DRIFT/force, hash tag |
-| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair; migration proof/capability enforcement; final command không ghi outbox; refund no-op |
+| `VoucherLifecycleIntegrationTest` (PostgreSQL + Redis) | Publish in-window → ACTIVE outbox; pause → ADMIN_DISABLED; immutable definition; discovery/save/suggest/calculate; reserve replay/mismatch; confirm receipt + finalize marker; same-key mismatch; legacy cleanup SAVED + repair (kèm proof); final command không ghi outbox; refund no-op (chỉ khẳng định state không đổi vì không có endpoint refund); confirm sau lazy-expiry (`EXPIRED→USED`, rồi legacy cleanup → `EXPIRED`); 6 confirm và 6 legacy cancel trùng key đồng thời cùng nhận stored response |
+| `DiscoveryIntegrationTest` (PostgreSQL + Redis) | 401 public promotion: top voucher ở ID 201/401, không dừng khi đủ eligible hoặc batch đầu toàn ineligible; loại mọi ownership trước paging, wallet/public ranking và tie ID; wallet >200, lazy expiry; options warm cache + display; pipeline snapshot TTL/corrupt JSON/version mismatch; budget exhausted/missing runtime; empty result |
+| `VoucherEvaluationBatchTest`, `PromotionSnapshotBatchTest` | Batch budget có kết quả như single evaluate, Redis lỗi giữ `DEGRADED`/fail-open; chỉ đọc budget khi rule eligible; snapshot Redis unavailable dùng một projection query cho unique IDs, batch rỗng không I/O |
+| `DiscoveryBatchTest` | Batch size cấu hình, cursor đi tiếp khi snapshot thiếu cả batch, cùng `now` và không dừng sớm khi đủ kết quả |
 | `ClaimAndTombstoneIntegrationTest` | Pool pre-generate tại publish, gate revision fence, DB commit trước success, replay, OUT_OF_STOCK, pause đóng gate; Redis loss rebuild + sweeper; tombstone watermark/invalidation/stale duplicate/mutation reject/no reverse event; clone identity |
-| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, `order-service` denied technical cleanup, legacy-migrator proof mismatch denied, Idempotency-Key mismatch 400 |
+| `ClaimStormSimulationTest` (chỉ chạy khi `PROMOTION_CLAIM_STORM=true`; `PROMOTION_STORM_USERS`/`QUOTA`/`ROUNDS`/`CRASHED`, mặc định 1000/100/5/30) | Flash sale trên PostgreSQL + Redis thật, gọi thẳng `ClaimService`, mỗi request một thread thả cùng lúc: A) 1000 user × 1 request, 5 vòng; B) mỗi user bấm đúp (2000 request); C) 30 user "chết" ngay sau `SPOP` rồi sweeper cứu; D) đo riêng từng tầng (Redis GET, `SELECT 1`, preflight ví, Lua) để định vị chậm. Khẳng định đúng QUOTA ví/claim/`claimed_quantity`, không ai nhận hai lần, pool/pending Redis về 0, tập user báo thành công = tập chủ ví. In dòng `SIM\|...` |
+| `PauseGateCloseFailureIntegrationTest` | Redis không đóng được claim gate: pause/cancel `503 PROMOTION_UNAVAILABLE`, campaign giữ `PUBLISHED`/revision, không outbox, claim vẫn chạy; gate thứ hai lỗi sau khi gate thứ nhất đã đóng → gate thứ nhất mở lại (hook rollback). `ClaimAndTombstoneIntegrationTest` còn kiểm pause bị rollback mở lại gate |
+| `OutboxCdcIntegrationTest` (PostgreSQL `wal_level=logical` + Kafka + `debezium/connect:3.0.0.Final` Testcontainers) | Chạy đúng `kafka/debezium-connector-promotion-outbox.json`: publish rồi pause → hai dòng outbox lên `t.promotion.markdown.events` với key `product_id`, header `ce_type`/`ce_aggregate_id`/`ce_source_revision`, thứ tự theo `source_revision`, envelope là JSON object bằng payload đã lưu (trừ field `null` tường minh bị bỏ) và hợp lệ với JSON Schema. Bỏ qua khi dùng `TEST_DB_URL` |
+| `HttpContractIntegrationTest` (MockMvc) | 403/401 problem+json, 201 + ETag/Location, 412 revision mismatch, merge-patch, list cursor, save 201/200 no-store và PUT không body, claim mode mismatch, calculate/reserve/confirm/cancel wire shape, Idempotency-Key mismatch 400; technical cleanup: `order-service` `403`, migrator thiếu/sai proof `403`, body sai schema/digest/field lạ `400`, thành công lưu proof trên receipt, replay khác digest `409`; `checkout_channel` ≠ `CHECKOUT` ở calculate/reserve/options `400` (customer discovery không bị ép); `voucher-options` có `Cache-Control: no-store`; route lạ `404`, sai method `405`, Content-Type sai `400` (problem+json `INVALID_REQUEST`, không `500`) |
 
-Chưa có: load 10.000 contender, race test đa luồng, schedule worker với Redis thật theo thời
-gian, Debezium/Kafka E2E, Temporal fixture.
+Chưa có: load 10.000 contender, race test đa luồng cho claim/sweep (confirm và legacy cancel trùng đồng thời đã
+có), schedule worker với Redis thật theo thời gian, E2E Promotion → Product qua Debezium/Kafka cùng lúc, Temporal fixture, consumer contract
+test từ Checkout/Order chạy với Promotion thật.
 
 Phải có negative integration test chứng minh Order/refund input ngoài contract không
-mutate wallet/budget và Promotion không yêu cầu `promotion_refund_allocations[]`.
+mutate wallet/budget và Promotion không yêu cầu `promotion_refund_allocations[]`. Hiện chưa có test gửi input
+refund: Promotion không có endpoint hay consumer refund nên bằng chứng duy nhất là test state không đổi ở trên.
 
 ## 4. Rule Engine
 
@@ -165,10 +176,10 @@ Promotion HTTP phải generate/validate theo
 [`contracts/http/promotion/v1/openapi.yaml`](../../contracts/http/promotion/v1/openapi.yaml).
 Contract không được chứa refund endpoint hoặc SKU-level voucher allocation; CI lint
 OpenAPI và chạy provider/consumer contract tests trước khi nâng adoption status.
-Checkout adoption gate còn yêu cầu internal DTO chấp nhận `user_tier` omit/null và
-Calculate/Reserve chỉ nhận `checkout_channel=CHECKOUT`; customer discovery context
-không bị ép dùng internal channel. Test phải cover cả Discount Calculate và Reserve bằng
-cùng item/category context.
+Internal DTO chấp nhận `user_tier` omit/null (`userTierIsOptional`), và calculate, voucher
+options và reserve chỉ nhận `checkout_channel=CHECKOUT` (`400 INVALID_REQUEST` nếu khác;
+`internalContextsAcceptOnlyTheCheckoutChannel`); customer discovery context không bị ép dùng
+internal channel. Test cover cả Discount Calculate và Reserve bằng cùng item/category context.
 
 ## 8. Test data
 
@@ -198,6 +209,8 @@ as external input: no Promotion call, allocation or mutation is permitted.
 - Inspect command receipt (`redis_finalized_at`) + wallet/budget trước Redis counter.
 - Inspect runtime claim fields/pending/reservation/schedule bằng read-only command.
 - Kiểm tra DB campaign revision/time trước khi sửa ZSET.
+- Member START/END còn mãi trong ZSET: tìm log WARN "page starting at rule N failed" (lô lỗi) và so số
+  outbox row `...:trigger:START|END` với số rule chưa invalidated; không xóa member thủ công (RB-05).
 - Kiểm tra connector offset/outbox age/Product source revision khi markdown stale.
 - Kiểm tra Product tombstone watermark/catalog revision + invalidation overlay trước khi retry.
 - Không SADD claim, xóa reservation/outbox/index hoặc sửa counter thủ công ngoài runbook.

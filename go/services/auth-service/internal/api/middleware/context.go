@@ -3,8 +3,8 @@
 package middleware
 
 import (
+	obs "github.com/ecommerce/observability"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/auth-service/internal/common/constants"
@@ -16,11 +16,9 @@ import (
 // context and echoes the request id back to the caller.
 func Correlation(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader(constants.HeaderRequestID)
-		if requestID == "" || len(requestID) > 128 {
-			requestID = uuid.NewString()
-		}
-		traceparent := c.GetHeader(constants.HeaderTraceparent)
+		c.Request = obs.EnsureContext(c.Request)
+		requestID := obs.NormalizeRequestID(c.GetHeader(constants.HeaderRequestID))
+		traceparent := obs.Traceparent(c.Request.Context())
 
 		ctx := reqctx.WithRequestID(c.Request.Context(), requestID)
 		ctx = reqctx.WithTraceparent(ctx, traceparent)
@@ -30,7 +28,7 @@ func Correlation(logger *zap.Logger) gin.HandlerFunc {
 			zap.String("operation", c.FullPath()),
 		)
 		if traceparent != "" {
-			scoped = scoped.With(zap.String("traceparent", traceparent))
+			scoped = scoped.With(zap.String("trace_id", obs.TraceID(c.Request.Context())))
 		}
 
 		c.Request = c.Request.WithContext(logging.WithContext(ctx, scoped))

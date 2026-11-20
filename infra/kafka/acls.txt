@@ -1,0 +1,80 @@
+# Principal SCRAM và ACL của broker local (mesh ADR-003). File này là trạng thái mong muốn:
+# kafka-init (docker-compose) và Job kafka-topics-init (deploy/k8s/infra) tạo user SCRAM còn thiếu,
+# thêm ACL còn thiếu và XOÁ ACL ALLOW của các principal ở đây mà file không còn liệt kê.
+# Broker đặt allow.everyone.if.no.acl.found=false: thứ không có dòng ở đây bị từ chối.
+#
+# Cột: principal  tài-nguyên  thao-tác[,thao-tác]  tên...
+#   tài-nguyên: topic | group | topic-prefixed | group-prefixed | cluster (tên: kafka-cluster)
+#   thao-tác:   tên của kafka-acls --operation (Read, Write, Describe, Create, DescribeConfigs…)
+# READ/WRITE đã bao gồm DESCRIBE. Producer idempotent (mặc định của client Kafka 3.x, sarama
+# Idempotent=true) không cần IdempotentWrite trên cluster: từ Kafka 2.8 broker cho InitProducerId
+# khi principal có WRITE trên ít nhất một topic. Không service nào dùng transaction.
+#
+# Mật khẩu của principal P nằm trong biến môi trường SCRAM_PASSWORD_<P viết hoa, '-' thành '_'>
+# của kafka-init. Hai super user (kafka-broker cho inter-broker, kafka-admin cho công cụ) không có
+# ACL; broker tạo chúng trong ZooKeeper trước khi khởi động (infra/kafka/broker-entrypoint.sh).
+#
+# Chỉ principal sở hữu một topic được WRITE nó: event nghiệp vụ đi qua outbox nên chủ sở hữu là
+# connector Debezium của service, không phải service. Topic DLQ được ghi bởi consumer bị lỗi.
+
+# ── Service Go (sarama) ──────────────────────────────────────────────────────────────
+auth-service          topic   Write   t.auth.events t.auth.notification.events
+
+user-service          topic   Read    t.auth.events t.notification.outcomes.v1
+user-service          group   Read    user-service
+user-service          topic   Write   t.user.events t.auth.events.dlq t.notification.outcomes.v1.dlq
+
+cart-service          topic   Read    t.order.events t.auth.events
+cart-service          group   Read    cart-order-consumer cart-auth-consumer
+cart-service          topic   Write   t.cart.events t.cart.events.dlq
+
+notification-service  topic   Read    t.notification.critical.v1 t.notification.transactional.v1 t.notification.bulk.v1 t.auth.notification.events t.review.events t.cart.events t.user.events t.auth.events
+notification-service  group   Read    notification-critical notification-transactional notification-bulk notification-auth-critical notification-review-transactional notification-cart-bulk notification-preferences notification-user-lifecycle
+notification-service  topic   Write   t.notification.outcomes.v1 t.notification.critical.v1.dlq t.notification.transactional.v1.dlq t.notification.bulk.v1.dlq t.auth.notification.events.dlq t.review.events.dlq t.cart.events.dlq t.user.events.dlq t.auth.events.dlq
+
+# ── Service Java (Spring Kafka) ──────────────────────────────────────────────────────
+# Order chỉ consume; event của Order đi qua debezium-order.
+order-service         topic   Read    t.payment.events.v2 t.inventory.order.events.v1 t.order.events t.notification.transactional.v1
+order-service         group   Read    order-payment-consumer order-inventory-ship-consumer order-inventory-return-consumer order-outbox-receipt-observer
+
+# Inbox webhook Stripe đã verify: Payment vừa ghi vừa đọc. t.payment.events.v2 là của debezium-payment.
+payment-service       topic   Read,Write   t.payment.webhooks.raw
+payment-service       group   Read    payment-webhook-processor
+
+# Describe: KafkaCatalogOffsetProvider đọc end offset của topic catalog cho phiên export.
+product-service       topic   Read    t.promotion.markdown.events
+product-service       group   Read    product-markdown-consumer
+product-service       topic   Write   t.promotion.markdown.events.dlq
+product-service       topic   Describe   t.product.events t.category.events
+
+promotion-service     topic   Read    t.product.events
+promotion-service     group   Read    promotion-product-tombstone-consumer
+promotion-service     topic   Write   t.product.events.promotion.dlq
+
+review-service        topic   Read    t.order.events t.review.events t.auth.events
+review-service        group   Read    review-order-sync review-privacy-sync review-rating-aggregator
+review-service        topic   Write   t.order.events.dlq t.review.events.dlq t.auth.events.dlq
+
+# search-reindex-<run>: consumer tạm của ReindexCatchUp.
+search-service        topic   Read    t.product.events t.category.events t.catalog.control.events t.inventory.stock.events.v1 t.review.events
+search-service        group   Read    search-indexer
+search-service        group-prefixed   Read   search-reindex-
+
+# ── Kafka Connect + Debezium ─────────────────────────────────────────────────────────
+# Worker: group của cluster Connect và ba topic nội bộ (Connect tự tạo khi chưa có).
+kafka-connect         group   Read    product-service-connect-cluster
+kafka-connect         topic   Read,Write,Create,DescribeConfigs   product-service-connect-configs product-service-connect-offsets product-service-connect-status
+
+# Mỗi connector produce bằng principal riêng (producer.override.sasl.jaas.config), gồm cả topic
+# heartbeat __debezium-heartbeat.<topic.prefix>.
+debezium-product      topic   Write   t.product.events t.category.events t.catalog.control.events __debezium-heartbeat.product-db
+debezium-promotion    topic   Write   t.promotion.markdown.events __debezium-heartbeat.promotion-db
+debezium-inventory    topic   Write   t.inventory.order.events.v1 t.inventory.stock.events.v1 __debezium-heartbeat.inventory-db
+debezium-order        topic   Write   t.order.events t.notification.transactional.v1 __debezium-heartbeat.order-db
+debezium-payment      topic   Write   t.payment.events.v2 __debezium-heartbeat.payment-db
+debezium-review       topic   Write   t.review.events
+
+# ── Quan sát ─────────────────────────────────────────────────────────────────────────
+# Chỉ đọc metadata, offset và lag; không đọc message.
+kafka-exporter        topic   Describe   *
+kafka-exporter        group   Describe   *

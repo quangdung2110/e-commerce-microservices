@@ -15,7 +15,7 @@ class StorageConfigTest {
                 "us-east-1", "review-media", "key", "secret", true);
         var properties = new ReviewProperties(defaults.windowDays(), defaults.maxContentLength(),
                 defaults.maxMediaPerReview(), defaults.reportThreshold(), defaults.exportSessionTtl(),
-                defaults.eventReceiptRetentionDays(), defaults.outboxRetentionDays(), defaults.secrets(), defaults.media(),
+                defaults.eventReceiptRetentionDays(), defaults.secrets(), defaults.media(),
                 storage, defaults.gateway(), defaults.internal(), defaults.topics(), defaults.consumerGroups(), defaults.scheduler());
         var config = new StorageConfig();
         try (var client = config.s3Client(properties); var presigner = config.s3Presigner(properties)) {

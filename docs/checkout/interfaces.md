@@ -1,7 +1,7 @@
 ---
 doc_id: checkout-interfaces
 service: checkout-service
-scope: target
+scope: current
 status: implemented
 owners:
   - Checkout Service team
@@ -156,13 +156,28 @@ và extension theo code. Không bao giờ trả body thô của downstream. Quy�
 | `CHECKOUT_UNAVAILABLE` | 503 | true | `RETRY` | `Retry-After` | Dependency bắt buộc lỗi, circuit mở, bulkhead đầy hoặc hết deadline |
 | `VOUCHER_OPTIONS_UNAVAILABLE` | 503 | true | `RETRY` | `Retry-After` | Promotion không trả được voucher options |
 
+Frontend recovery: `404 SUBMISSION_NOT_FOUND` chỉ chứng minh chưa có submission,
+không chứng minh quote còn hiệu lực. Sau khi người dùng gửi lại, lỗi terminal mới
+từ POST (ví dụ `410 CHECKOUT_EXPIRED`/`CHECKOUT_SUPERSEDED`, `409 PRICE_CHANGED`)
+phải ưu tiên hơn lỗi GET đã cache; ẩn nút gửi lại và hiển thị action của POST.
+`START_NEW_PREVIEW` cần người dùng chủ động chọn; không tự submit hoặc tự preview.
+Khi đã có lỗi terminal cần action, màn recovery không tiếp tục gọi kết quả là UNKNOWN
+hoặc hiện nút kiểm tra lại do timer 90 giây; timer chỉ giới hạn thời gian chờ kết quả chưa rõ.
+
 Khi Submit phát hiện nhiều thay đổi, `changed_fields` liệt kê tất cả (`CART`,
 `AVAILABILITY`, `PRICE`, `PROMOTION`) và `code` lấy theo thứ tự ưu tiên `CART_CHANGED` >
 `SKU_UNAVAILABLE` > `PRICE_CHANGED` > `PROMOTION_CHANGED`. Cùng một code có thể trả `422`
 lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá đã cũ).
 
 `429` do Gateway trả theo profile `checkout-preview`, `checkout-submit`,
-`checkout-voucher-options`; Checkout không có rate limiter riêng.
+`checkout-voucher-options`, và `api-authenticated` cho `GET /submissions/{checkout_token}`
+([Gateway §5](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc)); Checkout không có
+rate limiter riêng và không bao giờ tự sinh `429`.
+
+Request tới route hoặc method mà Checkout không có (không đi qua Gateway, chỉ thấy khi gọi thẳng
+service) vẫn là `application/problem+json` với `code=INVALID_REQUEST` và giữ nguyên HTTP status
+của framework (`404`, `405`); catalog không có mã riêng cho chúng. Body không phải JSON là `400`
+kể cả khi `Content-Type` khác `application/json` (Checkout đọc byte rồi tự parse).
 
 ## Internal dependencies
 
@@ -173,8 +188,8 @@ lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá
 | SKU batch | Product | gRPC `ProductService/GetBatchSkus` | Tối đa 100 SKU unique mỗi lời gọi; giỏ 50 dòng nên luôn một lời gọi |
 | Allocation preview | Inventory | `POST /internal/inventory/v1/allocation-previews` | Stateless, không giữ hàng; request chỉ có `lines`, không có địa chỉ |
 | Discount calculation | Promotion | `POST /internal/v1/promotion-discount-calculations` | Pure query; chỉ gọi khi có `promotion_id` |
-| Voucher options | Promotion | `POST /internal/v1/promotion-voucher-options` | `proposed`; chỉ `checkout-service` được gọi |
-| Order submission | Order | `POST /internal/v1/checkout-order-submissions` | `Idempotency-Key = checkout_token`; chờ tới `PAYMENT_READY` tối đa 12 giây |
+| Voucher options | Promotion | `POST /internal/v1/promotion-voucher-options` | `implemented` ([Promotion ADR-018](../promotion/decisions/ADR-018-checkout-voucher-options-and-context-free-save.md)); chỉ `checkout-service` được gọi |
+| Order submission | Order | `POST /internal/v1/checkout-order-submissions` | `Idempotency-Key = checkout_token`; chờ checkpoint tối đa 12 giây bằng async HTTP waiter phía Order ([Order ADR-027](../order/decisions/ADR-027-async-submission-checkpoint-waiters.md)); wire contract không đổi |
 | Order recovery | Order | `GET /internal/v1/checkout-order-submissions/{checkout_token}` | Nguồn duy nhất của Payment client data khi replay |
 
 ### Header gửi cho dependency
@@ -182,10 +197,11 @@ lúc Preview (không dựng được báo giá) và `409` lúc Submit (báo giá
 | Header / metadata | Cart | User | Product | Inventory | Promotion | Order |
 |---|---|---|---|---|---|---|
 | `X-Service-Identity: checkout-service` | Có | Có | Có (metadata `x-service-identity`) | Có (bắt buộc) | Có | Có |
-| `traceparent`/`tracestate` | Có | Có | Có | Có | Có | Có |
-| `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | — | Có | Có |
+| `traceparent`/`tracestate` | Có | Có | Chỉ `traceparent` (metadata) | Có | Có | Có |
+| `X-Request-Id` (đã chuẩn hoá) | Có | Có | Có (metadata `x-request-id`) | Có | Có | Có |
 | `X-Correlation-ID` (= request ID đã chuẩn hoá) | — | — | — | Có (bắt buộc) | — | — |
 | `X-Causation-ID` (= `Idempotency-Key` của Preview) | — | — | — | Có (bắt buộc) | — | — |
+| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Không dùng header: deadline gRPC bằng đúng giá trị đó | Có | Có | Có |
 | `Idempotency-Key` (= `checkout_token`) | — | — | — | — | — | Chỉ POST |
 
 Request ID đã chuẩn hoá: dùng `X-Request-Id` từ Gateway nếu khớp
@@ -254,7 +270,7 @@ Bỏ `user_tier`. Map response theo bảng [VoucherOptions](#voucheroptions-ngu�
 | `items[].snapshot_name` | Product `product_name` |
 | `items[].snapshot_image_url` | URL CDN như báo giá; `null` khi SKU không có ảnh (không gửi placeholder) |
 | `items[].snapshot_attributes` | Product `variant_attributes` |
-| `items[].variant_name` | Không gửi (Product chưa có nhãn biến thể) |
+| `items[].variant_name` | Dẫn xuất từ snapshot `variant_attributes`: bỏ value rỗng, sắp theo key, nối `key: value / key: value`, giới hạn 255 ký tự; null nếu không có thuộc tính dùng được |
 | `pricing` | `total_amount`, `total_discount`, `final_amount` |
 | `promotions` | `[]` hoặc `[{promotion_id, discount_amount}]` |
 | `allocation_plan` | `allocation_plan_id` + `lines[{line_reference, sku_id, warehouse_id, quantity}]` từ Inventory |

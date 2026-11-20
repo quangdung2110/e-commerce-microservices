@@ -23,7 +23,10 @@ type AccountRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entity.Account, error)
 	// GetByNormalizedEmail looks the identity up by lower(btrim(email)).
 	GetByNormalizedEmail(ctx context.Context, normalizedEmail string) (*entity.Account, error)
-	// Update persists the mutable columns of an existing account.
+	// Update persists the mutable columns of an existing account, but only when the
+	// stored row still has the version in account.Revision. A row that changed
+	// since it was loaded is ErrConcurrentUpdate and nothing is written. On success
+	// account.Revision carries the new version, so the same copy can be saved again.
 	Update(ctx context.Context, account *entity.Account) error
 	// ExistsByNormalizedEmail answers the uniqueness pre-check of a registration
 	// or an email change.

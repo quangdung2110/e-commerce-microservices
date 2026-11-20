@@ -34,6 +34,10 @@ import java.util.function.Function;
  *       availability work) behind a savepoint;</li>
  *   <li>persist the terminal result: accepted, or a durable rejection after rolling back
  *       to the savepoint;</li>
+ *   <li>run the body's {@link Accepted#lastStep() last step}, if any: the guarded stock
+ *       updates that lock hot rows (ADR-033), after the result is recorded so nothing else
+ *       runs while those rows are held; a replacement outcome it returns is recorded instead,
+ *       and a rejection it throws is handled as in step 4;</li>
  *   <li>commit once.</li>
  * </ol>
  * Lock contention is retried at most twice and then answered {@code 503 INVENTORY_BUSY};
@@ -130,10 +134,23 @@ public class CommandExecutor {
         Object savepoint = status.createSavepoint();
         try {
             Accepted accepted = handler.apply(context);
-            status.releaseSavepoint(savepoint);
             JsonNode body = objectMapper.valueToTree(accepted.body());
             commands.complete(request.namespace(), commandId, "ACCEPTED", 200, null, accepted.outcome(),
                     accepted.resourceId(), body);
+            if (accepted.lastStep() != null) {
+                // ADR-033: the hot stock rows are locked here, after the result is already recorded.
+                Accepted replacement = accepted.lastStep().get();
+                if (replacement != null) {
+                    if (replacement.lastStep() != null) {
+                        throw new IllegalStateException("a replacement outcome cannot have a last step");
+                    }
+                    accepted = replacement;
+                    body = objectMapper.valueToTree(accepted.body());
+                    commands.complete(request.namespace(), commandId, "ACCEPTED", 200, null, accepted.outcome(),
+                            accepted.resourceId(), body);
+                }
+            }
+            status.releaseSavepoint(savepoint);
             meters.counter("inventory_commands_total", "operation", operation, "result", "accepted").increment();
             return new CommandResponse(200, body, false);
         } catch (DomainRejection rejection) {

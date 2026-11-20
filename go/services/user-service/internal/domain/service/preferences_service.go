@@ -41,6 +41,49 @@ func (s *PreferencesService) Get(ctx context.Context, userID uuid.UUID) (*entity
 	return preferences, nil
 }
 
+// MarketingOptOutResult reports what one complaint delivery did.
+type MarketingOptOutResult struct {
+	// Disabled is true when marketing was on and is now off.
+	Disabled bool
+}
+
+// DisableMarketing is the spam-complaint reaction (docs/user/interfaces.md §4):
+// Notification already stopped marketing in its local replica, and this makes
+// the source of truth say the same, so a later snapshot or preference change
+// cannot switch marketing back on for somebody who complained.
+//
+// It is idempotent. A flag that is already off, or a user without preferences
+// (never bootstrapped, deleted or purged), changes nothing and emits nothing.
+// The change is a single atomic UPDATE rather than a read-modify-write, so it
+// cannot overwrite an email or in-app change the owner makes at the same time.
+func (s *PreferencesService) DisableMarketing(ctx context.Context, userID uuid.UUID) (MarketingOptOutResult, error) {
+	var changed *entity.Preferences
+	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		updated, err := s.preferences.DisableMarketing(txCtx, userID)
+		if err != nil {
+			return err
+		}
+		changed = updated
+		return nil
+	})
+	if err != nil {
+		return MarketingOptOutResult{}, err
+	}
+	if changed == nil {
+		return MarketingOptOutResult{}, nil
+	}
+
+	s.emitter.Emit(ctx, event.NewPreferencesUpdated(
+		changed.UserID,
+		changed.EmailEnabled,
+		changed.InAppEnabled,
+		changed.MarketingEnabled,
+		changed.UpdatedAt,
+		reqctx.EventMetadata(ctx),
+	))
+	return MarketingOptOutResult{Disabled: true}, nil
+}
+
 // Replace writes the three notification flags and publishes
 // USER_PREFERENCES_UPDATED after the commit. Resending the same body changes
 // nothing and emits nothing.

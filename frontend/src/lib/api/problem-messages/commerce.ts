@@ -56,8 +56,15 @@ export const ORDER_MESSAGES: Record<string, string> = {
   CHECKOUT_PAYMENT_WINDOW_EXHAUSTED: "Thời gian giữ hàng không còn đủ để thanh toán.",
   ORDER_CANCELLED_DURING_PREPARATION: "Đơn hàng đã được huỷ trước khi thanh toán sẵn sàng.",
   ORDER_UNAVAILABLE: "Thông tin đơn hàng đang gián đoạn. Vui lòng thử lại sau.",
+  DELIVERY_REQUIRES_DISPATCH: "Dòng hàng chưa được kho ghi nhận xuất kho nên chưa thể xác nhận đã giao.",
+  DELIVERY_ALREADY_CONFIRMED:
+    "Dòng hàng này đã được xác nhận giao với mã tham chiếu hoặc thời điểm khác.",
+  INVALID_DELIVERY_CONFIRMATION:
+    "Thông tin xác nhận giao hàng chưa hợp lệ. Thời điểm giao phải sau lúc xuất kho và không ở tương lai.",
   ADMIN_REFUND_REQUIRES_ALL_UNDISPATCHED:
     "Không thể hoàn tiền tự động vì đã có sản phẩm rời kho.",
+  REFUND_MANUAL_REVIEW_REQUIRED:
+    "Hồ sơ hoàn tiền đang được bộ phận vận hành kiểm tra. Bạn không cần gửi lại yêu cầu.",
   PROMOTION_RECALCULATION_NEEDED: "Voucher cần được tính lại. Vui lòng xem lại đơn hàng.",
   PAYMENT_TIMEOUT: "Đơn hàng đã quá thời hạn thanh toán.",
 };
@@ -68,6 +75,13 @@ export const INVENTORY_MESSAGES: Record<string, string> = {
   DISPATCH_NOT_ALLOWED:
     "Dòng hàng không còn đủ điều kiện xuất kho hoặc dữ liệu phiếu không khớp phân bổ hiện tại.",
   OPERATION_IDENTITY_CONFLICT:
-    "Mã phiếu và dòng phiếu này đã được dùng cho một lần xuất kho khác.",
-  WAREHOUSE_NOT_FOUND: "Không tìm thấy kho trong lệnh xuất kho.",
+    "Mã phiếu hoặc mã thao tác đã được dùng. Hãy tra kết quả lệnh và đối chiếu chứng từ.",
+  WAREHOUSE_NOT_FOUND: "Không tìm thấy kho. Hãy kiểm tra lại mã kho.",
+  RETURN_RECEIPT_REJECTED: "Không thể nhận hàng: dòng đơn, SKU hoặc số lượng không khớp yêu cầu trả. Hãy tải lại và đối chiếu kiện hàng.",
+  INSPECTION_REJECTED: "Không thể kiểm định: kiểm tra kho nhận, phiếu nhận và số lượng chưa kiểm định rồi tải lại hàng đợi.",
+  DISPOSITION_REJECTED: "Không thể xử lý cách ly: kiểm tra kết quả kiểm định, số lượng còn lại và chứng từ hàng rời hoặc quay về kho.",
+  REFUND_SCOPE_STATE_CONFLICT: "Yêu cầu trả hàng đã chuyển trạng thái và không nhận thêm hàng. Hãy tải lại yêu cầu.",
+  INSUFFICIENT_SELLABLE_STOCK: "Không đủ tồn bán được cho thao tác này. Hãy tải lại vị trí tồn.",
+  MOVEMENT_NOT_REVERSIBLE: "Biến động này không thể đảo bằng điều chỉnh tồn. Hãy dùng đúng quy trình hàng trả hoặc cách ly.",
+  WAREHOUSE_CONFLICT: "Kho vừa được cập nhật. Hãy tải lại trước khi sửa tiếp.",
 };

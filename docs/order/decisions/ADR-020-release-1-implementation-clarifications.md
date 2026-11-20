@@ -42,6 +42,10 @@ return chờ xác minh thủ công).
 
 ## Quyết định
 
+
+> **Cập nhật ADR-021 (2026-10-11):** không có Delivery service; "verified Delivery proof" trong ADR này nay là
+> Admin delivery confirmation trên Order ([ADR-021](./ADR-021-admin-delivery-confirmation.md)). Quyết định còn lại giữ nguyên.
+
 ### Runtime
 
 Order Service là Java 21 + Spring Boot 3.3 (JDBC + Flyway, không JPA), Spring Kafka và
@@ -54,9 +58,9 @@ và Payment.
    đa 100 line. Order internal `items[]`/`allocation_plan.lines[]` và public
    `items[]`/`lines[]`/return `lines[]`/refund-case `lines[]` giảm từ 200 xuống 100.
 2. **`variant_name`.** Checkout `CheckoutItem` có thêm `variant_name` optional/nullable.
-   Order lưu immutable ở `order_item_lines.snapshot_variant_name`; đây là nguồn duy nhất của
-   `order.completed.v1 items[].variant_name` và `variant_name` trong notification. Không
-   suy diễn từ `snapshot_attributes`.
+   Order lưu immutable ở `order_item_lines.snapshot_variant_name`. [ADR-022](./ADR-022-purchase-variant-snapshot-fallback.md)
+   cập nhật quy tắc này: Checkout dẫn xuất label từ purchase attributes; Order fallback
+   từ `snapshot_attributes` đã lưu khi line cũ thiếu label, không đọc catalog hiện tại.
 3. **Lỗi submit terminal.** Inventory Reserve `REJECT_ALL` trả
    `409 INVENTORY_RESERVATION_REJECTED`; Payment initiation bị từ chối bền vững trả
    `409 PAYMENT_INITIATION_REJECTED`. Recovery read trả `state=FAILED` cùng problem đó.
@@ -69,7 +73,7 @@ và Payment.
    `TO_RECEIVE=IN_DELIVERY`, `COMPLETED`, `CANCELLED`,
    `RETURN_REQUESTED=RETURN_IN_PROGRESS`, `REFUNDED`,
    `FINANCIAL_RECONCILIATION_REQUIRED=UNDER_REVIEW`. `ui_status_rank` là rank của tab.
-6. **Delivery `source`** là `/services/delivery` theo convention CloudEvents chung.
+6. ~~**Delivery `source`** là `/services/delivery`~~ — bị thay thế bởi ADR-021: không có Delivery fact.
 
 ### Domain
 
@@ -102,6 +106,8 @@ và Payment.
     (`PREPARING/PAYMENT_READY/RECALCULATION_REQUIRED/FAILED`), `order_id` và problem. Đây
     là nguồn của recovery read. Workflow checkout chỉ nhận `checkout_token`; snapshot có
     PII (địa chỉ, số điện thoại) không vào Temporal history.
+    [ADR-027](./ADR-027-async-submission-checkpoint-waiters.md) bổ sung async HTTP waiter và trigger
+    commit notification; RAM waiter và NOTIFY không thay thế nguồn recovery bền vững này.
 12. **`payment_deadline_at`** được ghi khi tạo order bằng business ceiling
     (`created_at + 15 phút`), rồi khoá một lần tại `PAYMENT_READY` bằng minimum trong
     ADR-014 (chỉ có thể giảm) và đánh dấu `payment_deadline_locked_at`. Sau khi khoá nó
@@ -153,6 +159,12 @@ và Payment.
 24. **Operation mapping.** Cancellation `SUCCEEDED` khi order `CANCELLED`, `REJECTED` khi
     capture thắng race; payment-attempt `REJECTED` nếu deadline đã qua lúc Payment trả kết quả,
     `MANUAL_REVIEW_REQUIRED` nếu outcome không xác định.
+25. **Mã lỗi của operation chờ con người.** Operation refund/return vào
+    `MANUAL_REVIEW_REQUIRED` mang problem `REFUND_MANUAL_REVIEW_REQUIRED` (`409`,
+    `retryable=false`), không phải `INVALID_ORDER_TRANSITION`: trạng thái đơn không bị từ
+    chối, tiền mới là thứ cần Finance xử lý (E2E ORD09, F11-01). Frontend dịch **mọi** operation
+    `MANUAL_REVIEW_REQUIRED` thành "đang được kiểm tra thủ công, không cần gửi lại" bất kể
+    `failure.code` và khoá lệnh tạo ra nó; `REJECTED`/`FAILED` vẫn dịch theo `failure.code`.
 
 ## Hệ quả
 

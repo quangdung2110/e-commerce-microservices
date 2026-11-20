@@ -6,6 +6,7 @@ import com.ecommerce.checkout.client.RequestContext;
 import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.domain.Snapshot;
 import com.ecommerce.checkout.observability.CheckoutMetrics;
+import com.ecommerce.checkout.observability.Spans;
 import com.ecommerce.checkout.problem.ApiException;
 import com.ecommerce.checkout.problem.Problem;
 import com.ecommerce.checkout.problem.ProblemCode;
@@ -39,11 +40,12 @@ public class VoucherOptionsService {
     private final Failures failures;
     private final CheckoutProperties properties;
     private final CheckoutMetrics metrics;
+    private final Spans spans;
     private final Clock clock;
 
     public VoucherOptionsService(SessionStore store, Codec codec, DependencyGuard guard, PromotionClient promotions,
                                  Failures failures, CheckoutProperties properties, CheckoutMetrics metrics,
-                                 Clock clock) {
+                                 Spans spans, Clock clock) {
         this.store = store;
         this.codec = codec;
         this.guard = guard;
@@ -51,6 +53,7 @@ public class VoucherOptionsService {
         this.failures = failures;
         this.properties = properties;
         this.metrics = metrics;
+        this.spans = spans;
         this.clock = clock;
     }
 
@@ -59,7 +62,7 @@ public class VoucherOptionsService {
             // Disabled until Promotion ships the operation: do not call it (operations.md, Cau hinh).
             return Mono.error(failures.unavailable(ProblemCode.VOUCHER_OPTIONS_UNAVAILABLE));
         }
-        return store.findControl(token).flatMap(found -> {
+        return spans.in("checkout.voucher_options", store.findControl(token).flatMap(found -> {
             if (found.isEmpty() || !found.get().userId().equals(userId)) {
                 return alreadySubmittedOrMissing(userId, token);
             }
@@ -77,7 +80,7 @@ public class VoucherOptionsService {
                 default:
                     return Mono.<PublicDtos.VoucherOptions>error(alreadySubmitted(token));
             }
-        });
+        }));
     }
 
     /** A record that is gone may still have a terminal result: that token was submitted, not unknown. */

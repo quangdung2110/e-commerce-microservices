@@ -7,11 +7,27 @@ import com.platform.promotionservice.domain.enums.WalletStatus;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
 
 /** WalletVoucher trên wire (openapi WalletVoucher). */
 public final class WalletDtos {
 
     private WalletDtos() {
+    }
+
+    public record WalletEntry(
+            WalletVoucher wallet,
+            @JsonProperty("effective_status") WalletStatus effectiveStatus,
+            String code,
+            DiscountDto discount,
+            @JsonProperty("min_order_amount") MoneyDto minOrderAmount,
+            @JsonProperty("conditions_summary") String conditionsSummary,
+            @JsonProperty("is_enabled") boolean enabled) {
+    }
+
+    public record WalletPage(List<WalletEntry> items,
+                             @JsonProperty("next_cursor") String nextCursor,
+                             @JsonProperty("as_of") Instant asOf) {
     }
 
     public record WalletVoucher(

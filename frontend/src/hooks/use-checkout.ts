@@ -87,7 +87,7 @@ export function useCheckout(initialToken: string | null, onRecover: (token: stri
   }
 
   return {
-    preview, quote, submit, token, submission, pollPaused, placeOrder, startFresh,
+    preview, quote, submit, token, submission, pollPaused, placeOrder, startFresh, recover,
     resume: () => { setPollDeadline(Date.now() + 90_000); setPollPaused(false); void submission.refetch(); },
   };
 }

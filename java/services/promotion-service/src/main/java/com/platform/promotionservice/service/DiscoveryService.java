@@ -1,9 +1,7 @@
 package com.platform.promotionservice.service;
 
-import com.platform.promotionservice.common.DomainException;
-import com.platform.promotionservice.common.ErrorCode;
 import com.platform.promotionservice.common.Ids;
-import com.platform.promotionservice.domain.entity.PromotionEntity;
+import com.platform.promotionservice.config.PromotionProperties;
 import com.platform.promotionservice.domain.entity.UserCouponWalletEntity;
 import com.platform.promotionservice.domain.enums.BudgetGuard;
 import com.platform.promotionservice.domain.enums.EligibilityReason;
@@ -24,10 +22,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.PriorityQueue;
 import java.util.UUID;
 
 /**
@@ -39,10 +37,8 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class DiscoveryService {
 
-    private static final int PUBLIC_CANDIDATE_LIMIT = 200;
     private static final int DEFAULT_LIMIT = 20;
     private static final int OPTIONS_DEFAULT_LIMIT = 50;
-    private static final String CHECKOUT_CHANNEL = "CHECKOUT";
 
     private final UserCouponWalletRepository wallets;
     private final PromotionRepository promotions;
@@ -50,32 +46,66 @@ public class DiscoveryService {
     private final PromotionSnapshotService snapshots;
     private final VoucherEvaluationService evaluator;
     private final Clock clock;
+    private final PromotionProperties properties;
 
     /** {@code validUntil}: wallet expiry for a WALLET voucher, campaign end for a PUBLIC one. */
     private record Ranked(CheckoutDtos.VoucherEvaluation dto, long promotionId, PromotionView view, Instant validUntil) {
+    }
+
+    private static final Comparator<Ranked> ORDER = Comparator
+            .comparing((Ranked r) -> !r.dto().eligible())
+            .thenComparing(Comparator.comparingLong((Ranked r) -> r.dto().discount().amountMinor()).reversed())
+            .thenComparingLong(Ranked::promotionId);
+
+    /** Worst retained item at the head; both wallet and public share a global top K. */
+    private static final class TopK {
+        private final int limit;
+        private final boolean includeIneligible;
+        private final PriorityQueue<Ranked> items = new PriorityQueue<>(ORDER.reversed());
+
+        private TopK(int limit, boolean includeIneligible) {
+            if (limit < 1) {
+                throw new IllegalArgumentException("limit must be positive");
+            }
+            this.limit = limit;
+            this.includeIneligible = includeIneligible;
+        }
+
+        private void add(Ranked item) {
+            if (!includeIneligible && !item.dto().eligible()) {
+                return;
+            }
+            if (items.size() < limit) {
+                items.add(item);
+            } else if (ORDER.compare(item, items.peek()) < 0) {
+                items.poll();
+                items.add(item);
+            }
+        }
+
+        private List<Ranked> sorted() {
+            return items.stream().sorted(ORDER).toList();
+        }
     }
 
     @Transactional
     public CheckoutDtos.VoucherSuggestionResponse suggest(UUID userId, CheckoutDtos.SuggestionRequest request) {
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), userId, null);
-        List<Ranked> ranked = evaluateWallet(userId, context, now);
+        TopK ranked = new TopK(limitOf(request.limit()), true);
+        evaluateWallet(ranked, userId, context, now);
         // Wallet tray trả cả voucher không đủ điều kiện kèm reason (openapi: "cùng eligibility hiện tại").
-        return respond(ranked, limitOf(request.limit()), true, now);
+        return respond(ranked, now);
     }
 
     @Transactional
     public CheckoutDtos.VoucherSuggestionResponse discover(UUID userId, CheckoutDtos.DiscoveryRequest request) {
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), userId, null);
-        List<Ranked> ranked = new ArrayList<>(evaluateWallet(userId, context, now));
-        Set<Long> owned = new HashSet<>();
-        ranked.forEach(item -> owned.add(item.promotionId()));
-        wallets.findByUserIdAndStatus(userId, WalletStatus.USED).forEach(w -> owned.add(w.getPromotionId()));
-        wallets.findByUserIdAndStatus(userId, WalletStatus.EXPIRED).forEach(w -> owned.add(w.getPromotionId()));
-
-        addPublic(ranked, owned, context, now);
-        return respond(ranked, limitOf(request.limit()), Boolean.TRUE.equals(request.includeIneligible()), now);
+        TopK ranked = new TopK(limitOf(request.limit()), Boolean.TRUE.equals(request.includeIneligible()));
+        evaluateWallet(ranked, userId, context, now);
+        addPublic(ranked, userId, context, now);
+        return respond(ranked, now);
     }
 
     /**
@@ -86,23 +116,44 @@ public class DiscoveryService {
      */
     @Transactional
     public CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request) {
-        if (!CHECKOUT_CHANNEL.equals(request.context().checkoutChannel())) {
-            throw new DomainException(ErrorCode.INVALID_REQUEST, "context.checkout_channel must be CHECKOUT",
-                    List.of(new DomainException.FieldError("context.checkout_channel", "must be CHECKOUT")));
-        }
+        return options(request, true);
+    }
+
+    /** Same query/evaluation/DTO path, without lazy wallet mutations. Startup only, no HTTP route. */
+    @Transactional(readOnly = true)
+    public CheckoutDtos.VoucherOptionList warmupOptions(CheckoutDtos.VoucherOptionRequest request) {
+        // Also prime pipeline/projection on an empty catalog or a completely warm snapshot cache.
+        snapshots.findAll(List.of(-1L));
+        CheckoutDtos.VoucherOptionList response = options(request, false);
+        // An in-memory candidate primes AST, budget reads, display and money DTOs even with no campaigns.
+        // Negative IDs never allocate a promotion, wallet, claim or reservation.
+        Instant now = clock.instant();
+        PromotionView sample = new PromotionView(-1, -1, 1, "Startup voucher", null,
+                com.platform.promotionservice.domain.enums.PublicationStatus.PUBLISHED,
+                now.minusSeconds(60), now.plusSeconds(60), "STARTUP",
+                com.platform.promotionservice.domain.enums.DistributionMode.PUBLIC_SAVE,
+                com.platform.promotionservice.domain.enums.DiscountType.PERCENTAGE, 1000, 50000L, 0,
+                "{\"node_type\":\"CONDITION\",\"operator\":\"GREATER_THAN_OR_EQUAL\",\"field\":\"cart.total_amount\",\"value\":0}",
+                1, com.platform.promotionservice.domain.enums.ValidityMode.CAMPAIGN_END, null, null, true, 0);
+        var evaluation = evaluator.evaluateAll(List.of(new VoucherEvaluationService.Candidate(sample, null)),
+                RuleFactsBuilder.build(request.context(), request.userId(), request.userTier()), now).get(0);
+        Ranked ranked = new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), -1, sample, sample.endTime());
+        List<CheckoutDtos.VoucherOption> items = new ArrayList<>(response.items());
+        items.add(new CheckoutDtos.VoucherOption(ranked.dto(), display(ranked)));
+        return new CheckoutDtos.VoucherOptionList(items, response.evaluatedAt());
+    }
+
+    private CheckoutDtos.VoucherOptionList options(CheckoutDtos.VoucherOptionRequest request, boolean normalizeWallet) {
+        RuleFactsBuilder.requireCheckoutChannel(request.context());
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
-        List<Ranked> ranked = new ArrayList<>(evaluateWallet(request.userId(), context, now));
+        TopK ranked = new TopK(request.limit() == null ? OPTIONS_DEFAULT_LIMIT : request.limit(),
+                !Boolean.FALSE.equals(request.includeIneligible()));
+        evaluateWallet(ranked, request.userId(), context, now, normalizeWallet);
         if (!Boolean.FALSE.equals(request.includePublic())) {
-            Set<Long> owned = new HashSet<>();
-            ranked.forEach(item -> owned.add(item.promotionId()));
-            wallets.findByUserIdAndStatus(request.userId(), WalletStatus.USED).forEach(w -> owned.add(w.getPromotionId()));
-            wallets.findByUserIdAndStatus(request.userId(), WalletStatus.EXPIRED).forEach(w -> owned.add(w.getPromotionId()));
-            addPublic(ranked, owned, context, now);
+            addPublic(ranked, request.userId(), context, now);
         }
-        List<CheckoutDtos.VoucherOption> items = rank(ranked,
-                request.limit() == null ? OPTIONS_DEFAULT_LIMIT : request.limit(),
-                !Boolean.FALSE.equals(request.includeIneligible())).stream()
+        List<CheckoutDtos.VoucherOption> items = ranked.sorted().stream()
                 .map(item -> new CheckoutDtos.VoucherOption(item.dto(), display(item)))
                 .toList();
         return new CheckoutDtos.VoucherOptionList(items, now);
@@ -118,22 +169,34 @@ public class DiscoveryService {
     }
 
     /** Active public campaigns the user does not already own, evaluated without a wallet. */
-    private void addPublic(List<Ranked> ranked, Set<Long> owned, RuleFactsBuilder.Context context, Instant now) {
-        for (PromotionEntity promotion : promotions.findPublicActive(now, PageRequest.of(0, PUBLIC_CANDIDATE_LIMIT))) {
-            if (owned.contains(promotion.getId())) {
-                continue;
+    private void addPublic(TopK ranked, UUID userId, RuleFactsBuilder.Context context, Instant now) {
+        long afterId = 0;
+        int batchSize = properties.getDiscovery().getBatchSize();
+        while (true) {
+            List<Long> ids = promotions.findPublicActiveAfter(userId, now, afterId, PageRequest.of(0, batchSize));
+            if (ids.isEmpty()) {
+                return;
             }
-            snapshots.find(promotion.getId()).ifPresent(view -> {
-                VoucherEvaluationService.Evaluation evaluation = evaluator.evaluate(view, null, context, now, true);
-                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), promotion.getId(), view,
+            Map<Long, PromotionView> views = snapshots.findAll(ids);
+            List<VoucherEvaluationService.Candidate> candidates = ids.stream().filter(views::containsKey)
+                    .map(id -> new VoucherEvaluationService.Candidate(views.get(id), null)).toList();
+            for (VoucherEvaluationService.Evaluation evaluation : evaluator.evaluateAll(candidates, context, now)) {
+                PromotionView view = evaluation.view();
+                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.PUBLIC, null), view.promotionId(), view,
                         view.endTime()));
-            });
+            }
+            // Advance using the scanned IDs, even when snapshots are absent or all rules reject.
+            afterId = ids.get(ids.size() - 1);
+            if (ids.size() < batchSize) {
+                return;
+            }
         }
     }
 
     /** Checkout tính lại 0/1 voucher từ trusted context; pure/replay-safe. */
     @Transactional(readOnly = true)
     public CheckoutDtos.DiscountCalculationResult calculate(CheckoutDtos.DiscountCalculationRequest request) {
+        RuleFactsBuilder.requireCheckoutChannel(request.context());
         Instant now = clock.instant();
         RuleFactsBuilder.Context context = RuleFactsBuilder.build(request.context(), request.userId(), request.userTier());
         MoneyDto subtotal = MoneyDto.vnd(context.subtotalVnd());
@@ -162,40 +225,58 @@ public class DiscoveryService {
     }
 
     /** Lazy-normalize SAVED đã hết hạn rồi evaluate từng voucher SAVED còn lại. */
-    private List<Ranked> evaluateWallet(UUID userId, RuleFactsBuilder.Context context, Instant now) {
-        jdbc.lazyExpireWallets(userId, now);
-        List<Ranked> ranked = new ArrayList<>();
-        for (UserCouponWalletEntity wallet : wallets.findByUserIdAndStatus(userId, WalletStatus.SAVED)) {
-            snapshots.find(wallet.getPromotionId()).ifPresent(view -> {
-                VoucherEvaluationService.Evaluation evaluation = evaluator.evaluate(view, wallet, context, now, true);
-                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.WALLET, wallet.getId()),
-                        wallet.getPromotionId(), view, wallet.getExpiredAt()));
-            });
-        }
-        return ranked;
+    private void evaluateWallet(TopK ranked, UUID userId, RuleFactsBuilder.Context context, Instant now) {
+        evaluateWallet(ranked, userId, context, now, true);
     }
 
-    private static CheckoutDtos.VoucherSuggestionResponse respond(List<Ranked> ranked, int limit,
-                                                                  boolean includeIneligible, Instant now) {
-        List<CheckoutDtos.VoucherEvaluation> items = rank(ranked, limit, includeIneligible).stream()
+    private void evaluateWallet(TopK ranked, UUID userId, RuleFactsBuilder.Context context, Instant now,
+                                boolean normalizeWallet) {
+        if (normalizeWallet) {
+            jdbc.lazyExpireWallets(userId, now);
+        }
+        long afterId = 0;
+        int batchSize = properties.getDiscovery().getBatchSize();
+        while (true) {
+            List<UserCouponWalletRepository.SavedCandidate> page = wallets.findSavedAfter(userId, afterId,
+                    PageRequest.of(0, batchSize));
+            if (page.isEmpty()) {
+                return;
+            }
+            Map<Long, PromotionView> views = snapshots.findAll(page.stream()
+                    .map(UserCouponWalletRepository.SavedCandidate::getPromotionId).toList());
+            List<VoucherEvaluationService.Candidate> candidates = new ArrayList<>();
+            for (UserCouponWalletRepository.SavedCandidate row : page) {
+                PromotionView view = views.get(row.getPromotionId());
+                if (view != null) {
+                    UserCouponWalletEntity wallet = new UserCouponWalletEntity();
+                    wallet.setId(row.getId());
+                    wallet.setPromotionId(row.getPromotionId());
+                    wallet.setExpiredAt(row.getExpiredAt());
+                    wallet.setStatus(WalletStatus.SAVED);
+                    candidates.add(new VoucherEvaluationService.Candidate(view, wallet));
+                }
+            }
+            List<VoucherEvaluationService.Evaluation> evaluations = evaluator.evaluateAll(candidates, context, now);
+            for (int i = 0; i < candidates.size(); i++) {
+                UserCouponWalletEntity wallet = candidates.get(i).wallet();
+                PromotionView view = candidates.get(i).view();
+                VoucherEvaluationService.Evaluation evaluation = evaluations.get(i);
+                ranked.add(new Ranked(evaluator.toDto(evaluation, VoucherSource.WALLET, wallet.getId()),
+                        wallet.getPromotionId(), view, wallet.getExpiredAt()));
+            }
+            afterId = page.get(page.size() - 1).getId();
+            if (page.size() < batchSize) {
+                return;
+            }
+        }
+    }
+
+    private static CheckoutDtos.VoucherSuggestionResponse respond(TopK ranked, Instant now) {
+        List<CheckoutDtos.VoucherEvaluation> items = ranked.sorted().stream()
                 .map(Ranked::dto)
                 .toList();
         return new CheckoutDtos.VoucherSuggestionResponse(items, now);
     }
-
-    /** Eligible first, then larger discount, then promotion_id ascending; deterministic. */
-    private static List<Ranked> rank(List<Ranked> ranked, int limit, boolean includeIneligible) {
-        Comparator<Ranked> order = Comparator
-                .comparing((Ranked r) -> !r.dto().eligible())
-                .thenComparing(r -> -r.dto().discount().amountMinor())
-                .thenComparingLong(Ranked::promotionId);
-        return ranked.stream()
-                .filter(r -> includeIneligible || r.dto().eligible())
-                .sorted(order)
-                .limit(limit)
-                .toList();
-    }
-
 
     private static int limitOf(Integer limit) {
         return limit == null ? DEFAULT_LIMIT : limit;

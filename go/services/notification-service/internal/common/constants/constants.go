@@ -6,10 +6,13 @@ const (
 	HeaderUserID          = "X-User-Id"
 	HeaderRequestID       = "X-Request-Id"
 	HeaderServiceIdentity = "X-Service-Identity"
-	HeaderIdempotencyKey  = "Idempotency-Key"
-	HeaderCacheControl    = "Cache-Control"
-	HeaderRetryAfter      = "Retry-After"
-	HeaderDeliveryID      = "X-Notification-Delivery-Id"
+	// HeaderServiceSignature proves to Auth's internal API that the caller holds
+	// the shared signing key (mesh ADR-004).
+	HeaderServiceSignature = "X-Service-Signature"
+	HeaderIdempotencyKey   = "Idempotency-Key"
+	HeaderCacheControl     = "Cache-Control"
+	HeaderRetryAfter       = "Retry-After"
+	HeaderDeliveryID       = "X-Notification-Delivery-Id"
 
 	NoStore            = "no-store"
 	ContentTypeJSON    = "application/json"

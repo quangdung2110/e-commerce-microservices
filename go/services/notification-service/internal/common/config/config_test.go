@@ -33,6 +33,38 @@ func TestShippedApplicationYAMLIsValid(t *testing.T) {
 	}
 }
 
+// The shared Redis requires a password (mesh ADR-002): configs/application.yaml
+// reads it from REDIS_PASSWORD, which docker-compose sets.
+func TestShippedApplicationYAMLReadsTheRedisPassword(t *testing.T) {
+	t.Setenv("REDIS_PASSWORD", "redis-secret-from-env")
+	cfg, err := Load("../../../configs/application.yaml")
+	if err != nil {
+		t.Fatalf("configs/application.yaml: %v", err)
+	}
+	if cfg.Redis.Password != "redis-secret-from-env" {
+		t.Fatalf("redis.password = %q, want the REDIS_PASSWORD value", cfg.Redis.Password)
+	}
+}
+
+// Kafka requires SASL/SCRAM per service principal (mesh ADR-003); docker-compose
+// sets the principal through NOTIFICATION_KAFKA_SASL_*.
+func TestKafkaSASLPrincipalFromEnv(t *testing.T) {
+	t.Setenv("NOTIFICATION_KAFKA_SASL_USERNAME", "notification-service")
+	t.Setenv("NOTIFICATION_KAFKA_SASL_PASSWORD", "kafka-secret-from-env")
+	cfg, err := Load("../../../configs/application.yaml")
+	if err != nil {
+		t.Fatalf("configs/application.yaml: %v", err)
+	}
+	if cfg.Kafka.SASLUsername != "notification-service" || cfg.Kafka.SASLPassword != "kafka-secret-from-env" {
+		t.Fatalf("kafka sasl = %q/%q, want the NOTIFICATION_KAFKA_SASL_* values", cfg.Kafka.SASLUsername, cfg.Kafka.SASLPassword)
+	}
+
+	t.Setenv("NOTIFICATION_KAFKA_SASL_PASSWORD", "")
+	if _, err := Load("../../../configs/application.yaml"); err == nil || !strings.Contains(err.Error(), "kafka.sasl_password") {
+		t.Fatalf("a username without a password must be rejected, got %v", err)
+	}
+}
+
 func TestValidateOrderingAndPrivacy(t *testing.T) {
 	base := func(t *testing.T) *Config {
 		t.Helper()
@@ -55,11 +87,32 @@ func TestValidateOrderingAndPrivacy(t *testing.T) {
 		{"short key outside development", func(c *Config) { c.App.Env = "staging"; c.Privacy.HMACKey = "short" }, "at least 32 bytes"},
 		{"bad previous keys", func(c *Config) { c.Privacy.PreviousHMACKeys = "nope" }, "previous_hmac_keys"},
 		{"previous redefines active", func(c *Config) { c.Privacy.PreviousHMACKeys = "1:abc" }, "redefines active"},
+		{"staging with the committed development key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = devHMACKey
+			c.Auth.SigningKey = strings.Repeat("a", 40)
+		}, "development value committed"},
+		{"staging without an auth signing key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+		}, "NOTIFICATION_AUTH_SIGNING_KEY) is required outside development"},
+		{"production with a placeholder auth signing key", func(c *Config) {
+			c.App.Env = "production"
+			c.Email.Provider = "ses"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+			c.Auth.SigningKey = "local-dev-auth-internal-signing-key-not-a-secret"
+		}, "development value committed"},
+		{"staging with a short auth signing key", func(c *Config) {
+			c.App.Env = "staging"
+			c.Privacy.HMACKey = strings.Repeat("k", 32)
+			c.Auth.SigningKey = "too-short"
+		}, "auth.signing_key (NOTIFICATION_AUTH_SIGNING_KEY) must be at least 32 bytes"},
 		{"staging with a real key", func(c *Config) {
 			c.App.Env = "staging"
 			c.Privacy.HMACKey = strings.Repeat("k", 32)
 			c.Privacy.HMACKeyVersion = 2
 			c.Privacy.PreviousHMACKeys = "1:" + strings.Repeat("o", 32)
+			c.Auth.SigningKey = strings.Repeat("a", 40)
 		}, ""},
 	}
 	for _, tc := range cases {
@@ -84,6 +137,7 @@ func TestPrivacyKeyFromEnvironment(t *testing.T) {
 	t.Setenv("NOTIFICATION_APP_ENV", "staging")
 	t.Setenv("NOTIFICATION_PRIVACY_HMAC_KEY", strings.Repeat("s", 40))
 	t.Setenv("NOTIFICATION_PRIVACY_HMAC_KEY_VERSION", "3")
+	t.Setenv("NOTIFICATION_AUTH_SIGNING_KEY", strings.Repeat("a", 40))
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -94,5 +148,51 @@ func TestPrivacyKeyFromEnvironment(t *testing.T) {
 	}
 	if k.ActiveVersion() != 3 {
 		t.Fatalf("version from env: %d", k.ActiveVersion())
+	}
+}
+
+// D-21: the mesh authenticates callers, so production needs no TLS material
+// at the application layer and the allowlists must not be empty.
+func TestInternalIdentityConfiguration(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Internal.StatusPrincipals, ","); got != "order-service,finance-ops" {
+		t.Fatalf("status principals: %s", got)
+	}
+	if got := strings.Join(cfg.Internal.OpsPrincipals, ","); got != "notification-ops" {
+		t.Fatalf("ops principals: %s", got)
+	}
+
+	prod := *cfg
+	prod.App.Env = "production"
+	prod.Email.Provider = "ses"
+	prod.Privacy.HMACKey = strings.Repeat("p", 32)
+	prod.Auth.SigningKey = strings.Repeat("s", 40)
+	if err := prod.Validate(); err != nil {
+		t.Fatalf("production must not require application-level mTLS: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"status": func(c *Config) { c.Internal.StatusPrincipals = []string{" "} },
+		"ops":    func(c *Config) { c.Internal.OpsPrincipals = nil },
+	} {
+		c := *cfg
+		mutate(&c)
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "internal."+name+"_principals") {
+			t.Fatalf("%s: want an allowlist error, got %v", name, err)
+		}
+	}
+}
+
+func TestInternalPrincipalsFromEnvironment(t *testing.T) {
+	t.Setenv("NOTIFICATION_INTERNAL_STATUS_PRINCIPALS", "order-service,support-tool")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Internal.StatusPrincipals, ","); got != "order-service,support-tool" {
+		t.Fatalf("override from env: %s", got)
 	}
 }

@@ -54,7 +54,9 @@ public class RefundScopeService {
         if (existing.isPresent()) {
             RefundStore.Scope scope = existing.get();
             if (sameRegistration(scope, request)) {
-                return result("REGISTERED", scope, 1, context);
+                // Replay of the same business identity under a new command ID: the receipt names
+                // the scope as it is now, not the revision it had when first registered.
+                return result("REGISTERED", scope, scope.revision(), context);
             }
             throw new DomainRejection(ErrorCode.REFUND_SCOPE_ALREADY_EXISTS,
                     "The order already has its lifetime refund scope");

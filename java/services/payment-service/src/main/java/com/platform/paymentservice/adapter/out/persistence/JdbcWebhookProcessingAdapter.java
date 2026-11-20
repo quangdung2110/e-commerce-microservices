@@ -77,6 +77,7 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                        dispute_transaction_id=COALESCE(:dispute_id,dispute_transaction_id)
                  WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                    AND lease_token=:lease_token
+                   AND lease_expires_at > :completed_at
                 """).param("reason", bounded(reason)).param("completed_at", timestamp(completedAt))
                 .param("provider_object_id", providerObjectId).param("payment_id", paymentId)
                 .param("refund_id", refundId).param("dispute_id", disputeId)
@@ -118,7 +119,8 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                            payment_transaction_id=:payment_id
                      WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                        AND lease_token=:lease_token
-                    """).param("reason_code", reasonCode).param("now", timestamp(completedAt))
+                   AND lease_expires_at > :now
+                """).param("reason_code", reasonCode).param("now", timestamp(completedAt))
                     .param("provider_object_id", providerObjectId).param("payment_id", paymentId)
                     .param("id", claim.inboxId()).param("owner", claim.owner())
                     .param("lease_token", claim.leaseToken()).update();
@@ -175,7 +177,8 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                            dispute_transaction_id=COALESCE(:dispute_id,dispute_transaction_id)
                      WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                        AND lease_token=:lease_token
-                    """).param("reason_code", reasonCode).param("now", timestamp(completedAt))
+                   AND lease_expires_at > :now
+                """).param("reason_code", reasonCode).param("now", timestamp(completedAt))
                     .param("provider_object_id", providerObjectId).param("payment_id", paymentId)
                     .param("refund_id", refundId).param("dispute_id", disputeId)
                     .param("id", claim.inboxId()).param("owner", claim.owner())
@@ -223,7 +226,8 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                            payment_transaction_id=:payment_id
                      WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                        AND lease_token=:lease_token
-                    """).param("reason", bounded(reason)).param("now", timestamp(completedAt))
+                   AND lease_expires_at > :now
+                """).param("reason", bounded(reason)).param("now", timestamp(completedAt))
                     .param("provider_object_id", providerObjectId).param("payment_id", paymentId)
                     .param("id", claim.inboxId()).param("owner", claim.owner())
                     .param("lease_token", claim.leaseToken()).update();
@@ -275,7 +279,8 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                            dispute_transaction_id=CASE WHEN :is_refund THEN dispute_transaction_id ELSE :aggregate_id END
                      WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                        AND lease_token=:lease_token
-                    """).param("reason", bounded(reason)).param("now", timestamp(completedAt))
+                   AND lease_expires_at > :now
+                """).param("reason", bounded(reason)).param("now", timestamp(completedAt))
                     .param("provider_object_id", providerObjectId).param("payment_id", paymentId)
                     .param("is_refund", refund).param("aggregate_id", aggregateId)
                     .param("id", claim.inboxId()).param("owner", claim.owner())
@@ -303,6 +308,7 @@ public final class JdbcWebhookProcessingAdapter implements WebhookProcessingPort
                            lease_owner=NULL, lease_expires_at=NULL
                      WHERE id=:id AND status='PROCESSING' AND lease_owner=:owner
                        AND lease_token=:lease_token
+                                       AND lease_expires_at > :failed_at
                     """).param("status", exhausted ? "DEAD" : "RETRY_WAIT")
                     .param("error", bounded(error))
                     .param("next_retry_at", exhausted ? null : timestamp(nextRetryAt))

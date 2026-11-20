@@ -1,0 +1,14 @@
+[
+  {
+    "Path": "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\worker\\WorkflowDispatcher.java",
+    "Hash": "ADFB2C1A6BA725DD9F972C187AC291CADF082E48D4E7460C01D832D6CB02045B"
+  },
+  {
+    "Path": "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\store\\WorkflowOutboxStore.java",
+    "Hash": "448BA638283FE67A773395B255ADA62C34350BCC1A411BD2E868F6AFDD1781C8"
+  },
+  {
+    "Path": "C:\\Users\\ASUS\\MyProjects\\e-commerce-microservices\\java\\services\\order-service\\src\\main\\java\\com\\ecommerce\\order\\worker\\TemporalWorkflowGateway.java",
+    "Hash": "7642DB85C1114EF98B24D4A2274549BAA16F6EB83C16D280B3A67A9B8735927B"
+  }
+]

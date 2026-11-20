@@ -79,7 +79,12 @@ components:
     userPreferencesUpdated:
       name: userPreferencesUpdatedV1
       title: USER_PREFERENCES_UPDATED
-      summary: Ba notification preference được Notification Service replicate đã thay đổi.
+      summary: >-
+        Ba notification preference được Notification Service replicate đã thay đổi:
+        owner đổi preferences qua HTTP, hoặc User tắt `marketing_enabled` ở nguồn
+        sau khi Notification báo `complaint-received`. Account mới không phát event
+        này lúc bootstrap; mặc định là email/in-app bật và marketing tắt (opt-in),
+        khớp mặc định của Notification khi chưa có preference.
       contentType: application/cloudevents+json
       x-consumers: [notification-service]
       payload:

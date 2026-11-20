@@ -2,7 +2,10 @@ package com.platform.promotionservice.config;
 
 import lombok.Getter;
 import lombok.Setter;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -15,15 +18,19 @@ import java.util.List;
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "promotion")
+@Validated
 public class PromotionProperties {
 
     private Admin admin = new Admin();
     private Internal internal = new Internal();
     private Product product = new Product();
     private Snapshot snapshot = new Snapshot();
+    @Valid
+    private Discovery discovery = new Discovery();
     private Claim claim = new Claim();
     private Reservation reservation = new Reservation();
     private Finalizer finalizer = new Finalizer();
+    @Valid
     private Schedule schedule = new Schedule();
     private Reconciliation reconciliation = new Reconciliation();
     private Retention outbox = new Retention(Duration.ofDays(14), Duration.ofHours(1));
@@ -52,8 +59,16 @@ public class PromotionProperties {
         private List<String> calculationClients = new ArrayList<>(List.of("checkout-service"));
         /** Caller của POST /internal/v1/promotion-voucher-options (Checkout, ADR-018). */
         private List<String> optionsClients = new ArrayList<>(List.of("checkout-service"));
-        /** Caller của /internal/v1/promotion-allocation/** (Order/Temporal). */
+        /**
+         * Caller của reservations/confirmations/cancellations dưới /internal/v1/promotion-allocation
+         * (Order/Temporal). Không gồm technical-cancellations.
+         */
         private List<String> allocationClients = new ArrayList<>(List.of("order-service"));
+        /**
+         * Caller duy nhất của POST /internal/v1/promotion-allocation/technical-cancellations
+         * (legacy migration cleanup, ADR-013/017). Tách hẳn khỏi {@link #allocationClients}: Order bị từ chối.
+         */
+        private List<String> legacyMigrationClients = new ArrayList<>(List.of("promotion-legacy-migrator"));
     }
 
     @Getter
@@ -70,6 +85,14 @@ public class PromotionProperties {
     @Setter
     public static class Snapshot {
         private Duration ttl = Duration.ofSeconds(3600);
+    }
+
+    @Getter
+    @Setter
+    public static class Discovery {
+        /** Number of candidates per batch, never a cap on the candidates evaluated. */
+        @Min(1)
+        private int batchSize = 200;
     }
 
     @Getter
@@ -105,6 +128,9 @@ public class PromotionProperties {
         private Duration fallbackInterval = Duration.ofSeconds(15);
         private int batchSize = 100;
         private Duration fallbackLookback = Duration.ofDays(1);
+        /** Số markdown rule (product) mỗi transaction khi phát snapshot START/END; không phải trần số product (ADR-021). */
+        @Min(1)
+        private int emitBatchSize = 200;
     }
 
     @Getter

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"cart-service/internal/infrastructure/product"
 )
 
 // Metrics holds every collector the service exports.
@@ -31,6 +33,8 @@ type Metrics struct {
 
 	orderPaidOutcomes *prometheus.CounterVec
 	orderPaidDeleted  prometheus.Counter
+
+	userDeletedOutcomes *prometheus.CounterVec
 }
 
 // NewMetrics builds the registry and every collector.
@@ -49,8 +53,8 @@ func NewMetrics() *Metrics {
 		}, []string{"outcome"}),
 		productCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cart_product_calls_total",
-			Help: "Product Service gRPC calls, by rpc and outcome.",
-		}, []string{"rpc", "outcome"}),
+			Help: "Product Service gRPC calls, by rpc, outcome (success, rejected, error) and ErrorInfo reason.",
+		}, []string{"rpc", "outcome", "reason"}),
 		breakerRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "cart_product_breaker_rejections_total",
 			Help: "Calls rejected because the Product circuit breaker was open.",
@@ -83,6 +87,10 @@ func NewMetrics() *Metrics {
 			Name: "cart_order_paid_deleted_items_total",
 			Help: "Cart lines removed because an order was paid.",
 		}),
+		userDeletedOutcomes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "cart_user_deleted_outcomes_total",
+			Help: "USER_DELETED handling outcomes.",
+		}, []string{"outcome"}),
 	}
 
 	registry.MustRegister(
@@ -97,6 +105,7 @@ func NewMetrics() *Metrics {
 		m.trimmedTotal,
 		m.orderPaidOutcomes,
 		m.orderPaidDeleted,
+		m.userDeletedOutcomes,
 	)
 
 	return m
@@ -120,12 +129,19 @@ func (m *Metrics) ObserveValidationCache(hit bool) {
 }
 
 // ObserveProductCall records a Product gRPC call outcome.
+//
+// "rejected" is Product refusing the request itself (identity, invalid argument), which says nothing about
+// Product's health; "error" is Product or the path to it failing. reason is Product's ErrorInfo.reason
+// (contracts ADR-006), empty when the status carried none.
 func (m *Metrics) ObserveProductCall(rpc string, err error) {
 	outcome := "success"
 	if err != nil {
 		outcome = "error"
+		if product.CallerFault(err) {
+			outcome = "rejected"
+		}
 	}
-	m.productCalls.WithLabelValues(rpc, outcome).Inc()
+	m.productCalls.WithLabelValues(rpc, outcome, product.Reason(err)).Inc()
 }
 
 // ObserveBreakerRejection records a call the breaker refused.
@@ -202,6 +218,26 @@ func (m *Metrics) OrderPaidSkipped(reason string) {
 // OrderPaidError records a cleanup that failed and will be redelivered.
 func (m *Metrics) OrderPaidError() {
 	m.orderPaidOutcomes.WithLabelValues("error").Inc()
+}
+
+// UserDeletedApplied records a handled USER_DELETED. purged is false when the
+// user had no cart (or it was already purged by a redelivery).
+func (m *Metrics) UserDeletedApplied(purged bool) {
+	outcome := "no_cart"
+	if purged {
+		outcome = "purged"
+	}
+	m.userDeletedOutcomes.WithLabelValues(outcome).Inc()
+}
+
+// UserDeletedSkipped records a message Cart chose not to act on.
+func (m *Metrics) UserDeletedSkipped(reason string) {
+	m.userDeletedOutcomes.WithLabelValues("skipped_" + reason).Inc()
+}
+
+// UserDeletedError records a purge that failed and will be redelivered.
+func (m *Metrics) UserDeletedError() {
+	m.userDeletedOutcomes.WithLabelValues("error").Inc()
 }
 
 func label(bucket int) string {

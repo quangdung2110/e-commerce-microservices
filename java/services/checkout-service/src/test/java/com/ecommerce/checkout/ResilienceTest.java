@@ -1,5 +1,6 @@
 package com.ecommerce.checkout;
 
+import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.resilience.CallResult;
 import com.ecommerce.checkout.resilience.Deadline;
 import com.ecommerce.checkout.resilience.Dependency;
@@ -8,13 +9,14 @@ import com.ecommerce.checkout.support.Fixtures;
 import com.github.tomakehurst.wiremock.client.WireMock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
@@ -23,6 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** ADR-014: deadlines, timeouts shorter than the mesh, no application retry, per-dependency circuits and bulkheads. */
 class ResilienceTest extends AbstractCheckoutTest {
+
+    @Autowired
+    private CheckoutProperties properties;
 
     @Test
     @DisplayName("The application never retries: one failing Cart call is one request")
@@ -61,20 +66,26 @@ class ResilienceTest extends AbstractCheckoutTest {
     }
 
     @Test
-    @DisplayName("A bulkhead rejection is 503 and never counts against the circuit")
+    @DisplayName("A full bulkhead rejects calls without recording a circuit failure")
     void bulkheadDoesNotOpenTheCircuit() {
-        UPSTREAMS.stubFor(WireMock.get(urlPathMatching(CART_PATH)).willReturn(json(200, Fixtures.cart())
-                .withFixedDelay(400)));
-        List<CompletableFuture<Integer>> calls = new ArrayList<>();
-        for (int i = 0; i < 30; i++) {
-            calls.add(CompletableFuture.supplyAsync(() ->
-                    preview(newUser()).returnResult(String.class).getStatus().value()));
-        }
-        List<Integer> statuses = calls.stream().map(CompletableFuture::join).toList();
+        long rejectedBefore = calls(Dependency.CART, "bulkhead_rejected");
+        int permits = properties.bulkheads().cart();
 
-        assertThat(statuses).contains(200, 503);
-        assertThat(calls(Dependency.CART, "bulkhead_rejected")).isPositive();
-        assertThat(guard.isOpen(Dependency.CART)).isFalse();
+        // Subscribe all holders before probing. Virtual time keeps their call timeouts from firing.
+        StepVerifier.withVirtualTime(() -> Mono.using(
+                () -> Flux.range(0, permits)
+                        .flatMap(i -> guard.call(Dependency.CART, Deadline.startingNow(Duration.ofSeconds(2)),
+                                Mono::<String>never), permits)
+                        .subscribe(),
+                holders -> guard.call(Dependency.CART, Deadline.startingNow(Duration.ofSeconds(2)),
+                        () -> Mono.just("unexpected call")),
+                Disposable::dispose))
+                .assertNext(result -> assertThat(result.outcome()).isEqualTo(Outcome.BULKHEAD_REJECTED))
+                .verifyComplete();
+
+        assertThat(calls(Dependency.CART, "bulkhead_rejected")).isEqualTo(rejectedBefore + 1);
+        assertThat(guard.breaker(Dependency.CART).getMetrics().getNumberOfFailedCalls()).isZero();
+        preview(newUser()).expectStatus().isOk();
     }
 
     @Test

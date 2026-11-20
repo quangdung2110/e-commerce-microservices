@@ -54,7 +54,7 @@ public record ProductPayload(String productId,
     public ProductPayload validated() {
         text(productId, "product_id", 64);
         text(name, "name", 255);
-        text(slug, "slug", 255);
+        text(slug, "slug", 180);
         require(catalogRevision != null && catalogRevision >= 1, "catalog_revision must be >= 1");
         validateCategory();
         validateAttributes();
@@ -88,6 +88,7 @@ public record ProductPayload(String productId,
             text(attribute.name(), "attributes.name", 120);
             require(VALUE_TYPES.contains(attribute.valueType()), "attributes.value_type is not a known type");
             scalar(attribute.value(), "attributes.value");
+            optionalText(attribute.valueLabel(), "attributes.value_label", 120);
         }
     }
 
@@ -105,6 +106,7 @@ public record ProductPayload(String productId,
             for (VariantOption option : axis.options()) {
                 require(option != null, "variant option is null");
                 scalar(option.value(), "variant_axes.options.value");
+                optionalText(option.label(), "variant_axes.options.label", 120);
             }
         }
     }
@@ -123,6 +125,9 @@ public record ProductPayload(String productId,
             require(sku.variantAttributes() != null && sku.variantAttributes().size() <= 100,
                     "skus.variant_attributes must be an object of at most 100 keys");
             sku.variantAttributes().values().forEach(value -> scalar(value, "skus.variant_attributes value"));
+            if (sku.thumbnailStorageKey() != null) {
+                storageKey(sku.thumbnailStorageKey(), "skus.thumbnail_storage_key");
+            }
         }
         return ids;
     }
@@ -135,7 +140,8 @@ public record ProductPayload(String productId,
             text(item.mediaId(), "media.media_id", 64);
             require(ids.add(item.mediaId()), "duplicate media_id " + item.mediaId());
             require(MEDIA_TYPES.contains(item.mediaType()), "media.media_type is not IMAGE or VIDEO");
-            text(item.storageKey(), "media.storage_key", 1024);
+            storageKey(item.storageKey(), "media.storage_key");
+            optionalText(item.altText(), "media.alt_text", 255);
             require(item.sortOrder() != null && item.sortOrder() >= 0, "media.sort_order must be >= 0");
             require(item.skuId() == null || skuIds.contains(item.skuId()),
                     "media " + item.mediaId() + " points at a SKU that is not in skus[]");
@@ -163,8 +169,28 @@ public record ProductPayload(String productId,
                 field + " must be a non-empty string of at most " + maxLength);
     }
 
+    private static void optionalText(String value, String field, int maxLength) {
+        require(value == null || value.length() <= maxLength, field + " must be at most " + maxLength);
+    }
+
+    /**
+     * Storage key dựng thành URL CDN bằng cách nối base + key. Segment rỗng, {@code .} hoặc
+     * {@code ..} được trình duyệt chuẩn hóa nên URL thoát khỏi thư mục base của CDN: Product
+     * chỉ kiểm key không rỗng, vì vậy BFF coi chúng là sai contract (ADR-005). Dấu {@code /}
+     * đầu bị {@code MediaUrls} bỏ nên được chấp nhận.
+     */
+    private static void storageKey(String value, String field) {
+        text(value, field, 1024);
+        String key = value.replaceFirst("^/+", "");
+        for (String segment : key.split("/", -1)) {
+            require(!segment.isEmpty() && !segment.equals(".") && !segment.equals(".."),
+                    field + " must not contain empty, \".\" or \"..\" path segments");
+        }
+    }
+
     private static void scalar(JsonNode value, String field) {
         require(ScalarValues.isScalar(value), field + " must be a string, number or boolean");
+        require(!value.isTextual() || value.textValue().length() <= 500, field + " must be at most 500 characters");
     }
 
     private static void require(boolean condition, String message) {

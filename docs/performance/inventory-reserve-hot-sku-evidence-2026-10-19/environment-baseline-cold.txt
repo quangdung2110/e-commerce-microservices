@@ -1,0 +1,14 @@
+variant=baseline scenario=cold hot_share=0 rates=100 200 300 400 600 800 duration=60s pause=15
+cold_skus=2000 max_vus=2000 k6_image=grafana/k6:0.54.0
+jar_sha256=4697d0c9be340f746fa6c0fbb75d796c3aa615459a29e049c0fe94a1906607fa
+git_head=0b71bdcd
+inventory_src_changed_files=4
+docker_cpus=16 docker_mem=15969447936
+shared_stack_containers=0
+started=2026-10-19T17:33:18+07:00
+fsync=on
+max_connections=200
+shared_buffers=32768
+synchronous_commit=on
+wal_sync_method=fdatasync
+finished=2026-10-19T17:44:17+07:00

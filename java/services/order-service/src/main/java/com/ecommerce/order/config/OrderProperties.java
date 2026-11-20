@@ -1,6 +1,7 @@
 package com.ecommerce.order.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 import java.util.List;
@@ -12,6 +13,7 @@ public record OrderProperties(
         Checkout checkout,
         Refund refund,
         Search search,
+        Fulfillment fulfillment,
         Notification notification,
         Temporal temporal,
         Clients clients,
@@ -41,18 +43,63 @@ public record OrderProperties(
                            Duration activityTimeout, int activityMaxAttempts) {
     }
 
+    /**
+     * {@code readTimeout} is the default; the three per-provider values override it. Each must stay at
+     * least one second under the mesh timeout of the routes Order calls (mesh runtime contract section 7,
+     * Order ADR-023).
+     */
     public record Clients(String serviceName, String inventoryBaseUrl, String promotionBaseUrl,
-                          String paymentBaseUrl, Duration connectTimeout, Duration readTimeout) {
+                          String paymentBaseUrl, Duration connectTimeout, Duration readTimeout,
+                          Duration inventoryReadTimeout, Duration promotionReadTimeout,
+                          Duration paymentReadTimeout, Integer maxConcurrent) {
+
+        /** Calls in flight to one provider at once; more are not sent (Order ADR-024). */
+        public int maxConcurrentCalls() {
+            return maxConcurrent != null ? maxConcurrent : 64;
+        }
+
+        public Duration inventoryRead() {
+            return inventoryReadTimeout != null ? inventoryReadTimeout : readTimeout;
+        }
+
+        public Duration promotionRead() {
+            return promotionReadTimeout != null ? promotionReadTimeout : readTimeout;
+        }
+
+        public Duration paymentRead() {
+            return paymentReadTimeout != null ? paymentReadTimeout : readTimeout;
+        }
     }
 
-    public record Kafka(boolean consumersEnabled, String paymentTopic, String inventoryTopic, String deliveryTopic,
+    public record Fulfillment(Duration deliveryConfirmationOverdue, Duration deliveredAtFutureSkew) {
+    }
+
+    public record Kafka(boolean consumersEnabled, String paymentTopic, String inventoryTopic,
                         String orderTopic, String notificationTopic, String paymentGroup,
-                        String inventoryShipGroup, String inventoryReturnGroup, String deliveryGroup,
-                        String receiptGroup) {
+                        String inventoryShipGroup, String inventoryReturnGroup, String receiptGroup) {
     }
 
     public record Workers(boolean enabled, String instanceId, Duration dispatchInterval, int dispatchBatchSize,
-                          Duration lease, Duration reconcileInterval) {
+                          Duration lease, Duration reconcileInterval, int dispatchThreads,
+                          int dispatchAckBatchSize, Duration dispatchAckInterval) {
+        @ConstructorBinding
+        public Workers {
+            if (dispatchThreads < 1 || dispatchThreads > 64 || dispatchBatchSize < 1 || dispatchBatchSize > 1000
+                    || dispatchAckBatchSize < 1 || dispatchAckBatchSize > 1000) {
+                throw new IllegalArgumentException("Invalid dispatcher thread/batch bounds");
+            }
+            if (lease == null || lease.compareTo(Duration.ofSeconds(1)) < 0 || dispatchAckInterval == null
+                    || dispatchAckInterval.isNegative() || dispatchAckInterval.isZero()
+                    || dispatchAckInterval.compareTo(lease.dividedBy(3)) >= 0) {
+                throw new IllegalArgumentException("Lease must be >= 1s; ACK interval must be positive and < lease/3");
+            }
+        }
+
+        public Workers(boolean enabled, String instanceId, Duration dispatchInterval, int dispatchBatchSize,
+                       Duration lease, Duration reconcileInterval) {
+            this(enabled, instanceId, dispatchInterval, dispatchBatchSize, lease, reconcileInterval,
+                    8, 50, Duration.ofMillis(20));
+        }
     }
 
     public record Outbox(Duration retention, Duration receiptSafetyDelay, String trimCron) {

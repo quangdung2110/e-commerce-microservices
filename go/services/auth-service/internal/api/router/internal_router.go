@@ -1,6 +1,8 @@
 package router
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -25,27 +27,32 @@ type InternalDeps struct {
 //
 // This engine is bound to its own port and must never be published through the
 // gateway: its responses carry the recipient address and, for verification and
-// reset templates, the secret itself.
+// reset templates, the secret itself. What separates it from a recipient oracle
+// is the mesh AuthorizationPolicy that only lets the notification-service
+// principal reach it (docs/mesh/runtime-contract.md section 5.2). The
+// X-Service-Identity allowlist below is defence in depth, not the enforcement
+// point (docs/auth/interfaces.md section 3). Without a mesh every container on
+// the network reaches this port, so the caller must also sign the request with
+// the key it shares with Auth (mesh ADR-004).
 func NewInternal(deps InternalDeps) *gin.Engine {
 	engine := newEngine(deps.Config, deps.Logger)
 
 	engine.GET("/health/live", deps.Health.Live)
 
+	limit := rule(deps.Config.Security.RateLimit.InternalPerResource)
+
 	group := engine.Group("/internal/v1/auth")
-	if deps.Config.Internal.MutualTLSEnabled() {
-		group.Use(middleware.ServiceIdentity(deps.Config.Internal.AllowedClientCN))
-	} else {
-		// Without certificates the listener can only be protected by the network
-		// itself, which is acceptable for local development and refused by the
-		// configuration validator in production.
-		deps.Logger.Warn("the internal delivery API is running without mTLS")
-	}
+	group.Use(
+		middleware.ServiceIdentity(deps.Config.Internal.AllowedCallers),
+		middleware.ServiceSignature([]byte(deps.Config.Internal.SigningKey), deps.Config.Internal.SignatureTolerance, time.Now),
+	)
 
-	group.Use(middleware.RateLimit(deps.Limiter, "internal-delivery:ip",
-		rule(deps.Config.Security.RateLimit.InternalPerClient)))
-
-	group.POST("/notification-deliveries/:delivery_id/content", deps.Delivery.Resolve)
-	group.GET("/users/:user_id/notification-contact", deps.Contact.Resolve)
+	group.POST("/notification-deliveries/:delivery_id/content",
+		middleware.RateLimitByServiceResource(deps.Limiter, "internal-delivery", "delivery_id", limit),
+		deps.Delivery.Resolve)
+	group.GET("/users/:user_id/notification-contact",
+		middleware.RateLimitByServiceResource(deps.Limiter, "internal-contact", "user_id", limit),
+		deps.Contact.Resolve)
 
 	return engine
 }

@@ -1,0 +1,5 @@
+# Raw output and jar copies of scripts/ci/inventory-bench.sh; the numbers that matter are copied into
+# docs/performance/ with their evidence summary.
+results/
+jars/
+__pycache__/

@@ -75,9 +75,9 @@ services:
 
   - id: payment-service
     bounded_context: payment
-    runtime: java-planned
-    status: documented
-    contract_adoption: not_started
+    runtime: java
+    status: implemented
+    contract_adoption: pilot
     docs: docs/payment/README.md
 
   - id: promotion-service
@@ -117,10 +117,17 @@ services:
 
   - id: notification-service
     bounded_context: notification
-    runtime: go-planned
-    status: documented
+    runtime: go
+    status: implemented
     contract_adoption: pilot
     docs: docs/notification/README.md
+
+  - id: notification-ops
+    bounded_context: notification
+    runtime: operator-workload
+    status: documented
+    contract_adoption: not_started
+    docs: docs/notification/16-operations.md
 
   - id: chat-service
     bounded_context: chat

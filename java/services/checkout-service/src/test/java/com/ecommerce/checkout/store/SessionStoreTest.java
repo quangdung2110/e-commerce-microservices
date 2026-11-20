@@ -45,6 +45,18 @@ class SessionStoreTest extends AbstractCheckoutTest {
     }
 
     @Test
+    void readWarmupExecutesLuaWithoutChangingAnyWorkflowOrWarmupKey() {
+        Quote quote = quote();
+        claim(quote, "warmup-test-attempt");
+        List<String> before = redisKeys("checkout:").stream().sorted().toList();
+        store.warmupReadPath().block(WAIT);
+        assertThat(redisKeys("checkout:").stream().sorted().toList()).containsExactlyElementsOf(before);
+        assertThat(redisKeys("checkout:warmup:")).isEmpty();
+        assertThat(state(quote)).isEqualTo(SessionState.SUBMITTING);
+        assertThat(store.readPayloadCipher(quote.ref()).block(WAIT)).contains("payload-cipher");
+    }
+
+    @Test
     @DisplayName("Preview writes the session, the active pointer and the replay with the documented TTLs")
     void previewTtls() {
         Quote quote = quote();

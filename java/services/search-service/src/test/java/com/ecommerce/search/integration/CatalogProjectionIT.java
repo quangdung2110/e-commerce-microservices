@@ -63,6 +63,25 @@ class CatalogProjectionIT extends AbstractSearchIntegrationTest {
     }
 
     @Test
+    void aRatingArrivingRightAfterAnUnrefreshedWriteIsNotLost() throws IOException {
+        applyCatalog("sku-1", 1L, 28_891_500L);
+        // Written inside the refresh interval: the update-by-query still sees the old version.
+        EventBatch batch = new EventBatch(properties.aliases().productsWrite());
+        batch.addAvailabilityWrite(writer.availabilityPatch(batch.targetIndex(), "sku-1", true, 1L,
+                Timestamps.iso(NOW), Timestamps.nowIso(), "availability-1"));
+        executor.execute("t.inventory.stock.events.v1", batch);
+
+        writer.reviewMetricsPatch(properties.aliases().productsWrite(), "prod-1", 4.5, 12L, 7L,
+                Timestamps.iso(NOW), "review-1");
+        refreshAll();
+
+        ProductDocument document = read("sku-1").orElseThrow();
+        assertThat(document.productRatingAvg()).isEqualTo(4.5);
+        assertThat(document.reviewRevision()).isEqualTo(7L);
+        assertThat(document.inStock()).isTrue();
+    }
+
+    @Test
     void ignoresACatalogEventOlderThanTheDocument() throws IOException {
         applyCatalog("sku-1", 42L, 28_000_000L);
         applyCatalog("sku-1", 41L, 99_000_000L);

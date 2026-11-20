@@ -30,6 +30,10 @@ Amended bởi [ADR-007](./ADR-007-hot-path-clarifications.md): timeout Product t
 Product (trả `503`), và việc bỏ pha 2 được kiểm chứng bằng độ trễ chèn trước pha Product
 chứ không bằng Product chậm. ADR-007 cũng thêm `no-store` cho `404`. Phần còn lại giữ nguyên.
 
+Làm rõ bởi [ADR-008](./ADR-008-post-implementation-audit-corrections.md): chỉ `400`/`401`/`403`
+là lỗi cấu hình mà circuit breaker bỏ qua; mọi status ngoài contract khác (`4xx` khác, `3xx`,
+`404` của Inventory/Review) là "response không đúng contract" và tính là lỗi.
+
 ## Context
 
 ADR-001 và ADR-002 yêu cầu BFF có timeout, bulkhead và circuit breaker riêng cho từng
@@ -69,7 +73,9 @@ kết nối ở mesh (Product, Review) và gateway (kết nối tới BFF).
 
 Nếu sau pha 1 deadline còn lại dưới 100 ms, BFF không gọi Inventory và Review: mọi SKU là
 `UNKNOWN`, `review_section.status = UNAVAILABLE`. Deadline được truyền bằng request
-context; khi client hoặc gateway hủy request, BFF hủy mọi call đang chạy.
+context; khi client hoặc gateway hủy request, BFF hủy mọi call đang chạy (ngoại lệ từ
+[ADR-011](./ADR-011-in-process-catalog-cache.md): khi catalog cache bật, lời gọi Product dùng
+chung cho nhiều request cùng slug không bị hủy theo một client).
 
 Để các timeout trên có nghĩa, provider cần đạt latency kỳ vọng: Product buyer-read
 p99 ≤ 250 ms, Inventory batch-read (≤ 500 SKU) p99 ≤ 200 ms, Review PDP summary
@@ -142,9 +148,32 @@ dõi như chỉ số sức khỏe của Inventory.
 
 ## Verification
 
+### Bổ sung 2026-10-12: outbound startup warm-up
+
+Timeout Product tại BFF có thể bao gồm khởi tạo client/DNS/connect; cold start/idle chưa
+được chứng minh là nguyên nhân duy nhất. Chọn startup runner read-only GET Product trên
+pool dùng bởi request thật, ba round với ngân sách tổng 30 giây, mỗi GET 5 giây và tối đa
+hai retry backoff mỗi round. Chỉ quảng bá readiness sau thành công; startup thất bại nếu
+probe không hoàn tất. Khởi tạo local HTTP resources của Inventory/Review nhưng không probe
+hai provider optional. Không thay bảng timeout, retry business, circuit hoặc degradation
+của ADR này. Readiness runtime không gọi downstream.
+
+Thêm DNS/connect/pool/decode metrics với labels hữu hạn và log failure có request/trace ID.
+Test phải kiểm tra first request không được fixture làm nóng, timeout startup có giới hạn,
+probe không ghi dữ liệu, missing Product vẫn 404 còn timeout vẫn 503/no-store. Warm-up
+không thay thế việc đo latency sau idle và dưới tải.
+
 - Test: Product chậm làm cạn budget dẫn tới bỏ pha 2; timeout ứng dụng kích hoạt trước
   timeout mesh; circuit open, half-open rồi đóng; bulkhead từ chối; `4xx` từ từng
   dependency; response sai contract; client hủy request thì call con bị hủy.
 - Load test xác nhận latency kỳ vọng của provider, giới hạn bulkhead và SLO PDP trước khi
   public availability.
 - Kiểm tra `Cache-Control: no-store` trên mọi response degrade và `503`.
+
+### Bổ sung 2026-10-15: deadline gửi cho dependency
+
+Theo [contracts ADR-003](../../../contracts/decisions/ADR-003-deadline-propagation.md). Các con số của ADR này
+không đổi; provider nay biết chúng. `DependencyGuard` ghi timeout hiệu dụng
+`min(trần, deadline còn lại − dự phòng)` vào Reactor context và `UpstreamHttp` gửi nó làm
+`X-Request-Timeout-Ms` tới Product, Inventory và Review. Review dùng nó để đếm các lần trả lời sau khi BFF
+đã cắt ở 300 ms. Test: `ProductDetailApiTest.dependenciesReceiveOneBatchAndTheRightHeaders`.

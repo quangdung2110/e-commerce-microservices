@@ -1,6 +1,6 @@
 # Quy ước vận hành của Service Mesh
 
-> **Trạng thái:** Quy ước mục tiêu (`target/proposed`) — chưa xác minh trên cluster.
+> **Trạng thái:** triển khai và kiểm chứng local bằng kind theo ADR-005; production vẫn cần kiểm chứng riêng.
 > **Nguồn chân lý:** Tài liệu này định nghĩa hành vi bắt buộc của mesh và được ưu tiên hơn
 > manifest hoặc kế hoạch khi có mâu thuẫn. Với identity header và route public, nó bổ sung —
 > không thay thế — [gateway/runtime-contract.md](../gateway/runtime-contract.md).
@@ -21,20 +21,20 @@ dụng đều là defense-in-depth; `AuthorizationPolicy` mục 5 là nơi thự
 
 | Hạng mục | Quy ước |
 |---|---|
-| Mesh | Istio `<pinned-version>` ambient mode, pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest` |
+| Mesh | Istio `1.31.3` ambient mode ([`deploy/mesh/versions.yaml`](../../deploy/mesh/versions.yaml)); pin exact version + digest cho istiod, ztunnel, waypoint image và `istio-cni`; cấm `latest` |
 | Kubernetes | Phiên bản trong ma trận tương thích của bản Istio đã pin; CNI của cluster phải được `istio-cni` hỗ trợ ở ambient |
 | Cài đặt | Helm chart chính thức (`base`, `istiod`, `cni`, `ztunnel`), values được version hóa; không `istioctl install` thủ công trên production |
 | Profile | `ambient`; sidecar injection tắt mặc định (`istio-injection` không gắn cho namespace nào) |
 | Edge | Traefik `v3.7.1` là workload trong `edge`; không deploy Istio Ingress Gateway |
 | Traffic policy east-west | `VirtualService` + `DestinationRule` (waypoint thực thi); `HTTPRoute` chỉ dùng cho Traefik |
-| Telemetry | `Telemetry` API → OpenTelemetry Collector (`observability`); Prometheus scrape trực tiếp |
+| Telemetry | `Telemetry` API → OpenTelemetry Collector (`observability`); Prometheus scrape endpoint chính xác qua waypoint |
 | Local development | Docker Compose **không có mesh**; mọi bảo đảm trong tài liệu này chỉ tồn tại trên cluster |
 
 ## 3. Namespace, nhãn và yêu cầu workload
 
 | Namespace | `istio.io/dataplane-mode` | `istio.io/use-waypoint` | mTLS |
 |---|---|---|---|
-| `edge` | `ambient` | — | STRICT, trừ port `80`/`443` của Traefik: PERMISSIVE |
+| `edge` | `ambient` | — | STRICT, trừ port public `80`/`443` của Traefik và `3000` của Frontend: PERMISSIVE |
 | `ecommerce` | `ambient` | `ecommerce-waypoint` | STRICT |
 | `observability` | `ambient` | — | STRICT |
 | `data` | không gắn | — | Ngoài mesh (đợt 1) |
@@ -49,15 +49,15 @@ Yêu cầu bắt buộc cho mọi workload trong `edge` và `ecommerce`:
 - Không `hostNetwork`, không `hostPort`; pod dùng `hostNetwork` không được ztunnel bảo vệ.
 - Job/CronJob trong hai namespace này chạy bình thường (không có sidecar cần thoát).
 - Readiness/liveness probe của kubelet đi thẳng, không qua mTLS — không cần cấu hình thêm.
-- Waypoint `ecommerce-waypoint`: `Gateway` với `gatewayClassName: istio-waypoint`, ≥2 replica,
+- Waypoint `ecommerce-waypoint`: `Gateway` với `gatewayClassName: istio-waypoint`, `istio.io/waypoint-for: all`, ≥2 replica,
   `PodDisruptionBudget minAvailable: 1`, HPA theo CPU, request/limit được load test xác nhận.
 
 ## 4. Xác thực transport
 
 `PeerAuthentication` `default` trong `istio-system` đặt `mtls.mode: STRICT` toàn mesh.
 `PeerAuthentication` riêng cho workload Traefik đặt `portLevelMtls` `80`/`443` = `PERMISSIVE`
-vì LoadBalancer bên ngoài mesh kết nối trực tiếp. Không namespace hay workload nào khác được
-PERMISSIVE; "mở tạm PERMISSIVE để debug" là vi phạm contract.
+vì LoadBalancer bên ngoài mesh kết nối trực tiếp. Frontend có ngoại lệ tương tự, chỉ port public `3000`.
+Không listener nghiệp vụ trong `ecommerce` được PERMISSIVE; "mở tạm PERMISSIVE để debug" là vi phạm contract.
 
 Chứng chỉ workload do istiod cấp, TTL 24 giờ, rotate tự động; alert khi chứng chỉ còn dưới 6 giờ
 mà chưa rotate.
@@ -69,11 +69,17 @@ Ký hiệu principal: `edge/traefik` = `cluster.local/ns/edge/sa/traefik`;
 (ALLOW không rule). Policy L7 gắn `targetRefs` tới Service đích và được waypoint thực thi;
 policy L4 gắn `selector` và được ztunnel thực thi.
 
+Listener nghiệp vụ trong `ecommerce` chỉ nhận principal của waypoint ở L4. Không có ngoại lệ L4
+cho Prometheus: scraper đi qua waypoint và chỉ được `GET` đúng metrics path/cổng HTTP khai báo trong
+`topology.yaml`. URI template `{*}` giữ nguyên ranh giới segment của path; không nới rule thành suffix.
+Mỗi grant gắn với port của listener đích. Traffic trực tiếp Pod IP vẫn phải qua cùng kiểm soát.
+
 ### 5.1 Namespace `edge` (L4, ztunnel)
 
 | Đích | Port | Được phép từ |
 |---|---|---|
 | Traefik | `80`, `443` | Bất kỳ (PERMISSIVE; bảo vệ bằng LoadBalancer/firewall) |
+| `frontend` | `3000` | Bất kỳ (public UI, PERMISSIVE chỉ trên cổng này) |
 | Traefik | `8090` metrics | `observability/prometheus` |
 | `gateway-auth` | HTTP | `edge/traefik` |
 | `gateway-auth` | metrics | `observability/prometheus` |
@@ -95,7 +101,7 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `cart-service` | `/internal/v1/carts/*/checkout-snapshot` | GET | `ecommerce/checkout-service` | `checkout-reads-cart-snapshot` |
 | `product-service` | `/api/v1/products/**`, `/api/v1/categories/**`, `/api/v1/attributes/**` | X | `edge/traefik` | gateway matrix |
 | `product-service` | `/internal/v1/products/export`, `/internal/v1/categories/export` | X | `ecommerce/search-service` | `search-reindexes-product-catalog` |
-| `product-service` | `/internal/v1/products/*/snapshot` | GET | `ecommerce/search-service`, `ecommerce/promotion-service` | Product OpenAPI `searchServiceMtls` |
+| `product-service` | `/internal/v1/products/*/snapshot` | GET | `ecommerce/search-service`, `ecommerce/promotion-service` | `search-reindexes-product-catalog`, `promotion-validates-product-snapshot` |
 | `product-service` | `/internal/v1/product-details/*` | GET | `ecommerce/product-detail-bff` | `product-detail-bff-queries-product-catalog` |
 | `product-service` (port `grpc`) | `/ecommerce.product.v1.ProductService/*` | POST | `ecommerce/cart-service`, `ecommerce/checkout-service` | `cart-and-checkout-query-product-skus` |
 | `promotion-service` | `/api/v1/me/**`, `/api/v1/promotion-discovery`, `/api/v1/admin/**` | X | `edge/traefik` | gateway matrix |
@@ -116,8 +122,10 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `checkout-service` | `/api/v1/checkout/preview`, `/api/v1/checkout/submit` | POST | `edge/traefik` | `gateway-routes-checkout` |
 | `checkout-service` | `/api/v1/checkout/submissions/*`, `/api/v1/checkout/previews/*/voucher-options` | GET | `edge/traefik` | `gateway-routes-checkout` |
 | `order-service` | `/api/v1/orders/**`, `/api/v1/admin/orders/**`, `/api/v1/order-operations/**`, `/api/v1/admin/order-operations/**` | X | `edge/traefik` | Order public OpenAPI v1 |
-| `order-service` | `/internal/v1/checkout-order-submissions`, `/internal/v1/checkout-order-submissions/*` | POST/GET | `ecommerce/checkout-service` | `checkout-creates-order` |
-| `order-service` | `/internal/v1/orders/*/financial-reconciliation-case`, `/internal/v1/orders/*/financial-reconciliation-decisions` | GET/POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
+| `order-service` | `/internal/v1/checkout-order-submissions` | POST | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/checkout-order-submissions/*` | GET | `ecommerce/checkout-service` | `checkout-creates-order` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-case` | GET | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
+| `order-service` | `/internal/v1/orders/*/financial-reconciliation-decisions` | POST | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | `finance-ops-decides-order-financial-reconciliation` |
 | `payment-service` | `/v1/payments/webhook/stripe` | POST | `edge/traefik` | gateway public `/api/payments/webhook/stripe` rewrite sang service path này; route public duy nhất của Payment |
 | `payment-service` | `/v1/payments/initiate`, `/v1/payments/{transactionId}/cancel`, `/v1/payments/{transactionId}/refund` | POST | `ecommerce/order-service` | `order-initiates-payment`; policy triển khai phải dùng match tương đương nhưng không được bao trùm webhook |
 | `auth-service` | `/internal/v1/auth/users/*/notification-contact` | GET | `ecommerce/notification-service` | `notification-resolves-auth-contact` |
@@ -125,14 +133,21 @@ gateway matrix phải được đối soát (mục 11). `X` = mọi method của
 | `notification-service` | `/internal/v1/notifications/requests/*`, `/internal/v1/notifications/deliveries` | GET | `ecommerce/order-service`, `ecommerce/finance-ops` | `support-queries-notification-status` |
 | `notification-service` | `/internal/v1/notifications/ops/**` | X | `ecommerce/notification-ops` | `notification-ops-operates-notification`; không route qua Gateway |
 | `payment-service` | `/v1/payments/{transactionId}`, `/v1/payments/{transactionId}/client-data`, `/v1/refunds/{refundTransactionId}` | GET | `ecommerce/order-service` | `order-initiates-payment` |
+| `payment-service` | `/internal/v1/payment/**` | X | `ecommerce/finance-ops`, `ecommerce/accounting-ops` | Payment ADR-028; operations allowlist; actor/maker-checker vẫn do ứng dụng kiểm tra |
 | `chat-service` | `/ws/**` | GET (Upgrade) | `edge/traefik` | gateway matrix |
-| Mọi service | port metrics | GET | `observability/prometheus` | mục 9 |
+| Mọi service | metrics path/cổng HTTP trong `topology.yaml` | GET | `observability/prometheus` | mục 9; qua waypoint, không được gọi nghiệp vụ |
+| Mọi service có health check | health path/caller chính xác trong `topology.yaml` | GET | Theo `health_checks` | Health check của Traefik và startup probe Promotion của Checkout; không mở toàn bộ actuator |
 
 Không có rule nào cho `analytics-service` inbound HTTP: service này chỉ nhận Kafka.
 `notification-service` nhận HTTP từ Traefik (inbox), từ support workload (status) và từ
 `notification-ops` (ops); SES event đi qua SNS → SQS nên không có webhook route. Mọi path
 không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới vào
 `interactions.yaml`, PR phải kèm dòng mới trong bảng này và policy tương ứng.
+
+Hai provider giả lập local `mailpit` và `localstack` dùng mTLS + policy L4 theo đích/cổng,
+chỉ cho `notification-service` tới SMTP `1025` và AWS API giả lập `4566`. Chúng đặt
+`istio.io/use-waypoint: none` trên Service/Pod; không được tái sử dụng ngoại lệ này cho service nghiệp vụ.
+Nguồn cấu hình: `local_tcp_providers` trong topology. UI Mailpit qua port-forward của operator.
 
 ### 5.3 Namespace `observability` (L4, ztunnel)
 
@@ -148,16 +163,16 @@ không xuất hiện trong bảng bị từ chối. Khi thêm interaction mới 
 |---|---|---|---|
 | `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` | `gateway-auth` qua Traefik, theo [gateway/runtime-contract.md §6.1](../gateway/runtime-contract.md#61-ánh-xạ-identity-header) | Chỉ `edge/traefik` chạm được route public | Tin trên route public; bỏ qua trên `/internal/**`, `/exports/**` |
 | `X-Service-Identity` | Service caller, giá trị = ServiceAccount name của chính nó | **Không** xác minh giá trị; chỉ bảo đảm principal caller được phép chạm path | Log, audit, problem detail, allowlist defense-in-depth; không dùng làm bằng chứng authorization duy nhất |
-| `X-Request-Id`, `traceparent`, `tracestate` | Caller/gateway | Waypoint giữ nguyên và tạo span con | Propagate tiếp |
+| `X-Request-Id`, `traceparent`, `tracestate` (gRPC: `x-request-id`, `traceparent`, `tracestate`) | Caller/gateway | Waypoint giữ nguyên và tạo span con | Propagate tiếp; định dạng và quy tắc khi không có request gốc theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) |
 
 Traefik xoá `X-Service-Identity` do client gửi cùng nhóm `X-User-*`
 ([gateway/runtime-contract.md §4](../gateway/runtime-contract.md#4-luồng-xử-lý-request)). Service
 gọi internal API bắt buộc gửi `X-Service-Identity`; thiếu header là lỗi contract phía caller dù
 mesh đã cho phép.
 
-Review Service hiện dùng static bearer token (`REVIEW_INTERNAL_*_TOKENS`) thay vì
-`X-Service-Identity`; đó cũng là defense-in-depth với cùng địa vị, và là ứng viên hợp nhất về
-header chung (mục 11).
+Mọi service kiểm `X-Service-Identity` (gRPC: `x-service-identity`) với allowlist cấu hình được theo nhóm route;
+thiếu là `401`/`UNAUTHENTICATED`, không thuộc allowlist là `403`/`PERMISSION_DENIED`
+([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md)). Review không còn dùng bearer token.
 
 ## 7. Traffic policy east-west
 
@@ -174,17 +189,26 @@ của Istio.
 | `POST /internal/inventory/v1/allocation-previews` | 0 | 4 giây | Advisory nhưng POST; Checkout budget 3 giây |
 | `POST /internal/v1/promotion-discount-calculations` | 0 | 3 giây | Pure query nhưng POST; Checkout budget 2 giây |
 | `POST /internal/v1/promotion-voucher-options` | 0 | 2 giây | Pure query nhưng POST; Checkout budget 1 giây, lỗi chỉ ảnh hưởng khay voucher ([Checkout ADR-017](../checkout/decisions/ADR-017-voucher-options-read-composition.md)) |
-| `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/v1/promotion-allocation/{reservations,cancellations,confirmations}` | 0 | 10 giây | Order Temporal activity sở hữu retry; Order cắt ở 8 giây ([Order ADR-023](../order/decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md)) |
 | `POST /internal/v1/promotion-allocation/technical-cancellations` | 0 | 10 giây | Legacy migrator only; proof verification before mutation |
-| `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry |
+| `POST /internal/inventory/v1/reservations/**`, `/refund-scopes/**` | 0 | 10 giây | Order Temporal activity sở hữu retry; Order cắt ở 8 giây (Order ADR-023) |
+| `GET /internal/inventory/v1/commands/*`, `GET .../reservations/*`, `GET .../refund-scopes/*` | 0 | 10 giây | Order query sau kết quả UNKNOWN; không có retry mesh vì Order sở hữu replay. Order cắt ở 8 giây (Order ADR-023) |
+| `GET /v1/payments/{transactionId}`, `GET /v1/payments/{transactionId}/client-data`, `GET /v1/refunds/{refundTransactionId}` | 0 | 15 giây | Order đọc `client-data` ngay trong request của Checkout và query sau UNKNOWN; Order cắt ở 10 giây và còn bị kẹp bởi `X-Request-Timeout-Ms` của Checkout (Order ADR-023) |
 | `POST /internal/v1/checkout-order-submissions`, `POST /v1/payments/initiate`, `POST /v1/payments/*/cancel`, `POST /v1/payments/*/refund` | 0 | 15 giây | Caller sở hữu retry/recovery bằng stable idempotency key; mesh không retry. Checkout cắt Order POST ở 13 giây (Order chờ `PAYMENT_READY` tối đa 12 giây), GET recovery ở 2 giây, và query Order status sau timeout thay vì nhân ba deadline ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Webhook không nằm trong policy này |
-| `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
+| `/internal/v1/reviews/rating-aggregate-exports**`, `/internal/v1/products/export`, `/internal/v1/categories/export`, `/exports/inventory/v1/**` | 0 | 30 giây | Export session/page |
+| `/internal/v1/payment/**` | 0 | 30 giây | Finance/Accounting Ops; không retry mutation tự động; maker-checker và idempotency tại ứng dụng |
 | `GET /internal/v1/reviews/products/*/pdp-summary`, `POST .../sku-availabilities:batch-get` | 2 lần / 0 | 2 giây | BFF cắt ở `min(300 ms, deadline còn lại − 50 ms)`, không retry ở ứng dụng, có circuit breaker riêng và degrade theo contract ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md)); mesh là giới hạn ngoài |
 | `POST /internal/v1/auth/notification-deliveries/*/content` | 2 lần, `connect-failure,refused-stream` | 2 giây | POST nhưng idempotent theo `delivery_id` (Auth OpenAPI ghi rõ retry cùng `delivery_id` trả cùng nội dung); chỉ retry lỗi kết nối, không retry sau khi đã nhận response |
 | `GET /internal/v1/auth/users/*/notification-contact` | 2 lần, `connect-failure,refused-stream` | 2 giây | Pure read; Notification cache 15 phút và có bulkhead theo lane |
 | `GET /internal/v1/notifications/requests/*`, `GET /internal/v1/notifications/deliveries` | 2 lần, `connect-failure,refused-stream` | 3 giây | Pure read cho support tooling |
 | `/internal/v1/notifications/ops/**` | 0 | 10 giây | Caller sở hữu retry bằng `Idempotency-Key`; mesh không retry |
+| `GET /internal/v1/checkout-order-submissions/*` | 0 | 15 giây | Checkout đọc lại submission bằng cùng token khi recovery; Checkout cắt ở 2 giây ([Checkout ADR-014](../checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md)). Caller sở hữu recovery nên mesh không retry. Thêm 2026-10-16 ([mesh ADR-001](decisions/ADR-001-manifests-generated-from-runtime-contract.md)): route đã có ở mục 5.2 nhưng chưa có dòng ở đây |
+| `GET/POST /internal/v1/orders/*/financial-reconciliation-case`, `.../financial-reconciliation-decisions` | 0 | 10 giây | Finance Ops và Accounting Ops thao tác bằng `Idempotency-Key`; caller sở hữu retry. Thêm 2026-10-16 như dòng trên |
 | Route public từ Traefik | 0 | Không đặt ở mesh | Traefik sở hữu ngân sách timeout và retry edge |
+
+Mọi route trong bảng trên MUST có dòng ở đây trước khi caller được gọi nó, và timeout hiệu dụng của caller
+(giá trị nó gửi trong `X-Request-Timeout-Ms` hoặc đặt làm deadline gRPC, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md))
+MUST nhỏ hơn timeout mesh của route ít nhất 1 giây. Mesh không đọc header này.
 
 `DestinationRule` per service: `outlierDetection` (5 lỗi 5xx liên tiếp → eject 30 giây, tối đa
 50 % endpoint), `connectionPool` giới hạn theo load test, `loadBalancer: LEAST_REQUEST`. Giá trị
@@ -192,10 +216,16 @@ là chính sách khởi điểm, phải được load test xác nhận và ghi v
 
 ## 8. Egress
 
-`meshConfig.outboundTrafficPolicy.mode: REGISTRY_ONLY`. Mọi đích ngoài cluster được khai báo
-bằng `ServiceEntry`: Stripe API (Payment), SMTP/email provider (Notification), nhà cung cấp
-khác khi có. Đích trong `data` (ngoài mesh) là Kubernetes Service bình thường, không cần
-`ServiceEntry`. Không có egress gateway ở đợt 1.
+Trên kind local, `NetworkPolicy` mặc định chặn egress từ pod trong `ecommerce`, rồi mở DNS,
+HBONE và các đích/cổng nội bộ cần thiết. Chỉ pod của waypoint `ecommerce-egress` được mở
+TCP/443 tới Internet. Waypoint mặc định từ chối và cấp quyền theo danh tính mTLS trên từng
+`ServiceEntry`. Payment được phép tới `api.stripe.com:443` với TLS xuyên suốt tới Stripe.
+Notification dùng Mailpit và LocalStack trong cluster. AWS SES/SQS mặc định đóng trên local.
+Đích trong `data` (ngoài mesh) dùng Kubernetes Service. `REGISTRY_ONLY` vẫn được cấu hình;
+NetworkPolicy chịu trách nhiệm chặn đường ra trực tiếp.
+
+Kindnet dùng hàng đợi nftables có cờ `bypass`. Phạm vi kiểm chứng là pod dùng mạng của cluster
+khi bộ thực thi NetworkPolicy hoạt động, kể cả khi waypoint egress dừng.
 
 ## 9. Quy ước khả năng quan sát
 
@@ -246,14 +276,32 @@ Loki; và load test ghi nhận p95/p99 thêm do waypoint, CPU/RAM ztunnel và wa
 
 ## 11. Khoảng cách với trạng thái hiện tại
 
-Repository chưa có manifest Kubernetes cho bất kỳ service nào, chưa có ServiceAccount riêng,
-chưa có Helm values Istio; `<pinned-version>` chưa chốt vì chưa có cluster để xác minh ma trận
-tương thích. docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
+Cân bằng gRPC không còn phụ thuộc hoàn toàn vào waypoint: client round-robin theo DNS và Product đóng kết nối quá tuổi
+([contracts ADR-007](../../contracts/decisions/ADR-007-grpc-channel-balancing-and-keepalive.md)). Cổng gRPC của Product vẫn cần
+`appProtocol: grpc` (mục 3); ở cụm không có waypoint nó phải là Service headless.
+
+Repository có manifest mesh sinh từ tài liệu này ([`deploy/mesh/`](../../deploy/mesh/README.md), [mesh ADR-001](decisions/ADR-001-manifests-generated-from-runtime-contract.md)):
+Namespace, ServiceAccount, `PeerAuthentication`, waypoint, `AuthorizationPolicy` (L4 và L7), `VirtualService`, `DestinationRule`,
+`ServiceEntry`, `Telemetry`, `NetworkPolicy` và Helm values Istio 1.31.3. Theo ADR-005, chúng đã được triển khai
+trên cluster kind local cùng Deployment/Service thực từ `deploy/k8s`, appProtocol và digest đã được pin.
+Kiểm chứng caller/route/port, HTTP/gRPC, header giả, Pod IP, plaintext, metrics và RBAC nằm tại
+[`mesh-p1-evidence-2026-11-04`](../security/mesh-p1-evidence-2026-11-04/results.json). Không suy rộng
+kết quả này thành toàn bộ tiêu chí mục 10: retry, phân bố gRPC nhiều backend, tracing, rotation và performance
+vẫn cần kiểm chứng riêng. Production chưa triển khai/kiểm chứng bởi công việc local này.
+docker-compose không có mesh nên `X-Service-Identity` và `X-User-*` vẫn spoof
 được trong môi trường local — tài liệu từng service đã ghi nhận điều này và không được coi
-Compose là bằng chứng bảo mật. Gateway route matrix vẫn còn prefix legacy
+Compose là bằng chứng bảo mật. Từ [mesh ADR-002](decisions/ADR-002-local-runtime-exposure-and-broker-auth.md), phạm vi spoof thu về
+máy dev và mạng compose: chỉ gateway và frontend nghe trên mọi interface, cổng service/hạ tầng bind `127.0.0.1`; `deploy/k8s`
+chỉ có LoadBalancer cho Traefik và frontend, kèm NetworkPolicy L4 dẫn xuất từ mục 5.2 (chỉ có tác dụng với CNI thực thi
+NetworkPolicy). Từ [mesh ADR-003](decisions/ADR-003-kafka-sasl-scram-and-acls.md), Kafka xác thực SASL/SCRAM theo principal của
+từng client và chỉ chủ sở hữu topic được ghi (ACL), nên một container trong mạng compose không còn giả được event của service khác;
+REST của Kafka Connect vẫn không xác thực. Từ [mesh ADR-004](decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md),
+compose tách network: frontend chỉ thấy gateway (`ecommerce-edge`), Mailpit/LocalStack chỉ thấy Notification, Temporal UI và Grafana
+có network riêng; NetworkPolicy của `deploy/k8s` chỉ mở cổng nội bộ của Auth (8081) cho Notification và của User (8083) cho Checkout;
+API nội bộ của Auth đòi `X-Service-Signature` (HMAC khoá chung với Notification) như lớp thứ hai khi chưa có mesh. Trong
+`ecommerce-network`, header `X-Service-Identity` của các route nội bộ khác vẫn giả được. Gateway route matrix vẫn còn prefix legacy
 `/api/users/**` (route `/api/payments/**` ngoài webhook đã bỏ 2026-09-19); Order public routes đã được đối soát theo OpenAPI
 v1; Product Detail BFF đã có dòng `/api/v1/storefront/products/**`; Cart đã có dòng `/api/v1/carts/mine`
 và `/api/v1/carts/mine/items`. Inventory admin đã có dòng `/api/v1/admin/inventory/**` trong gateway matrix, khớp mục 5.2 ([Inventory ADR-024](../inventory/decisions/ADR-024-admin-surface-and-error-catalog.md)). Review Service
-dùng static bearer token cho `/internal/v1/**` thay vì `X-Service-Identity`; hợp nhất là việc
-riêng, không chặn mesh. Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một
+đã chuyển từ static bearer token sang allowlist `X-Service-Identity` ([Review ADR-015](../review/decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)). Kế hoạch triển khai chuyển các khoảng cách này thành công việc; một
 năng lực không được gọi là "hoàn thành" trước khi tiêu chí xác minh của nó đạt.

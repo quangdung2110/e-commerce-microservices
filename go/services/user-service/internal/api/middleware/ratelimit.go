@@ -40,15 +40,29 @@ func RateLimitByIdentity(limiter port.RateLimiter, scope string, rule port.RateL
 	}
 }
 
-// RateLimit applies a rule keyed by the client IP. It guards the internal
-// listener, whose caller is a service rather than an end user.
-func RateLimit(limiter port.RateLimiter, scope string, rule port.RateLimitRule) gin.HandlerFunc {
+// RateLimitByServiceUser applies a rule to one (calling service, user) pair on
+// the internal listener. It must run after ServiceIdentity.
+//
+// A client IP is the wrong subject there: behind the mesh waypoint every pod of
+// the caller arrives from the same few addresses, so a per-IP budget is one
+// bucket shared by all of Checkout and turns ordinary traffic into 429s. The
+// user id taken from the path keeps one noisy user from spending the budget of
+// the others, which is the abuse this limiter exists for; admission of the
+// caller itself is the mesh's job.
+func RateLimitByServiceUser(limiter port.RateLimiter, scope, userParam string, rule port.RateLimitRule) gin.HandlerFunc {
 	if !rule.Enabled() {
 		return func(c *gin.Context) { c.Next() }
 	}
 
 	return func(c *gin.Context) {
-		result, err := limiter.Allow(c.Request.Context(), scope, c.ClientIP(), rule)
+		caller, ok := ServiceIdentityFrom(c)
+		if !ok {
+			httpx.WriteProblem(c, apperr.ErrUnauthorized)
+			return
+		}
+
+		subject := caller + ":" + c.Param(userParam)
+		result, err := limiter.Allow(c.Request.Context(), scope, subject, rule)
 		if err != nil {
 			httpx.WriteProblem(c, err)
 			return

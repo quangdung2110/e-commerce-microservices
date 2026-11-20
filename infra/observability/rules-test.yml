@@ -1,0 +1,171 @@
+rule_files: [rules.yml]
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="backend-go",service="cart-service",instance="cart-service:8080"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: TelemetryTargetDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: TelemetryTargetDown
+        exp_alerts:
+          - exp_labels:
+              job: backend-go
+              service: cart-service
+              instance: cart-service:8080
+              owner: platform
+              severity: critical
+            exp_annotations:
+              summary: 'Telemetry target cart-service is unavailable'
+              runbook_url: 'http://localhost:3001/d/backend-observability?viewPanel=1'
+              description: 'Check process health, exporter, network/DNS and Prometheus target error. See docs/observability/runbook.md#telemetrytargetdown.'
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{service="order-service",uri="/orders",status="200"}'
+        values: '0+92x15'
+      - series: 'http_server_requests_seconds_count{service="order-service",uri="/orders",status="503"}'
+        values: '0+8x15'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HighBackendErrorRate
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HighBackendErrorRate
+        exp_alerts:
+          - exp_labels:
+              service: order-service
+              owner: backend
+              severity: warning
+            exp_annotations:
+              summary: 'HTTP 5xx exceeds 5% on order-service'
+              runbook_url: 'http://localhost:3001/d/backend-observability'
+              description: 'Inspect route/status, dependency failures and correlated traces. See docs/observability/runbook.md#highbackenderrorrate.'
+  # Inventory saturation alerts (docs/inventory/decisions/ADR-032-reserve-saturation-alerts.md). Rates and pool values
+  # come from docs/performance/inventory-reserve-hot-sku-baseline-2026-10-19.md.
+  # Hot SKU saturated: ~330 Reserve/s, every response slower than 1 s, next to fast high-volume PDP availability reads on
+  # the same service. The route alert fires; the service-wide HighBackendLatency stays silent (diluted).
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.1"}'
+        values: '0+0x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.2"}'
+        values: '0+0x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.5"}'
+        values: '0+0x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="1"}'
+        values: '0+0x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="+Inf"}'
+        values: '0+19800x30'
+      - series: 'http_server_requests_seconds_count{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200"}'
+        values: '0+19800x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200",le="0.1"}'
+        values: '0+400000x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200",le="0.2"}'
+        values: '0+400000x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200",le="0.5"}'
+        values: '0+400000x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200",le="1"}'
+        values: '0+400000x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200",le="+Inf"}'
+        values: '0+400000x30'
+      - series: 'http_server_requests_seconds_count{service="inventory-service",method="POST",uri="/internal/inventory/v1/sku-availabilities:batch-get",status="200"}'
+        values: '0+400000x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: InventoryReserveLatencySloBreach
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: InventoryReserveLatencySloBreach
+        exp_alerts:
+          - exp_labels:
+              service: inventory-service
+              owner: backend
+              severity: critical
+            exp_annotations:
+              summary: 'Reserve latency breaches its SLO on inventory-service'
+              runbook_url: 'http://localhost:3001/d/backend-observability'
+              description: 'Reserve p95 > 200 ms or p99 > 500 ms for 10 minutes. Check Hikari pending and stock_position lock waits for a hot SKU. See docs/observability/runbook.md#inventoryreservelatencyslobreach.'
+      - eval_time: 20m
+        alertname: HighBackendLatency
+        exp_alerts: []
+  # Within the SLO (250/s step: p95 152 ms, p99 376 ms): 90% <= 100 ms, 96% <= 200 ms, 99.6% <= 500 ms.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.1"}'
+        values: '0+13500x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.2"}'
+        values: '0+14400x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="0.5"}'
+        values: '0+14940x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="1"}'
+        values: '0+15000x30'
+      - series: 'http_server_requests_seconds_bucket{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200",le="+Inf"}'
+        values: '0+15000x30'
+      - series: 'http_server_requests_seconds_count{service="inventory-service",method="POST",uri="/internal/inventory/v1/reservations",status="200"}'
+        values: '0+15000x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: InventoryReserveLatencySloBreach
+        exp_alerts: []
+  # Pool saturated (hot 300-600/s steps: mean pending 129-154, cap 176) on one instance versus within the SLO (mean
+  # <= 1.5 with single samples up to 28) on another. Sampled every 15 s as Prometheus scrapes.
+  - interval: 15s
+    input_series:
+      - series: 'hikaricp_connections_pending{job="backend-java",service="inventory-service",instance="inventory-service:8080",application="inventory-service",pool="HikariPool-1"}'
+        values: '150+0x40'
+      - series: 'hikaricp_connections_pending{job="backend-java",service="inventory-service",instance="inventory-service-2:8080",application="inventory-service",pool="HikariPool-1"}'
+        values: '0 1 28 0 2 0 1 0 28 1 0 0 2 1 0 28 0 1 0 0 3 0 28 1 0 0 1 0 2 28 0 1 0 0 1 28 0 0 1 0 2'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: InventoryDbPoolSaturated
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: InventoryDbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              job: backend-java
+              service: inventory-service
+              instance: inventory-service:8080
+              application: inventory-service
+              pool: HikariPool-1
+              owner: backend
+              severity: warning
+            exp_annotations:
+              summary: 'Inventory requests queue for database connections on inventory-service:8080'
+              runbook_url: 'http://localhost:3001/d/backend-observability'
+              description: 'Average Hikari pending above 10 for 5 minutes: connections are held by lock waits (hot SKU) or a slow primary. See docs/observability/runbook.md#inventorydbpoolsaturated.'
+  # INVENTORY_BUSY: 2% of commands busy fires; 0.5% does not.
+  - interval: 1m
+    input_series:
+      - series: 'inventory_commands_total{service="inventory-service",operation="RESERVE_ORDER",result="accepted"}'
+        values: '0+980x20'
+      - series: 'inventory_commands_total{service="inventory-service",operation="RESERVE_ORDER",result="busy"}'
+        values: '0+20x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: InventoryCommandBusy
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: InventoryCommandBusy
+        exp_alerts:
+          - exp_labels:
+              service: inventory-service
+              owner: backend
+              severity: critical
+            exp_annotations:
+              summary: 'More than 1% of Inventory commands end INVENTORY_BUSY on inventory-service'
+              runbook_url: 'http://localhost:3001/d/backend-observability'
+              description: 'Lock timeout, deadlock or serialization failure after two internal retries. See docs/observability/runbook.md#inventorycommandbusy.'
+  - interval: 1m
+    input_series:
+      - series: 'inventory_commands_total{service="inventory-service",operation="RESERVE_ORDER",result="accepted"}'
+        values: '0+995x20'
+      - series: 'inventory_commands_total{service="inventory-service",operation="RESERVE_ORDER",result="busy"}'
+        values: '0+5x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: InventoryCommandBusy
+        exp_alerts: []

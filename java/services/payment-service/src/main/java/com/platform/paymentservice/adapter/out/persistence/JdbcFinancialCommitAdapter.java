@@ -13,10 +13,12 @@ import java.sql.Timestamp;
 public final class JdbcFinancialCommitAdapter implements FinancialCommitPort {
     private final JdbcClient jdbc;
     private final TransactionTemplate transactions;
+    private final JdbcBalanceLedgerAdapter ledger;
 
     public JdbcFinancialCommitAdapter(JdbcClient jdbc, TransactionTemplate transactions) {
         this.jdbc = jdbc;
         this.transactions = transactions;
+        this.ledger = new JdbcBalanceLedgerAdapter(jdbc, transactions);
     }
 
     @Override
@@ -55,6 +57,14 @@ public final class JdbcFinancialCommitAdapter implements FinancialCommitPort {
     }
 
     private void postJournal(CommitBatch.JournalRecord record) {
+        if (record.reversalOfJournalId() == null) {
+            ledger.post(new com.platform.paymentservice.application.port.out.BalanceLedgerPort.Journal(
+                    record.id(), record.paymentId(), record.refundId(), record.disputeId(),
+                    record.journalType(), record.providerBalanceTransactionId(), record.sourceType(),
+                    record.sourceId(), record.amountMinor(), record.currency(), record.occurredAt(),
+                    record.providerObservedAt(), record.linesJson()));
+            return;
+        }
         jdbc.sql("""
                 CALL post_financial_journal(
                   CAST(:id AS varchar),CAST(:payment_id AS varchar),CAST(:refund_id AS varchar),
@@ -226,6 +236,7 @@ public final class JdbcFinancialCommitAdapter implements FinancialCommitPort {
                        refund_transaction_id = COALESCE(:refund_id, refund_transaction_id),
                        dispute_transaction_id = COALESCE(:dispute_id, dispute_transaction_id)
                  WHERE id = :id AND status = 'PROCESSING' AND lease_token = :lease_token
+                   AND lease_expires_at > :processed_at
                 """)
                 .param("status", completion.terminalStatus())
                 .param("error", completion.processingError())

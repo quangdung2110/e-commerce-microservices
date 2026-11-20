@@ -3,7 +3,6 @@ package com.platform.promotionservice.infrastructure.kafka;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.promotionservice.service.ProductTombstoneService;
-import com.platform.promotionservice.service.PromotionSnapshotService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,7 +29,6 @@ public class ProductDeletedConsumer {
 
     private final ObjectMapper objectMapper;
     private final ProductTombstoneService tombstones;
-    private final PromotionSnapshotService snapshots;
 
     @KafkaListener(
             topics = "${promotion.kafka.product-topic}",
@@ -54,11 +52,11 @@ public class ProductDeletedConsumer {
         Tombstone tombstone = parse(event.path("data"));
         ProductTombstoneService.Outcome outcome = tombstones.apply(tombstone.productId(),
                 tombstone.catalogRevision(), tombstone.deletedAt());
+        // Không có cache nào theo product để invalidate: markdown rule không nằm trong Redis và snapshot voucher
+        // (theo promotion) không đổi vì voucher definition không đổi (ADR-019). Cũng không emit ngược về Product.
         log.info("Applied product tombstone product={} catalog_revision={} invalidated={} advanced={}",
                 tombstone.productId(), tombstone.catalogRevision(), outcome.invalidatedRules(),
                 outcome.watermarkAdvanced());
-        // Sau commit: invalidate snapshot product-scoped (cache version fence); không emit ngược về Product.
-        snapshots.bumpVersionQuietly();
     }
 
     private record Tombstone(UUID productId, long catalogRevision, Instant deletedAt) {

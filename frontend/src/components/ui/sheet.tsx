@@ -14,8 +14,9 @@ function SheetContent({
   className,
   children,
   side = "left",
+  closeLabel = "Đóng bảng điều hướng",
   ...props
-}: SheetPrimitive.Popup.Props & { side?: "left" | "right" }) {
+}: SheetPrimitive.Popup.Props & { side?: "left" | "right"; closeLabel?: string }) {
   return (
     <SheetPrimitive.Portal>
       <SheetPrimitive.Backdrop
@@ -38,7 +39,7 @@ function SheetContent({
         >
           {children}
           <SheetPrimitive.Close
-            aria-label="Đóng bảng điều hướng"
+            aria-label={closeLabel}
             className="focus-ring absolute right-3 top-3 grid size-11 place-content-center rounded-lg text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-foreground"
           >
             <X className="size-5" aria-hidden />

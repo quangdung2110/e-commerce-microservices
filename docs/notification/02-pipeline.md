@@ -1,6 +1,6 @@
 # Pipeline: sáu stage logic, hai ranh giới vật lý
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1) — số liệu tải trong file này là giả định thiết kế, chưa đo (README §5).
 
 ## 1. Vấn đề với "một handler làm hết"
 

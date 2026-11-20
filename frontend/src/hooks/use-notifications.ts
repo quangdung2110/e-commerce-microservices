@@ -72,12 +72,19 @@ export function useInboxActions() {
   const setRead = useMutation({
     mutationFn: ({ id, read }: { id: string; read: boolean }) => notificationApi.setRead(id, read),
     onSuccess: (updated) => {
-      // Cập nhật tại chỗ bằng bản server trả về; tab "Chưa đọc" sẽ gọn lại ở lần tải kế tiếp.
-      client.setQueriesData<InboxCache>({ queryKey: lists }, (data) =>
+      client.setQueryData<InboxCache>(notificationKeys.list(accountId, false), (data) =>
         mapPages(data, (items) => items.map((item) => (item.id === updated.id ? updated : item)))
       );
+      client.setQueryData<InboxCache>(notificationKeys.list(accountId, true), (data) =>
+        mapPages(data, (items) =>
+          items.map((item) => (item.id === updated.id ? updated : item)).filter((item) => !item.read)
+        )
+      );
     },
-    onSettled: refreshCount,
+    onSettled: async () => {
+      // Tải lại để bổ sung thông báo vừa chuyển thành chưa đọc và giữ đúng phân trang.
+      await Promise.all([refreshCount(), client.invalidateQueries({ queryKey: lists })]);
+    },
   });
 
   const archive = useMutation({

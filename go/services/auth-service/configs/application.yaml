@@ -17,16 +17,24 @@ server:
   idle_timeout: 120s
   shutdown_timeout: 20s
 
-# Cluster-internal listener serving the notification delivery API. It must never
-# be exposed through the public gateway, and production requires mTLS.
+# Cluster-internal listener serving the notification delivery and notification
+# contact APIs. It must never be exposed through the public gateway: the
+# responses carry recipient addresses and, for verification and reset templates,
+# the secret itself. Transport mTLS and the per-principal AuthorizationPolicy are
+# enforced by the service mesh, which hides the caller certificate from the
+# application (docs/mesh/runtime-contract.md), so this service checks the
+# X-Service-Identity header against the allowlist and, without a mesh, the
+# X-Service-Signature HMAC under signing_key (mesh ADR-004).
 internal:
   enabled: true
   host: "0.0.0.0"
   port: 8081
-  tls_cert_file: "${AUTH_INTERNAL_TLS_CERT_FILE}"
-  tls_key_file: "${AUTH_INTERNAL_TLS_KEY_FILE}"
-  client_ca_file: "${AUTH_INTERNAL_CLIENT_CA_FILE}"
-  allowed_client_cn: "${AUTH_INTERNAL_ALLOWED_CLIENT_CN}"
+  allowed_callers:
+    - "notification-service"
+  # Shared with Notification (NOTIFICATION_AUTH_SIGNING_KEY). Required outside
+  # development; empty skips the signature check in development only.
+  signing_key: "${AUTH_INTERNAL_SIGNING_KEY}"
+  signature_tolerance: 60s
 
 database:
   host: "localhost"
@@ -87,9 +95,16 @@ refresh:
   cookie_secure: false # must be true outside local development
 
 security:
-  # Empty means gin trusts no proxy header. List the gateway CIDRs in a cluster
-  # so the client IP used for rate limiting is the real one.
+  # Only a request from these addresses may name its client in
+  # client_ip_headers; any other peer is its own client. List the gateway
+  # address only: docker-compose sets AUTH_SECURITY_TRUSTED_PROXIES to the fixed
+  # address of api-gateway, deploy/k8s to the pod CIDR. Empty trusts no proxy,
+  # so every request behind a gateway shares the gateway's per-IP budget.
   trusted_proxies: []
+  # Traefik always sets X-Real-Ip: the address it saw, or the one forwarded by
+  # the frontend, its only trusted hop (mesh ADR-004). X-Forwarded-For is not
+  # read: through Next its last hop is the frontend, not the browser.
+  client_ip_headers: ["X-Real-IP"]
   argon2:
     memory: 65536
     iterations: 3
@@ -110,7 +125,8 @@ security:
     otp_per_account: { limit: 5, window: 15m }
     password_reset_per_ip: { limit: 5, window: 1h }
     refresh_per_ip: { limit: 60, window: 5m }
-    internal_per_client: { limit: 600, window: 1m }
+    # Per (calling service, delivery id or user id) on the internal listener.
+    internal_per_resource: { limit: 120, window: 1m }
 
 otp:
   ttl: 5m

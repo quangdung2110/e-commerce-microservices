@@ -104,8 +104,61 @@ func (c *AddressCache) Get(ctx context.Context, userID uuid.UUID) ([]*entity.Add
 	return addresses, true
 }
 
-// Put stores the list with the TTL that matches its size.
-func (c *AddressCache) Put(ctx context.Context, userID uuid.UUID, addresses []*entity.Address) error {
+// epochMissing is the epoch of a user whose counter does not exist yet (never
+// invalidated, or expired). Put compares against the same default, so a user
+// without a counter can still be filled.
+const epochMissing = "0"
+
+// fillScript stores the list only while the epoch the reader saw is still the
+// current one. Reading the counter and writing the value in one script is what
+// closes the window between the check and the SET.
+//
+//	KEYS[1] epoch key   KEYS[2] list key
+//	ARGV[1] epoch seen  ARGV[2] payload  ARGV[3] ttl in milliseconds
+var fillScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if not current then current = '0' end
+if current ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+return 1
+`)
+
+// invalidateScript advances the epoch and drops the list together, so no fill
+// that started before the mutation can land after it.
+//
+//	KEYS[1] epoch key   KEYS[2] list key   ARGV[1] epoch ttl in milliseconds
+var invalidateScript = redis.NewScript(`
+redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+redis.call('DEL', KEYS[2])
+return 1
+`)
+
+// Epoch reads the invalidation counter. "" means Redis could not answer, which
+// makes the following Put a no-op: filling blind could cache a stale list.
+func (c *AddressCache) Epoch(ctx context.Context, userID uuid.UUID) string {
+	value, err := c.client.Get(ctx, c.keys.AddressesEpoch(userID.String())).Result()
+	switch {
+	case err == nil:
+		return value
+	case errors.Is(err, redis.Nil):
+		return epochMissing
+	default:
+		c.logger.Warn("address cache epoch could not be read, the fill is skipped",
+			zap.String("user_id", userID.String()),
+			zap.Error(err),
+		)
+		return ""
+	}
+}
+
+// Put stores the list with the TTL that matches its size, unless a mutation
+// invalidated the cache after the reader took the epoch.
+func (c *AddressCache) Put(ctx context.Context, userID uuid.UUID, addresses []*entity.Address, epoch string) error {
+	if epoch == "" {
+		return nil
+	}
+
 	document := cachedAddressList{Version: cacheVersion, Addresses: make([]cachedAddress, 0, len(addresses))}
 	for _, address := range addresses {
 		document.Addresses = append(document.Addresses, fromEntity(address))
@@ -120,17 +173,31 @@ func (c *AddressCache) Put(ctx context.Context, userID uuid.UUID, addresses []*e
 	if len(addresses) == 0 {
 		ttl = c.emptyTTL
 	}
-	if err := c.client.Set(ctx, c.keys.Addresses(userID.String()), payload, ttl).Err(); err != nil {
+	filled, err := fillScript.Run(ctx, c.client,
+		[]string{c.keys.AddressesEpoch(userID.String()), c.keys.Addresses(userID.String())},
+		epoch, payload, ttl.Milliseconds(),
+	).Int()
+	if err != nil {
 		return mapError(err)
+	}
+	if filled == 0 {
+		c.logger.Debug("address cache fill refused: the list changed while it was being read",
+			zap.String("user_id", userID.String()))
 	}
 	return nil
 }
 
-// Invalidate drops the key after a committed mutation. The caller has already
-// committed, so a failure here is reported for alerting but never rolled back;
-// the TTL bounds how long a stale list can survive.
+// Invalidate drops the key and advances the epoch after a committed mutation.
+// The caller has already committed, so a failure here is reported for alerting
+// but never rolled back; the TTL bounds how long a stale list can survive.
 func (c *AddressCache) Invalidate(ctx context.Context, userID uuid.UUID) error {
-	if err := c.client.Del(ctx, c.keys.Addresses(userID.String())).Err(); err != nil {
+	// The counter has to outlive any fill that could still be in flight, which is
+	// bounded by the request timeout; the list TTL is a generous upper bound.
+	err := invalidateScript.Run(ctx, c.client,
+		[]string{c.keys.AddressesEpoch(userID.String()), c.keys.Addresses(userID.String())},
+		c.ttl.Milliseconds(),
+	).Err()
+	if err != nil {
 		return mapError(err)
 	}
 	return nil

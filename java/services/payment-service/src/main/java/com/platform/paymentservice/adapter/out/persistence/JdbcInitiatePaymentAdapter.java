@@ -142,7 +142,7 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
             Instant now,
             Duration leaseTtl) {
         Map<String, Object> commandRow = jdbc.sql("""
-                SELECT request_fingerprint, status, resource_id, response_code,
+                SELECT request_fingerprint, status, resource_id, response_code, response_body::text AS response_body,
                        lease_token, lease_expires_at
                   FROM payment_idempotency
                  WHERE idempotency_key = :key AND action = 'INITIATE'
@@ -154,6 +154,18 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
         }
         if ("COMPLETED".equals(commandRow.get("status"))) {
             int responseCode = ((Number) commandRow.get("response_code")).intValue();
+            if (responseCode == 422) {
+                try {
+                    var proof = json.readTree((String) commandRow.get("response_body"));
+                    if ("PROVIDER_CREATE_NOT_ACCEPTED".equals(proof.path("code").asText())
+                            && proof.path("no_payment_created").asBoolean(false)) {
+                        return new InitiatePaymentPreparation.NoPaymentCreated(
+                                (String) commandRow.get("resource_id"), proof.path("provider_operation_id").asText());
+                    }
+                } catch (JsonProcessingException invalid) {
+                    throw new IllegalStateException("invalid stored initiation proof", invalid);
+                }
+            }
             if (responseCode != 200) {
                 return new InitiatePaymentPreparation.ProviderRejected(
                         (String) commandRow.get("resource_id"));
@@ -288,7 +300,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            updated_at = :completed_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :completed_at
+                """)
                     .param("provider_id", completion.providerTransactionId())
                     .param("provider_result", completion.sanitizedProviderResultJson())
                     .param("provider_request_id", completion.providerRequestId())
@@ -309,7 +322,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                      WHERE idempotency_key = :key AND action = 'INITIATE'
                        AND status = 'IN_PROGRESS' AND lease_owner = :owner
                        AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :completed_at
+                """)
                     .param("payment_id", completion.transactionId())
                     .param("response_body", responseBody)
                     .param("completed_at", timestamp(completion.completedAt()))
@@ -388,7 +402,8 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            lease_expires_at = NULL, updated_at = :recorded_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :recorded_at
+                """)
                     .param("provider_result", unknown.sanitizedProviderResultJson())
                     .param("provider_request_id", unknown.providerRequestId())
                     .param("next_retry_at", timestamp(unknown.nextRetryAt()))
@@ -406,6 +421,14 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
     @Override
     public boolean recordTerminalFailure(TerminalInitiationFailure failure) {
         return Boolean.TRUE.equals(transactions.execute(status -> {
+            boolean absent = failure.noPaymentCreated() && !failure.reviewRequired();
+            List<Map<String, Object>> proofPayments = absent ? jdbc.sql("""
+                    SELECT order_id,payment_attempt_number FROM payment_transactions
+                     WHERE id=:id AND status='INITIATING' AND provider_transaction_id IS NULL
+                       AND financial_state_version=0 FOR UPDATE
+                    """).param("id", failure.transactionId()).query().listOfRows() : List.of();
+            Map<String, Object> proofPayment = proofPayments.isEmpty() ? null : proofPayments.getFirst();
+            if (absent && proofPayment == null) return false;
             String providerStatus = failure.reviewRequired()
                     ? "MANUAL_REVIEW_REQUIRED" : "PROVIDER_REJECTED";
             String reasonCode = failure.reviewRequired()
@@ -419,8 +442,14 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                            lease_expires_at = NULL, updated_at = :recorded_at
                      WHERE id = :operation_id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner = :owner AND lease_token = :lease_token
-                    """)
+                   AND lease_expires_at > :recorded_at
+                       AND (NOT :absent OR (status='REQUESTED' AND operation_type='CREATE'
+                            AND attempt_count=1 AND provider_object_id IS NULL
+                            AND (CAST(:provider_result AS jsonb)->>'http_status')='400'
+                            AND (CAST(:provider_result AS jsonb)->>'error_code')='amount_too_small'))
+                """)
                     .param("provider_status", providerStatus)
+                    .param("absent", absent)
                     .param("provider_result", failure.sanitizedProviderResultJson())
                     .param("provider_request_id", failure.providerRequestId())
                     .param("recorded_at", timestamp(failure.recordedAt()))
@@ -429,18 +458,19 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                     .param("lease_token", failure.operationLeaseToken()).update();
             int payment = jdbc.sql("""
                     UPDATE payment_transactions
-                       SET requires_manual_review = TRUE, version = version + 1,
+                       SET requires_manual_review = :review, version = version + 1,
                            updated_at = :recorded_at
                      WHERE id = :payment_id AND status = 'INITIATING'
                     """)
                     .param("recorded_at", timestamp(failure.recordedAt()))
+                    .param("review", !absent)
                     .param("payment_id", failure.transactionId()).update();
             Map<String, Object> evidence = new LinkedHashMap<>();
             evidence.put("db_status", "INITIATING");
             evidence.put("provider_status", providerStatus);
             evidence.put("operation_id", failure.operationId());
             evidence.put("observed_at", failure.recordedAt().toString());
-            int review = jdbc.sql("""
+            int review = absent ? 1 : jdbc.sql("""
                     INSERT INTO payment_review_cases
                       (id, payment_transaction_id, reason_code, case_status,
                        evidence, opened_by, opened_at)
@@ -458,22 +488,32 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                         failure.idempotencyKey(), failure.owner(), failure.commandLeaseToken(),
                         failure.recordedAt());
             } else {
-                String responseBody = write(Map.of(
-                        "code", "PROVIDER_REQUEST_REJECTED",
-                        "retryable", false,
-                        "correlation_id", failure.correlationId()));
+                Map<String, Object> response = new LinkedHashMap<>();
+                response.put("code", absent ? "PROVIDER_CREATE_NOT_ACCEPTED" : "PROVIDER_REQUEST_REJECTED");
+                response.put("retryable", false);
+                response.put("correlation_id", failure.correlationId());
+                if (absent) {
+                    response.put("no_payment_created", true);
+                    response.put("transaction_id", failure.transactionId());
+                    response.put("provider_operation_id", failure.operationId());
+                    response.put("order_id", proofPayment.get("order_id").toString());
+                    response.put("payment_attempt_number", proofPayment.get("payment_attempt_number"));
+                }
+                String responseBody = write(response);
                 command = jdbc.sql("""
                         UPDATE payment_idempotency
                            SET status = 'COMPLETED', resource_id = :payment_id,
-                               response_code = 503,
+                               response_code = :response_code,
                                response_body = CAST(:response_body AS jsonb),
                                completed_at = :recorded_at, lease_owner = NULL,
                                lease_expires_at = NULL, last_heartbeat_at = :recorded_at
                          WHERE idempotency_key = :key AND action = 'INITIATE'
                            AND status = 'IN_PROGRESS' AND lease_owner = :owner
                            AND lease_token = :lease_token
-                        """)
+                   AND lease_expires_at > :recorded_at
+                """)
                         .param("payment_id", failure.transactionId())
+                        .param("response_code", absent ? 422 : 503)
                         .param("response_body", responseBody)
                         .param("recorded_at", timestamp(failure.recordedAt()))
                         .param("key", failure.idempotencyKey())
@@ -495,6 +535,7 @@ public final class JdbcInitiatePaymentAdapter implements InitiatePaymentPort {
                  WHERE idempotency_key = :key AND action = 'INITIATE'
                    AND status = 'IN_PROGRESS' AND lease_owner = :owner
                    AND lease_token = :lease_token
+                   AND lease_expires_at > :now
                 """)
                 .param("now", timestamp(now)).param("key", key)
                 .param("owner", owner).param("lease_token", token).update();

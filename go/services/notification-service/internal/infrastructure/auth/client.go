@@ -11,15 +11,13 @@ package auth
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -100,11 +98,6 @@ func NewClient(cfg config.AuthConfig, cacheTTL time.Duration, cache ContactCache
 		return nil, fmt.Errorf("auth client: base_url is empty")
 	}
 
-	tlsCfg, err := buildTLS(cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	c := &Client{
 		cfg:      cfg,
 		cacheTTL: cacheTTL,
@@ -123,15 +116,13 @@ func NewClient(cfg config.AuthConfig, cacheTTL time.Duration, cache ContactCache
 				Timeout:   cfg.Timeout,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			TLSClientConfig:       tlsCfg,
 			MaxConnsPerHost:       maxConns,
 			MaxIdleConnsPerHost:   maxConns,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   cfg.Timeout,
 			ResponseHeaderTimeout: cfg.Timeout,
 			ForceAttemptHTTP2:     true,
 		}
-		c.clients[lane] = &http.Client{Transport: tr, Timeout: cfg.Timeout}
+		c.clients[lane] = &http.Client{Transport: obs.Transport(tr), Timeout: cfg.Timeout}
 		c.limiters[lane] = newLimiter(cfg.RatePerSecond.For(string(lane)), func() time.Time { return time.Now() })
 		if metrics != nil {
 			metrics.BulkheadCapacity.WithLabelValues(string(lane), string(entity.ChannelEmail), "auth_http_conns").Set(float64(maxConns))
@@ -149,32 +140,6 @@ func NewClient(cfg config.AuthConfig, cacheTTL time.Duration, cache ContactCache
 	c.publishState(DependencyContact, c.contactBreaker.State())
 	c.publishState(DependencyContent, c.contentBreaker.State())
 	return c, nil
-}
-
-func buildTLS(cfg config.AuthConfig) (*tls.Config, error) {
-	if cfg.TLSCertFile == "" && cfg.TLSKeyFile == "" && cfg.CAFile == "" {
-		return nil, nil
-	}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("auth client: load client certificate: %w", err)
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-	}
-	if cfg.CAFile != "" {
-		pem, err := os.ReadFile(cfg.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("auth client: read ca file: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("auth client: ca file %s holds no certificate", cfg.CAFile)
-		}
-		tlsCfg.RootCAs = pool
-	}
-	return tlsCfg, nil
 }
 
 // ContactBreaker exposes the auth_contact breaker (readiness, tests).
@@ -293,6 +258,10 @@ func (c *Client) call(ctx context.Context, lane entity.Lane, dependency string, 
 	req.Header.Set(constants.HeaderCacheControl, constants.NoStore)
 	if c.cfg.ServiceIdentity != "" {
 		req.Header.Set(constants.HeaderServiceIdentity, c.cfg.ServiceIdentity)
+	}
+	if c.cfg.SigningKey != "" {
+		req.Header.Set(constants.HeaderServiceSignature,
+			signatureHeader([]byte(c.cfg.SigningKey), c.clk.Now(), method, req.URL.EscapedPath(), c.cfg.ServiceIdentity))
 	}
 	rid := reqctx.RequestID(ctx)
 	if rid == "" {

@@ -43,8 +43,14 @@ type Breaker struct {
 	count    int // results recorded (<= windowSize)
 	failures int
 
-	openedAt       time.Time
-	halfOpenSince  time.Time
+	openedAt      time.Time
+	halfOpenSince time.Time
+	// unhealthySince is when the circuit left closed in the current streak; it
+	// survives open ↔ half-open flapping and is cleared when the circuit closes.
+	unhealthySince time.Time
+	// lastProbeGrant is when a half-open probe was last handed out, to a real
+	// call or to a health probe.
+	lastProbeGrant time.Time
 	probesInFlight int
 	probeSuccesses int
 }
@@ -106,6 +112,7 @@ func (b *Breaker) Allow() bool {
 	case StateHalfOpen:
 		if b.probesInFlight < b.halfOpenProbe {
 			b.probesInFlight++
+			b.lastProbeGrant = b.clk.Now()
 			allowed = true
 		}
 	default:
@@ -132,6 +139,7 @@ func (b *Breaker) Success() {
 		b.probeSuccesses++
 		if b.probeSuccesses >= b.halfOpenProbe {
 			b.resetWindow()
+			b.unhealthySince = time.Time{}
 			b.state = StateClosed
 			changed, state = true, StateClosed
 		}
@@ -206,6 +214,9 @@ func (b *Breaker) tick() (bool, int) {
 }
 
 func (b *Breaker) open() {
+	if b.state == StateClosed {
+		b.unhealthySince = b.clk.Now()
+	}
 	b.state = StateOpen
 	b.openedAt = b.clk.Now()
 	b.probesInFlight = 0
@@ -240,4 +251,42 @@ func (b *Breaker) notify(state int) {
 	if b.onStateChange != nil {
 		b.onStateChange(state)
 	}
+}
+
+// UnhealthySince reports when the circuit first left the closed state in the
+// current unhealthy streak. ok is false while it is closed. The streak spans
+// open ↔ half-open flapping, which is what "the provider has been down for an
+// hour" means to the bulk auto-pause (06-backpressure.md §5).
+func (b *Breaker) UnhealthySince() (since time.Time, ok bool) {
+	b.mu.Lock()
+	changed, state := b.tick()
+	since, ok = b.unhealthySince, b.state != StateClosed && !b.unhealthySince.IsZero()
+	b.mu.Unlock()
+	if changed {
+		b.notify(state)
+	}
+	return since, ok
+}
+
+// AllowIdleProbe hands out a half-open probe slot to a caller that is not a
+// real delivery (the provider health probe): only while the circuit is
+// half-open, a slot is free and no probe was handed out for minIdle, so real
+// rows of a lower lane keep priority and the health probe fills the gap when
+// there is nothing to probe with.
+func (b *Breaker) AllowIdleProbe(minIdle time.Duration) bool {
+	b.mu.Lock()
+	changed, state := b.tick()
+	allowed := false
+	now := b.clk.Now()
+	if b.state == StateHalfOpen && b.probesInFlight < b.halfOpenProbe &&
+		(b.lastProbeGrant.IsZero() || !now.Before(b.lastProbeGrant.Add(minIdle))) {
+		b.probesInFlight++
+		b.lastProbeGrant = now
+		allowed = true
+	}
+	b.mu.Unlock()
+	if changed {
+		b.notify(state)
+	}
+	return allowed
 }

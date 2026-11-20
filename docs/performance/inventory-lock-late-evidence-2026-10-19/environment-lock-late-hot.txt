@@ -1,0 +1,15 @@
+variant=lock-late scenario=hot hot_share=1 rates=150 200 250 300 400 duration=120s pause=15
+cold_skus=2000 max_vus=64 k6_image=grafana/k6:0.54.0
+mode=reserve commit_delay=15 release_share=0 timeout=8s
+jar_sha256=4d16b8df211124365a0fc693ead3b6e6b2c9097c7f8289a5b7beae168ebd8130
+git_head=d3462c97
+inventory_src_changed_files=8
+docker_cpus=16 docker_mem=15969447936
+shared_stack_containers=0
+started=2026-10-19T23:21:10+07:00
+fsync=on
+max_connections=200
+shared_buffers=32768
+synchronous_commit=on
+wal_sync_method=fdatasync
+finished=2026-10-19T23:35:51+07:00

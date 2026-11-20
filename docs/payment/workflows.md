@@ -13,6 +13,10 @@ verified_against_commit: null
 
 # Payment Service — Luồng nghiệp vụ
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Các luồng dưới đây bảo toàn happy path, idempotency, race, retry và recovery. Mỗi
 > flow ghi rõ thành phần `[PostgreSQL]`, `[Redis]`, `[Kafka]`, `[FSM]`, `[Stripe API]`
 > khi cần. Transition ID (`T*`, `R*`, `CORR`) theo `domain.md §6`; bảng và cột theo
@@ -99,6 +103,16 @@ payment ở `INITIATING`, idempotency `IN_PROGRESS`; trả `503 PROVIDER_OUTCOME
 `requires_manual_review`, mở case `PROVIDER_CREATE_REJECTED`, complete command bằng
 `503 PROVIDER_REQUEST_REJECTED` không retry. Replay trả stored failure và không gọi
 Stripe. Scanner không expire `INITIATING`.
+
+**Ngoại lệ CREATE chưa được chấp nhận ([ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)):**
+chỉ Stripe `400 amount_too_small` tại lần dispatch đầu, operation chưa từng UNKNOWN/retry
+và chưa bind provider object, được persist atomically thành `422 PROVIDER_CREATE_NOT_ACCEPTED`.
+Response chứa `no_payment_created=true`, `transaction_id`, `provider_operation_id`,
+`order_id`, `payment_attempt_number`, `retryable=false`. Operation terminal
+`PROVIDER_REJECTED`; payment audit giữ `INITIATING`, financial version 0, không review
+case/history/financial event. Replay trả cùng proof, không gọi Stripe lại. Order
+validate proof đúng order/attempt rồi fail preparation và bù Inventory/Promotion holds.
+Không nâng cấp receipt `503` cũ hoặc suy luận từ `retryable=false`.
 
 **Test scenarios:** same-attempt replay; replay `INITIATING` khi recovery đã nhận
 operation và không còn active request; concurrent request còn active → `409`; replay sau khi payment đã `SUCCESS` (không
@@ -293,12 +307,13 @@ hai instance đồng thời; Stripe timeout rồi recovery; `payment_intent.canc
 
 **Mục tiêu:** phát hiện và sửa sai lệch object state và mọi money movement DB ↔ Stripe.
 **Trigger:** Reconciliation
-Worker hourly, singleton bằng partial unique row `RUNNING` trong PostgreSQL.
+Worker hourly, singleton bằng session advisory lock và run-row fence, kèm partial
+unique RUNNING/lane trong PostgreSQL (ADR-023).
 
 **Happy path:**
 
 1. Chạy hai lane độc lập `OBJECT_STATE` và `BALANCE_LEDGER`; insert
-   `reconciliation_runs` (`RUNNING`, cửa sổ/cursor có overlap,
+   `reconciliation_runs` (`RUNNING`, cửa sổ có overlap nhưng cursor null mỗi cửa sổ,
    `auto_correction_frozen` copy từ cấu hình vận hành).
 2. Tập đối soát: payment `updated_at` trong cửa sổ hoặc còn `PENDING`/`PROCESSING`/
    `REFUNDING`; refund `PROCESSING`, hoặc `SUCCESS` có `finalized_at` trong
@@ -307,25 +322,25 @@ Worker hourly, singleton bằng partial unique row `RUNNING` trong PostgreSQL.
    quét theo `provider_synced_at` cũ nhất trước (NULLS FIRST) để refund mới không bị bỏ
    đói khi vượt `batch-size`.
    Operation `UNKNOWN` thuộc Provider-operation Recovery, không bị xử lý lặp ở lane này.
-3. `[Stripe API]` `PaymentIntent.retrieve`/`Refund.retrieve`/`Dispute.retrieve` (hoặc `list` theo
-   metadata) → cập nhật `provider_status_snapshot`/`provider_synced_at`.
-4. So khớp status/amount. Khớp → không làm gì. Lệch:
+3. `[Stripe API]` `PaymentIntent.retrieve`/`Refund.retrieve`/`Dispute.retrieve` → cập nhật `provider_status_snapshot`/`provider_synced_at`.
+4. So khớp status/amount. Khớp → ghi observation/rotate scan, không phát financial fact. Lệch:
    - Không freeze và transition đích hợp lệ → `CORR` (history `triggered_by =
      RECONCILIATION`, `cause_ref = run id`) + outbox event tương ứng; `corrected_count++`.
    - Freeze, hoặc lệch amount, hoặc đích không hợp lệ → review case
      `RECONCILIATION_DRIFT` với `evidence`; `review_opened_count++`.
    - Refund `SUCCESS` nhưng Stripe `failed`/`canceled`/`requires_action` → `CORR` tương
      đương `R5`/`T9`.
-5. Lane `BALANCE_LEDGER` list balance transactions, dedup theo provider id, post
+5. Lane `BALANCE_LEDGER` đọc hết balance pages, limit ≤100, dedup theo canonical
+   source và balance ID (nội dung tài chính phải khớp), post
    journal capture/refund/dispute withdrawal hoặc reinstatement theo dấu amount,
    fee/payout và tính totals/currency. Source không map được hoặc currency sai làm
-   run `FAILED` + alert; lifecycle drift có aggregate owner mở ReviewCase ở lane
+   run `FAILED`/error_message; metric/alert nghiệp vụ còn chưa triển khai; lifecycle drift có aggregate owner mở ReviewCase ở lane
    `OBJECT_STATE`. Không tự sửa journal cũ.
-6. Chỉ advance provider cursor khi run `COMPLETED`. Lỗi → `FAILED` + `error_message`.
+6. Session lock + run-row fencing bảo vệ lane (ADR-023); owner mất session → run cũ FAILED/OWNER_SESSION_LOST khi successor nhận lane. Chỉ COMPLETED mới advance watermark. Object batch áp dụng riêng từng nhóm payment/refund/dispute; observation xoay vòng cả ba nhóm.
 
 **Recovery:** drift tăng đột biến → vận hành gọi internal freeze API maker-checker;
 row `CONTROL` bền vững được scheduler đọc trước mỗi run, run sau chỉ
-mở review case. `CORR` idempotent: chạy lại cùng cửa sổ không phát event thứ hai
+mở review case ở object lane; balance lane FAILED/AUTO_CORRECTION_FROZEN, không ghi ledger hoặc advance watermark. `CORR` idempotent: chạy lại cùng cửa sổ không phát event thứ hai
 (state đã khớp).
 
 **Test scenarios:** không lệch; lệch status; lệch amount; freeze; Stripe API lỗi;
@@ -521,9 +536,24 @@ Mọi transition có money movement gọi `post_financial_journal` trong cùng D
 transaction; stored procedure insert immutable header + ít nhất hai line và deferred
 trigger kiểm balance. Capture/refund/reversal/dispute dùng source identity của object
 và balance transaction khi có. Balance Reconciliation Worker ingest fee/payout bằng
-cursor overlap, unique provider balance transaction ngăn double-post, tính tổng theo
-currency và mở drift case. Correction chỉ là reversal journal + journal đúng mới;
-không update/delete ledger cũ.
+pagination đầy đủ trong một cửa sổ cố định (page ≤100). Cửa sổ mới bắt đầu cursor
+null; scheduler đọc bù từ successful watermark/failed window. Canonical source
+chung với webhook/correction và nội dung journal phải khớp để dedup, kể cả khi
+journal cũ chưa có balance ID. Kiểm amount-fee=net, dấu movement, fee credit đảo
+accounts; refund_failure là REFUND_REVERSAL. Freeze chặn lane, ghi FAILED và không
+advance watermark. Totals là dữ liệu đã đọc, gồm duplicate hợp lệ; chưa có closing
+balance/statement comparison hay tự mở review case cho lỗi balance (run FAILED
+có error_message). Correction amount cần reversal + journal mới nhưng API này
+chưa triển khai; không UPDATE/DELETE ledger hoặc dùng SQL trực tiếp làm runbook.
 
 **Test:** debit=credit; rollback khi lệch; duplicate balance transaction; cursor
 không advance khi run fail; fee/payout; reversal; concurrent webhook/reconciliation.
+
+### Bằng chứng correction SUCCESS sau audit 2026-10-11
+
+Theo quyết định chủ dự án, PAYMENT_SUCCESS_CONFIRMED yêu cầu provider_status=succeeded,
+provider_object_id là Charge ch_, provider_response_json là object có id bằng
+PaymentIntent đã lưu, status=succeeded và latest_charge bằng Charge đó. Charge đã
+lưu nếu có cũng phải khớp. Journal CAPTURE dùng source CHARGE/ch_ chung với webhook
+và balance, tránh journal CHARGE/pi_ gây ghi kép. Bằng chứng do Finance Ops cung cấp;
+API không tự retrieve hoặc xác thực chữ ký của bằng chứng.

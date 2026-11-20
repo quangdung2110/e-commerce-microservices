@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/** Durable inbox for Payment/Inventory/Delivery facts (INV-ORD-018/029, data.md §3.9). */
+/** Durable inbox for Payment/Inventory facts (INV-ORD-018/029, data.md §3.9). */
 @Repository
 public class InboxStore {
 

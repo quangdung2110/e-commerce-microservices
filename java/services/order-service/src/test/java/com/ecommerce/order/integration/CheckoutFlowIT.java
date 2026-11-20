@@ -1,5 +1,8 @@
 package com.ecommerce.order.integration;
 
+import com.ecommerce.order.common.CanonicalJson;
+import com.ecommerce.order.service.CheckoutSaga;
+import com.ecommerce.order.store.CheckpointStore;
 import com.ecommerce.order.support.AbstractIntegrationTest;
 import com.ecommerce.order.support.ContractSchemas;
 import com.ecommerce.order.support.Fixtures;
@@ -10,12 +13,14 @@ import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SchemaLocation;
 import com.networknt.schema.SpecVersion;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -24,6 +29,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** WF-ORDER-004/005/006/006a/009/011 end to end against PostgreSQL and in-memory Temporal. */
 class CheckoutFlowIT extends AbstractIntegrationTest {
+
+    @Autowired
+    private CheckpointStore checkpoints;
+    @Autowired
+    private CheckoutSaga checkout;
+
+    @Test
+    void completedEventUsesAttributesFromLegacyPurchaseSnapshotWhenLabelIsAbsent() throws Exception {
+        long orderId = paidOrder(Fixtures.submission(List.of(
+                new Fixtures.LineSpec("SKU-SNAPSHOT", 1, 20_000, "WH-HN", "Purchased product", null)), 0, null));
+        assertThat(jdbc.queryForObject("SELECT snapshot_variant_name FROM order_item_lines WHERE order_id = ?",
+                String.class, orderId)).isEqualTo("color: red");
+        // Model an already-persisted order from the old producer; only display metadata changes.
+        jdbc.update("UPDATE order_item_lines SET snapshot_variant_name = NULL WHERE order_id = ?", orderId);
+        dispatchAll(orderId);
+        deliverAll(orderId);
+        awaitStatus(orderId, "COMPLETED");
+        JsonNode event = outbox(orderId, "com.ecommerce.order.completed.v1").get(0);
+        assertThat(event.path("data").path("items").get(0).path("variant_name").asText()).isEqualTo("color: red");
+        validateAgainstContracts(orderId);
+    }
 
     private static String user() {
         return UUID.randomUUID().toString();
@@ -135,6 +161,24 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void proven_no_create_failure_terminates_submission_and_releases_both_holds() throws Exception {
+        String buyer = user();
+        fakes.behaviour.put("initiate:" + buyer, "NO_CREATE");
+        String token = UUID.randomUUID().toString();
+        Response result = submit(Fixtures.submission(token, buyer, Fixtures.defaultLines(), 200_000, "promo-" + UUID.randomUUID()));
+        assertThat(result.status()).isEqualTo(409);
+        assertThat(result.body().path("code").asText()).isEqualTo("PAYMENT_INITIATION_REJECTED");
+        long orderId = jdbc.queryForObject("SELECT id FROM orders WHERE checkout_token=?", Long.class, token);
+        awaitStatus(orderId, "CANCELLED");
+        assertThat(fakes.callsFor(orderId)).contains("inventory.release:" + orderId + ":PRE_PAYMENT_SAGA_FAILED");
+        assertThat(fakes.callsFor(orderId)).anyMatch(call -> call.startsWith("promotion.cancel:"));
+        assertThat(fakes.callsFor(orderId).stream().filter(call -> call.startsWith("payment.initiate:")).count()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_payment_attempts WHERE order_id=?", Integer.class, orderId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT state FROM order_checkout_submissions WHERE checkout_token=?", String.class, UUID.fromString(token))).isEqualTo("FAILED");
+        assertThat(submit(Fixtures.submission(Fixtures.defaultLines(), 0, null)).status()).isEqualTo(201);
+    }
+
+    @Test
     void paymentDeadlineCancelsAfterNonCaptureAndCleanup() throws Exception {
         long orderId = placeOrder(Fixtures.submission(Fixtures.defaultLines(), 0, null));
         temporal.sleep(Duration.ofMinutes(16));
@@ -203,6 +247,44 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void latePendingCancelPreservesCaptureAndLegacyCheckpointIsRecheckedBeforeRelease() throws Exception {
+        long orderId = placeOrder(Fixtures.submission(UUID.randomUUID().toString(), user(),
+                Fixtures.defaultLines(), 0, null));
+        String txn = activeTxn(orderId);
+        jdbc.update("UPDATE orders SET status = 'CANCELLING', cancel_reason = 'USER_CANCEL' WHERE id = ?", orderId);
+
+        var key = new CheckpointStore.Key(orderId, "CHECKOUT", "CANCELLING", "PAYMENT_CANCEL", txn, 0);
+        var request = mapper.createObjectNode().put("order_id", Long.toString(orderId)).put("reason", "BUYER_CANCELLED");
+        var checkpoint = checkpoints.freeze(key, "order-" + orderId + "-payment-cancel-" + txn, request.toString(),
+                CanonicalJson.digest(request));
+        var pending = mapper.createObjectNode().put("order_id", Long.toString(orderId)).put("transaction_id", txn)
+                .put("outcome", "CANCEL_PENDING").put("financial_state_version", 1);
+        var captured = pending.deepCopy().put("outcome", "ALREADY_SUCCEEDED").put("financial_state_version", 2);
+        captured.putObject("amount").put("amount_minor", (long) order(orderId).get("final_amount_minor"));
+        checkpoints.record(checkpoint.id(), "ACCEPTED", null, captured.toString(), CanonicalJson.digest(captured));
+        checkpoints.record(checkpoint.id(), "UNKNOWN", "CANCEL_PENDING", pending.toString(), CanonicalJson.digest(pending));
+
+        var stored = checkpoints.find(key).orElseThrow();
+        assertThat(stored.accepted()).isTrue();
+        assertThat(stored.errorCode()).isNull();
+        assertThat(mapper.readTree(stored.responseJson()).path("outcome").asText()).isEqualTo("ALREADY_SUCCEEDED");
+        assertThat(stored.responseDigest()).isEqualTo(CanonicalJson.digest(captured));
+
+        // Recreate a checkpoint written by the old code and simulate cleanup already queued in Temporal.
+        jdbc.update("UPDATE order_saga_checkpoints SET response = CAST(? AS jsonb), response_digest = ? WHERE id = ?",
+                pending.toString(), CanonicalJson.digest(pending), checkpoint.id());
+        fakes.behaviour.put("cancel:" + orderId, "CANCEL_PENDING");
+        assertThat(checkout.releaseInventory(orderId).isUnknown()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("CANCELLING");
+
+        fakes.behaviour.put("cancel:" + orderId, "ALREADY_SUCCEEDED");
+        assertThat(checkout.releaseInventory(orderId).isCaptured()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("PAID");
+        assertThat(checkpoints.find(key).orElseThrow().responseJson()).contains("ALREADY_SUCCEEDED");
+        assertThat(fakes.callsFor(orderId)).noneMatch(call -> call.startsWith("inventory.release:"));
+    }
+
+    @Test
     void failedAttemptCanBeRetriedBeforeTheDeadline() throws Exception {
         String user = user();
         long orderId = placeOrder(Fixtures.submission(UUID.randomUUID().toString(), user, Fixtures.defaultLines(), 0, null));
@@ -260,27 +342,100 @@ class CheckoutFlowIT extends AbstractIntegrationTest {
     }
 
     @Test
-    void deliveryProofBeforeDispatchIsParkedThenReplayed() throws Exception {
+    void adminDeliveryConfirmationNeedsDispatchAndCompletesOrderOnLastLine() throws Exception {
         long orderId = paidOrder(Fixtures.submission(Fixtures.defaultLines(), 0, null));
-        List<Map<String, Object>> lines = jdbc.queryForList(
-                "SELECT id, sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE order_id = ? ORDER BY id",
-                orderId);
-        Map<String, Object> first = lines.get(0);
-        long lineId = ((Number) first.get("id")).longValue();
-        deliver(orderId, lineId, (String) first.get("allocated_warehouse_id"), "proof-early-" + orderId);
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId))
-                .isEqualTo("PROCESSING");
-        dispatch(orderId, lineId, (String) first.get("allocated_warehouse_id"), (String) first.get("sku_id"),
+        List<Long> lines = lineIds(orderId);
+        String path = "/api/v1/admin/orders/" + orderId + "/delivery-confirmations";
+
+        // Nothing is dispatched yet: the confirmation is refused and changes nothing.
+        Response early = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-1")));
+        assertThat(early.status()).isEqualTo(409);
+        assertThat(early.body().path("code").asText()).isEqualTo("DELIVERY_REQUIRES_DISPATCH");
+        assertThat(lineStatus(lines.get(0))).isEqualTo("PROCESSING");
+
+        // Dispatch alone never delivers (Inventory physical dispatch is not delivery).
+        Map<String, Object> first = jdbc.queryForMap(
+                "SELECT sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE id = ?", lines.get(0));
+        Instant beforeFirstDispatch = workflowNow().minusSeconds(3600);
+        dispatch(orderId, lines.get(0), (String) first.get("allocated_warehouse_id"), (String) first.get("sku_id"),
                 ((Number) first.get("quantity")).intValue());
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId))
-                .isEqualTo("DELIVERED");
-        // The same proof cannot deliver another line; a mismatched warehouse is quarantined.
-        Map<String, Object> second = lines.get(1);
-        long secondId = ((Number) second.get("id")).longValue();
-        dispatch(orderId, secondId, "WH-OTHER", (String) second.get("sku_id"), ((Number) second.get("quantity")).intValue());
-        assertThat(jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, secondId))
-                .isEqualTo("PROCESSING");
+        assertThat(lineStatus(lines.get(0))).isEqualTo("DISPATCHED");
+
+        // Authorization and input validation.
+        assertThat(call(buyer(MockMvcRequestBuilders.post(path), user()).contentType("application/json")
+                .content("{\"lines\":[]}")).status()).isEqualTo(403);
+        assertThat(confirmDelivery(orderId, List.of()).status()).isEqualTo(400);
+        assertThat(confirmDelivery(orderId, List.of(deliveryLine(999999999L, "TRK-X"))).status()).isEqualTo(422);
+        assertThat(confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "A"), deliveryLine(lines.get(0), "B")))
+                .body().path("code").asText()).isEqualTo("INVALID_DELIVERY_CONFIRMATION");
+        Response future = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
+                "delivered_at", workflowNow().plusSeconds(3600).toString(), "delivery_reference", "TRK-F")));
+        assertThat(future.status()).isEqualTo(422);
+        Response beforeDispatch = confirmDelivery(orderId, List.of(Map.of("order_line_id", Long.toString(lines.get(0)),
+                "delivered_at", beforeFirstDispatch.toString(), "delivery_reference", "TRK-B")));
+        assertThat(beforeDispatch.status()).isEqualTo(422);
+        assertThat(call(admin(MockMvcRequestBuilders.post("/api/v1/admin/orders/424242424/delivery-confirmations"))
+                .contentType("application/json").content(mapper.writeValueAsString(
+                        Map.of("lines", List.of(deliveryLine(lines.get(0), "TRK-N")))))).status()).isEqualTo(404);
+
+        // All-or-nothing: a dispatched line plus a not-yet-dispatched line changes neither.
+        Response mixed = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-1"),
+                deliveryLine(lines.get(1), "TRK-2")));
+        assertThat(mixed.status()).isEqualTo(409);
+        assertThat(lineStatus(lines.get(0))).isEqualTo("DISPATCHED");
+
+        // First line confirmed: the order stays PROCESSING and the unit is partially delivered.
+        Map<String, Object> confirmed = deliveryLine(lines.get(0), "TRK-1");
+        Response one = confirmDelivery(orderId, List.of(confirmed));
+        assertThat(one.status()).isEqualTo(200);
+        ContractSchemas.assertComponent(ContractSchemas.PUBLIC, "DeliveryConfirmationResult", one.body());
+        assertThat(one.body().path("order_completed").asBoolean()).isFalse();
         assertThat(orderStatus(orderId)).isEqualTo("PROCESSING");
+        assertThat(jdbc.queryForObject("SELECT delivery_confirmed_by::text FROM order_item_lines WHERE id = ?",
+                String.class, lines.get(0))).isEqualTo("99999999-9999-4999-8999-999999999999");
+        // Same line, same reference and time replays; a different reference conflicts.
+        assertThat(confirmDelivery(orderId, List.of(confirmed)).status()).isEqualTo(200);
+        Response changed = confirmDelivery(orderId, List.of(deliveryLine(lines.get(0), "TRK-OTHER")));
+        assertThat(changed.status()).isEqualTo(409);
+        assertThat(changed.body().path("code").asText()).isEqualTo("DELIVERY_ALREADY_CONFIRMED");
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).isEmpty();
+
+        // Dispatch and confirm the remaining lines: the last confirmation completes the master once.
+        for (Long lineId : lines.subList(1, lines.size())) {
+            Map<String, Object> row = jdbc.queryForMap(
+                    "SELECT sku_id, quantity, allocated_warehouse_id FROM order_item_lines WHERE id = ?", lineId);
+            dispatch(orderId, lineId, (String) row.get("allocated_warehouse_id"), (String) row.get("sku_id"),
+                    ((Number) row.get("quantity")).intValue());
+        }
+        List<Map<String, Object>> rest = new java.util.ArrayList<>();
+        for (Long lineId : lines.subList(1, lines.size())) {
+            rest.add(deliveryLine(lineId, "TRK-REST"));
+        }
+        Response last = confirmDelivery(orderId, rest);
+        assertThat(last.status()).isEqualTo(200);
+        assertThat(last.body().path("order_completed").asBoolean()).isTrue();
+        assertThat(orderStatus(orderId)).isEqualTo("COMPLETED");
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).hasSize(1);
+        assertThat(notificationTemplates(orderId)).containsExactly("ORDER_CONFIRMED", "ORDER_COMPLETED");
+        // A late replay of an already applied confirmation neither fails nor emits another fact.
+        assertThat(confirmDelivery(orderId, List.of(confirmed)).status()).isEqualTo(200);
+        assertThat(outbox(orderId, "com.ecommerce.order.completed.v1")).hasSize(1);
+        validateAgainstContracts(orderId);
+    }
+
+    @Test
+    void dispatchedButUnconfirmedLinesAreCountedAsOverdue() throws Exception {
+        long orderId = paidOrder(Fixtures.submission(Fixtures.defaultLines(), 0, null));
+        dispatchAll(orderId);
+        jdbc.update("UPDATE order_item_lines SET dispatched_at = NOW() - INTERVAL '8 days' WHERE order_id = ?", orderId);
+        Double overdue = meterRegistry.get("order.fulfillment.delivery_confirmation_overdue").gauge().value();
+        assertThat(overdue).isGreaterThanOrEqualTo((double) lineIds(orderId).size());
+        deliverAll(orderId);
+        awaitStatus(orderId, "COMPLETED");
+    }
+
+    private String lineStatus(long lineId) {
+        return jdbc.queryForObject("SELECT fulfillment_status FROM order_item_lines WHERE id = ?", String.class, lineId);
     }
 
     @Test

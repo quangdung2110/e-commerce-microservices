@@ -24,10 +24,12 @@ public class UserClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public UserClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "user", properties.endpoints().userBaseUrl(),
+    public UserClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "user", properties.endpoints().userBaseUrl(),
                 properties.bulkheads().user());
         this.objectMapper = objectMapper;
+        objectMapper.readerFor(Address.class);
     }
 
     public record Address(String addressId, String recipientName, String recipientPhone, String addressLine,

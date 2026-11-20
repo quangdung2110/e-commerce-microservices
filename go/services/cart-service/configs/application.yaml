@@ -32,12 +32,16 @@ kafka:
   topic_cart_events_dlq: "t.cart.events.dlq"
   topic_order_events: "t.order.events"
   consumer_group_order: "cart-order-consumer"
+  # USER_DELETED privacy purge (ADR-014). Replaying the topic from "oldest" is
+  # safe: the purge is idempotent.
+  topic_auth_events: "t.auth.events"
+  consumer_group_auth: "cart-auth-consumer"
   initial_offset: "oldest"
   required_acks: "all"
   produce_timeout: 10s
   session_timeout: 30s
   tls_enabled: false
-  event_data_schema: "https://contracts.ecommerce.local/events/cart/v1/schemas/cart-abandoned.schema.json"
+  event_data_schema: "/contracts/events/cart/v1/schemas/cart-abandoned.schema.json"
 
 # Pull model: Product is called when a user writes and when a user reads, never
 # on a schedule and never through a change feed (ADR-005).
@@ -97,6 +101,8 @@ worker:
     interval: 5m
     operation_timeout: 5s
   order_consumer:
+    enabled: true
+  user_deleted_consumer:
     enabled: true
 
 logging:

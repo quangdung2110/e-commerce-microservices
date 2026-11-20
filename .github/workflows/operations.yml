@@ -1,0 +1,108 @@
+name: Operations Checks
+
+on:
+  schedule:
+    - cron: '0 19 * * 6'
+    - cron: '0 20 1 * *'
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Run an approved staging load check, production SLO assessment, or isolated PostgreSQL recovery drill
+        required: true
+        type: choice
+        options: [performance, slo, recovery]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operations-${{ inputs.operation || (github.event.schedule == '0 19 * * 6' && 'performance') || (github.event.schedule == '0 20 1 * *' && 'recovery') || 'slo' }}
+  cancel-in-progress: false
+
+jobs:
+  configuration-required:
+    if: github.event_name == 'workflow_dispatch' && (vars.OPERATIONS_ENABLED != 'true' || github.ref != 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo '::error::Operations requires main, reviewed policy/configuration and OPERATIONS_ENABLED=true.'
+          exit 1
+
+  performance:
+    if: >-
+      vars.OPERATIONS_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (inputs.operation == 'performance' || github.event.schedule == '0 19 * * 6')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment: operations-staging
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r deploy/checks/requirements.txt
+      - run: python scripts/ops/performance.py --config deploy/gitops/environments.json --policy deploy/operations/policy.json --output ci-artifacts/operations/performance.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: staging-performance
+          overwrite: true
+          path: ci-artifacts/operations/performance.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  slo:
+    if: >-
+      vars.OPERATIONS_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (inputs.operation == 'slo' || github.event.schedule == '0 1 * * *')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: operations-production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r deploy/checks/requirements.txt
+      - name: Assess a complete 30-day production SLO window
+        env:
+          PROMETHEUS_AUTHORIZATION: ${{ secrets.PROMETHEUS_AUTHORIZATION }}
+        run: python scripts/cd/slo.py --config deploy/gitops/environments.json --environment production --output ci-artifacts/operations/slo.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: production-slo
+          overwrite: true
+          path: ci-artifacts/operations/slo.json
+          if-no-files-found: warn
+          retention-days: 90
+
+  recovery:
+    if: >-
+      vars.OPERATIONS_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
+      (inputs.operation == 'recovery' || github.event.schedule == '0 20 1 * *')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Rehearse backup, loss, restore and RPO/RTO in isolated fixtures
+        run: python scripts/ops/recovery.py --policy deploy/operations/policy.json --output ci-artifacts/operations/recovery.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: isolated-recovery-drill
+          overwrite: true
+          path: ci-artifacts/operations/recovery.json
+          if-no-files-found: warn
+          retention-days: 90

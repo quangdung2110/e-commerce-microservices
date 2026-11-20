@@ -108,6 +108,16 @@ channels:
     x-access-policy: >-
       Consumer: analytics-service (mọi type), user-service (complaintReceived để
       tắt marketing_enabled ở nguồn).
+    x-consumers-detail:
+      user-service:
+        consumer-group: user-service
+        acts-on: com.ecommerce.notification.complaint-received.v1
+        ignores: delivered, bounced, failed
+        dead-letter-topic: t.notification.outcomes.v1.dlq
+        effect: >-
+          Idempotent. Tắt marketing_enabled nếu đang bật rồi phát
+          USER_PREFERENCES_UPDATED; không làm gì khi cờ đã tắt hoặc user không còn
+          preferences.
     messages:
       notificationDelivered:
         $ref: '#/components/messages/notificationDelivered'
@@ -195,6 +205,10 @@ components:
       x-consumers: [analytics-service]
       payload:
         $ref: './schemas/notification-failed.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-failed.v1.json'
     notificationComplaintReceived:
       name: notificationComplaintReceivedV1
       title: NOTIFICATION_COMPLAINT_RECEIVED
@@ -205,3 +219,7 @@ components:
       x-consumers: [analytics-service, user-service]
       payload:
         $ref: './schemas/notification-complaint-received.schema.json'
+      examples:
+        - name: default
+          payload:
+            $ref: '../../../examples/events/notification-complaint-received.v1.json'

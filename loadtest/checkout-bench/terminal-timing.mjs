@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {dir,sql} from './prepare.mjs';
+import {distribution} from './stats.mjs';
+const name=process.argv[2];if(!/^[A-Za-z0-9_.-]+$/.test(name??''))throw Error('run name');
+const out=path.join(dir,'results',name),s=JSON.parse(fs.readFileSync(path.join(out,'summary.json')));
+const users=fs.readFileSync(path.join(out,'sessions.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).map(r=>r.userId);
+if(users.some(u=>!/^[0-9a-f-]{36}$/.test(u)))throw Error('fixture identity');
+const rows=JSON.parse(sql('order_service',`SELECT coalesce(json_agg(s),'[]'::json)::text FROM (SELECT id::text,status,payment_status,created_at,paid_at,cancelled_at,updated_at,payment_deadline_at,cancel_reason,cancel_reason_detail FROM orders WHERE user_id IN (${users.map(u=>`'${u}'::uuid`).join(',')}))s;`));
+const cutoff=Date.parse(s.finishedAt),cancelled=rows.filter(r=>r.cancelled_at),paid=rows.filter(r=>r.paid_at);
+const result={at:new Date().toISOString(),runFinishedAt:s.finishedAt,orders:rows.length,paid:paid.length,cancelled:cancelled.length,cancelReasons:cancelled.reduce((o,r)=>{const k=r.cancel_reason??r.cancel_reason_detail;o[k]=(o[k]??0)+1;return o;},{}),cancelledAfterRunEndMs:distribution(cancelled.map(r=>Date.parse(r.cancelled_at)-cutoff)),paidAfterRunEndMs:distribution(paid.map(r=>Date.parse(r.paid_at)-cutoff)),notTerminalWithinFiveMinutes:rows.filter(r=>!r.paid_at&&!r.cancelled_at||Math.min(Date.parse(r.paid_at)||Infinity,Date.parse(r.cancelled_at)||Infinity)>cutoff+300000).length,note:'Order terminal timestamps are durable evidence, not a reconstruction of all post-payment obligations or queue drain. Negative durations mean before generator run finished.',rows};
+fs.writeFileSync(path.join(out,'terminal-timing.json'),JSON.stringify(result,null,2));const {rows:ignored,...compact}=result;console.log(JSON.stringify(compact,null,2));

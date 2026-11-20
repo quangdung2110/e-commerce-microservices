@@ -1,0 +1,382 @@
+ M contracts/CHANGELOG.md
+ M contracts/catalog/interactions.yaml
+ M contracts/events/order/v1/schemas/order-completed.schema.json
+ M contracts/grpc/ecommerce/product/v1/README.md
+ M contracts/grpc/ecommerce/product/v1/product_service.proto
+ M contracts/http/cart/v1/README.md
+ M contracts/http/cart/v1/openapi.yaml
+ M contracts/http/order/internal/v1/openapi.yaml
+ M contracts/http/order/v1/openapi.yaml
+ M contracts/http/payment/v1/openapi.yaml
+ M contracts/http/promotion/v1/openapi.yaml
+ M contracts/http/review/v1/README.md
+ M contracts/http/review/v1/openapi.yaml
+ M contracts/http/search/v2/openapi.yaml
+ M docker-compose.yml
+ M docs/README.md
+ M docs/cart/data.md
+ M docs/cart/interfaces.md
+ M docs/cart/workflows.md
+ M docs/checkout/architecture.md
+ M docs/checkout/decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md
+ M docs/checkout/interfaces.md
+ M docs/checkout/operations.md
+ M docs/frontend/README.md
+ M docs/frontend/implementation-plan.md
+ M docs/frontend/step-10-verification.md
+ M docs/frontend/step-11-verification.md
+ M docs/frontend/step-12-verification.md
+ M docs/frontend/step-6-verification.md
+ M docs/frontend/step-7-verification.md
+ M docs/frontend/step-8-verification.md
+ M docs/frontend/step-9-verification.md
+ M docs/order/data.md
+ M docs/order/decisions/ADR-020-release-1-implementation-clarifications.md
+ M docs/order/decisions/README.md
+ M docs/order/domain.md
+ M docs/order/interfaces.md
+ M docs/order/workflows.md
+ M docs/payment/architecture.md
+ M docs/payment/data.md
+ M docs/payment/decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md
+ M docs/payment/decisions/README.md
+ M docs/payment/development.md
+ M docs/payment/operations.md
+ M docs/payment/runtime-status.md
+ M docs/payment/workflows.md
+ M docs/performance/load-test.md
+ M docs/product-detail-bff/architecture.md
+ M docs/product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md
+ M docs/product-detail-bff/operations.md
+ M docs/product/interfaces.md
+ M docs/product/operations.md
+ M docs/promotion/README.md
+ M docs/promotion/architecture.md
+ M docs/promotion/data.md
+ M docs/promotion/decisions/ADR-014-claim-and-markdown-consistency.md
+ M docs/promotion/decisions/README.md
+ M docs/promotion/development.md
+ M docs/promotion/domain.md
+ M docs/promotion/operations.md
+ M docs/promotion/workflows.md
+ M docs/review/data.md
+ M docs/review/development.md
+ M docs/review/domain.md
+ M docs/review/interfaces.md
+ M docs/review/operations.md
+ M docs/review/workflows.md
+ M docs/search/data.md
+ M docs/search/decisions/README.md
+ M docs/search/development.md
+ M docs/search/operations.md
+ M docs/search/schema/scripts/README.md
+ M docs/search/workflows.md
+ M frontend/src/app/(site)/products/[slug]/page.tsx
+ M frontend/src/components/admin/inventory/command-detail.tsx
+ M frontend/src/components/admin/inventory/inventory-shared.tsx
+ M frontend/src/components/admin/inventory/stock-adjustment-form.tsx
+ M frontend/src/components/admin/inventory/stock-movement-detail.tsx
+ M frontend/src/components/admin/inventory/stock-receipt-form.tsx
+ M frontend/src/components/admin/inventory/warehouse-create-form.tsx
+ M frontend/src/components/admin/inventory/warehouse-detail.tsx
+ M frontend/src/components/admin/orders/admin-order-detail.tsx
+ M frontend/src/components/cart/__tests__/cart-page.test.tsx
+ M frontend/src/components/cart/cart-item.tsx
+ M frontend/src/components/catalog/catalog-filters.tsx
+ M frontend/src/components/catalog/catalog-page.tsx
+ M frontend/src/components/checkout/__tests__/checkout.test.tsx
+ M frontend/src/components/checkout/checkout-page-content.tsx
+ M frontend/src/components/notifications/__tests__/notifications.test.tsx
+ M frontend/src/components/orders/order-detail-content.tsx
+ M frontend/src/components/orders/payment-complete-content.tsx
+ M frontend/src/components/orders/payment-content.tsx
+ M frontend/src/components/orders/return-request-content.tsx
+ M frontend/src/components/product/add-to-cart-button.tsx
+ M frontend/src/components/product/product-detail-page-content.tsx
+ M frontend/src/components/profile/ProfileForm.tsx
+ M frontend/src/components/reviews/__tests__/reviews-flow.test.tsx
+ M frontend/src/components/reviews/review-create-content.tsx
+ M frontend/src/components/reviews/review-detail-content.tsx
+ M frontend/src/components/ui/form.tsx
+ M frontend/src/hooks/__tests__/use-checkout-vouchers.test.tsx
+ M frontend/src/hooks/__tests__/use-command.test.ts
+ M frontend/src/hooks/__tests__/use-review-media-uploader.test.ts
+ M frontend/src/hooks/use-admin-orders.ts
+ M frontend/src/hooks/use-checkout-vouchers.ts
+ M frontend/src/hooks/use-command.ts
+ M frontend/src/hooks/use-notifications.ts
+ M frontend/src/hooks/use-orders.ts
+ M frontend/src/hooks/use-review-media-uploader.ts
+ M frontend/src/hooks/use-reviews.ts
+ M frontend/src/lib/__tests__/cart.test.tsx
+ M frontend/src/lib/__tests__/order.test.ts
+ M frontend/src/lib/__tests__/storefront.test.tsx
+ M frontend/src/lib/api/__tests__/review-commands.test.ts
+ M frontend/src/lib/api/generated/auth.ts
+ M frontend/src/lib/api/generated/cart.ts
+ M frontend/src/lib/api/generated/order.ts
+ M frontend/src/lib/api/generated/product.ts
+ M frontend/src/lib/api/generated/promotion.ts
+ M frontend/src/lib/api/generated/review.ts
+ M frontend/src/lib/api/generated/search.ts
+ M frontend/src/lib/api/generated/user.ts
+ M frontend/src/lib/api/problem-messages/commerce.ts
+ M frontend/src/lib/api/review.ts
+ M frontend/src/lib/order.ts
+ M frontend/src/lib/product-detail.ts
+ M frontend/src/lib/review-media.ts
+ M frontend/src/lib/storefront-search.ts
+ M go/services/cart-service/internal/api/dto/response/cart.go
+ M go/services/cart-service/internal/api/router/router_test.go
+ M go/services/cart-service/internal/domain/cart.go
+ M go/services/cart-service/internal/infrastructure/cartredis/store_test.go
+ M go/services/cart-service/internal/infrastructure/product/client.go
+ M go/services/cart-service/internal/infrastructure/product/client_test.go
+ M go/services/cart-service/internal/infrastructure/product/pb/PROTO_SHA256
+ M go/services/cart-service/internal/infrastructure/product/pb/productv1/product_service.pb.go
+ M go/services/cart-service/internal/service/cart_service.go
+ M go/services/cart-service/internal/service/cart_service_test.go
+ M java/services/checkout-service/proto/ecommerce/product/v1/product_service.proto
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/api/RequestContextFilter.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/CartClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/InventoryClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/OrderClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/ProductClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/PromotionClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/UpstreamHttp.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/UserClient.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/config/CheckoutConfig.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/resilience/DependencyGuard.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/service/OrderPayloadFactory.java
+ M java/services/checkout-service/src/main/java/com/ecommerce/checkout/store/SessionStore.java
+ M java/services/checkout-service/src/main/resources/application.yml
+ M java/services/checkout-service/src/test/java/com/ecommerce/checkout/AbstractCheckoutTest.java
+ M java/services/checkout-service/src/test/java/com/ecommerce/checkout/SubmitApiTest.java
+ M java/services/checkout-service/src/test/java/com/ecommerce/checkout/store/SessionStoreTest.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/client/HttpGateways.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/ErrorCode.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/CheckoutSaga.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderConvergence.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/RefundSaga.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/ScopeFinalization.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/client/HttpRemoteTest.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/integration/CheckoutFlowIT.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/integration/RefundFlowIT.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/FakeRemotes.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/adapter/in/http/PaymentController.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/adapter/out/persistence/JdbcInitiatePaymentAdapter.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/adapter/out/persistence/JdbcReconciliationAdapter.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/port/out/InitiatePaymentPort.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/port/out/InitiatePaymentPreparation.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/port/out/ProviderOperationResult.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/service/InitiatePaymentResult.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/service/InitiatePaymentService.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/application/service/ProviderRecoveryService.java
+ M java/services/payment-service/src/main/java/com/platform/paymentservice/stripe/StripePaymentProviderAdapter.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/adapter/in/http/PaymentControllerTest.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/AbstractPaymentIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/InitiatePaymentIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/PaymentServiceContextIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/ProviderRecoveryIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/ReconciliationIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/integration/ReconciliationOwnershipIT.java
+ M java/services/payment-service/src/test/java/com/platform/paymentservice/stripe/StripePaymentProviderAdapterTest.java
+ M java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/client/InventoryClient.java
+ M java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/client/ProductClient.java
+ M java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/client/ReviewClient.java
+ M java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/client/UpstreamHttp.java
+ M java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/resilience/DependencyGuard.java
+ M java/services/product-detail-bff/src/main/resources/application.yml
+ M java/services/product-service/proto/ecommerce/product/v1/product_service.proto
+ M java/services/product-service/src/main/java/com/platform/productservice/config/ProductProperties.java
+ M java/services/product-service/src/main/java/com/platform/productservice/infrastructure/grpc/ProductCatalogGrpcService.java
+ M java/services/product-service/src/main/java/com/platform/productservice/infrastructure/persistence/AttributeRepository.java
+ M java/services/product-service/src/main/java/com/platform/productservice/infrastructure/persistence/SkuRepository.java
+ M java/services/product-service/src/main/resources/application.yml
+ M java/services/product-service/src/test/java/com/platform/productservice/integration/ProductCatalogGrpcIntegrationTest.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/config/PromotionProperties.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/infrastructure/persistence/OutboxEventRepository.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/infrastructure/redis/LuaScripts.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/AdminSupport.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/CampaignAdminService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/CampaignScheduleService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/ClaimPersistenceService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/ClaimService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/DiscoveryService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/MarkdownSnapshotService.java
+ M java/services/promotion-service/src/main/java/com/platform/promotionservice/service/RuntimeRebuildService.java
+ M java/services/promotion-service/src/main/resources/application.yml
+ M java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/ClaimAndTombstoneIntegrationTest.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/config/JacksonConfig.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/domain/Review.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/dto/PublicDtos.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/repository/ReviewRepository.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/repository/ReviewRepositoryQueries.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/service/ReviewAssembler.java
+ M java/services/review-service/src/main/java/com/ecommerce/review/service/ReviewCommandService.java
+ M java/services/review-service/src/test/java/com/ecommerce/review/integration/AbstractReviewIT.java
+ M java/services/review-service/src/test/java/com/ecommerce/review/integration/HttpContractIT.java
+ M java/services/review-service/src/test/java/com/ecommerce/review/support/SchemaSyncTest.java
+ M java/services/search-service/src/main/java/com/ecommerce/search/repository/es/IndexAdmin.java
+ M java/services/search-service/src/main/java/com/ecommerce/search/repository/es/PainlessScripts.java
+ M java/services/search-service/src/main/java/com/ecommerce/search/repository/es/ProjectionWriter.java
+ M java/services/search-service/src/main/java/com/ecommerce/search/worker/job/FullReindexJob.java
+ M java/services/search-service/src/main/java/com/ecommerce/search/worker/job/ReindexVerifier.java
+ M java/services/search-service/src/test/java/com/ecommerce/search/integration/AbstractSearchIntegrationTest.java
+ M java/services/search-service/src/test/java/com/ecommerce/search/integration/ReindexLifecycleIT.java
+ M java/services/search-service/src/test/java/com/ecommerce/search/repository/es/CanonicalSchemaVerbatimTest.java
+ M java/services/search-service/src/test/java/com/ecommerce/search/worker/job/FullReindexJobTest.java
+ M java/services/search-service/src/test/java/com/ecommerce/search/worker/job/ReindexVerifierTest.java
+ M note/cart.txt
+?? docs/frontend/cart-toast-fix-product-latency-investigation-2026-10-11.md
+?? docs/frontend/cart-toast-product-latency-evidence-2026-10-11/
+?? docs/frontend/checkout-p1-investigation-evidence-2026-10-13/
+?? docs/frontend/checkout-p1-root-cause-investigation-2026-10-13.md
+?? docs/frontend/checkout-warmup-evidence-2026-10-13/
+?? docs/frontend/checkout-warmup-retest-2026-10-13.md
+?? docs/frontend/e2e-address-evidence-2026-10-11/
+?? docs/frontend/e2e-address-test-report-2026-10-11.md
+?? docs/frontend/e2e-auth-evidence-2026-10-11/
+?? docs/frontend/e2e-auth-test-report-2026-10-11.md
+?? docs/frontend/e2e-cart-evidence-2026-10-11/
+?? docs/frontend/e2e-cart-evidence-2026-10-13/
+?? docs/frontend/e2e-cart-test-report-2026-10-11.md
+?? docs/frontend/e2e-cart-test-report-2026-10-13.md
+?? docs/frontend/e2e-catalog-evidence-2026-10-12/
+?? docs/frontend/e2e-catalog-test-report-2026-10-12.md
+?? docs/frontend/e2e-checkout-evidence-2026-10-12/
+?? docs/frontend/e2e-checkout-evidence-2026-10-15/
+?? docs/frontend/e2e-checkout-fix-evidence-2026-10-15/
+?? docs/frontend/e2e-checkout-fix-report-2026-10-15.md
+?? docs/frontend/e2e-checkout-test-report-2026-10-12.md
+?? docs/frontend/e2e-checkout-test-report-2026-10-15.md
+?? docs/frontend/e2e-fulfillment-test-report-2026-10-14.md
+?? docs/frontend/e2e-inventory-evidence-2026-10-14/
+?? docs/frontend/e2e-inventory-fix-evidence-2026-10-15/
+?? docs/frontend/e2e-inventory-fix-report-2026-10-15.md
+?? docs/frontend/e2e-inventory-test-report-2026-10-14.md
+?? docs/frontend/e2e-latency-fix-evidence-2026-10-12/
+?? docs/frontend/e2e-latency-fix-report-2026-10-12.md
+?? docs/frontend/e2e-moderation-evidence-2026-10-14/
+?? docs/frontend/e2e-moderation-fix-evidence-2026-10-14/
+?? docs/frontend/e2e-moderation-fix-report-2026-10-14.md
+?? docs/frontend/e2e-moderation-test-report-2026-10-14.md
+?? docs/frontend/e2e-notifications-evidence-2026-10-11/
+?? docs/frontend/e2e-orders-evidence-2026-10-14/
+?? docs/frontend/e2e-orders-fix-report-2026-10-14.md
+?? docs/frontend/e2e-orders-test-report-2026-10-14.md
+?? docs/frontend/e2e-payment-evidence-2026-10-14/
+?? docs/frontend/e2e-payment-fix-evidence-2026-10-14/
+?? docs/frontend/e2e-payment-fix-report-2026-10-14.md
+?? docs/frontend/e2e-payment-p2-fix-evidence-2026-10-14/
+?? docs/frontend/e2e-payment-p2-fix-report-2026-10-14.md
+?? docs/frontend/e2e-payment-test-report-2026-10-14.md
+?? docs/frontend/e2e-pdp-evidence-2026-10-15/
+?? docs/frontend/e2e-pdp-fix-evidence-2026-10-16/
+?? docs/frontend/e2e-pdp-fix-report-2026-10-16.md
+?? docs/frontend/e2e-pdp-inventory-evidence-2026-10-11/
+?? docs/frontend/e2e-pdp-inventory-retest-2026-10-11.md
+?? docs/frontend/e2e-pdp-test-report-2026-10-15.md
+?? docs/frontend/e2e-profile-preferences-evidence-2026-10-11/
+?? docs/frontend/e2e-profile-preferences-test-report-2026-10-11.md
+?? docs/frontend/e2e-promotions-evidence-2026-10-12/
+?? docs/frontend/e2e-promotions-evidence-2026-10-13/
+?? docs/frontend/e2e-promotions-test-report-2026-10-12.md
+?? docs/frontend/e2e-promotions-test-report-2026-10-13.md
+?? docs/frontend/e2e-returns-evidence-2026-10-12/
+?? docs/frontend/e2e-returns-test-report-2026-10-12.md
+?? docs/frontend/e2e-reviews-evidence-2026-10-12/
+?? docs/frontend/e2e-reviews-evidence-2026-10-13/
+?? docs/frontend/e2e-reviews-fix-evidence-2026-10-13/
+?? docs/frontend/e2e-reviews-fix-report-2026-10-13.md
+?? docs/frontend/e2e-reviews-test-report-2026-10-12.md
+?? docs/frontend/e2e-reviews-test-report-2026-10-13.md
+?? docs/frontend/e2e-search-diagnosis-evidence-2026-10-15/
+?? docs/frontend/e2e-search-evidence-2026-10-11/
+?? docs/frontend/e2e-search-evidence-2026-10-15/
+?? docs/frontend/e2e-search-fix-evidence-2026-10-16/
+?? docs/frontend/e2e-search-fix-report-2026-10-16.md
+?? docs/frontend/e2e-search-root-cause-report-2026-10-15.md
+?? docs/frontend/e2e-search-test-report-2026-10-11.md
+?? docs/frontend/e2e-search-test-report-2026-10-15.md
+?? docs/frontend/e2e-test-checklist.md
+?? docs/frontend/e2e-vouchers-evidence-2026-10-14/
+?? docs/frontend/e2e-vouchers-test-report-2026-10-14.md
+?? docs/frontend/e2e-wave-evidence-2026-10-12/
+?? docs/frontend/e2e-wave-test-report-2026-10-12.md
+?? docs/frontend/live-local-2026-10-11.md
+?? docs/frontend/notification-filter-fix-evidence-2026-10-12/
+?? docs/frontend/notification-filter-fix-report-2026-10-12.md
+?? docs/frontend/product-cold-start-fix-report-2026-10-11.md
+?? docs/frontend/product-warmup-fix-evidence-2026-10-11/
+?? docs/frontend/promotion-cart-payment-fix-evidence-2026-10-13/
+?? docs/frontend/promotion-cart-payment-fix-report-2026-10-13.md
+?? docs/frontend/unicode-profile-fix-notification-e2e-report-2026-10-12.md
+?? docs/order/decisions/ADR-022-purchase-variant-snapshot-fallback.md
+?? docs/payment/decisions/ADR-024-certified-create-non-acceptance.md
+?? docs/performance/search-scale-benchmark.md
+?? docs/promotion/decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md
+?? docs/review/schema/0004_review_content_edited_at.sql
+?? docs/search/decisions/ADR-026-reindex-preserves-tombstones.md
+?? docs/search/schema/scripts/reindex_tombstone_copy.painless
+?? frontend/src/components/admin/inventory/__tests__/inventory-command-recovery.test.tsx
+?? frontend/src/components/admin/orders/__tests__/admin-manual-review.test.tsx
+?? frontend/src/components/admin/orders/__tests__/admin-unresolved-command.test.tsx
+?? frontend/src/components/catalog/catalog-page.test.tsx
+?? frontend/src/components/orders/__tests__/order-manual-review.test.tsx
+?? frontend/src/components/orders/__tests__/payment-recovery.test.tsx
+?? frontend/src/components/orders/__tests__/payment-safety.test.tsx
+?? frontend/src/components/orders/__tests__/payment-theme.test.tsx
+?? frontend/src/components/product/__tests__/
+?? frontend/src/hooks/__tests__/paid-order-cart-sync.test.tsx
+?? frontend/src/hooks/__tests__/review-upload-cancellation.test.ts
+?? frontend/src/hooks/use-inventory-command.ts
+?? frontend/src/hooks/use-paid-order-cart-sync.ts
+?? frontend/src/lib/payment-confirmation.ts
+?? infra/minio/Dockerfile
+?? java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/ClientTransports.java
+?? java/services/checkout-service/src/main/java/com/ecommerce/checkout/client/ProductCallTiming.java
+?? java/services/checkout-service/src/test/java/com/ecommerce/checkout/LivePromotionIdleTest.java
+?? java/services/checkout-service/src/test/java/com/ecommerce/checkout/StartupFirstRequestTest.java
+?? java/services/checkout-service/src/test/java/com/ecommerce/checkout/client/ClientTransportsTest.java
+?? java/services/checkout-service/src/test/java/com/ecommerce/checkout/config/RedisReadWarmupTest.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/domain/VariantSnapshot.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/benchmark/
+?? java/services/order-service/src/test/java/com/ecommerce/order/domain/VariantSnapshotTest.java
+?? java/services/product-detail-bff/src/main/java/com/ecommerce/pdp/client/ClientTransports.java
+?? java/services/product-detail-bff/src/test/java/com/ecommerce/pdp/StartupFirstRequestTest.java
+?? java/services/product-detail-bff/src/test/java/com/ecommerce/pdp/client/ClientTransportsTest.java
+?? java/services/product-service/src/main/java/com/platform/productservice/infrastructure/grpc/ProductRpcTiming.java
+?? java/services/product-service/src/main/java/com/platform/productservice/infrastructure/startup/
+?? java/services/product-service/src/main/java/com/platform/productservice/service/support/VariantNameResolver.java
+?? java/services/product-service/src/test/java/com/platform/productservice/infrastructure/grpc/ProductRpcTimingTest.java
+?? java/services/product-service/src/test/java/com/platform/productservice/infrastructure/startup/
+?? java/services/product-service/src/test/java/com/platform/productservice/integration/CatalogWarmupTargetIntegrationTest.java
+?? java/services/product-service/src/test/java/com/platform/productservice/service/support/VariantNameResolverTest.java
+?? java/services/promotion-service/src/main/java/com/platform/promotionservice/config/VoucherReadWarmup.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/config/VoucherReadWarmupTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/CampaignScheduleBatchIntegrationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/CampaignScheduleBenchmarkTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/ClaimStormSimulationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/IntegerHttpContractIntegrationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/PauseGateCloseFailureIntegrationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/VoucherHttpWarmupIntegrationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/integration/VoucherWarmupIntegrationTest.java
+?? java/services/promotion-service/src/test/java/com/platform/promotionservice/service/CampaignScheduleBatchTest.java
+?? java/services/review-service/src/main/resources/db/migration/V4__review_content_edited_at.sql
+?? java/services/review-service/src/test/java/com/ecommerce/review/integration/ContentEditedAtIT.java
+?? java/services/review-service/src/test/java/com/ecommerce/review/integration/ContentEditedAtMigrationIT.java
+?? java/services/review-service/src/test/java/com/ecommerce/review/integration/ReviewBoundaryIT.java
+?? java/services/search-service/src/main/java/com/ecommerce/search/worker/job/ReindexTombstoneTransfer.java
+?? java/services/search-service/src/main/resources/search/scripts/reindex_tombstone_copy.painless
+?? loadtest/k6/search-scale.js
+?? loadtest/order-dispatch-bench/
+?? loadtest/search-bench/
+?? note/performance.txt
+?? scripts/ci/order-dispatch-bench.ps1
+?? scripts/ci/search-bench.sh
+?? scripts/payment-e2e-runtime.mjs
+?? scripts/pdp-e2e-extra.mjs
+?? scripts/pdp-e2e-runtime.mjs
+?? scripts/pdp-fix-retest.mjs
+?? scripts/repair-review-variant-snapshots.mjs

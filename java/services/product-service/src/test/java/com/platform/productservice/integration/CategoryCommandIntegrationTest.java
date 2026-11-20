@@ -1,8 +1,11 @@
 package com.platform.productservice.integration;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.platform.productservice.common.DomainException;
 import com.platform.productservice.common.ErrorCode;
+import com.platform.productservice.domain.enums.AttributeValueType;
 import com.platform.productservice.infrastructure.event.CatalogEventTypes;
+import com.platform.productservice.web.dto.AttributeDtos;
 import com.platform.productservice.web.dto.CategoryDtos;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -196,8 +199,113 @@ class CategoryCommandIntegrationTest extends AbstractCatalogIntegrationTest {
     @Test
     @DisplayName("Attribute và option không phát event riêng ở v1")
     void attributeChangesEmitNoEvents() {
-        givenAttribute("brand");
+        UUID attributeId = attributeService.create(new AttributeDtos.CreateAttributeRequest(
+                "color", "Màu sắc", AttributeValueType.SELECT)).attributeId();
+        attributeService.createOption(attributeId, new AttributeDtos.CreateAttributeOptionRequest(
+                "black", "Đen", 0));
 
         assertThat(outboxRows()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Category snapshot mang facet_definitions theo mapping, sắp theo code")
+    void categorySnapshotCarriesFacetDefinitions() {
+        UUID categoryId = givenLeafCategory("phones");
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        UUID brand = givenAttribute("brand", "Thương hiệu", AttributeValueType.TEXT);
+
+        assertThat(latestCategorySnapshot(categoryId).path("facet_definitions").isArray()).isTrue();
+        assertThat(latestCategorySnapshot(categoryId).path("facet_definitions")).isEmpty();
+
+        givenMapping(categoryId, color, false, true);
+        givenMapping(categoryId, brand, true, false);
+
+        JsonNode facets = latestCategorySnapshot(categoryId).path("facet_definitions");
+        assertThat(facets).hasSize(2);
+        assertThat(facets.get(0).path("code").asText()).isEqualTo("brand");
+        assertThat(facets.get(0).path("label").asText()).isEqualTo("Thương hiệu");
+        assertThat(facets.get(0).path("type").asText()).isEqualTo("TEXT");
+        assertThat(facets.get(1).path("code").asText()).isEqualTo("color");
+        assertThat(facets.get(1).path("type").asText()).isEqualTo("SELECT");
+    }
+
+    @Test
+    @DisplayName("Bỏ mapping làm descriptor biến mất khỏi snapshot kế tiếp")
+    void removingMappingDropsFacetDefinition() {
+        UUID categoryId = givenLeafCategory("phones");
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        givenMapping(categoryId, color, false, true);
+
+        categoryCommandService.deleteAttribute(categoryId, color);
+
+        assertThat(latestCategorySnapshot(categoryId).path("facet_definitions")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Đổi tên attribute đã map tăng category_revision và phát lại mọi category map nó")
+    void renamingMappedAttributeRepublishesEveryCategory() {
+        UUID phones = givenLeafCategory("phones");
+        UUID laptops = givenLeafCategory("laptops");
+        UUID unrelated = givenLeafCategory("books");
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        givenMapping(phones, color, false, true);
+        givenMapping(laptops, color, false, true);
+        int before = outboxRowsOfType(CatalogEventTypes.CATEGORY_UPSERTED).size();
+
+        attributeService.replace(color, new AttributeDtos.ReplaceAttributeRequest(
+                "color", "Màu", AttributeValueType.SELECT));
+
+        List<OutboxRow> events = outboxRowsOfType(CatalogEventTypes.CATEGORY_UPSERTED);
+        assertThat(events).hasSize(before + 2);
+        for (UUID categoryId : List.of(phones, laptops)) {
+            OutboxRow latest = latestCategoryRow(categoryId);
+            assertThat(latest.sequence()).isEqualTo(3L);
+            assertThat(latest.changeKind()).isEqualTo("CATEGORY_ATTRIBUTE_CHANGED");
+            assertThat(latest.data().path("category").path("facet_definitions").get(0).path("label").asText())
+                    .isEqualTo("Màu");
+        }
+        assertThat(latestCategoryRow(unrelated).sequence()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("Đổi tên attribute chưa map hoặc đổi nhãn option không phát event")
+    void renamingUnmappedAttributeEmitsNothing() {
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        UUID optionId = attributeService.createOption(color,
+                new AttributeDtos.CreateAttributeOptionRequest("black", "Đen", 0)).optionId();
+
+        attributeService.replace(color, new AttributeDtos.ReplaceAttributeRequest(
+                "color", "Màu", AttributeValueType.SELECT));
+        attributeService.replaceOption(color, optionId,
+                new AttributeDtos.ReplaceAttributeOptionRequest("black", "Đen tuyền", 1));
+
+        assertThat(outboxRows()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Đổi nhãn option của attribute đã map không phát lại category (option không nằm trong descriptor)")
+    void optionLabelChangeDoesNotRepublishCategory() {
+        UUID categoryId = givenLeafCategory("phones");
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        UUID optionId = attributeService.createOption(color,
+                new AttributeDtos.CreateAttributeOptionRequest("black", "Đen", 0)).optionId();
+        givenMapping(categoryId, color, false, true);
+        int before = outboxRows().size();
+
+        attributeService.replaceOption(color, optionId,
+                new AttributeDtos.ReplaceAttributeOptionRequest("black", "Đen tuyền", 0));
+
+        assertThat(outboxRows()).hasSize(before);
+    }
+
+    private JsonNode latestCategorySnapshot(UUID categoryId) {
+        return latestCategoryRow(categoryId).data().path("category");
+    }
+
+    private OutboxRow latestCategoryRow(UUID categoryId) {
+        List<OutboxRow> rows = outboxRowsOfType(CatalogEventTypes.CATEGORY_UPSERTED).stream()
+                .filter(row -> row.partitionKey().equals(categoryId))
+                .toList();
+        return rows.get(rows.size() - 1);
     }
 }

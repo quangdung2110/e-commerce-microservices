@@ -1,0 +1,82 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] --------------------< com.ecommerce:order-service >---------------------
+[INFO] Building order-service 1.0.0-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ order-service ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] Copying 6 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ order-service ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ order-service ---
+[INFO] Copying 0 resource from src\test\resources to target\test-classes
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ order-service ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- surefire:3.2.5:test (default-test) @ order-service ---
+[INFO] Using auto detected provider org.apache.maven.surefire.junitplatform.JUnitPlatformProvider
+[INFO] 
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.ecommerce.order.benchmark.WorkflowDispatcherBenchmarkTest
+15:13:57.626 [main] INFO com.zaxxer.hikari.HikariDataSource -- HikariPool-1 - Starting...
+15:13:57.958 [main] INFO com.zaxxer.hikari.pool.HikariPool -- HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@5b1f29fa
+15:13:57.960 [main] INFO com.zaxxer.hikari.HikariDataSource -- HikariPool-1 - Start completed.
+15:13:58.874 [main] INFO org.flywaydb.core.FlywayExecutor -- Database: jdbc:postgresql://localhost:25432/order_dispatch_bench (PostgreSQL 16.15)
+15:13:58.971 [main] INFO org.flywaydb.core.internal.schemahistory.JdbcTableSchemaHistory -- Schema history table "public"."flyway_schema_history" does not exist yet
+15:13:58.978 [main] INFO org.flywaydb.core.internal.command.DbValidate -- Successfully validated 3 migrations (execution time 00:00.049s)
+15:13:59.011 [main] INFO org.flywaydb.core.internal.schemahistory.JdbcTableSchemaHistory -- Creating Schema History table "public"."flyway_schema_history" ...
+15:13:59.095 [main] INFO org.flywaydb.core.internal.command.DbMigrate -- Current version of schema "public": << Empty Schema >>
+15:13:59.147 [main] INFO org.flywaydb.core.internal.command.DbMigrate -- Migrating schema "public" to version "1 - order baseline"
+15:13:59.748 [main] INFO org.flywaydb.core.internal.command.DbMigrate -- Migrating schema "public" to version "2 - admin delivery confirmation"
+15:13:59.811 [main] INFO org.flywaydb.core.internal.command.DbMigrate -- Migrating schema "public" to version "3 - submission checkpoint notification"
+15:13:59.838 [main] INFO org.flywaydb.core.internal.command.DbMigrate -- Successfully applied 3 migrations to schema "public", now at version v3 (execution time 00:00.611s)
+15:14:00.951 [main] INFO io.temporal.serviceclient.WorkflowServiceStubsImpl -- Created WorkflowServiceStubs for channel: ManagedChannelOrphanWrapper{delegate=ManagedChannelImpl{logId=1, target=localhost:27233}}
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+WARNING: A Java agent has been loaded dynamically (C:\Users\ASUS\.m2\repository\net\bytebuddy\byte-buddy-agent\1.14.16\byte-buddy-agent-1.14.16.jar)
+WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading to hide this warning
+WARNING: If a serviceability tool is not in use, please run with -Djdk.instrument.traceUsage for more information
+WARNING: Dynamic loading of agents will be disallowed by default in a future release
+BENCH|saturated-mixed-50-50-adr028-1|97.27 ops/s|1459/2500 completed in 15.000s|backlog=1041
+BENCH|saturated-mixed-50-50-parallel-1|251.40 ops/s|3771/4800 completed in 15.000s|backlog=1029
+BENCH|saturated-starts-adr028-1|235.27 ops/s|3529/4600 completed in 15.000s|backlog=971
+BENCH|saturated-starts-parallel-1|238.40 ops/s|3576/4600 completed in 15.000s|backlog=1024
+BENCH|saturated-mixed-50-50-parallel-2|133.13 ops/s|1997/3000 completed in 15.000s|backlog=1003
+BENCH|saturated-mixed-50-50-adr028-2|108.73 ops/s|1631/2700 completed in 15.000s|backlog=969
+BENCH|saturated-starts-parallel-2|211.60 ops/s|3174/4200 completed in 15.000s|backlog=1026
+BENCH|saturated-starts-adr028-2|216.40 ops/s|3246/4300 completed in 15.000s|backlog=954
+BENCH|saturated-mixed-50-50-adr028-3|107.27 ops/s|1609/2600 completed in 15.000s|backlog=991
+BENCH|saturated-mixed-50-50-parallel-3|248.47 ops/s|3727/4800 completed in 15.000s|backlog=973
+BENCH|saturated-starts-adr028-3|216.67 ops/s|3250/4300 completed in 15.000s|backlog=1050
+BENCH|saturated-starts-parallel-3|214.27 ops/s|3214/4300 completed in 15.000s|backlog=986
+BENCH|saturated-mixed-50-50-parallel-4|252.53 ops/s|3788/4800 completed in 15.000s|backlog=1012
+BENCH|saturated-mixed-50-50-adr028-4|106.40 ops/s|1596/2600 completed in 15.000s|backlog=1004
+BENCH|saturated-starts-parallel-4|226.33 ops/s|3395/4400 completed in 15.000s|backlog=1005
+BENCH|saturated-starts-adr028-4|222.80 ops/s|3342/4400 completed in 15.000s|backlog=1058
+BENCH|arrival-mixed-80-adr028|79.80 ops/s|1197/1200 completed in 15.000s|backlog=3
+BENCH|arrival-mixed-80-parallel|79.80 ops/s|1197/1200 completed in 15.000s|backlog=3
+BENCH|arrival-mixed-120-parallel|119.73 ops/s|1796/1800 completed in 15.000s|backlog=4
+BENCH|arrival-mixed-120-adr028|99.53 ops/s|1493/1800 completed in 15.000s|backlog=306
+BENCH|arrival-mixed-160-adr028|106.40 ops/s|1596/2400 completed in 15.000s|backlog=803
+BENCH|arrival-mixed-160-parallel|159.27 ops/s|2389/2400 completed in 15.000s|backlog=10
+15:21:42.090 [main] INFO io.temporal.serviceclient.WorkflowServiceStubsImpl -- shutdown
+15:21:42.104 [main] INFO com.zaxxer.hikari.HikariDataSource -- HikariPool-1 - Shutdown initiated...
+15:21:42.109 [main] INFO com.zaxxer.hikari.HikariDataSource -- HikariPool-1 - Shutdown completed.
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 464.9 s -- in com.ecommerce.order.benchmark.WorkflowDispatcherBenchmarkTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  07:51 min
+[INFO] Finished at: 2026-10-20T15:21:42+07:00
+[INFO] ------------------------------------------------------------------------

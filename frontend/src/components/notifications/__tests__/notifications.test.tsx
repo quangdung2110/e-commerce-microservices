@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, type InfiniteData } from "@tanstack/react-query";
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -21,7 +21,8 @@ vi.mock("@/lib/api/notification", () => ({
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { NotificationsPageContent } from "@/components/notifications/notifications-page-content";
 import { ToastProvider } from "@/components/ui/toast";
-import { notificationApi, type InboxItem } from "@/lib/api/notification";
+import { notificationApi, type InboxItem, type InboxPage } from "@/lib/api/notification";
+import { notificationKeys } from "@/hooks/use-notifications";
 import { useAuthStore } from "@/store/useAuthStore";
 
 const item = (overrides: Partial<InboxItem> = {}): InboxItem => ({
@@ -40,9 +41,10 @@ function login() {
   useAuthStore.getState().setSession(`e30.${btoa(JSON.stringify({ sub: "buyer-a", roles: ["USER"] }))}.test`);
 }
 
-function renderWithClient(ui: React.ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ToastProvider>{ui}</ToastProvider></QueryClientProvider>);
+function renderWithClient(ui: React.ReactElement, client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })) {
+  const wrap = (content: React.ReactElement) => <QueryClientProvider client={client}><ToastProvider>{content}</ToastProvider></QueryClientProvider>;
+  const result = render(wrap(ui));
+  return { ...result, client, rerender: (content: React.ReactElement) => result.rerender(wrap(content)) };
 }
 
 beforeEach(() => {
@@ -141,6 +143,62 @@ describe("/notifications", () => {
 
     expect(await screen.findByText("Bạn đã đọc hết thông báo")).toBeTruthy();
     expect(notificationApi.list).toHaveBeenCalledWith({ limit: 20, cursor: undefined, unread_only: true }, expect.anything());
+  });
+
+  it("bỏ thông báo cuối khỏi tab chưa đọc ngay cả khi tải lại chưa hoàn tất", async () => {
+    vi.mocked(notificationApi.list)
+      .mockResolvedValueOnce({ items: [item()], next_cursor: null })
+      .mockImplementation(() => new Promise(() => {}));
+    vi.mocked(notificationApi.setRead).mockResolvedValue(item({ read: true }));
+    renderWithClient(<NotificationsPageContent unreadOnly />);
+    fireEvent.click(await screen.findByRole("button", { name: "Đánh dấu đã đọc" }));
+
+    expect(await screen.findByText("Bạn đã đọc hết thông báo")).toBeTruthy();
+    expect(screen.queryByText("Đánh giá của bạn có phản hồi mới")).toBeNull();
+    await waitFor(() => expect(notificationApi.list).toHaveBeenCalledTimes(2));
+  });
+
+  it("bỏ thông báo đã đọc trên trang tiếp theo nhưng giữ nó trong tab tất cả", async () => {
+    const first = item({ id: "n-2", title: "Thông báo trang đầu" });
+    const cache: InfiniteData<InboxPage, string | undefined> = {
+      pages: [{ items: [first], next_cursor: "page-2" }, { items: [item()], next_cursor: null }],
+      pageParams: [undefined, "page-2"],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(notificationKeys.list("buyer-a", true), cache);
+    client.setQueryData(notificationKeys.list("buyer-a", false), cache);
+    vi.mocked(notificationApi.list).mockImplementation(() => new Promise(() => {}));
+    vi.mocked(notificationApi.setRead).mockResolvedValue(item({ read: true }));
+    renderWithClient(<NotificationsPageContent unreadOnly />, client);
+    fireEvent.click(screen.getAllByRole("button", { name: "Đánh dấu đã đọc" })[1]);
+
+    await waitFor(() => expect(screen.queryByText("Đánh giá của bạn có phản hồi mới")).toBeNull());
+    expect(screen.getByText("Thông báo trang đầu")).toBeTruthy();
+    const unread = client.getQueryData<InfiniteData<InboxPage>>(notificationKeys.list("buyer-a", true));
+    const all = client.getQueryData<InfiniteData<InboxPage>>(notificationKeys.list("buyer-a", false));
+    expect(unread?.pages.map((page) => page.items.map((entry) => entry.id))).toEqual([["n-2"], []]);
+    expect(unread?.pageParams).toEqual([undefined, "page-2"]);
+    expect(all?.pages[1].items[0]).toMatchObject({ id: "n-1", read: true });
+  });
+
+  it("đánh dấu chưa đọc ở tab tất cả làm mới tab chưa đọc đã được cache", async () => {
+    let current = item({ read: true });
+    vi.mocked(notificationApi.list).mockImplementation(async (params) => ({
+      items: params?.unread_only && current.read ? [] : [current], next_cursor: null,
+    }));
+    vi.mocked(notificationApi.setRead).mockImplementation(async () => {
+      current = item();
+      return current;
+    });
+    const view = renderWithClient(<NotificationsPageContent unreadOnly />);
+    await screen.findByText("Bạn đã đọc hết thông báo");
+    view.rerender(<NotificationsPageContent unreadOnly={false} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Đánh dấu chưa đọc" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Đánh dấu đã đọc" }).hasAttribute("disabled")).toBe(false));
+    view.rerender(<NotificationsPageContent unreadOnly />);
+
+    expect(await screen.findByText("Đánh giá của bạn có phản hồi mới")).toBeTruthy();
+    expect(screen.queryByText("Bạn đã đọc hết thông báo")).toBeNull();
   });
 
   it("lỗi tải có nút thử lại và không lộ chi tiết kỹ thuật", async () => {

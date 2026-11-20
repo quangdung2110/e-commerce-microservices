@@ -14,6 +14,10 @@ verified_against_commit: null
 
 # Payment Service — Vận hành
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Acceptance criteria vận hành cho Payment Service: SLO, cấu hình, metric, alert,
 > failure mode, triển khai, worker và runbook. Runtime/worker đã có; dashboard và alert
 > rule hạ tầng chưa nằm trong module này. Mọi con số SLO là **mục tiêu thiết kế** và phải được đo lại
@@ -64,7 +68,7 @@ thiết kế chưa có để đánh dấu runtime đạt.
 
 ## 2. Cấu hình cần công bố
 
-Property naming đề xuất `payment.<nhóm>.<tên>`; giá trị secret chỉ qua Vault/Secret
+Bảng có cả property runtime và cấu hình dự trù; mục chưa bind không có tác dụng trong code hiện tại. Property naming `payment.<nhóm>.<tên>`; giá trị secret chỉ qua Vault/Secret
 Manager, **không** commit và không log. Đổi property có đánh dấu "restart" cần
 rolling restart. Runtime hiện tại nạp env/config lúc startup, chưa có hot reload;
 local Compose phải recreate container khi đổi env. Các ô reload trong bảng dưới
@@ -84,7 +88,7 @@ là khả năng thiết kế, chưa phải bằng chứng runtime.
 | `payment.stripe.webhook-max-bytes` | Giới hạn exact request bytes | 262144 | Không | Không |
 | `payment.provider.safe-replay-horizon` | Same-key provider retry trước horizon | `PT23H` | Không | Không |
 | `payment.provider.cancel-recovery-window` / `refund-recovery-window` | Deadline phục hồi operation cancel/refund | `P7D` / `P7D` | Không | Không |
-| `payment.stripe.decline.non-retryable-codes` | Policy `RULE-PAY-014` | `fraudulent,lost_card,stolen_card,pickup_card,restricted_card,security_violation,merchant_blacklist` + Radar `blocked` | Không | Không |
+| `payment.stripe.decline.non-retryable-codes` (chưa bind) | Policy `RULE-PAY-014`; runtime dùng `DeclinePolicy` hardcoded | `fraudulent,lost_card,stolen_card,pickup_card,restricted_card,security_violation,merchant_blacklist` + Radar `blocked` | Không | Không |
 | `payment.stripe.decline.max-per-attempt` | `max_declines_per_attempt` | 5 | Không | Không |
 | `payment.stripe.payment-method-types` | Phạm vi phương thức thanh toán của PaymentIntent (`RULE-PAY-025`, [ADR-022](./decisions/ADR-022-refund-lifecycle-hardening.md)); Stripe Dashboard payment-method configuration phải khớp | `card` | Không | Có |
 
@@ -103,11 +107,11 @@ Webhook endpoint đăng ký trên Stripe Dashboard/CLI phải subscribe đúng t
 |---|---|---|---|---|
 | `payment.session.ttl` | `expires_at = created_at + ttl` | 15 phút | Không | Không |
 | `payment.session.client-secret-margin` | `client_expires_at = expires_at − margin` | 30s | Không | Không |
-| `payment.crypto.kms-key-id` | Envelope key cho `client_secret_ciphertext`; ghi vào `client_secret_key_id` | Theo môi trường | Có | Có |
-| `payment.crypto.previous-kms-key-ids` | Giải mã row cũ trong cửa sổ rotation | Danh sách | Có | Không |
-| `payment.crypto.local-key` | **Chỉ profile `dev`/`test`**: AES-256 key cố định thay KMS; startup fail nếu set ở `prod` | base64 32 byte | Có (local) | Có |
-| `payment.command.lease-ttl` / `heartbeat` | DB execution lease/fencing | 45s / 10s | Không | Không |
-| `payment.webhook.lease-ttl` / `heartbeat` | Durable inbox claim lease | 60s / 15s | Không | Không |
+| `payment.crypto.kms-key-id` (chưa triển khai) | Envelope key cho `client_secret_ciphertext`; ghi vào `client_secret_key_id` | Theo môi trường | Có | Có |
+| `payment.crypto.previous-kms-key-ids` (chưa triển khai) | Giải mã row cũ trong cửa sổ rotation | Danh sách | Có | Không |
+| `payment.crypto.local-key` | Runtime hiện tại: AES-256 key cố định; chưa có guard cấm profile `prod`. Giới hạn dùng dev/test là yêu cầu triển khai, không phải kiểm tra đã có trong code | base64 32 byte | Có (local) | Có |
+| `payment.command.lease-ttl` / `heartbeat` | DB execution lease/fencing đã có; heartbeat dự trù chưa được worker gọi | 45s / 10s | Không | Không |
+| `payment.webhook.lease-ttl` / `heartbeat` | Durable inbox claim lease đã có; heartbeat dự trù chưa được worker gọi | 60s / 15s | Không | Không |
 
 ### 2.3. Worker và retention
 
@@ -148,6 +152,8 @@ khi `commit_lsn` đã dưới `confirmed_flush_lsn` của đúng replication slo
 ## 3. Quan sát hệ thống
 
 ### 3.1. Metric
+
+Danh mục dưới là target; runtime chưa emit metric nghiệp vụ `payment_*`. Dashboard/alert phụ thuộc chúng chưa được kiểm chứng.
 
 Quy ước: Micrometer/Prometheus, prefix `payment_`; **không** label bằng
 `order_id`/`payment_transaction_id`/`user_id` (cardinality + PII); label cho phép:
@@ -249,7 +255,7 @@ lý trong giờ làm), **P3** (ticket). Mọi alert link tới runbook §9.
 | Stripe rate limit (429) | Provider `error` với code 429 | Như trên | SDK retry có backoff; scheduler giảm batch | Giảm interval scanner/poller tạm thời |
 | Webhook miss (Stripe outage/network) | Refund age, reconciliation drift | Fact đến trễ | Poller (refund `PROCESSING`) và reconciliation (payment; refund `SUCCESS` trong 35 ngày) chốt từ `retrieve` | Không cần thao tác |
 | Sai/đổi `whsec_` | ingress `auth_failed` spike | Delivery bị `400`, không có inbox row | Giữ secret cũ+mới overlap; Stripe retry delivery mới với signature mới | Sửa secret, dùng Stripe Resend nếu cần; reconciliation lấp gap |
-| KMS/Vault không giải mã được | decrypt `error` | Buyer reload trang không lấy được secret; initiate mới vẫn mã hóa được (key hiện hành) hoặc fail nếu key hiện hành hỏng | `client-data` trả `usable=false`; phiên hết hạn → Order mở attempt mới | Sửa key; thêm key cũ vào `previous-kms-key-ids` |
+| KMS/Vault không giải mã được | decrypt `error` | Buyer reload trang không lấy được secret; initiate mới vẫn mã hóa được (key hiện hành) hoặc fail nếu key hiện hành hỏng | `client-data` trả `usable=false`; phiên hết hạn → Order mở attempt mới | Khôi phục local key hiện hữu; previous-kms-key-ids chưa có runtime adapter |
 | Refund fail/reverse sau accept | Review case | Khách chưa nhận tiền | Không tạo refund thứ hai; case `OPEN` | Hoàn tay, đóng case |
 | Capture sau cancel (race) | Review case `CAPTURE_AFTER_CANCEL` | Order đã nhả hàng nhưng tiền đã thu | Payment `SUCCESS`; Order lane hậu thanh toán/financial reconciliation | Order/CSKH quyết định giao lại hoặc refund qua lane refund |
 | Dispute/chargeback | dispute metrics/review + facts | Stripe giữ tiền + phí | Dispute FSM, journal funds movement, deadline alert; Payment status không đổi | Finance Ops nộp evidence, reconcile outcome/funds |
@@ -273,7 +279,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 | Webhook Processor | Theo partition (6) + DB Retry Worker | Correctness bằng inbox lease/checkpoint, không dựa partition order |
 | Expiration Scanner | Nhiều instance, `SKIP LOCKED`, batch 200 | Mỗi row = 1 Stripe cancel → ≤ 200 call/phút/instance |
 | Recovery / Poller | Nhiều instance, lock theo payment | Stripe rate limit |
-| Reconciliation, Trimmer | PostgreSQL singleton: partial unique `RUNNING` cho reconciliation; transaction advisory lock cho Trimmer | Cửa sổ 65 phút mỗi giờ; batch 500; Redis không cấp correctness |
+| Reconciliation, Trimmer | PostgreSQL singleton: session advisory lock + run-row fencing + partial unique `RUNNING`/lane cho reconciliation; transaction advisory lock cho Trimmer | Object batch 500 mỗi nhóm; balance page ≤100, đọc hết cửa sổ và đọc bù downtime; Redis không cấp correctness |
 | PostgreSQL | Một primary + replica cho read `GET`/dashboard | Bảng tăng đơn điệu ([ADR-013](./decisions/ADR-013-single-oltp-retention-no-partition.md)); partial index giữ tập hoạt động nhỏ; theo dõi bloat, `autovacuum` cho `payment_status_history`/`webhook_logs` |
 
 Ước lượng dung lượng phải load-test cả journal/dispute. Raw webhook ciphertext
@@ -286,7 +292,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 1. PostgreSQL: migration tạo 12 bảng (`development.md §8`), deferred ledger
    balance trigger và quyền deny update/delete ledger; user app chỉ có DML +
    `SELECT` trên `outbox_events` cho Debezium user (REPLICATION).
-2. Vault/KMS: nạp `sk_`, `whsec_` (rỗng cho tới bước 7), KMS key id.
+2. Runtime demo/staging: nạp `sk_`, `whsec_` và `payment.crypto.local-key`/`local-key-id` (AES-256). Production KMS adapter chưa triển khai; không dùng các property KMS dự trù như cấu hình đang hoạt động.
 3. Kafka topic (`t.payment.webhooks.raw` 6 partition retention 7 ngày;
    `t.payment.events.v2` theo platform), consumer group.
 4. Debezium connector với outbox SMT; xác nhận `aggregate_type=Payment` route đúng
@@ -301,6 +307,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 
 ### 7.2. Rolling deploy
 
+- **Lần nâng cấp ADR-023:** dừng reconciliation worker cũ trước khi chạy bản mới; cần session pooling/direct PostgreSQL. Xem `runtime-status.md` phần triển khai ownership.
 - API và processor deploy rolling; worker mới và cũ chạy song song an toàn nhờ
   optimistic lock + unique constraint + `SKIP LOCKED`.
 - Migration **expand/contract**: thêm cột/index nullable trước, code sau, xóa cột ở
@@ -316,7 +323,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
   Không bao giờ chỉ có một secret trong lúc rotation.
 - **Stripe API key:** restricted key mới → nạp Vault → rolling restart → thu hồi key
   cũ. Recovery/idempotency không phụ thuộc key nên an toàn giữa chừng.
-- **KMS key:** key mới thành `kms-key-id`, key cũ vào `previous-kms-key-ids`; row
+- **KMS key (thiết kế tương lai, chưa chạy được trên runtime hiện tại):** key mới thành `kms-key-id`, key cũ vào `previous-kms-key-ids`; row
   `PENDING` cũ vẫn giải mã được; sau `session.ttl` không còn row nào dùng key cũ →
   bỏ khỏi danh sách.
 - **Stripe API version:** đổi qua ADR; test webhook payload mới ở sandbox trước;
@@ -342,7 +349,7 @@ webhook, 1 order ≈ 1.3 attempt, refund ≈ 2% order.
 | Expiration Scanner | 60s | `PENDING/PROCESSING` quá hạn → cancel call → actual result | `SKIP LOCKED`, operation lease | `WF-PAYMENT-005` |
 | Provider-operation Recovery | 30s | `REQUESTED`/`UNKNOWN` → same-key before horizon, lookup-only after | DB lease/fencing, backoff/deadline | `WF-PAYMENT-008` |
 | Refund Status Poller | 10 phút ± jitter | `PROCESSING` > 1 phút → `Refund.retrieve` → `R2`/`R3` | Lock theo payment; precedence | `WF-PAYMENT-007` |
-| Reconciliation | hourly | Object-state + balance-ledger lanes | Singleton/cursor overlap; freeze | `WF-PAYMENT-006`, `014` |
+| Reconciliation | hourly | Object-state + balance-ledger lanes | Session ownership/fencing, window overlap và cursor null/window; freeze | `WF-PAYMENT-006`, `014` |
 | Webhook DB Retry | 1 phút | `RECEIVED/RETRY_WAIT` + expired `PROCESSING` lease → claim/process | DB lease/fencing; max attempts → `DEAD` | `WF-PAYMENT-009` |
 | Manual Inbox Replay | Manual | Verified retained row → `RETRY_WAIT` | Maker-checker, actor/cause, rate limit | `WF-PAYMENT-009` |
 | Dispute deadline alert | Alert rule ngoài module, chưa có `@Scheduled` worker | Query active disputes gần `evidence_due_at`; case `DISPUTE_OPENED` đã được tạo ở D1 | Dashboard/alert ownership; không được mô tả như runtime worker Gate 3 | `WF-PAYMENT-013` |
@@ -388,6 +395,14 @@ thật để đối chiếu; (3) ghi timeline vào incident trước khi thao t�
 3. Trimmer không được chạy trong lúc này (kiểm tra watermark guard).
 
 ### 9.4. Provider operation kẹt
+
+Certified first-dispatch `400 amount_too_small` mới theo [ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)
+có receipt `422 PROVIDER_CREATE_NOT_ACCEPTED`, terminal CREATE và không review case.
+Order phải chấm dứt preparation và bù holds; audit payment còn `INITIATING` không
+đồng nghĩa operation đang chờ recovery. Không retry CREATE hoặc chuyển FSM bằng SQL.
+Receipt `503` cũ (bao gồm E2E order `770072`) không tự chuyển thành proof `422`;
+review case cũ vẫn cần đối chiếu provider và maker-checker. Đóng case đơn thuần
+không tự giải phóng Order đang PREPARING; cần recovery được phê duyệt cho cả hai miền.
 
 1. `SELECT id, operation_type, status, attempt_count, last_attempted_at FROM
    provider_operations WHERE status IN ('REQUESTED','UNKNOWN') ORDER BY created_at`.
@@ -445,7 +460,7 @@ Không đóng case nếu `requires_manual_review` vẫn `TRUE` sau commit (bug �
 
 1. `payment_client_secret_decrypt_total{outcome="error"}` theo `client_secret_key_id`
    (log) → key nào hỏng.
-2. Key cũ bị xóa sớm → khôi phục vào `previous-kms-key-ids`.
+2. Runtime local AES chưa bind previous keys: khôi phục đúng local key/key-id đã mã hóa row; không đổi key khi còn ciphertext cần giải mã. KMS rotation theo previous-kms-key-ids là tooling tương lai.
 3. Không thể khôi phục → buyer của các attempt `PENDING` đó không tiếp tục được;
    phiên tự hết hạn (≤ 15 phút) → Order mở attempt mới. Không cần thao tác dữ liệu.
 4. Kiểm tra initiate mới vẫn mã hóa được; nếu không → P1, tắt Order gọi initiate.
@@ -472,7 +487,19 @@ Không đóng case nếu `requires_manual_review` vẫn `TRUE` sau commit (bug �
 3. Sau RCA: xử lý case tồn (§9.7), chạy reconciliation thủ công cho cửa sổ bị ảnh
    hưởng, unfreeze, theo dõi run kế.
 4. Frozen > 24h mà không có incident mở → hỏi chủ sở hữu, unfreeze.
-5. Sửa ledger bằng reversal journal + journal đúng mới; cấm UPDATE/DELETE line cũ.
+5. Thiết kế sửa ledger bằng reversal journal + journal mới; API/tooling này chưa triển khai. Escalate Accounting, giữ freeze; không coi SQL trực tiếp là remediation đã kiểm chứng và cấm UPDATE/DELETE line cũ.
+
+### 9.10a. Drift giả: Payment FAILED nhưng Stripe canceled
+
+Theo ADR-014, FAILED/EXPIRED/CANCELED là terminal non-capture sau proof PaymentIntent canceled. Khi provider ID, amount và currency khớp, cặp FAILED/canceled phải ghi observation, không mở RECONCILIATION_DRIFT hoặc phát financial correction mới.
+
+Điều tra F10-06 ngày 2026-10-14 xác nhận container local dùng artifact cũ thiếu FAILED trong `ReconciliationService.paymentMatches`; source đã có guard. Trước sửa logic, đối chiếu image ID, SHA-256 JAR/class thực sự chạy và bytecode với artifact build từ source. Source đúng hoặc timestamp mới không chứng minh container đã nhận bản sửa. Bằng chứng ở [báo cáo P2](../frontend/e2e-payment-p2-fix-report-2026-10-14.md).
+
+Build/test Payment theo development §6.3; trước thay bản ownership ADR-023 phải dừng worker cũ rồi mới khởi động bản mới, không chạy rolling chung với bản cũ. Giữ nguyên secret local và database/volume. Sau deploy kiểm readiness, hash class đang chạy và đối soát một attempt FAILED/Stripe canceled: trạng thái/financial version không đổi, có provider observation và không mở case mới. Regression `ReconciliationIT.canceled_provider_matches_non_capture_terminal_without_false_review` bao gồm freeze và các terminal non-capture; success mâu thuẫn sau FAILED vẫn phải mở review.
+
+Nếu readiness UP nhưng không có run mới, kiểm scheduler log. F10-07 (14/10/2026) là `JpaTransactionManager cannot be cast to DataSourceTransactionManager` tại `JdbcReconciliationAdapter.acquire`: runtime Boot/JPA khác fixture JDBC. Session ownership phải lấy connection trực tiếp từ DataSource được inject, không ép kiểu transaction manager; mutation vẫn dùng TransactionTemplate hiện hữu. Dùng `PaymentServiceContextIT.reconciliation_ownership_and_rollback_work_with_the_boot_transaction_manager` cùng `ReconciliationOwnershipIT` để kiểm cấu hình thực và fencing. Không coi healthcheck UP hoặc test chỉ dựng JDBC manager là đủ xác nhận scheduler hoạt động.
+
+Các case giả đã tạo không tự biến mất khi deploy. Finance/Payment kiểm chứng provider ID, số tiền/currency, `amount_received=0` và bằng chứng decline/cancel; sau đó claim/resolve qua API hiện có với `NO_ACTION_NEEDED`, cause_ref và maker/checker được phân quyền. Không tự gán hai danh tính approver để đóng case, không xóa case/audit hoặc sửa status/manual-review flag bằng SQL. CAPTURE_AFTER_CANCEL/DISPUTE_OPENED và các mâu thuẫn tài chính thật vẫn giữ quy trình xử lý riêng.
 
 ### 9.11. Decline rate bất thường
 
@@ -524,3 +551,30 @@ cause_ref, outbox/journal trong transaction aggregate.
 - Chỉ mở writes sau khi không có journal mất cân bằng, không duplicate provider
   movement, cursor không vượt dữ liệu đã restore và các `UNKNOWN` operation đã vào
   recovery an toàn. Ghi kết quả drill/RCA với owner và thời gian thực tế.
+
+## Allowlist caller của route Order-facing
+
+`payment.identity.allowed-callers` (env `PAYMENT_ALLOWED_CALLERS`, mặc định `order-service`) là danh sách
+`X-Service-Identity` được gọi `/v1/payments/**` (trừ webhook) và `/v1/refunds/**`; danh sách rỗng từ chối mọi
+caller ([ADR-026](./decisions/ADR-026-service-identity-allowlist-and-401-403.md)). `401`/`403` với body
+`UNAUTHENTICATED`/`FORBIDDEN` ở Order là lỗi cấu hình, không phải lỗi request: kiểm tra Order còn gửi
+`order-service` và danh sách còn chứa nó.
+
+Route Finance Ops `/internal/v1/payment/**` có danh sách riêng `payment.identity.operations-callers` (env
+`PAYMENT_OPERATIONS_CALLERS`, mặc định `finance-ops,accounting-ops`; rỗng từ chối mọi caller), kiểm trước
+maker-checker: thiếu `X-Service-Identity` là `401 UNAUTHENTICATED`, tên ngoài danh sách (kể cả `order-service`)
+là `403 FORBIDDEN` ([ADR-028](./decisions/ADR-028-finance-ops-caller-allowlist.md)). Path `/internal/**` khác
+không thuộc nhóm nào nên luôn bị từ chối. Ở docker-compose cổng `8089` chỉ bind `127.0.0.1`; gọi tay từ máy
+dev phải gửi `X-Service-Identity: finance-ops` cùng `X-Actor`/`X-Approver`.
+
+## Request ID, trace ID và deadline của caller
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md) và [ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md), thêm [ADR-025](./decisions/ADR-025-request-correlation-and-caller-deadline.md). Log trong
+phạm vi một request có `request_id` và `trace_id` (MDC do `RequestCorrelationFilter` đặt, hiển thị bằng `logging.pattern.level`); log của
+tác vụ nền không có hai trường này. `X-Request-Id` sai hoặc thiếu bị thay, không bao giờ `400`, và được
+trả lại trong response.
+
+Counter `http.server.caller_deadline_exceeded{route}` đếm request kết thúc sau khi caller đã thôi chờ
+(`X-Request-Timeout-Ms`), kèm một dòng WARN `request outlived the caller deadline`. Số này tăng đều nghĩa là
+Payment trả lời chậm hơn timeout của caller: xem p99 của route trước, rồi mới xét timeout của caller. Ngưỡng
+cảnh báo đặt theo số đo p99 từ load test, không đặt trước. `X-Correlation-Id` (Workflow ID của Order) giữ nguyên là bắt buộc và được echo; nó không phải request ID. Payment không hủy lời gọi Stripe đã bắt đầu vì header này.

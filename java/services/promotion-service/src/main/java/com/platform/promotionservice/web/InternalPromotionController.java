@@ -7,6 +7,7 @@ import com.platform.promotionservice.web.dto.AllocationDtos;
 import com.platform.promotionservice.web.dto.CheckoutDtos;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,6 +25,7 @@ import java.net.URI;
 public class InternalPromotionController {
 
     private static final String IDEMPOTENCY_KEY = "Idempotency-Key";
+    private static final String LEGACY_MIGRATION_PROOF = "X-Legacy-Migration-Proof";
 
     private final DiscoveryService discovery;
     private final AllocationService allocation;
@@ -35,10 +37,11 @@ public class InternalPromotionController {
         return discovery.calculate(request);
     }
 
+    /** Dữ liệu cá nhân của user (wallet): {@code Cache-Control: no-store} theo OpenAPI. */
     @PostMapping("/internal/v1/promotion-voucher-options")
-    public CheckoutDtos.VoucherOptionList voucherOptions(
+    public ResponseEntity<CheckoutDtos.VoucherOptionList> voucherOptions(
             @Valid @RequestBody CheckoutDtos.VoucherOptionRequest request) {
-        return discovery.options(request);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(discovery.options(request));
     }
 
     @PostMapping("/internal/v1/promotion-allocation/reservations")
@@ -65,10 +68,16 @@ public class InternalPromotionController {
         return allocation.cancel(request);
     }
 
+    /**
+     * Deprecated, legacy migration only. Caller allowlist (chỉ {@code promotion-legacy-migrator}) nằm ở
+     * {@code TrustedIdentityFilter}; header proof được so với body trong {@code FinalCommandService}. Header khai báo
+     * {@code required = false} để thiếu header là 403 (proof bị từ chối) thay vì 400 của Spring.
+     */
     @PostMapping("/internal/v1/promotion-allocation/technical-cancellations")
     public AllocationDtos.TechnicalCancellationResponse cancelConfirmed(
             @RequestHeader(IDEMPOTENCY_KEY) String idempotencyKey,
-            @Valid @RequestBody AllocationDtos.FinalAllocationRequest request) {
-        return finalCommands.cancelConfirmed(idempotencyKey, request);
+            @RequestHeader(value = LEGACY_MIGRATION_PROOF, required = false) String legacyMigrationProof,
+            @Valid @RequestBody AllocationDtos.LegacyTechnicalCancellationRequest request) {
+        return finalCommands.cancelConfirmed(idempotencyKey, legacyMigrationProof, request);
     }
 }

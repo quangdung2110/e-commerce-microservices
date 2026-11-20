@@ -51,6 +51,6 @@ final class ReconciliationWorker {
         service.runObjectState(to.minus(lookback), to, effectiveFreeze, batchSize);
         BalanceReconciliationService balanceService = balance.getIfAvailable();
         if (balanceService != null)
-            balanceService.run(to.minus(lookback), to, effectiveFreeze, batchSize);
+            balanceService.run(controls.resumeFrom("BALANCE_LEDGER", to.minus(lookback)), to, effectiveFreeze, batchSize);
     }
 }

@@ -3,7 +3,7 @@
 param([string]$Container = 'kafka')
 $ErrorActionPreference = 'Stop'
 # Root-stack diagnostic only; no event publication, offset reset or topic deletion.
-$description = & docker exec $Container kafka-topics --bootstrap-server kafka:9092 --describe --topic t.auth.events 2>&1
+$description = & docker exec $Container kafka-topics --bootstrap-server kafka:9092 --command-config /etc/kafka/admin.properties --describe --topic t.auth.events 2>&1
 if ($LASTEXITCODE -ne 0) { throw 'Cannot describe t.auth.events. Check broker readiness/topic existence.' }
 $text = $description -join "`n"
 $match = [regex]::Match($text, 'TopicId:\s*([A-Za-z0-9_-]+)')

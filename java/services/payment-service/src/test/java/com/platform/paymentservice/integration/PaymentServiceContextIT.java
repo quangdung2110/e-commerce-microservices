@@ -5,6 +5,7 @@ import com.platform.paymentservice.application.service.DeclinePaymentService;
 import com.platform.paymentservice.application.service.InitiatePaymentService;
 import com.platform.paymentservice.application.service.PaymentClientDataService;
 import com.platform.paymentservice.application.service.WebhookIngressService;
+import com.platform.paymentservice.application.port.out.ReconciliationPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,8 +16,10 @@ import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
@@ -50,6 +53,7 @@ class PaymentServiceContextIT {
     @Autowired CancelPaymentService cancelPaymentService;
     @Autowired DeclinePaymentService declinePaymentService;
     @Autowired WebhookIngressService webhookIngressService;
+    @Autowired ReconciliationPort reconciliation;
 
     @Test
     void starts_spring_boot_runs_flyway_and_validates_the_canonical_schema() {
@@ -66,5 +70,25 @@ class PaymentServiceContextIT {
         assertThat(cancelPaymentService).isNotNull();
         assertThat(declinePaymentService).isNotNull();
         assertThat(webhookIngressService).isNotNull();
+    }
+
+    @Test
+    void reconciliation_ownership_and_rollback_work_with_the_boot_transaction_manager() {
+        Instant now = Instant.now();
+        for (String lane : new String[]{"OBJECT_STATE", "BALANCE_LEDGER"}) {
+            var run = reconciliation.start(lane, now.minusSeconds(60), now, false, now).orElseThrow();
+            assertThat(reconciliation.owned(run.id(), () -> jdbc.queryForObject(
+                    "SELECT status FROM reconciliation_runs WHERE id=?", String.class, run.id())))
+                    .isEqualTo("RUNNING");
+            assertThatThrownBy(() -> reconciliation.owned(run.id(), () -> {
+                reconciliation.setFreeze(true, "context-fixture", "must-rollback", now);
+                throw new IllegalStateException("fixture rollback");
+            })).isInstanceOf(IllegalStateException.class).hasMessage("fixture rollback");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM reconciliation_runs WHERE lane='CONTROL'", Integer.class)).isZero();
+            reconciliation.complete(run.id(), null, ReconciliationPort.Counts.zero(), now);
+            assertThat(jdbc.queryForObject("SELECT status FROM reconciliation_runs WHERE id=?", String.class, run.id()))
+                    .isEqualTo("COMPLETED");
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=731024 AND granted", Integer.class)).isZero();
     }
 }

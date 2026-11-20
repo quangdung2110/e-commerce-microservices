@@ -2,15 +2,15 @@
 doc_id: search-data
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
 evidence:
   - docs/search/schema/products.index.json
   - docs/search/schema/categories.index.json
   - docs/search/schema/search_suggestions.index.json
+  - docs/search/schema/search_jobs.index.json
   - docs/search/schema/scripts
-verified_against_commit: null
 ---
 
 # Search Service — Thiết kế dữ liệu
@@ -124,6 +124,15 @@ Quan hệ chỉ là quan hệ logic bằng identifier: Elasticsearch không có 
 thiết kế cố tình tránh `nested`/`join` field
 ([ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md)). Index vẫn chứa SKU; API nhóm product_id và chọn SKU giá thấp nhất thỏa bộ lọc. Không nested/join, không index mới, không cần mapping migration hay reindex.
 
+Projection đọc bắt buộc là `product_cards` ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)), mặc định bật. Tắt projector không bật lại grouping cho request mới:
+
+- Mỗi document là một Product: `product_id`, `source_version` (= `indexed_at` lớn nhất của mọi SKU, dùng làm external version) và
+  `skus` dạng `nested` chứa nguyên văn các document SKU còn sống.
+- Mapping `skus` trùng mapping `products` ([schema/product_cards.index.json](./schema/product_cards.index.json), sinh từ `products.index.json`).
+- Physical index `product_cards_v<N>` nằm sau alias `product_cards`; `_meta.source_index` là generation `products` nó phản chiếu, `_meta.changes_through` là vị trí change feed đã áp dụng.
+- Index SKU vẫn là nơi ghi duy nhất. `product_cards` dựng lại được hoàn toàn từ index SKU nên không cần backup hay reindex từ upstream.
+- Full reindex checkpoint lưu `product_cards_index`; metadata `changes_through` được ghi vào generation riêng trước paired cutover. Mọi write/progress của projector pin physical index. Generation cũ thuộc retirement cleanup (mặc định 24h, ít nhất PIT keep-alive), không bị xóa ngay sau publish.
+
 ## 3. Schema sources
 
 | Artifact | Vai trò |
@@ -132,6 +141,7 @@ thiết kế cố tình tránh `nested`/`join` field
 | [`schema/categories.index.json`](./schema/categories.index.json) | Settings và mapping của `categories_v{N}` |
 | [`schema/search_suggestions.index.json`](./schema/search_suggestions.index.json) | Settings và mapping của `search_suggestions_v{N}` |
 | [`schema/search_jobs.index.json`](./schema/search_jobs.index.json) | Settings và mapping của `search_jobs_v{N}`, index nội bộ cho reindex run, suggestion build và lease lock |
+| [`schema/product_cards.index.json`](./schema/product_cards.index.json) | Settings và mapping của `product_cards_v{N}` (ADR-027), sinh từ `products.index.json`; `ProductCardSchemaTest` chặn lệch |
 | [`schema/scripts/`](./schema/scripts/README.md) | Painless script chuẩn cho write path; thay đổi cùng mapping, workflow và contract liên quan |
 
 Index vật lý luôn có hậu tố version (`products_v1`); ứng dụng chỉ được cấu hình
@@ -158,7 +168,7 @@ xem trong file mapping.
 | `sku_status` | Product | `ACTIVE`, `INACTIVE` |
 | `category_ancestor_ids` | Product snapshot | ID của category hiện tại và tổ tiên; lọc theo nhánh bằng ID, không bằng slug |
 | `category_slug_path` | Product snapshot | Path để hiển thị; không dùng làm filter vì slug có thể đổi |
-| `facet_definitions` | Product category snapshot | Descriptor `{code,label,type}` của attribute có thể lọc trong category. Giữ `enabled: false`: Search đọc metadata này để render API facet, còn count/value luôn query từ `products.filter_tokens`. Product phải đưa cùng snapshot này vào category event và category export. |
+| `facet_definitions` | Product category snapshot | Descriptor `{code,label,type}` của các attribute được map trực tiếp vào category (Product [ADR-019](../product/decisions/ADR-019-category-facet-definitions.md)). Giữ `enabled: false`: Search đọc metadata này để render API facet, còn count/value luôn query từ `products.filter_tokens`. Product đưa cùng snapshot này vào category event và category export; Search ghi nguyên vào `categories` và `FacetLabelResolver` dùng `label` làm nhãn nhóm facet (`type` được lưu nhưng API chỉ có `MULTI_SELECT`). |
 | `thumbnail_storage_key` | Product `sku-upserted` | Thumbnail hiệu lực: SKU IMAGE ưu tiên Product IMAGE; `null` khi không có ảnh. Response adapter dựng URL CDN hoặc placeholder. |
 | `is_deleted`, `deleted_at` | Search | Tombstone chặn zombie update trước khi purge |
 | `catalog_revision` | Product | Guard cho mọi event catalog của Product aggregate |
@@ -184,12 +194,11 @@ chỉ được ghi các field thuộc nguồn đó
 | Inventory | `availability_revision` (long) | `event.availability_revision > doc.availability_revision` | `sku_id` |
 | Review | `review_revision` (long) | `event.review_revision > doc.review_revision` | `product_id` |
 
-Guard dùng so sánh `>` chặt. Product đã cấp `catalog_revision` và
-`category_revision`; Inventory v1 định nghĩa `availability_revision` cùng per-SKU snapshot
-export. Các contract vẫn `proposed`, nên Search chỉ dùng chúng sau rollout producer
-và contract test. Review v1 định nghĩa `review_revision` cho cả event và aggregate
-snapshot export. Không dùng publish timestamp làm guard vì hai mutation có thể cùng
-timestamp mà mang state khác nhau.
+Guard dùng so sánh `>` chặt. Product cấp `catalog_revision` và
+`category_revision`; Inventory cấp `availability_revision` cùng per-SKU snapshot
+export; Review cấp `review_revision` cho cả event và aggregate snapshot export. Cả ba
+producer đã chạy (các contract `implemented`, chưa `verified`). Không dùng publish timestamp
+làm guard vì hai mutation có thể cùng timestamp mà mang state khác nhau.
 
 Event catalog của Product mang snapshot đầy đủ nên apply lại cùng revision là
 no-op. Khi cây category đổi, Product phát control event; Search coalesce rồi
@@ -208,6 +217,7 @@ Elasticsearch không có khóa ngoại hay unique constraint, nên các ràng bu
 | Document tồn tại trước khi apply availability | Search đăng ký readiness chỉ sau catalog write; Inventory không publish/export trước readiness; script không `upsert`, missing document là contract violation và không ACK |
 | Document tồn tại trước khi apply review | Không dùng `scripted_upsert`; missing document là no-op có metric |
 | Document tombstone không nhận update | Guard `is_deleted` đứng đầu mọi script ghi lên document đang sống. Hai script tombstone không mang guard này vì chính chúng đặt `is_deleted = true`; guard revision đã làm chúng idempotent |
+| Reindex không làm mất deletion guard | Copy tombstone SKU/Category trước build và tại VERIFY bằng `reindex_tombstone_copy`, giữ revision và `deleted_at`; event delete thông thường vẫn không upsert. Count drift chỉ so `is_deleted=false` ([ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md)) |
 | Field lạ không được index | `dynamic: strict` |
 | Không có hai index cùng nhận một write alias | Cutover bằng đúng một lệnh `_aliases` atomic |
 
@@ -263,9 +273,22 @@ Không có bảng inbox hay bộ nhớ dedupe theo `event_id`. Idempotency đế
 theo nguồn cộng với snapshot semantics. `last_*_event_id` chỉ để truy vết vận
 hành, không dùng để quyết định apply hay bỏ qua.
 
-Trạng thái của reindex và suggestion build được lưu trong index nội bộ
+Trạng thái của reindex, suggestion build và các job singleton được lưu trong index nội bộ
 `search_jobs`, mapping tại
-[`schema/search_jobs.index.json`](./schema/search_jobs.index.json). Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
+[`schema/search_jobs.index.json`](./schema/search_jobs.index.json) (`dynamic: strict`, nên mọi document ghi vào đây
+phải chỉ có field đã khai báo; `SearchJobsDocumentsMatchMappingTest` kiểm điều đó). Các loại document, phân biệt bằng
+`doc_kind` và `_id`:
+
+| `doc_kind` | `_id` | Nội dung |
+|---|---|---|
+| `REINDEX_RUN` | `run:<run_id>` | Một lần reindex: `status`, `phase`, `reason`, `actor`, thời điểm, `failure_*`, `target_index` (index products đang dựng), `progress`, `replay_from_offsets` theo nguồn, `checkpoint` (object không index: `stage`, hai index đích, cursor từng nguồn, session Inventory/Review, SKU bị defer, `resume_attempts`, vị trí kết thúc catch-up, hai index bị thay, `tail_replay`) |
+| `REINDEX_REQUEST` | `reindex-request:pending` | Request category-tree đã gộp: `started_at` (event đầu), `updated_at` (event mới nhất), `checkpoint.roots` (root category → revision cao nhất), `checkpoint.last_attempt_at` |
+| `REINDEX_CANCEL` | `cancel:<run_id>` | Yêu cầu hủy; tách khỏi run document vì job ghi đè cả document ở mỗi checkpoint |
+| `INDEX_RETIRED` | `retired:<index>` | Thời điểm (`finished_at`) một index ngừng được alias phục vụ, và `run_id` đã thay nó |
+| `LOCK` | `lock:<tên>` | Lease: `full-reindex`, `suggestion-rebuild`, `category-product-count`, `tombstone-purge`, `index-cleanup` |
+| `SUGGESTION_BUILD` | `suggestion-build:<run_id>` | Một lần rebuild suggestion |
+
+Suggestion build lưu `run_id`, pha, source index vật lý, current/rollback
 version, kết quả validation và owner lock. Distributed lock `suggestion-rebuild` là
 một document lease trong cùng index: acquire bằng thao tác atomic, mang `owner_run_id`
 và `lease_expires_at` cùng fencing token đơn điệu, được owner renew trong lúc chạy
@@ -289,13 +312,19 @@ phải lưu.
   `com.ecommerce.catalog.sku-deleted.v1` đặt `is_deleted = true`, `deleted_at` và
   `is_in_stock = false`. Document biến mất khỏi mọi kết quả ngay lập tức.
 - **Purge.** Tombstone purger revoke Inventory readiness rồi mới xóa vật lý document
-  sau cửa sổ bảo vệ; cửa sổ này phải dài hơn retention của các topic Search tiêu thụ
-  ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md)).
-- **Index cũ.** Sau cutover, index version cũ được giữ tối thiểu 24 giờ để rollback
-  rồi mới xóa.
+  sau cửa sổ bảo vệ 45 ngày; cửa sổ này phải dài hơn thời gian dài nhất một record đã consume còn nằm trên broker:
+  retention dài nhất 30 ngày (`t.inventory.stock.events.v1`) cộng `segment.ms` mặc định 7 ngày (Kafka chỉ xóa cả
+  segment) cộng biên
+  ([ADR-011](./decisions/ADR-011-tombstone-and-purge-window.md),
+  [ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md), thay con số 35 ngày của
+  [ADR-021](./decisions/ADR-021-tombstone-protection-window-35d.md)).
+- **Index cũ.** Cutover ghi marker `INDEX_RETIRED` cho hai index nó thay. `IndexCleanupJob` xóa index `products` và
+  `categories` không còn alias phục vụ sau 24 giờ kể từ marker đó (ngày tạo index không dùng được: build bắt đầu nhiều
+  giờ trước cutover). Rollback bằng API chỉ khả thi trong khoảng đó. Index chưa có marker (do tay hoặc phiên bản cũ) nhận
+  marker lúc job thấy nó. Không bao giờ xóa index của run chưa kết thúc.
 - **Suggestion.** Mỗi build tạo index mới. Sau swap, giữ current index và đúng một
-  rollback version tối thiểu 24 giờ; chỉ được xóa version cũ hơn rollback version.
-  Build `ABORTED` xóa index mới chưa từng được gắn alias.
+  rollback version (version retired mới nhất) vô thời hạn cho tới khi một swap sau làm nó cũ hơn rollback version; các
+  version cũ hơn xóa sau 24 giờ kể từ marker. Build `ABORTED` xóa index mới chưa từng được gắn alias.
 - **Backup.** Catalog/category tái tạo từ Product export rồi replay
   `t.product.events` và `t.category.events` từ offsets export trả về. Availability tái
   tạo trực tiếp trong Product documents từ Inventory fixed-watermark snapshot rồi

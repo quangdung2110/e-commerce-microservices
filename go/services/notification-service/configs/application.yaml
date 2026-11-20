@@ -23,9 +23,8 @@ server:                     # public listener: inbox API behind the gateway
 internal:                   # cluster-internal listener: status, ops, /metrics, health
   host: "0.0.0.0"
   port: 8081
-  tls_cert_file: "${NOTIFICATION_INTERNAL_TLS_CERT_FILE}"
-  tls_key_file: "${NOTIFICATION_INTERNAL_TLS_KEY_FILE}"
-  client_ca_file: "${NOTIFICATION_INTERNAL_CLIENT_CA_FILE}"
+  # Authentication is the mesh's job (mTLS + AuthorizationPolicy per principal);
+  # these lists are the X-Service-Identity allowlists kept as defence in depth.
   status_principals: [order-service, finance-ops]
   ops_principals: [notification-ops]
 
@@ -125,14 +124,11 @@ auth:                       # Auth internal API (listener 8081 of auth-service)
   base_url: "http://localhost:8081"
   timeout: 2s
   service_identity: "notification-service"
-  tls_cert_file: "${NOTIFICATION_AUTH_TLS_CERT_FILE}"
-  tls_key_file: "${NOTIFICATION_AUTH_TLS_KEY_FILE}"
-  ca_file: "${NOTIFICATION_AUTH_CA_FILE}"
   rate_per_second: { critical: 0, transactional: 30, bulk: 20 }
   max_conns:       { critical: 10, transactional: 10, bulk: 5 }
   breaker: { window_size: 20, failure_ratio: 0.5, open_duration: 30s, half_open_successes: 3 }
 
-lanes:                      # 01-lanes.md §5 divided by ~10 for dev
+lanes:                      # dev sizes; quotas follow 06-backpressure.md §4.1 (SES 50/s)
   critical:      { email_workers: 2, in_app_workers: 1, batch_size: 5,  email_quota_per_second: 10, breaker_open_retry: 30s, max_attempts: 5 }
   transactional: { email_workers: 2, in_app_workers: 1, batch_size: 10, email_quota_per_second: 20, breaker_open_retry: 5m,  max_attempts: 8 }
   bulk:          { email_workers: 3, in_app_workers: 1, batch_size: 20, email_quota_per_second: 15, breaker_open_retry: 30m, max_attempts: 8 }
@@ -153,6 +149,12 @@ deliver:
   control_poll_interval: 5s
   breaker: { window_size: 20, failure_ratio: 0.5, open_duration: 30s, half_open_successes: 3 }
   use_listen_notify: true
+  # Provider watchdog (06-backpressure.md §5, decisions.md D-23): pause bulk email
+  # when the breaker stays unhealthy this long (0 disables; resume is manual) and
+  # probe a half-open breaker with the provider health check when no real row did.
+  breaker_auto_pause_after: 1h
+  health_probe_interval: 10s    # 0 disables the watchdog
+  health_probe_idle: 15s
   # Order: per-subject serialisation lease (05-ordering.md §4). Must exceed
   # connect + send timeout + auth timeout + rate_limit_wait + 5s.
   ordering_lease: 45s

@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-architecture
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -107,6 +107,12 @@ mesh cắt ở 15 giây, nên timeout Checkout cho Order là `min(13 000 ms, dea
 200 ms)`. Nếu trước Bước 3 deadline còn dưới 2 000 ms, Checkout không gọi Order, chuyển
 token sang `RETRYABLE` và trả `202 RESULT_UNKNOWN`; luồng recovery sẽ gửi lại đúng payload.
 
+Order thực thi khoảng chờ bằng `DeferredResult` và PostgreSQL commit notification, có batch recovery
+([Order ADR-027](../order/decisions/ADR-027-async-submission-checkpoint-waiters.md)). Request HTTP vẫn
+mở nhưng không giữ thread Order trong lúc saga chuẩn bị. Checkout không cần callback/subscription
+hay thay đổi WebClient: `201/200`, business problem và `503` vẫn map như trước. Instance Order chết
+làm request lỗi/timeout; recovery đọc submission bền vững bằng cùng token qua instance còn sống nếu có.
+
 **Hủy request.** Trước Bước 1, client ngắt kết nối thì Checkout hủy mọi lời gọi. Từ Bước 1
 trở đi, phần việc còn lại chạy tách khỏi request context (vẫn trong deadline Submit) để
 kết quả luôn được ghi vào Redis; client lấy kết quả qua endpoint status. Preview và voucher
@@ -164,6 +170,17 @@ Checkout không có rate limiter riêng; quota thuộc Gateway để mọi repli
   (standalone hoặc Sentinel, không Cluster) và `maxmemory-policy noeviction`.
 - Khi nhận SIGTERM: readiness chuyển `false`, ngừng nhận request mới, chờ tối đa 25 giây
   cho request đang chạy (đủ cho deadline Submit 20 giây) rồi mới dừng.
+
+### Khởi tạo outbound trước readiness
+
+Theo bổ sung [ADR-014](./decisions/ADR-014-resilience-budget-and-mesh-gateway-split.md),
+startup chạy warm-up một lần trên các HTTP pool và Product gRPC channel thật. HTTP local
+resources được khởi tạo cho mọi dependency; chỉ Cart/User GET và Product `GetBatchSkus`
+được dùng làm network probe, với UUID zero và ngân sách startup riêng. `getState(true)`
+chỉ bắt đầu kết nối gRPC; một RPC hoàn tất mới xác nhận channel đã dùng được.
+Ứng dụng chưa quảng bá readiness khi runner đang chạy; thất bại thì startup thất bại.
+Orchestrator phải tôn trọng readiness. Pool được dispose khi đóng context. Không có probe
+định kỳ tới downstream, không đổi deadline business hoặc semantics fail-closed.
 
 ## 10. Trade-off
 

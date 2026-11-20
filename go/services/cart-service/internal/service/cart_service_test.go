@@ -25,6 +25,10 @@ type fakeStore struct {
 
 	removeCalls  []port.RemoveCommand
 	removeResult port.RemoveResult
+
+	purgeCalls  []domain.Identity
+	purgeResult port.PurgeResult
+	purgeErr    error
 }
 
 func (f *fakeStore) LoadItems(context.Context, domain.Identity) ([]domain.Item, error) {
@@ -53,6 +57,14 @@ func (f *fakeStore) Remove(_ context.Context, cmd port.RemoveCommand) (port.Remo
 
 func (f *fakeStore) MarkAbandoned(context.Context, port.MarkAbandonedCommand) (port.MarkAbandonedResult, error) {
 	return port.MarkAbandonedResult{}, nil
+}
+
+func (f *fakeStore) PurgeCart(_ context.Context, identity domain.Identity) (port.PurgeResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.purgeCalls = append(f.purgeCalls, identity)
+	return f.purgeResult, f.purgeErr
 }
 
 func (f *fakeStore) DueCarts(context.Context, int, time.Time, int) ([]port.DueCart, error) {
@@ -265,6 +277,37 @@ func TestGetCartEnrichesWithLiveProductData(t *testing.T) {
 	}
 }
 
+func TestGetCartRefreshesDisplayWithoutWritingAndKeepsSnapshotOnFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available bool
+		fail      bool
+		want      string
+	}{
+		{"renamed catalog", true, false, "Nhãn mới: Đen"},
+		{"degraded", true, true, "Nhãn cũ: Đen"},
+		{"unavailable", false, false, "Nhãn cũ: Đen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeStore{items: []domain.Item{{SkuID: "SKU-A", StoredItem: domain.StoredItem{VariantName: "Nhãn cũ: Đen", Quantity: 3}}}}
+			catalog := &fakeCatalog{batch: map[string]domain.ProductSnapshot{"SKU-A": {SkuID: "SKU-A", IsAvailable: tc.available, VariantName: "Nhãn mới: Đen"}}}
+			if tc.fail {
+				catalog.batchErr = errors.New("Product unavailable")
+			}
+			view, err := newService(store, catalog).GetCart(context.Background(), testIdentity(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Items[0].VariantName != tc.want {
+				t.Fatalf("variant name = %q, want %q", view.Items[0].VariantName, tc.want)
+			}
+			if store.items[0].VariantName != "Nhãn cũ: Đen" || len(store.upsertCalls) != 0 {
+				t.Fatal("GET changed the stored snapshot")
+			}
+		})
+	}
+}
+
 // A Product outage degrades the read but must not fail it. The cart page does
 // not die with Product Service.
 func TestGetCartDegradesWhenProductFails(t *testing.T) {
@@ -354,6 +397,29 @@ func TestDeleteItemsTouchesActivity(t *testing.T) {
 	}
 	if cmd.IdempotencyKey != "idempotency-key-000001" {
 		t.Fatalf("idempotency key = %q", cmd.IdempotencyKey)
+	}
+}
+
+// The privacy purge goes to the store as one command for the derived identity
+// and never consults Product.
+func TestPurgeUserDelegatesToTheStoreWithoutCallingProduct(t *testing.T) {
+	store := &fakeStore{purgeResult: port.PurgeResult{Purged: true}}
+	catalog := &fakeCatalog{}
+	identity := testIdentity(t)
+
+	result, err := newService(store, catalog).PurgeUser(context.Background(), identity)
+	if err != nil {
+		t.Fatalf("PurgeUser: %v", err)
+	}
+
+	if !result.Purged {
+		t.Fatal("the store result was not returned")
+	}
+	if len(store.purgeCalls) != 1 || store.purgeCalls[0].CartID != identity.CartID {
+		t.Fatalf("purge calls = %+v", store.purgeCalls)
+	}
+	if catalog.skuCalls != 0 || catalog.batchCall != 0 {
+		t.Fatal("purging a cart must not call Product")
 	}
 }
 

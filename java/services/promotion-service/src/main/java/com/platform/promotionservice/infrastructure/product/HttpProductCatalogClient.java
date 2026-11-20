@@ -1,6 +1,7 @@
 package com.platform.promotionservice.infrastructure.product;
 
 import com.platform.promotionservice.common.DomainException;
+import com.platform.promotionservice.common.RequestCorrelation;
 import com.platform.promotionservice.common.ErrorCode;
 import com.platform.promotionservice.config.PromotionProperties;
 import lombok.extern.slf4j.Slf4j;
@@ -28,11 +29,16 @@ public class HttpProductCatalogClient implements ProductCatalogClient {
     private final PromotionProperties.Product product;
 
     public HttpProductCatalogClient(PromotionProperties properties) {
+        this(properties, RestClient.builder());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public HttpProductCatalogClient(PromotionProperties properties, RestClient.Builder builder) {
         this.product = properties.getProduct();
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) product.getTimeout().toMillis());
         factory.setReadTimeout((int) product.getTimeout().toMillis());
-        this.restClient = RestClient.builder()
+        this.restClient = builder
                 .baseUrl(product.getBaseUrl())
                 .requestFactory(factory)
                 .defaultHeader(product.getIdentityHeader(), product.getIdentity())
@@ -42,10 +48,22 @@ public class HttpProductCatalogClient implements ProductCatalogClient {
     @Override
     public boolean exists(UUID productId) {
         try {
-            restClient.get()
+            // contracts ADR-002/003: the request id (and trace context) of the admin request being served,
+            // and the timeout this call runs under, which is the configured one because the call is made
+            // for a Gateway request that carries no caller deadline.
+            RequestCorrelation current = RequestCorrelation.current();
+            RestClient.RequestHeadersSpec<?> request = restClient.get()
                     .uri("/internal/v1/products/{id}/snapshot", productId)
-                    .retrieve()
-                    .toBodilessEntity();
+                    .header(RequestCorrelation.REQUEST_ID_HEADER,
+                            current != null ? current.requestId() : RequestCorrelation.newRequestId())
+                    .header(RequestCorrelation.TIMEOUT_HEADER, Long.toString(product.getTimeout().toMillis()));
+            if (current != null && current.traceparent() != null) {
+                request = request.header(RequestCorrelation.TRACEPARENT_HEADER, current.traceparent());
+                if (current.tracestate() != null) {
+                    request = request.header(RequestCorrelation.TRACESTATE_HEADER, current.tracestate());
+                }
+            }
+            request.retrieve().toBodilessEntity();
             return true;
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.NOT_FOUND) {

@@ -13,35 +13,34 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/reqctx"
 )
 
-// ServiceIdentityConfig tells the middleware how a peer proves who it is.
-type ServiceIdentityConfig struct {
-	// MutualTLS: the principal is the CN of the verified client certificate
-	// (the TLS server was built with RequireAndVerifyClientCert).
-	MutualTLS bool
-	// Development: without mTLS, accept the unauthenticated X-Service-Identity
-	// header. Only true when app.env is development (13-development.md §7);
-	// every other environment without mTLS answers 401.
-	Development bool
-}
+// maxPrincipalLength bounds the header so it cannot bloat logs and audit rows.
+const maxPrincipalLength = 128
 
-// ServiceIdentity resolves the peer principal for the internal listener and
-// checks it against the allowlist of the endpoint group (status or ops,
-// 11-privacy.md §5). The principal is stored in the request context for the
-// audit trail.
-func ServiceIdentity(cfg ServiceIdentityConfig, allowed []string) gin.HandlerFunc {
-	allow := make(map[string]struct{}, len(allowed))
+// ServiceIdentity admits only the listed service identities on a group of the
+// internal listener (status or ops, 11-privacy.md §5). The principal is stored
+// in the request context for the audit trail.
+//
+// Who may reach the listener is decided by the mesh: Istio ambient terminates
+// mTLS and enforces an AuthorizationPolicy per principal and path, and the
+// application never sees the caller certificate. The header is therefore not
+// proof of identity; this check is defence in depth, so a route reached through
+// a misconfigured policy still refuses an unknown caller. A missing header is
+// 401, an identity outside the list is 403, in every environment — the same
+// model as Auth, User, Cart, Inventory and Order (decisions.md D-21).
+func ServiceIdentity(allowed []string) gin.HandlerFunc {
+	permitted := make(map[string]struct{}, len(allowed))
 	for _, p := range allowed {
 		if p = strings.TrimSpace(p); p != "" {
-			allow[p] = struct{}{}
+			permitted[p] = struct{}{}
 		}
 	}
 	return func(c *gin.Context) {
-		principal, ok := resolvePrincipal(c, cfg)
-		if !ok {
-			httpx.WriteProblem(c, apperr.New(apperr.CodeUnauthorized, "A verified service identity is required."))
+		principal := strings.TrimSpace(c.GetHeader(constants.HeaderServiceIdentity))
+		if principal == "" || len(principal) > maxPrincipalLength {
+			httpx.WriteProblem(c, apperr.New(apperr.CodeUnauthorized, "A service identity is required."))
 			return
 		}
-		if _, permitted := allow[principal]; !permitted {
+		if _, ok := permitted[principal]; !ok {
 			logging.FromContext(c.Request.Context()).Info("service identity not allowlisted",
 				zap.String("principal", principal))
 			httpx.WriteProblem(c, apperr.New(apperr.CodeForbidden, "This service identity may not call this endpoint."))
@@ -54,35 +53,7 @@ func ServiceIdentity(cfg ServiceIdentityConfig, allowed []string) gin.HandlerFun
 	}
 }
 
-func resolvePrincipal(c *gin.Context, cfg ServiceIdentityConfig) (string, bool) {
-	if cfg.MutualTLS {
-		state := c.Request.TLS
-		if state == nil {
-			return "", false
-		}
-		for _, chain := range state.VerifiedChains {
-			if len(chain) > 0 && chain[0].Subject.CommonName != "" {
-				return chain[0].Subject.CommonName, true
-			}
-		}
-		// Some proxies terminate TLS and hand over the peer chain unverified;
-		// fall back to the leaf certificate only when the server verified it.
-		if len(state.PeerCertificates) > 0 && len(state.VerifiedChains) > 0 {
-			return state.PeerCertificates[0].Subject.CommonName, true
-		}
-		return "", false
-	}
-	if !cfg.Development {
-		return "", false
-	}
-	principal := strings.TrimSpace(c.GetHeader(constants.HeaderServiceIdentity))
-	if principal == "" || len(principal) > 128 {
-		return "", false
-	}
-	return principal, true
-}
-
-// PrincipalFrom returns the verified principal of the request.
+// PrincipalFrom returns the principal admitted by ServiceIdentity.
 func PrincipalFrom(c *gin.Context) string {
 	return reqctx.Principal(c.Request.Context())
 }

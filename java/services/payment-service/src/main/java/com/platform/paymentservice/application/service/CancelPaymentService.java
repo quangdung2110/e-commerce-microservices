@@ -72,10 +72,14 @@ public final class CancelPaymentService {
     public int expireDue(String owner, int batchSize) {
         requireOwner(owner);
         if (batchSize <= 0) throw new IllegalArgumentException("batchSize must be positive");
-        var acquired = persistence.claimExpired(
-                owner, clock.now(), batchSize, leaseTtl, recoveryWindow, ids);
-        for (CancelPaymentPreparation.Acquired item : acquired) executePrepared(item, owner);
-        return acquired.size();
+        int claimed = 0;
+        while (claimed < batchSize) {
+            var acquired = persistence.claimExpired(owner, clock.now(), 1, leaseTtl, recoveryWindow, ids);
+            if (acquired.isEmpty()) break;
+            executePrepared(acquired.getFirst(), owner);
+            claimed++;
+        }
+        return claimed;
     }
 
     public CancelPaymentResult executePrepared(CancelPaymentPreparation.Acquired acquired, String owner) {

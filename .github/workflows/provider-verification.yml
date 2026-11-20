@@ -1,0 +1,36 @@
+name: Provider verification
+
+# Calls the real providers as their consumers do and checks every answer against the OpenAPI contract
+# (contracts ADR-009). It builds and starts the stack, so it runs on demand and on a weekly schedule rather than on
+# every pull request. The same command works on a developer machine: scripts/ci/verify-providers.sh.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and start the providers that have probes
+        run: |
+          docker compose --profile payment --profile notification up -d --build --wait \
+            product-service review-service inventory-service promotion-service order-service payment-service \
+            cart-service user-service auth-service notification-service product-detail-bff
+      - name: Verify providers against their contracts
+        run: ./scripts/ci/verify-providers.sh
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose --profile payment --profile notification logs --no-color --tail 200
+      - name: Clean up the isolated runner stack
+        if: always()
+        run: docker compose --profile payment --profile notification down --volumes --remove-orphans

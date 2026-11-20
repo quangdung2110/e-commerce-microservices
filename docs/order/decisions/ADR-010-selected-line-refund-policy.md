@@ -27,6 +27,9 @@ ADR-006 vẫn được giữ nguyên; quyết định mới là authority cho Re
 > Current authority: ADR-014 thay late-payment paragraph; ADR-017 thay gross-cap amount
 > formula bằng tổng immutable selected-line net amounts. Lifetime case/full-quantity
 > scope và Inventory gate của ADR này vẫn hiệu lực.
+>
+> ADR-021 (2026-10-11): "verified Delivery proof" nay là Admin delivery confirmation trên Order
+> (không có Delivery service); điều kiện "mọi line DELIVERED" giữ nguyên.
 
 ## Bối cảnh
 

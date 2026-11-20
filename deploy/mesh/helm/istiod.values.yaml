@@ -1,0 +1,35 @@
+# Values for the `istiod` chart, Istio 1.31.3 ambient (docs/mesh/runtime-contract.md sections 2, 7, 8, 9; mesh ADR-001).
+# Installed by deploy/mesh/local.py from the checksum-pinned official release bundle.
+# Pin image digests at install time (versions.yaml); never use `latest`.
+profile: ambient
+image: docker.io/istio/pilot@sha256:6ad1e816c4d4767ba3f30a6286a96d121851ddb23d33e20736758acb5f3f4ea9
+
+global:
+  tag: 1.31.3
+  proxy:
+    image: docker.io/istio/proxyv2@sha256:eb74eacea98d3fb1e239ea84016085155478586a554158676b9b67d960151084
+
+meshConfig:
+  # Local egress is enforced by NetworkPolicy and the egress waypoint's per-provider authorization.
+  outboundTrafficPolicy:
+    mode: REGISTRY_ONLY
+
+  # No route depends on Istio's implicit retries: every route in generated/50-virtualservices.yaml states its attempts.
+  defaultHttpRetryPolicy:
+    attempts: 0
+
+  # Waypoint access log: JSON on stdout with the fields of runtime-contract section 9. No Authorization, cookie, body or X-User-* value.
+  accessLogFile: /dev/stdout
+  accessLogEncoding: JSON
+  accessLogFormat: >-
+    {"start_time":"%START_TIME%","method":"%REQ(:METHOD)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
+    "response_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","duration":"%DURATION%",
+    "source_principal":"%DOWNSTREAM_PEER_URI_SAN%","destination_service":"%REQ(:AUTHORITY)%",
+    "trace_id":"%REQ(TRACEPARENT)%","x_request_id":"%REQ(X-REQUEST-ID)%"}
+
+  # Traces go to the OpenTelemetry Collector (W3C traceparent); sampling is set by generated/70-telemetry.yaml.
+  extensionProviders:
+    - name: otel
+      opentelemetry:
+        service: otel-collector.observability.svc.cluster.local
+        port: 4317

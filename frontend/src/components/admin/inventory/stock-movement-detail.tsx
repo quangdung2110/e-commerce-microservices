@@ -7,6 +7,7 @@ import { FormSection } from "@/components/admin/form-section";
 import { IdChip } from "@/components/admin/id-chip";
 import {
   DetailSkeleton,
+  CommandRecovery,
   FieldBlock,
   MutationResult,
   ResultItem,
@@ -19,7 +20,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { useCommand } from "@/hooks/use-command";
+import { useInventoryCommand } from "@/hooks/use-inventory-command";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import { inventoryAdminApi, type MovementReversalRequest } from "@/lib/api/inventory-admin";
 import { formatDateTime } from "@/lib/format";
@@ -53,14 +54,14 @@ function MovementContent({ movement }: { movement: Awaited<ReturnType<typeof inv
   const [caseReference, setCaseReference] = useState("");
   const [evidenceReference, setEvidenceReference] = useState("");
 
-  const reverse = useCommand({
+  const reverse = useInventoryCommand({
     mutationFn: (input: MovementReversalRequest, context) =>
       inventoryAdminApi.reverseStockMovement(movement.movement_id, input, context.commandId),
     onSuccess: setResult,
   });
 
   function edited() {
-    if (reverse.isError) reverse.startNewIntent();
+    if (!reverse.startNewIntent()) return;
     submitError.reset();
     setValidation(null);
     setResult(null);
@@ -68,6 +69,7 @@ function MovementContent({ movement }: { movement: Awaited<ReturnType<typeof inv
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (reverse.isPending || reverse.isRetryDelayed) return;
     submitError.reset();
     setValidation(null);
     const reversalSequence = Number(sequence);
@@ -134,6 +136,8 @@ function MovementContent({ movement }: { movement: Awaited<ReturnType<typeof inv
       </section>
 
       <form onSubmit={submit} className="space-y-6" onChange={edited}>
+        {reverse.isUnresolved ? <CommandRecovery commandId={reverse.commandId} /> : null}
+        <fieldset disabled={reverse.inputsLocked}>
         <FormSection title="Tạo reversal" description="Chỉ receipt hoặc adjustment bán được đủ điều kiện mới có thể được bù trừ.">
           {validation ? <Alert variant="danger">{validation}</Alert> : null}
           {submitError.message ? <ErrorState error={reverse.error} message={inventoryErrorMessage(reverse.error) ?? submitError.message} /> : null}
@@ -163,7 +167,8 @@ function MovementContent({ movement }: { movement: Awaited<ReturnType<typeof inv
             </FieldBlock>
           </div>
         </FormSection>
-        <div className="flex justify-end"><SubmitButton pending={reverse.isPending} retry={reverse.isError} retryAfterSeconds={reverse.retryDelaySeconds}>Tạo reversal</SubmitButton></div>
+        </fieldset>
+        <div className="flex justify-end"><SubmitButton pending={reverse.isPending} retry={reverse.isUnresolved} retryAfterSeconds={reverse.retryDelaySeconds}>Tạo reversal</SubmitButton></div>
       </form>
     </div>
   );

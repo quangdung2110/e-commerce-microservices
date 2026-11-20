@@ -1,7 +1,7 @@
 ---
 doc_id: product-adr-018
 service: product
-status: proposed
+status: accepted
 date: 2026-09-25
 decision_owners:
   - Product Service team
@@ -21,7 +21,7 @@ evidence:
 
 ## Status
 
-`Proposed`. Amend [ADR-015](./ADR-015-buyer-product-detail-read.md) ở hình dạng response;
+`Accepted` (đã implement trong `BuyerDetailAssembler` và được `BuyerProductDetailIntegrationTest` kiểm với OpenAPI). Amend [ADR-015](./ADR-015-buyer-product-detail-read.md) ở hình dạng response;
 endpoint, caller, mTLS và nguyên tắc "không có stock" của ADR-015 giữ nguyên. Quyết định
 phía consumer nằm ở
 [Product Detail BFF ADR-005](../../product-detail-bff/decisions/ADR-005-pdp-catalog-scope-and-media-url.md).

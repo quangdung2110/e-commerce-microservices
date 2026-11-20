@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	obs "github.com/ecommerce/observability"
 	"io"
 	"math/big"
 	"net/http"
@@ -70,7 +71,7 @@ type Cache struct {
 func New(opts Options) *Cache {
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{}
+		client = &http.Client{Transport: obs.Transport(http.DefaultTransport)}
 	}
 	now := opts.Now
 	if now == nil {

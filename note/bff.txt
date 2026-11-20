@@ -1,0 +1,166 @@
+1. Timeout
+BFF quản lý tổng thời gian của cả phiên làm việc (End-to-End Budget) và phân bổ ngân sách từng service gọi đến
+Mesh quản lý từng chặn mạng đơn lẻ giữa 2 pod với nhau (Per-Hop Timeout)
+Quy tắc quan trọng: BFF Timeout phải bé hơn Mesh Timeout
+Lý do để trả lời cho câu hỏi:
+Nếu BFF đã chủ động ngắt sau 200ms rồi, thì cái mốc 2s của Mesh chẳng phải là thừa thãi hay sao? Vì 200ms đến trước, ngắt xong rồi thì làm sao chạm tới mốc 2s được nữa
++ Phòng thủ nhiều lớp: không tuyệt đối tin vào tầng ứng dụng
++ Khi BFF bị vấn đề: gây tình trạng Zombie Request đến service downstream
+
+
+
+2. Retry 
+Mesh chỉ nên retry trong 1 số trường hợp đặc biệt, khi chắn chắc rằng request chưa hề chạm tới service đích: connect-failure (không mở được socket), refused-stream (server từ chối nhận thêm luồng HTTP/2
+BFF retry được quyết định dựa trên ngữ cảnh nghiệp vụ: Tính chất của API (Idempotency): Request này có an toàn để gọi lại không
+
+Nếu BFF quyết định retry, nó tuyệt đối không được retry ngay lập tức (Immediate Retry) mà phải tuân theo 2 nguyên tắc vàng:
++ Exponential Backoff (Lùi thời gian theo cấp số nhân): Lần 1 thử lại sau 100ms, lần 2 sau 200ms, lần 3 sau 400ms... để cho downstream có thời gian thở và hồi phục.
++ Jitter (Thêm chút ngẫu nhiên): Nếu 1.000 user cùng bị lỗi lúc 12:00:00, dù có lùi 100ms thì đúng 12:00:00.100 cả 1.000 user lại cùng lúc đập vào server! Jitter sẽ cộng thêm một khoảng ngẫu nhiên: người thì 93ms, người thì 115ms, người thì 102ms. Lượng tải sẽ được "rải đều" ra như bão tan thành mưa rào, cứu sống server.
+
+
+
+
+3. Pod lỗi & Cả Service sập
+
+3.1 Pod lỗi lẻ tẻ: Mesh xử lý bằng "Outlier Detection" (Bác sĩ cách ly)Cơ chế này gọi là Outlier Detection (Phát hiện cá thể dị biệt - hay còn gọi là Passive Health Check).
+Envoy âm thầm theo dõi từng Pod đích. Nếu thấy Pod C trả về lỗi 5xx liên tiếp N lần (ví dụ 3 hoặc 5 lần):
+Envoy lập tức Eject IP của Pod C ra khỏi danh sách Load Balancing trong vòng 30 giây
+Toàn bộ request tiếp theo sẽ chỉ chia đều cho Pod A và Pod B
+Sau 30 giây, Envoy sẽ gửi thử một vài request sang Pod C để thăm dò. Nếu Pod C đã hồi phục thì cho quay lại, nếu vẫn lỗi thì tiếp tục trục xuất với thời gian phạt gấp đôi (60 giây)
+3.2 Cả service sập hoàn Toàn
+Khi nào nên thêm CB ở app
+1. Có fallback hợp lý
+Ví dụ: có cache cũ, giá trị mặc định, hoặc một phần tính năng có thể tắt đi. CB mở thì trả fallback ngay, không cần gọi. Đây là lý do chính để dùng CB, và cũng là lý do BFF gần như luôn cần nó
+Khi nào không nên thêm CB
+    Call nằm trong workflow engine (Temporal activity, saga orchestrator). Retry policy của Temporal đã có backoff, số lần tối đa và timeout theo từng activity. Thêm CB sẽ chồng lên logic đó, và activity chỉ nhận về một lỗi "circuit open" không mang thêm thông tin gì.
+    Call bắt buộc, không có fallback, lưu lượng vừa phải. Chỉ cần timeout và xử lý lỗi đúng.
+    Call có thể chuyển sang bất đồng bộ (outbox, retry queue). Khi đó hàng đợi chính là cơ chế chịu lỗi
+
+
+
+4. 
+
+Khi người dùng mở trang chi tiết sản phẩm trên trình duyệt (ví dụ: GET /api/v1/storefront/products/iphone-15), pod product-detail-bff nhận request và thực hiện 2 pha:
+
+
+
+[ Khách hàng ] ──GET /api/v1/storefront/products/iphone-15──> [ Product Detail BFF ]
+                                                                       │
+┌─────────────────────── XỬ LÝ NỘI BỘ TRONG POD BFF ───────────────────┘
+│
+├── Pha 1 (Tuần tự): 
+│   Gọi Product Service: GET /internal/v1/product-details/iphone-15
+│   ==> Nhận về: Tên máy, mô tả, giá, và danh sách SKU: ["SKU-128GB", "SKU-256GB"]
+│
+└── Pha 2 (Chạy song song 2 service):
+    ├── Gọi Inventory Service: POST /internal/inventory/v1/sku-availabilities:batch-get
+    │   ==> Kiểm tra xem SKU-128GB, SKU-256GB còn hàng không (IN_STOCK hay OUT_OF_STOCK)
+    │
+    └── Gọi Review Service: GET /internal/v1/reviews/products/123/pdp-summary
+        ==> Lấy số sao trung bình (ví dụ 4.8★) và 3 đánh giá mới nhất
+
+
+
+[ Request đến Pod BFF ]
+           │
+           ▼
+┌────────────────────────────────────────┐
+│ 1. BULKHEAD (Người gác cổng - Quota)   │
+│    - Còn slot (< 80)?                  │
+│      ├── CÒN: Cho đi tiếp sang bước 2. │
+│      └── HẾT: Từ chối ngay (0ms)       │
+│               ==> Trả về UNAVAILABLE   │
+└──────────────────┬─────────────────────┘
+                   │ (Đã được cấp phép)
+                   ▼
+┌────────────────────────────────────────┐
+│ 2. CONNECTION POOL (Hạ tầng mạng)     │
+│    - Mượn ngay 1 kết nối TCP/mTLS có   │
+│      sẵn trong bể kết nối.             │
+│    - Bắn dữ liệu đi trong vài ms.      │
+│    - Nhận kết quả, trả kết nối về bể.  │
+└────────────────────────────────────────┘
+
+
+
+
+Kịch bản: Khách hàng gửi Request GET /api/v1/storefront/products/iphone-15
+[ Khách hàng ] ───────── Request: Xem iPhone 15 ─────────> [ Pod BFF ] (Bắt đầu tính deadline 1000ms)
+
+PHA 1: Lấy thông tin sản phẩm (Đi qua Bulkhead Product)
+Để biết iPhone 15 có những phiên bản nào (màu gì, dung lượng bao nhiêu), BFF phải gọi Product Service trước.
+
+
+
+                  ┌──────────────────────────────────────────────┐
+                  │ BULKHEAD PRODUCT (Tối đa 100 slot)           │
+                  │ Hiện tại đang có 14 request khác đang chạy   │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+1. Xin cấp slot:                         ▼
+   - BFF kiểm tra: 14 < 100 (Còn chỗ!)
+   - TĂNG SỐ SLOT ĐANG DÙNG LÊN 15: [Slot đang bận: 15/100]
+                                         │
+2. Thực hiện gọi qua mạng:               ▼
+   - BFF mượn kết nối TCP từ Connection Pool gọi:
+     GET /internal/v1/product-details/iphone-15
+   - Mất 35ms: Product Service trả về tên, ảnh, giá và danh sách 2 SKU: ["SKU-128GB", "SKU-256GB"]
+                                         │
+3. Trả slot:                             ▼
+   - Lấy dữ liệu xong xuôi, BFF TRẢ LẠI 1 SLOT CHO BULKHEAD:
+     [Slot đang bận: giảm từ 15 về lại 14/100]
+Pha 1 hoàn tất sau 35ms. Bây giờ BFF có trong tay 2 mã SKU: SKU-128GB và SKU-256GB, cùng ID sản phẩm là 999.
+
+
+PHA 2: Chạy SONG SONG qua 2 Bulkhead (Inventory & Review)
+BFF tách thành 2 nhánh xử lý đồng thời (chạy song song trong 2 thread/goroutine):
+
+
+
+                                  [ Pod BFF ]
+                                  │         │
+                ┌─────────────────┘         └─────────────────┐
+                ▼                                             ▼
+        [ NHÁNH A: HỎI TỒN KHO ]                     [ NHÁNH B: HỎI ĐÁNH GIÁ ]
+                │                                             │
+┌───────────────────────────────┐             ┌───────────────────────────────┐
+│ BULKHEAD INVENTORY (Max: 80)  │             │ BULKHEAD REVIEW (Max: 80)     │
+│ Đang có 6 request chạy        │             │ Đang có 21 request chạy       │
+└───────────────┬───────────────┘             └───────────────┬───────────────┘
+                │                                             │
+1. Xin slot:    ▼                             1. Xin slot:    ▼
+   - 6 < 80 ==> CÒN CHỖ!                         - 21 < 80 ==> CÒN CHỖ!
+   - Tăng slot: [7 / 80]                         - Tăng slot: [22 / 80]
+                │                                             │
+2. Gọi mạng:    ▼                             2. Gọi mạng:    ▼
+   - POST /sku-availabilities:batch-get          - GET /reviews/products/999/pdp-summary
+   - Mất 12ms: Nhận về kết quả:                  - Mất 18ms: Nhận về kết quả:
+     * SKU-128GB: IN_STOCK                         * Điểm: 4.9 sao
+     * SKU-256GB: OUT_OF_STOCK                     * 200 lượt đánh giá
+                │                                             │
+3. Trả slot:    ▼                             3. Trả slot:    ▼
+   - Xong việc, TRẢ LẠI SLOT                     - Xong việc, TRẢ LẠI SLOT
+   - Giảm slot: [từ 7 về lại 6 / 80]             - Giảm slot: [từ 22 về lại 21 / 80]
+                │                                             │
+                └─────────────────┬───────────────────────────┘
+                                  ▼
+
+
+BƯỚC CUỐI: Tổng hợp và Trả về cho khách hàng
+Hai nhánh chạy song song tốn thời gian bằng nhánh lâu nhất: max(12ms,18ms)=18ms.
+BFF tổng hợp dữ liệu từ cả 3 nguồn:
+    Tên, giá, ảnh: Từ Pha 1
+    Tình trạng còn hàng: Từ Nhánh A
+    Điểm đánh giá sao: Từ Nhánh B
+Tổng thời gian xử lý toàn bộ request: = 55ms (nhanh hơn rất nhiều so với hạn mức 1 000ms).
+Khách hàng nhận được trang web với mã 200 OK đầy đủ mọi thông tin!
+
+Điều gì xảy ra nếu lúc này Nhánh B (Review) bị FULL SLOT (80/80)?
+Hãy xem điều kỳ diệu của Bulkhead:
+
+Nhánh A (Inventory) vẫn xin được slot -> Vẫn lấy được trạng thái còn hàng bình thường.
+Nhánh B (Review) vào gõ cửa Bulkhead Review -> Thấy [80/80]:
+Không được cấp slot, bị từ chối ngay trong 0 mili-giây (bắn metric bulkhead_rejected).
+Nhánh B không gọi qua mạng nữa, mà gán ngay: review_section.status = "UNAVAILABLE".
+BFF không cần chờ đợi gì thêm, lập tức ghép trang trả về cho khách: Khách vẫn thấy tên, ảnh, giá và tình trạng còn hàng để mua, chỉ riêng ô đánh giá hiện trạng thái tạm ẩn.
+Thời gian xử lý lúc này thậm chí còn nhanh hơn vì không phải chờ gọi mạng sang Review Service!

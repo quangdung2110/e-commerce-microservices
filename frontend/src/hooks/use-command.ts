@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
 import { newCommandId } from "@/lib/api/command";
+import { isCommandOutcomeUnknown } from "@/lib/admin-command";
 import { isRetryable, retryAfterSeconds } from "@/lib/api/problem";
 
 export interface CommandContext {
@@ -16,6 +17,12 @@ type CommandOptions<TData, TVariables> = Omit<
   "mutationFn"
 > & {
   mutationFn: (variables: TVariables, context: CommandContext) => Promise<TData>;
+  /**
+   * Gọi khi mutationFn trả về (server đã nhận lệnh). `true` nghĩa là kết quả cuối **chưa rõ** —
+   * ví dụ poll operation hết hạn hoặc operation chờ kiểm tra thủ công — nên lần gửi sau phải là
+   * replay của đúng ý định này (giữ command ID), không phải một lệnh mới.
+   */
+  isOutcomeUnresolved?: (data: TData) => boolean;
 };
 
 /**
@@ -31,13 +38,16 @@ type CommandOptions<TData, TVariables> = Omit<
  * - Thành công, hoặc thất bại không thể thử lại (400, 409, 422…) → lần gửi sau
  *   là ý định mới, sinh ID mới. Người dùng thường đã sửa dữ liệu, dùng lại ID cũ
  *   với payload khác sẽ bị server từ chối.
+ * - Ngoại lệ của mục trên: lệnh bất đồng bộ đã được nhận nhưng `isOutcomeUnresolved(data)`
+ *   trả `true` (poll hết hạn, chờ kiểm tra thủ công) thì vẫn giữ ID, vì server có thể
+ *   đang xử lý đúng ý định đó.
  *
  * Gọi `startNewIntent()` khi mở lại dialog/form để chắc chắn bắt đầu ý định mới.
  */
 export function useCommand<TData = unknown, TVariables = void>(
   options: CommandOptions<TData, TVariables>
 ) {
-  const { mutationFn, onSuccess, onError, ...rest } = options;
+  const { mutationFn, isOutcomeUnresolved, onSuccess, onError, ...rest } = options;
   const pendingId = useRef<string | null>(null);
   const [retryDeadline, setRetryDeadline] = useState<number | null>(null);
   const [retryDelaySeconds, setRetryDelaySeconds] = useState(0);
@@ -73,12 +83,14 @@ export function useCommand<TData = unknown, TVariables = void>(
       return mutationFn(variables, { commandId: pendingId.current });
     },
     onSuccess: (...args) => {
-      pendingId.current = null;
-      clearRetryDelay();
+      if (!isOutcomeUnresolved?.(args[0])) {
+        pendingId.current = null;
+        clearRetryDelay();
+      }
       return onSuccess?.(...args);
     },
     onError: (...args) => {
-      if (isRetryable(args[0])) {
+      if (isRetryable(args[0]) || isCommandOutcomeUnknown(args[0])) {
         const delay = retryAfterSeconds(args[0]);
         if (delay !== null) {
           setRetryDelaySeconds(delay);

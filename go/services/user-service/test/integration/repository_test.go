@@ -4,6 +4,8 @@ package integration_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -214,7 +216,9 @@ func TestPreferencesAreOnePerProfileAndCascade(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, vo.LanguageVietnamese, stored.Language)
 	require.Equal(t, vo.CurrencyVND, stored.Currency)
-	require.True(t, stored.MarketingEnabled)
+	require.True(t, stored.EmailEnabled)
+	require.True(t, stored.InAppEnabled)
+	require.False(t, stored.MarketingEnabled, "marketing is opt-in")
 
 	// Deleting the profile cascades, which is the safety net behind the purge.
 	deleted, err := profiles.HardDelete(ctx, userID)
@@ -242,9 +246,124 @@ func TestPreferencesUpdateOnlyMovesUpdatedAtOnARealChange(t *testing.T) {
 	require.NoError(t, preferences.Update(ctx, stored))
 	require.Equal(t, before, stored.UpdatedAt)
 
-	stored.MarketingEnabled = false
+	stored.MarketingEnabled = true
 	require.NoError(t, preferences.Update(ctx, stored))
 	require.True(t, stored.UpdatedAt.After(before))
+}
+
+func TestDisableMarketingIsAtomicAndIdempotent(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	userID, _ := seedProfile(t)
+	preferences := postgres.NewPreferencesRepository(testPool)
+
+	optedIn := entity.NewDefaultPreferences(userID, testNow)
+	optedIn.EmailEnabled = false
+	optedIn.MarketingEnabled = true
+	_, err := preferences.Insert(ctx, optedIn)
+	require.NoError(t, err)
+
+	changed, err := preferences.DisableMarketing(ctx, userID)
+	require.NoError(t, err)
+	require.NotNil(t, changed)
+	require.False(t, changed.MarketingEnabled)
+	require.False(t, changed.EmailEnabled, "only marketing_enabled is touched")
+	require.True(t, changed.InAppEnabled)
+	require.True(t, changed.UpdatedAt.After(testNow), "the schema trigger stamped the change")
+
+	again, err := preferences.DisableMarketing(ctx, userID)
+	require.NoError(t, err)
+	require.Nil(t, again, "a redelivered complaint finds nothing to change")
+
+	stored, err := preferences.GetByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, changed.UpdatedAt, stored.UpdatedAt, "and does not move updated_at")
+
+	missing, err := preferences.DisableMarketing(ctx, uuid.New())
+	require.NoError(t, err)
+	require.Nil(t, missing, "a user without preferences is a no-op, not an error")
+}
+
+func TestActiveProfileReadsHideAnAccountInItsRetentionWindow(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	userID, profiles := seedProfile(t)
+	deletions := postgres.NewDeletionRepository(testPool)
+
+	active, err := profiles.GetActive(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, userID, active.ID)
+
+	deletion, err := entity.NewDeletion(userID, testNow, testNow.Add(time.Hour), vo.DeletionGDPRRequest, testNow)
+	require.NoError(t, err)
+	_, err = deletions.Insert(ctx, deletion)
+	require.NoError(t, err)
+
+	_, err = profiles.GetActive(ctx, userID)
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound, "USER-INV-005: the anonymized row is not the owner's any more")
+
+	// The raw read still sees it, because Anonymize and the purge need the row.
+	raw, err := profiles.GetByID(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, userID, raw.ID)
+}
+
+func TestActiveProfileForUpdateChecksTheRetentionRecordAfterTakingTheLock(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+	userID, profiles := seedProfile(t)
+	deletions := postgres.NewDeletionRepository(testPool)
+	txManager := postgres.NewTxManager(testPool)
+
+	deletion, err := entity.NewDeletion(userID, testNow, testNow.Add(time.Hour), vo.DeletionGDPRRequest, testNow)
+	require.NoError(t, err)
+	_, err = deletions.Insert(ctx, deletion)
+	require.NoError(t, err)
+
+	err = txManager.WithinTx(ctx, func(txCtx context.Context) error {
+		_, err := profiles.GetActiveForUpdate(txCtx, userID)
+		return err
+	})
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound)
+}
+
+// TestMarketingBackfillSwitchesOffOnlyUntouchedRows runs the data part of
+// migration 0002 against rows shaped like the ones 0001 left behind.
+func TestMarketingBackfillSwitchesOffOnlyUntouchedRows(t *testing.T) {
+	resetState(t)
+	ctx := context.Background()
+
+	insert := func(updatedAt time.Time) uuid.UUID {
+		userID := uuid.New()
+		_, err := testPool.Exec(ctx, `
+			INSERT INTO "user".user_profiles (id, created_at, updated_at) VALUES ($1, $2, $2)`,
+			userID, testNow)
+		require.NoError(t, err)
+		_, err = testPool.Exec(ctx, `
+			INSERT INTO "user".user_preferences (user_id, email_enabled, in_app_enabled, marketing_enabled, updated_at)
+			VALUES ($1, TRUE, TRUE, TRUE, $2)`,
+			userID, updatedAt)
+		require.NoError(t, err)
+		return userID
+	}
+	untouched := insert(testNow)               // bootstrap default, never edited
+	edited := insert(testNow.Add(time.Minute)) // the owner changed something later
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0002_marketing_opt_in_default.up.sql"))
+	require.NoError(t, err)
+	_, err = testPool.Exec(ctx, string(script))
+	require.NoError(t, err)
+
+	preferences := postgres.NewPreferencesRepository(testPool)
+
+	row, err := preferences.GetByUser(ctx, untouched)
+	require.NoError(t, err)
+	require.False(t, row.MarketingEnabled, "TRUE was only the old default, not consent")
+	require.True(t, row.UpdatedAt.After(testNow), "the trigger stamped the change so reconciliation republishes it")
+
+	row, err = preferences.GetByUser(ctx, edited)
+	require.NoError(t, err)
+	require.True(t, row.MarketingEnabled, "a row the owner touched cannot be told apart from an opt-in, so it is left alone")
 }
 
 func TestDeletionIsIdempotentOnTheUser(t *testing.T) {

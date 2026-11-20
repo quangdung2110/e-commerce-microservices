@@ -33,6 +33,14 @@ type EmailSender interface {
 	Send(ctx context.Context, msg *entity.EmailMessage) (*entity.SendResult, error)
 }
 
+// HealthChecker is implemented by an email adapter that can ask its provider
+// whether it is reachable without sending mail. The provider watchdog uses it
+// to probe a half-open breaker when no real delivery is available to do so
+// (06-backpressure.md §5).
+type HealthChecker interface {
+	HealthCheck(ctx context.Context) error
+}
+
 // Renderer turns template_data into email or in-app content
 // (12-render.md). No I/O; errors are permanent (render_failed).
 type Renderer interface {

@@ -3,14 +3,18 @@ info:
   title: Cart Service HTTP API
   version: 1.0.0
   description: >-
-    Contract đích cho Cart Service Redis-only. Cart được xác định từ identity do
-    API Gateway inject; client không gửi cart_id hoặc user_id.
-    Gateway local dùng authenticated@file (ForwardAuth gateway-auth), không inject
-    danh tính dev cố định. POST/DELETE không retry ở gateway.
-x-adoption-status: proposed
+    Contract của Cart Service Redis-only (đã implement trong go/services/cart-service).
+    Cart được xác định từ identity do API Gateway inject; client không gửi cart_id
+    hoặc user_id. Gateway local dùng authenticated@file (ForwardAuth gateway-auth),
+    không inject danh tính dev cố định. POST/DELETE không retry ở gateway.
+
+    Rate limit cục bộ: mỗi pod giới hạn 20 request/giây (burst 40) theo user cho mọi
+    route `/api/v1/carts/mine/**`, kể cả GET; vượt giới hạn trả `429 RATE_LIMITED` kèm
+    `Retry-After`. Gateway áp thêm policy `rate-limit-api` ở phía trước.
+x-adoption-status: implemented
 servers:
-  - url: http://localhost:8085
-    description: Local Docker Compose
+  - url: http://localhost:8088
+    description: Local Docker Compose, qua API Gateway (Cart không publish cổng host)
 tags:
   - name: Cart
 paths:
@@ -39,6 +43,8 @@ paths:
                 $ref: '#/components/schemas/Cart'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '503':
           $ref: '#/components/responses/CartStoreUnavailable'
 
@@ -120,6 +126,9 @@ paths:
           $ref: '#/components/responses/CartStoreUnavailable'
 
   /internal/v1/carts/{user_id}/checkout-snapshot:
+    servers:
+      - url: http://cart-service:8080
+        description: Chỉ trong mạng service; không có route Gateway cho /internal/v1/**
     get:
       tags: [Cart]
       operationId: getCheckoutCartSnapshot
@@ -128,11 +137,18 @@ paths:
         CHECKOUT only. Reads the same Redis source of truth as the public Cart API
         but returns only identifiers and quantities. It does not call Product,
         expose Redis keys, refresh TTL, or mutate cart lifecycle state. Redis miss
-        returns an empty items array.
+        returns an empty items array. Items are ordered by sku_id. The internal route
+        is not rate limited.
+
+        The mesh authenticates the workload principal; Cart additionally requires
+        `X-Service-Identity` to be on its allowlist (`cart.internal_callers`, default
+        `checkout-service`) as defence in depth: a missing header is 401, any other
+        service is 403, a non-UUID `user_id` is 400.
       security: [{ checkoutService: [] }]
       parameters:
         - $ref: '#/components/parameters/UserId'
         - $ref: '#/components/parameters/RequestId'
+        - $ref: '#/components/parameters/ServiceIdentity'
       responses:
         '200':
           description: Minimal server-to-server Cart snapshot.
@@ -142,6 +158,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CheckoutCartSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/CartStoreUnavailable' }
@@ -155,7 +172,9 @@ components:
       description: Trusted identity Gateway inject sau JWT verification; không phải header public client được phép tự đặt.
     checkoutService:
       type: mutualTLS
-      description: Mesh principal must be checkout-service; X-Service-Identity is attribution only.
+      description: >-
+        Mesh principal must be checkout-service. Cart also checks the X-Service-Identity
+        header against its allowlist as defence in depth (see the ServiceIdentity parameter).
 
   parameters:
     RequestId:
@@ -168,12 +187,27 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 16, maxLength: 128 }
+    ServiceIdentity:
+      name: X-Service-Identity
+      in: header
+      required: true
+      description: >-
+        Calling service identity. Must be in the Cart allowlist (`cart.internal_callers`,
+        default `checkout-service`); a missing header is 401 and any other value is 403.
+      schema: { type: string, example: checkout-service }
     UserId:
       name: user_id
       in: path
       required: true
       schema: { type: string, format: uuid }
 
+  headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
   schemas:
     Money:
       $ref: '../../../shared/json-schema/v1/money.schema.json'
@@ -239,6 +273,7 @@ components:
         - sku_id
         - product_id
         - product_name
+        - image_url
         - quantity
         - unit_price_at_add
         - current_price
@@ -253,6 +288,15 @@ components:
           type: object
           additionalProperties: { type: string, maxLength: 200 }
           maxProperties: 30
+        variant_name:
+          type: string
+          maxLength: 64000
+          description: >-
+            Product-resolved Vietnamese display text (attribute names and display values).
+            CURRENT uses the current Product read; DEGRADED or unavailable SKU falls back
+            to the stored display snapshot. GET never persists that refresh. Optional for
+            legacy carts/providers. Consumers without a label display raw values only,
+            not attribute codes. Display only; variant_attributes remains unchanged.
         image_url:
           type: string
           format: uri
@@ -292,36 +336,46 @@ components:
 
   responses:
     BadRequest:
-      description: Request không hợp lệ.
+      description: >-
+        Request không hợp lệ (`code` = `VALIDATION_FAILED`, kèm `errors[]` theo field): thiếu
+        hoặc sai `Idempotency-Key`, body sai schema, `delta` bằng 0 hoặc ngoài -100..100,
+        `sku_ids` rỗng/trùng/quá 100, hoặc `user_id` của route nội bộ không phải UUID.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Unauthorized:
-      description: Thiếu trusted identity.
+      description: >-
+        Thiếu trusted identity (`X-User-Id` ở route public, `X-Service-Identity` ở route nội bộ);
+        `code` = `UNAUTHENTICATED`.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Forbidden:
-      description: Authenticated workload is not Checkout Service.
+      description: >-
+        `X-Service-Identity` không nằm trong allowlist `cart.internal_callers`
+        (`code` = `FORBIDDEN`).
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     IdempotencyConflict:
-      description: Key dùng với payload khác hoặc request cùng key đang xử lý.
-      headers:
-        Retry-After:
-          description: Có khi request cùng key đang xử lý.
-          schema: { type: integer, minimum: 1 }
+      description: >-
+        `IDEMPOTENCY_CONFLICT`: cùng `Idempotency-Key` đã được dùng với payload khác. Ghi
+        của Cart chạy nguyên tử trong Redis Lua nên không có trạng thái "đang xử lý": cùng
+        key và cùng payload luôn trả lại kết quả đã lưu, không bao giờ trả 409.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     Unprocessable:
-      description: Rule Cart hoặc Product validation không thỏa.
+      description: >-
+        Rule Cart hoặc Product validation không thỏa. `code` là một trong `CART_FULL`
+        (SKU mới vượt 50 SKU), `PRODUCT_NOT_AVAILABLE` (Product/SKU không active hoặc không
+        tồn tại), `QUANTITY_INVALID` (delta làm quantity không còn dương; dùng DELETE),
+        `ITEM_NOT_FOUND` (delta âm cho SKU không có trong cart).
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     RateLimited:
-      description: Vượt rate limit theo user.
+      description: Vượt rate limit theo user (`code` = `RATE_LIMITED`, `retryable` = true).
       headers:
         Retry-After:
           schema: { type: integer, minimum: 1 }
@@ -329,12 +383,20 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     CartStoreUnavailable:
-      description: Redis Cart source of truth không khả dụng.
+      description: >-
+        Redis Cart source of truth không khả dụng (`code` = `CART_STORE_UNAVAILABLE`,
+        `retryable` = true).
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     WriteDependencyUnavailable:
-      description: Redis hoặc Product dependency cần cho write không khả dụng.
+      description: >-
+        Redis hoặc Product dependency cần cho write không khả dụng (`code` =
+        `CART_STORE_UNAVAILABLE` hoặc `PRODUCT_UNAVAILABLE`, `retryable` = true).
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

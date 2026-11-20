@@ -1,7 +1,7 @@
 ---
 doc_id: cart-adr-012
 service: cart
-status: accepted
+status: superseded
 date: 2026-09-01
 decision_owners:
   - Cart Service team
@@ -12,6 +12,13 @@ evidence:
 ---
 
 # ADR-012 — Cart chỉ xác thực catalog, không xác thực tồn kho
+
+## Status
+
+`Superseded` bởi [ADR-013](./ADR-013-checkout-preview-order-reserve-boundary.md).
+
+> Lịch sử quyết định bên dưới được giữ nguyên. Quyết định catalog-only vẫn đúng; ADR-013
+> chỉ làm rõ rằng Checkout gọi Preview còn Order là caller duy nhất của Reserve.
 
 ## Context
 

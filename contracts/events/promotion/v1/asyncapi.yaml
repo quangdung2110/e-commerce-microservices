@@ -28,7 +28,8 @@ channels:
     x-ordering-scope: product_id
     x-transport: >-
       PostgreSQL outbox + Debezium CDC. promotion_outbox_events.payload giữ complete
-      CloudEvents envelope và lên wire nguyên văn; connector chỉ chọn topic, key và
+      CloudEvents envelope và lên wire như một JSON object (trừ field có giá trị null tường minh,
+      vd `discount.max_discount_vnd`, bị EventRouter bỏ: vắng mặt và null là một); connector chỉ chọn topic, key và
       header. CloudEvents.id bằng promotion_outbox_events.event_id nên ổn định qua mọi
       lần CDC retry.
     x-outbox-table: promotion.promotion_outbox_events

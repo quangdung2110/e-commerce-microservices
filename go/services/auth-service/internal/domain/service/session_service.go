@@ -28,6 +28,7 @@ type SessionService struct {
 	tokens   port.RefreshTokenRepository
 	issuer   *TokenService
 	revoker  *Revoker
+	notifier *Notifier
 	clock    clock.Clock
 	policy   SessionPolicy
 	logger   *zap.Logger
@@ -39,6 +40,7 @@ func NewSessionService(
 	tokens port.RefreshTokenRepository,
 	issuer *TokenService,
 	revoker *Revoker,
+	notifier *Notifier,
 	clk clock.Clock,
 	policy SessionPolicy,
 	logger *zap.Logger,
@@ -48,6 +50,7 @@ func NewSessionService(
 		tokens:   tokens,
 		issuer:   issuer,
 		revoker:  revoker,
+		notifier: notifier,
 		clock:    clk,
 		policy:   policy,
 		logger:   logger,
@@ -94,10 +97,18 @@ func (s *SessionService) Refresh(ctx context.Context, cmd RefreshCommand) (*Logi
 		}
 		return nil, err
 	}
-	if account.UnlockIfExpired(now) {
-		if err := s.accounts.Update(ctx, account); err != nil {
-			return nil, err
-		}
+	// A lock that ran out is lifted here as it is at login; whoever performs the
+	// LOCKED to ACTIVE write also announces it, so the notice goes out once.
+	var unlocked bool
+	account, saved, err := updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		unlocked = a.UnlockIfExpired(now)
+		return unlocked, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if saved && unlocked {
+		s.notifier.AccountUnlocked(ctx, account.ID, recipientOf(account), now)
 	}
 	if !account.IsActive() {
 		// AUTH-BR-001: only an ACTIVE account may hold credentials. The token

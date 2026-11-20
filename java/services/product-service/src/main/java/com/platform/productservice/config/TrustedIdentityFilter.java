@@ -12,12 +12,14 @@ import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Xác thực caller ở biên của service.
@@ -32,6 +34,8 @@ import java.util.Map;
  * {@code searchServiceMtls} cho reindex và {@code productDetailBffMtls} cho
  * buyer-read (ADR-015). Nhờ vậy Product Detail BFF không đọc được export chứa cả
  * Product {@code DRAFT}/{@code HIDDEN}, và Search không đi vòng qua buyer-read.
+ * Trong scheme {@code searchServiceMtls}, Promotion chỉ được gọi snapshot một
+ * Product, không được gọi export.
  *
  * <p>Header trusted chỉ hợp lệ vì các endpoint này không được expose trực tiếp
  * ra ngoài (contracts/conventions/http.md).
@@ -47,7 +51,10 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
     /** Buyer-read cho Product Detail BFF (WF-PRODUCT-007). */
     private static final String BUYER_READ_PATH = "/internal/v1/product-details/";
 
-    /** Export và snapshot phục vụ Search full reindex (ADR-014). */
+    /** Snapshot một Product: Search rebuild document, Promotion validate trước khi lưu rule. */
+    private static final Pattern SNAPSHOT_PATH = Pattern.compile("^/internal/v1/products/[^/]+/snapshot$");
+
+    /** Export phục vụ Search full reindex (ADR-014). */
     private static final List<String> REINDEX_PATHS =
             List.of("/internal/v1/products/", "/internal/v1/categories/");
 
@@ -63,7 +70,9 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
         EventContext.set(request.getHeader(TRACEPARENT_HEADER), request.getHeader(REQUEST_ID_HEADER));
         try {
-            String path = request.getRequestURI();
+            // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw
+            // URI would let "/%61pi/v1/..." or "/internal/v1;x=1/..." reach a controller unchecked.
+            String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
             if (path.startsWith(ADMIN_PATH) && !authorizeAdmin(request, response)) {
                 return;
             }
@@ -124,6 +133,9 @@ public class TrustedIdentityFilter extends OncePerRequestFilter {
         ProductProperties.Internal internal = properties.getInternal();
         if (path.startsWith(BUYER_READ_PATH)) {
             return internal.getBuyerReadClients();
+        }
+        if (SNAPSHOT_PATH.matcher(path).matches()) {
+            return internal.getSnapshotClients();
         }
         if (REINDEX_PATHS.stream().anyMatch(path::startsWith)) {
             return internal.getReindexClients();

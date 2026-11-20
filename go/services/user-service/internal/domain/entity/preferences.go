@@ -10,8 +10,8 @@ import (
 )
 
 // Preferences is the 1:1 companion of a profile. Only the three notification
-// flags are writable; language and currency are fixed by the contract and are
-// the fields Notification Service replicates.
+// flags are writable and are the fields Notification Service replicates;
+// language and currency are fixed by the contract.
 type Preferences struct {
 	UserID           uuid.UUID
 	Language         vo.Language
@@ -22,8 +22,12 @@ type Preferences struct {
 	UpdatedAt        time.Time
 }
 
-// NewDefaultPreferences creates the opted-in defaults written at bootstrap
-// (WF-USER-001).
+// NewDefaultPreferences creates the defaults written at bootstrap
+// (WF-USER-001). Transactional email and in-app notifications start on, because
+// blocking an order confirmation is the worse mistake; marketing starts off, and
+// stays off until the owner opts in. That is the default Notification Service
+// assumes for a user without a preference row (docs/notification/08-decide.md
+// §5), so the two sides cannot disagree about consent.
 func NewDefaultPreferences(userID uuid.UUID, now time.Time) *Preferences {
 	return &Preferences{
 		UserID:           userID,
@@ -31,7 +35,7 @@ func NewDefaultPreferences(userID uuid.UUID, now time.Time) *Preferences {
 		Currency:         vo.CurrencyVND,
 		EmailEnabled:     true,
 		InAppEnabled:     true,
-		MarketingEnabled: true,
+		MarketingEnabled: false,
 		UpdatedAt:        now.UTC(),
 	}
 }

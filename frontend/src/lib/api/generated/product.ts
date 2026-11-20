@@ -256,7 +256,7 @@ export interface paths {
         get: operations["getAttribute"];
         /**
          * Thay code, name và value type của attribute
-         * @description Không được đổi value_type khi option/mapping/Product hiện hữu khiến dữ liệu cũ không hợp lệ; server trả ATTRIBUTE_IN_USE (409).
+         * @description Không được đổi code hoặc value_type khi option/mapping/Product hiện hữu khiến dữ liệu cũ không hợp lệ; server trả ATTRIBUTE_IN_USE (409). Đổi name của attribute đã được map tăng category_revision và phát lại category snapshot của mọi category map nó, vì name là label trong facet_definitions (ADR-019).
          */
         put: operations["replaceAttribute"];
         post?: never;
@@ -329,7 +329,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Lấy snapshot mới nhất của một Product cho Search rebuild */
+        /**
+         * Lấy snapshot mới nhất của một Product cho Search rebuild và Promotion validate
+         * @description Search gọi để rebuild một document; Promotion gọi đồng bộ để xác nhận Product tồn tại trước khi tạo hoặc sửa markdown rule. Promotion không được gọi hai export.
+         */
         get: operations["getProductSnapshotForReindex"];
         put?: never;
         post?: never;
@@ -705,6 +708,12 @@ export interface components {
             /** @description Offset của mọi partition t.product.events được chụp trước scan ở trang đầu. Lặp lại không đổi trên mọi trang của cùng export session; offset là record đầu tiên Search phải replay, theo semantics inclusive. */
             replay_from_offsets: components["schemas"]["ReplayOffset"][];
         };
+        /** @description Descriptor của một attribute được map trực tiếp vào category (ADR-019). label là tên attribute admin đặt, type là value_type; không mang option, required hay variant. Cùng giá trị với facet_definitions của category-upserted. */
+        FacetDefinition: {
+            code: string;
+            label: string;
+            type: components["schemas"]["AttributeValueType"];
+        };
         CategoryExport: {
             category_id: components["schemas"]["Uuid"];
             parent_id?: components["schemas"]["Uuid"] | null;
@@ -718,6 +727,8 @@ export interface components {
                 slug: string;
             }[];
             is_leaf: boolean;
+            /** @description Mapping category–attribute trực tiếp của category, sắp theo code; mảng rỗng khi chưa có mapping. Tên attribute đổi tăng category_revision của mọi category map nó. */
+            facet_definitions: components["schemas"]["FacetDefinition"][];
             /** Format: date-time */
             updated_at: string;
         };
@@ -761,7 +772,7 @@ export interface components {
         };
     };
     responses: {
-        /** @description Request không hợp lệ; code INVALID_PRICE hoặc validation code khác. */
+        /** @description Request không hợp lệ: INVALID_REQUEST (kèm errors[] theo field; gồm base_price_vnd không dương, slug sai định dạng, thiếu hoặc sai If-Match), INVALID_ATTRIBUTES hoặc INVALID_CURSOR. */
         BadRequest: {
             headers: {
                 [name: string]: unknown;
@@ -1093,6 +1104,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["ProductNotFound"];
@@ -1240,6 +1252,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["SkuNotFound"];
@@ -1350,6 +1363,7 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["MediaNotFound"];

@@ -27,7 +27,8 @@ channels:
     x-ordering-scope: sku_id
     x-ordering-guard: aggregaterevision
     x-max-payload-bytes: 16384
-    x-retention: 30d-minimum
+    x-retention: 30d
+    x-retention-bound: floor-and-ceiling
     x-retry-policy:
       strategy: retry-without-ack-then-projection-rebuild
     x-data-classification: INTERNAL
@@ -44,7 +45,8 @@ channels:
     x-deduplication-key: CloudEvents.id
     x-ordering-guard: aggregaterevision
     x-max-payload-bytes: 262144
-    x-retention: 30d-minimum
+    x-retention: 30d
+    x-retention-bound: floor-and-ceiling
     x-retry-policy:
       strategy: consumer-managed-retry-with-dlq
       dead-letter-topic: t.inventory.order.events.v1.dlq

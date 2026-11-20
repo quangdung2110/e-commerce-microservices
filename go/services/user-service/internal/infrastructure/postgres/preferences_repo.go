@@ -119,6 +119,43 @@ func (r *PreferencesRepository) Update(ctx context.Context, preferences *entity.
 	return nil
 }
 
+// DisableMarketing is the spam-complaint action: marketing off at the source.
+// The `AND marketing_enabled` guard makes a redelivered complaint touch nothing,
+// so the schema trigger does not move `updated_at` and no second event follows.
+func (r *PreferencesRepository) DisableMarketing(ctx context.Context, userID uuid.UUID) (*entity.Preferences, error) {
+	const query = `
+		UPDATE "user".user_preferences
+		SET marketing_enabled = FALSE
+		WHERE user_id = $1 AND marketing_enabled
+		RETURNING user_id, language, currency, email_enabled, in_app_enabled, marketing_enabled, updated_at`
+
+	var (
+		preferences entity.Preferences
+		language    string
+		currency    string
+	)
+	err := r.db(ctx).QueryRow(ctx, query, userID).Scan(
+		&preferences.UserID,
+		&language,
+		&currency,
+		&preferences.EmailEnabled,
+		&preferences.InAppEnabled,
+		&preferences.MarketingEnabled,
+		&preferences.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, mapError(err)
+	}
+
+	preferences.Language = vo.Language(language)
+	preferences.Currency = vo.Currency(currency)
+	preferences.UpdatedAt = preferences.UpdatedAt.UTC()
+	return &preferences, nil
+}
+
 // DeleteForUser removes the preferences of an anonymized account.
 func (r *PreferencesRepository) DeleteForUser(ctx context.Context, userID uuid.UUID) (bool, error) {
 	const query = `DELETE FROM "user".user_preferences WHERE user_id = $1`

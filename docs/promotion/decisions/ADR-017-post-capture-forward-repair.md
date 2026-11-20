@@ -3,7 +3,9 @@
 ## Status
 
 Accepted — 2026-09-16. Refines the active-use interpretation of ADR-013 and
-ADR-016; their durable receipt/finalization mechanics remain valid.
+ADR-016; their durable receipt/finalization mechanics remain valid. The application-level guard it
+requires (migrator-only allowlist, proof header = body `migration_record_id`, `403` otherwise, `403` for
+`order-service`) was implemented in [ADR-019](./ADR-019-post-implementation-audit-corrections.md).
 
 ## Context
 

@@ -55,7 +55,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<Object> invalidParameters(HandlerMethodValidationException e, HttpServletRequest request) {
         List<ApiException.FieldError> errors = new ArrayList<>();
-        e.getAllValidationResults().forEach(result -> result.getResolvableErrors().forEach(error ->
+        e.getParameterValidationResults().forEach(result -> result.getResolvableErrors().forEach(error ->
                 errors.add(new ApiException.FieldError(result.getMethodParameter().getParameterName(),
                         error.getDefaultMessage()))));
         return invalid("Request validation failed", errors, request);
@@ -80,7 +80,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({MissingRequestHeaderException.class, MissingServletRequestParameterException.class,
             MethodArgumentTypeMismatchException.class, HttpMediaTypeNotSupportedException.class})
     public ResponseEntity<Object> badInput(Exception e, HttpServletRequest request) {
-        return invalid(e.getMessage(), List.of(), request);
+        // Spring's own messages name Java classes and parameter types; the wire gets a fixed sentence.
+        String detail = switch (e) {
+            case MissingRequestHeaderException header -> "Missing required header " + header.getHeaderName();
+            case MissingServletRequestParameterException parameter ->
+                    "Missing required parameter " + parameter.getParameterName();
+            case MethodArgumentTypeMismatchException mismatch -> "Invalid value for parameter " + mismatch.getName();
+            default -> "Unsupported request content type";
+        };
+        return invalid(detail, List.of(), request);
     }
 
     @ExceptionHandler({NoResourceFoundException.class, HttpRequestMethodNotSupportedException.class})

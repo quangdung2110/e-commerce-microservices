@@ -2,6 +2,7 @@ package com.ecommerce.checkout.client;
 
 import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.resilience.ContractViolationException;
+import com.ecommerce.checkout.resilience.DependencyGuard;
 import com.ecommerce.checkout.resilience.UpstreamStatusException;
 import com.ecommerce.contracts.common.v1.Money;
 import com.ecommerce.contracts.product.v1.GetBatchSkusRequest;
@@ -13,12 +14,17 @@ import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.protobuf.Any;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.rpc.ErrorInfo;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import io.grpc.stub.MetadataUtils;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -46,6 +52,8 @@ import java.util.concurrent.TimeoutException;
 @Component
 public class ProductClient implements DisposableBean {
 
+    /** {@code ErrorInfo.domain} of the errors Product itself returns (contracts ADR-006). */
+    private static final String PRODUCT_ERROR_DOMAIN = "ecommerce.product.v1";
     private static final Metadata.Key<String> SERVICE_IDENTITY =
             Metadata.Key.of("x-service-identity", Metadata.ASCII_STRING_MARSHALLER);
     private static final Metadata.Key<String> REQUEST_ID =
@@ -53,21 +61,51 @@ public class ProductClient implements DisposableBean {
     private static final Metadata.Key<String> TRACEPARENT =
             Metadata.Key.of("traceparent", Metadata.ASCII_STRING_MARSHALLER);
 
+    private final io.opentelemetry.api.OpenTelemetry telemetry;
     private final ManagedChannel channel;
     private final ProductServiceGrpc.ProductServiceFutureStub stub;
     private final Duration ceiling;
+    private final MeterRegistry meters;
 
     @Autowired
-    public ProductClient(CheckoutProperties properties) {
-        this(ManagedChannelBuilder.forTarget(properties.endpoints().productGrpcTarget()).usePlaintext().build(),
-                properties.timeouts().product());
+    public ProductClient(CheckoutProperties properties, MeterRegistry meters, io.opentelemetry.api.OpenTelemetry telemetry) {
+        this(channelFor(properties.endpoints().productGrpcTarget()), properties.timeouts().product(), meters, telemetry);
     }
 
-    ProductClient(ManagedChannel channel, Duration ceiling) {
+    /** Pings an active connection after this long without traffic (contracts ADR-007). Product permits one every 20 s. */
+    static final Duration KEEP_ALIVE_TIME = Duration.ofSeconds(30);
+    static final Duration KEEP_ALIVE_TIMEOUT = Duration.ofSeconds(10);
+    static final String LOAD_BALANCING_POLICY = "round_robin";
+
+    /**
+     * The channel to Product (contracts ADR-007): calls are spread over every address the name resolves to, which only
+     * matters without a waypoint (a headless Service lists every pod, a ClusterIP Service lists one); a silent dead
+     * connection is noticed by keepalive instead of by the next RPC's deadline; and Product's own
+     * {@code max-connection-age} makes the channel reconnect and resolve the name again, so new pods receive calls.
+     */
+    static ManagedChannel channelFor(String target) {
+        return ManagedChannelBuilder.forTarget(target)
+                .usePlaintext()
+                .defaultLoadBalancingPolicy(LOAD_BALANCING_POLICY)
+                .keepAliveTime(KEEP_ALIVE_TIME.toSeconds(), TimeUnit.SECONDS)
+                .keepAliveTimeout(KEEP_ALIVE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)
+                .keepAliveWithoutCalls(false)
+                .build();
+    }
+
+    ProductClient(ManagedChannel channel, Duration ceiling, MeterRegistry meters) {
+        this(channel, ceiling, meters, null);
+    }
+
+    private ProductClient(ManagedChannel channel, Duration ceiling, MeterRegistry meters, io.opentelemetry.api.OpenTelemetry telemetry) {
+        this.telemetry = telemetry;
         this.channel = channel;
-        this.stub = ProductServiceGrpc.newFutureStub(channel);
+        this.stub = telemetry == null ? ProductServiceGrpc.newFutureStub(channel)
+                : ProductServiceGrpc.newFutureStub(channel).withInterceptors(
+                        io.opentelemetry.instrumentation.grpc.v1_6.GrpcTelemetry.create(telemetry).newClientInterceptor());
         this.ceiling = ceiling;
-        // Connect now: the first request after startup must not pay for name resolution and the handshake.
+        this.meters = meters;
+        // Begin connecting; ClientTransports also awaits a real RPC before readiness.
         channel.getState(true);
     }
 
@@ -92,6 +130,18 @@ public class ProductClient implements DisposableBean {
     }
 
     public Mono<Batch> fetch(Collection<String> skuIds, RequestContext context) {
+        return fetch(skuIds, context, ceiling);
+    }
+
+    /** A bounded startup read on the same channel/stub; never creates a quote or calls Inventory/Order. */
+    Mono<Void> warmup(Duration timeout) {
+        String requestId = UUID.randomUUID().toString();
+        RequestContext context = new RequestContext(requestId, "", null, null,
+                com.ecommerce.checkout.resilience.Deadline.startingNow(timeout));
+        return fetch(List.of("00000000-0000-0000-0000-000000000000"), context, timeout).then();
+    }
+
+    private Mono<Batch> fetch(Collection<String> skuIds, RequestContext context, Duration timeout) {
         List<String> requested = skuIds.stream().distinct().toList();
         GetBatchSkusRequest request = GetBatchSkusRequest.newBuilder().addAllSkuIds(requested).build();
         return Mono.<GetBatchSkusResponse>create(sink -> {
@@ -101,23 +151,63 @@ public class ProductClient implements DisposableBean {
             if (context.traceparent() != null) {
                 headers.put(TRACEPARENT, context.traceparent());
             }
-            ListenableFuture<GetBatchSkusResponse> future = stub
-                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
-                    .withDeadlineAfter(ceiling.toMillis(), TimeUnit.MILLISECONDS)
+            // contracts ADR-003: the gRPC deadline is the timeout the guard runs this call under, never more
+            // than the ceiling; Product then sees the real deadline instead of a fixed one.
+            Duration effective = sink.contextView().getOrDefault(DependencyGuard.EFFECTIVE_TIMEOUT_KEY, timeout);
+            Duration deadline = effective.compareTo(timeout) < 0 ? effective : timeout;
+            ListenableFuture<GetBatchSkusResponse> future;
+            // Reactor does not hold a thread-local span across hops. Scope only the immediate RPC start.
+            try (io.opentelemetry.context.Scope ignored = parent(context, sink.contextView()).makeCurrent()) {
+                future = stub
+                    .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers), new ProductCallTiming(meters, context))
+                    .withDeadlineAfter(Math.max(1, deadline.toMillis()), TimeUnit.MILLISECONDS)
                     .getBatchSkus(request);
+            }
             sink.onCancel(() -> future.cancel(true));
             Futures.addCallback(future, new FutureCallback<>() {
                 @Override
                 public void onSuccess(GetBatchSkusResponse response) {
-                    sink.success(response);
+                    // gRPC invokes listeners with its client span in thread-local scope. Reactor
+                    // owns the parent observation of the next wave; do not let the callback's
+                    // completed Product span override it in Micrometer's parent selection.
+                    try (io.opentelemetry.context.Scope ignored = io.opentelemetry.context.Context.root().makeCurrent()) {
+                        sink.success(response);
+                    }
                 }
 
                 @Override
                 public void onFailure(Throwable error) {
-                    sink.error(translate(error));
+                    try (io.opentelemetry.context.Scope ignored = io.opentelemetry.context.Context.root().makeCurrent()) {
+                        sink.error(translate(error));
+                    }
                 }
             }, MoreExecutors.directExecutor());
         }).map(response -> toBatch(response, requested));
+    }
+
+    private io.opentelemetry.context.Context parent(RequestContext context, reactor.util.context.ContextView reactorContext) {
+        var current = io.opentelemetry.context.Context.current();
+        if (telemetry == null) { return current; }
+        String traceparent = context.traceparent();
+        var observation = reactorContext.<io.micrometer.observation.Observation>getOrEmpty(
+                io.micrometer.observation.contextpropagation.ObservationThreadLocalAccessor.KEY);
+        if (observation.isPresent()) {
+            var tracing = observation.get().getContextView()
+                    .<io.micrometer.tracing.handler.TracingObservationHandler.TracingContext>get(
+                            io.micrometer.tracing.handler.TracingObservationHandler.TracingContext.class);
+            if (tracing != null && tracing.getSpan() != null) {
+                var span = tracing.getSpan().context();
+                traceparent = "00-" + span.traceId() + "-" + span.spanId() + "-"
+                        + (Boolean.FALSE.equals(span.sampled()) ? "00" : "01");
+            }
+        }
+        if (traceparent == null) { return current; }
+        return telemetry.getPropagators().getTextMapPropagator().extract(current,
+                java.util.Map.of("traceparent", traceparent),
+                new io.opentelemetry.context.propagation.TextMapGetter<java.util.Map<String, String>>() {
+                    public Iterable<String> keys(java.util.Map<String, String> carrier) { return carrier.keySet(); }
+                    public String get(java.util.Map<String, String> carrier, String key) { return carrier.get(key); }
+                });
     }
 
     /** gRPC statuses classified like their HTTP counterparts so DependencyGuard needs one rule set. */
@@ -126,14 +216,38 @@ public class ProductClient implements DisposableBean {
             return error;
         }
         Status.Code code = grpc.getStatus().getCode();
+        String reason = reasonOf(grpc);
         return switch (code) {
             case DEADLINE_EXCEEDED -> new TimeoutException("Product GetBatchSkus deadline exceeded");
-            case UNAVAILABLE -> new IOException("Product unavailable");
-            case INVALID_ARGUMENT -> new UpstreamStatusException(400);
-            case UNAUTHENTICATED -> new UpstreamStatusException(401);
-            case PERMISSION_DENIED -> new UpstreamStatusException(403);
-            default -> new UpstreamStatusException(503);
+            case UNAVAILABLE -> new IOException("Product unavailable" + (reason == null ? "" : " (" + reason + ")"));
+            case INVALID_ARGUMENT -> new UpstreamStatusException(400, reason);
+            case UNAUTHENTICATED -> new UpstreamStatusException(401, reason);
+            case PERMISSION_DENIED -> new UpstreamStatusException(403, reason);
+            default -> new UpstreamStatusException(503, reason);
         };
+    }
+
+    /**
+     * The stable {@code ErrorInfo.reason} Product attached to a failed call (contracts ADR-006), or null when the
+     * status carries none: the gRPC runtime and the mesh send statuses without details. Callers log it so that
+     * "identity not allowed" is told apart from "batch too large" without parsing the free-text description.
+     */
+    static String reasonOf(StatusRuntimeException error) {
+        com.google.rpc.Status details = StatusProto.fromThrowable(error);
+        if (details == null) {
+            return null;
+        }
+        for (Any detail : details.getDetailsList()) {
+            if (detail.is(ErrorInfo.class)) {
+                try {
+                    ErrorInfo info = detail.unpack(ErrorInfo.class);
+                    return PRODUCT_ERROR_DOMAIN.equals(info.getDomain()) ? info.getReason() : null;
+                } catch (InvalidProtocolBufferException malformed) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     static Batch toBatch(GetBatchSkusResponse response, List<String> requested) {

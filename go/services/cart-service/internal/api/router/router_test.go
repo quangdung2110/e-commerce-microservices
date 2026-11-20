@@ -56,6 +56,10 @@ func (s *stubStore) MarkAbandoned(context.Context, port.MarkAbandonedCommand) (p
 	return port.MarkAbandonedResult{}, nil
 }
 
+func (s *stubStore) PurgeCart(context.Context, domain.Identity) (port.PurgeResult, error) {
+	return port.PurgeResult{}, nil
+}
+
 func (s *stubStore) DueCarts(context.Context, int, time.Time, int) ([]port.DueCart, error) {
 	return nil, nil
 }
@@ -203,7 +207,7 @@ func TestGetCartRendersTheContractShape(t *testing.T) {
 		},
 	}}}
 	catalog := &stubCatalog{batch: map[string]domain.ProductSnapshot{
-		"SKU-A": {SkuID: "SKU-A", Price: domain.Money{AmountMinor: 130000, Currency: "VND"}, IsAvailable: true},
+		"SKU-A": {SkuID: "SKU-A", Price: domain.Money{AmountMinor: 130000, Currency: "VND"}, IsAvailable: true, VariantName: "Màu sắc: Đỏ"},
 	}}
 
 	recorder := do(t, newTestEngine(store, catalog), http.MethodGet, cartPath, "", map[string]string{
@@ -215,6 +219,9 @@ func TestGetCartRendersTheContractShape(t *testing.T) {
 
 	body := decode[map[string]any](t, recorder)
 	item := body["items"].([]any)[0].(map[string]any)
+	if item["variant_name"] != "Màu sắc: Đỏ" {
+		t.Fatalf("variant_name = %v", item["variant_name"])
+	}
 
 	for _, required := range []string{
 		"sku_id", "product_id", "product_name", "quantity",

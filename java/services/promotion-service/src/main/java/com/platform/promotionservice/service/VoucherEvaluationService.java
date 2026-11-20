@@ -16,7 +16,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.util.Optional;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Eligibility + discount toàn đơn cho một promotion (WF-PROMO-004). Wallet voucher
@@ -34,6 +35,46 @@ public class VoucherEvaluationService {
 
     public record Evaluation(PromotionView view, boolean eligible, EligibilityReason reason,
                              long discountVnd, long finalAmountVnd, BudgetGuard budgetGuard) {
+    }
+
+    public record Candidate(PromotionView view, UserCouponWalletEntity wallet) {
+    }
+
+    /** Evaluate rules first; only eligible candidates require a runtime budget read. */
+    public List<Evaluation> evaluateAll(List<Candidate> candidates, RuleFactsBuilder.Context context, Instant now) {
+        List<Evaluation> evaluations = candidates.stream()
+                .map(candidate -> evaluate(candidate.view(), candidate.wallet(), context, now, false)).toList();
+        List<Long> ids = evaluations.stream().filter(Evaluation::eligible)
+                .map(evaluation -> evaluation.view().promotionId()).distinct().toList();
+        if (ids.isEmpty()) {
+            return evaluations;
+        }
+        Map<Long, RuntimeStore.RuntimeState> states;
+        try {
+            states = runtime.readAll(ids);
+        } catch (RuntimeException e) {
+            log.debug("Budget batch guard degraded: {}", e.getMessage());
+            return evaluations.stream().map(evaluation -> evaluation.eligible()
+                    ? withBudget(evaluation, BudgetGuard.DEGRADED, context.subtotalVnd()) : evaluation).toList();
+        }
+        return evaluations.stream().map(evaluation -> evaluation.eligible()
+                ? withBudget(evaluation, guardFor(states.get(evaluation.view().promotionId()), evaluation.discountVnd()),
+                             context.subtotalVnd()) : evaluation).toList();
+    }
+
+    private static Evaluation withBudget(Evaluation evaluation, BudgetGuard guard, long subtotalVnd) {
+        return guard == BudgetGuard.EXHAUSTED
+                ? ineligible(evaluation.view(), EligibilityReason.BUDGET_EXHAUSTED, subtotalVnd, guard)
+                : new Evaluation(evaluation.view(), true, evaluation.reason(), evaluation.discountVnd(),
+                                 evaluation.finalAmountVnd(), guard);
+    }
+
+    private static BudgetGuard guardFor(RuntimeStore.RuntimeState state, long discountVnd) {
+        if (state == null) {
+            return BudgetGuard.NOT_CHECKED;
+        }
+        return state.quantityExhausted() || state.budgetExhaustedFor(discountVnd)
+                ? BudgetGuard.EXHAUSTED : BudgetGuard.AVAILABLE;
     }
 
     public Evaluation evaluate(PromotionView view, UserCouponWalletEntity wallet,
@@ -78,14 +119,7 @@ public class VoucherEvaluationService {
 
     private BudgetGuard budgetGuard(long promotionId, long discountVnd) {
         try {
-            Optional<RuntimeStore.RuntimeState> state = runtime.read(promotionId);
-            if (state.isEmpty()) {
-                return BudgetGuard.NOT_CHECKED;
-            }
-            if (state.get().quantityExhausted() || state.get().budgetExhaustedFor(discountVnd)) {
-                return BudgetGuard.EXHAUSTED;
-            }
-            return BudgetGuard.AVAILABLE;
+            return guardFor(runtime.read(promotionId).orElse(null), discountVnd);
         } catch (RuntimeException e) {
             log.debug("Budget guard degraded for promotion {}: {}", promotionId, e.getMessage());
             return BudgetGuard.DEGRADED;

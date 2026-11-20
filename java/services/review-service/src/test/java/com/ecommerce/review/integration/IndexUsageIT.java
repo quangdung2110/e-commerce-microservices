@@ -1,6 +1,7 @@
 package com.ecommerce.review.integration;
 
 import com.ecommerce.review.domain.ModerationQueueStatus;
+import com.ecommerce.review.repository.PrivacyRepository;
 import com.ecommerce.review.repository.ReviewRepositoryQueries;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -177,6 +178,36 @@ class IndexUsageIT extends AbstractReviewIT {
 
         assertThat(plan).contains("ix_report_reporter_erasure");
         assertThat(plan).doesNotContain("Seq Scan on review_reports");
+    }
+
+    /**
+     * The daily purge reads due requests through {@code ix_privacy_hard_delete_sweep}. Since
+     * a failed purge is retried, that index covers {@code FAILED} as well as
+     * {@code ANONYMIZED}; against a table that is mostly {@code PURGED} history it is the
+     * only thing standing between the sweep and a full scan.
+     */
+    @Test
+    void thePurgeSweepUsesItsPartialIndexForBothRetryableStates() {
+        jdbc.sql("""
+                INSERT INTO privacy_erasure_requests
+                    (source_event_id, subject_user_id, subject_match_key, deletion_reason, deleted_at,
+                     hard_delete_after, status, anonymized_at, purged_at)
+                SELECT gen_random_uuid(),
+                       CASE WHEN g > 40 THEN NULL ELSE gen_random_uuid() END,
+                       decode(md5(g::text) || md5(g::text), 'hex'),
+                       'GDPR_REQUEST', now() - interval '60 days', now() - interval '30 days',
+                       (CASE WHEN g <= 20 THEN 'ANONYMIZED' WHEN g <= 40 THEN 'FAILED' ELSE 'PURGED' END)::privacy_erasure_status,
+                       now() - interval '59 days',
+                       CASE WHEN g > 40 THEN now() - interval '29 days' END
+                  FROM generate_series(1, 4000) AS g
+                """).update();
+        jdbc.sql("ANALYZE privacy_erasure_requests").update();
+
+        String plan = explain(PrivacyRepository.dueForPurgeSql(false),
+                List.of(java.time.OffsetDateTime.now(), 50));
+
+        assertThat(plan).contains("ix_privacy_hard_delete_sweep");
+        assertThat(plan).doesNotContain("Seq Scan on privacy_erasure_requests");
     }
 
     private void seedOwnedRows(String table) {

@@ -19,6 +19,7 @@ public sealed interface InitiatePaymentPreparation {
             implements InitiatePaymentPreparation {}
 
     record ProviderRejected(String transactionId) implements InitiatePaymentPreparation {}
+    record NoPaymentCreated(String transactionId, String providerOperationId) implements InitiatePaymentPreparation {}
 
     record InProgress() implements InitiatePaymentPreparation {}
     record KeyReused() implements InitiatePaymentPreparation {}

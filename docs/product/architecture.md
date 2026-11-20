@@ -2,7 +2,7 @@
 doc_id: product-architecture
 service: product
 scope: current
-status: accepted_design
+status: implemented
 owners:
   - Product Service team
 ---
@@ -16,10 +16,13 @@ flowchart LR
   ADMIN[Admin qua Gateway] --> HTTP[HTTP admin API]
   CART[Cart / Checkout] --> GRPC[gRPC catalog read]
   PDP[Product Detail BFF] --> PDR[Internal buyer-read API]
+  SEARCH -- export + snapshot --> EXP[Internal export/snapshot API]
+  PROMOTION -- chỉ snapshot --> EXP
   PROMOTION[Promotion] --> MK[Markdown consumer]
   HTTP --> APP[Application + domain]
   GRPC --> APP
   PDR --> APP
+  EXP --> APP
   MK --> APP
   APP --> PG[(PostgreSQL + outbox)]
   PG --> DBZ[Debezium]
@@ -38,6 +41,7 @@ flowchart LR
 | HTTP admin API | Validate transport, ủy quyền admin và gọi application layer |
 | gRPC catalog read | Trả catalog saleability và giá; không trả stock |
 | Internal buyer-read API | Trả projection buyer đã resolve (category path, thuộc tính, trục biến thể, media giới hạn, giá) cho Product Detail BFF; không trả stock |
+| Internal export/snapshot API | Export Category/Product kèm replay offsets cho Search full reindex; snapshot một Product cho Search và Promotion. Allowlist tách theo nhóm route (`TrustedIdentityFilter`), so khớp trên path đã decode và bỏ `;param` — đúng path Spring MVC route — nên `/%61pi/v1/...` hay `/internal/v1;x=1/...` không né được kiểm quyền (`TrustedIdentityFilterPathTest`) |
 | Application/domain | Command, validation, transaction, pricing, revision và outbox |
 | PostgreSQL repository | Write store, lock order Product → SKU |
 | Markdown consumer | Consume ACTIVE full payload/INACTIVE tombstone, guard `source_revision`, reprice SKU |

@@ -222,6 +222,32 @@ class MediaAssetIT extends AbstractReviewIT {
     }
 
     /** An attached asset is never swept: attaching removed it from the sweep. */
+    /**
+     * The daily pass works through the whole backlog, not just its first batch: with
+     * "process every DELETE_PENDING asset" (WF-REVIEW-011) a queue longer than the batch
+     * size would otherwise only ever drain from the front.
+     */
+    @Test
+    void theDailyCleanupDrainsMoreAssetsThanOneBatchHolds() {
+        for (int i = 0; i < 5; i++) {
+            mediaAssetService.issueUploadInstruction(buyer,
+                    new CommandDtos.IssueMediaUploadRequest(MediaType.IMAGE, "image/jpeg", 1024L, null));
+        }
+        jdbc.sql("""
+                UPDATE review_media_assets
+                   SET upload_state = 'DELETE_PENDING', deletion_reason = 'UNATTACHED_EXPIRED',
+                       delete_requested_at = now()
+                """).update();
+
+        int deleted = mediaCleanup.processDeletePending(2);
+
+        assertThat(deleted).isEqualTo(5);
+        assertThat(jdbc.sql("SELECT count(*) FROM review_media_assets WHERE upload_state = 'DELETED'")
+                .query(Long.class).single()).isEqualTo(5);
+        assertThat(jdbc.sql("SELECT count(*) FROM review_media_assets WHERE upload_state = 'DELETE_PENDING'")
+                .query(Long.class).single()).isZero();
+    }
+
     @Test
     void anAttachedAssetIsNeverSwept() {
         UUID eligibilityId = grantEntitlement("order-9", "p-1", "sku-1", buyer);

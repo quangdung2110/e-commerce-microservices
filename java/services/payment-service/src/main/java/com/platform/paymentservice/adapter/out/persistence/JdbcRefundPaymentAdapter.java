@@ -32,6 +32,14 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
         this.json = json;
     }
 
+    private String bindProviderIntent(String fingerprint, String intentId) {
+        try {
+            var value = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(fingerprint);
+            value.put("provider_transaction_id", intentId);
+            return json.writeValueAsString(value);
+        } catch (JsonProcessingException invalid) { throw new IllegalArgumentException("invalid fingerprint", invalid); }
+    }
+
     @Override
     public RefundPaymentPreparation prepare(
             RefundPaymentCommand command, String commandFingerprint, ProviderOperation requested,
@@ -87,9 +95,7 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
             }
 
             String providerTransactionId = (String) payment.get("provider_transaction_id");
-            String providerFingerprint = requested.requestFingerprintJson()
-                    .replace("\"provider_transaction_id\":null",
-                            "\"provider_transaction_id\":\"" + providerTransactionId + "\"");
+            String providerFingerprint = bindProviderIntent(requested.requestFingerprintJson(), providerTransactionId);
             ProviderOperation operation = new ProviderOperation(requested.id(), requested.paymentTransactionId(),
                     requested.refundTransactionId(), requested.type(), requested.providerIdempotencyKey(),
                     requested.commandIdempotencyKey(), providerFingerprint, requested.status(),
@@ -208,7 +214,8 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
                            lease_owner=NULL,lease_expires_at=NULL,updated_at=:now
                      WHERE id=:id AND status IN ('REQUESTED','UNKNOWN')
                        AND lease_owner=:owner AND lease_token=:token
-                    """).param("request_id", u.providerRequestId()).param("result", u.sanitizedProviderResultJson())
+                   AND lease_expires_at > :now
+                """).param("request_id", u.providerRequestId()).param("result", u.sanitizedProviderResultJson())
                     .param("next_retry", timestamp(u.nextRetryAt())).param("now", timestamp(u.recordedAt()))
                     .param("id", u.operationId()).param("owner", u.owner()).param("token", u.operationLeaseToken()).update();
             int command = expireCommandLease(u.idempotencyKey(), u.owner(), u.commandLeaseToken(), u.recordedAt());
@@ -364,6 +371,7 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
                        next_retry_at=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=:now
                  WHERE id=:id AND status IN ('REQUESTED','UNKNOWN')
                    AND lease_owner=:owner AND lease_token=:token
+                   AND lease_expires_at > :now
                 """).param("status", status).param("object_id", objectId).param("request_id", requestId)
                 .param("result", result).param("now", timestamp(now)).param("id", id)
                 .param("owner", owner).param("token", token).update();
@@ -379,6 +387,7 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
                        lease_owner=NULL,lease_expires_at=NULL
                  WHERE idempotency_key=:key AND action='REFUND' AND status='IN_PROGRESS'
                    AND lease_owner=:owner AND lease_token=:token
+                   AND lease_expires_at > :now
                 """).param("resource_id", refundId).param("body", body).param("now", timestamp(now))
                 .param("key", key).param("owner", owner).param("token", token).update();
     }
@@ -388,6 +397,7 @@ public final class JdbcRefundPaymentAdapter implements RefundPaymentPort {
                 UPDATE payment_idempotency SET lease_expires_at=:now,last_heartbeat_at=:now
                  WHERE idempotency_key=:key AND action='REFUND' AND status='IN_PROGRESS'
                    AND lease_owner=:owner AND lease_token=:token
+                   AND lease_expires_at > :now
                 """).param("now", timestamp(now)).param("key", key)
                 .param("owner", owner).param("token", token).update();
     }

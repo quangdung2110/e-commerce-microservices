@@ -3,7 +3,7 @@ package com.ecommerce.pdp.config;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
-import org.springframework.boot.autoconfigure.validation.ValidationAutoConfiguration;
+import org.springframework.boot.validation.autoconfigure.ValidationAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
@@ -40,7 +40,6 @@ class PdpPropertiesValidationTest {
                     "pdp.inventory.slow-call-threshold=240ms",
                     "pdp.review.enabled=true",
                     "pdp.review.base-url=http://review-service:8080",
-                    "pdp.review.service-token=secret",
                     "pdp.review.preview-limit=3",
                     "pdp.review.timeout=300ms",
                     "pdp.review.bulkhead=80",
@@ -58,13 +57,6 @@ class PdpPropertiesValidationTest {
     @DisplayName("Cấu hình đầy đủ khởi động được; Inventory tắt thì không cần base URL")
     void completeConfigurationStarts() {
         runner.run(context -> assertThat(context).hasNotFailed());
-    }
-
-    @Test
-    @DisplayName("Review bật mà thiếu token thì không khởi động")
-    void reviewWithoutTokenFails() {
-        runner.withPropertyValues("pdp.review.service-token=")
-                .run(context -> assertThat(context).getFailure().hasStackTraceContaining("PDP_REVIEW_SERVICE_TOKEN"));
     }
 
     @Test

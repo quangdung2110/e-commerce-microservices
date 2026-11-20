@@ -21,6 +21,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.equalToJson;
+import static com.github.tomakehurst.wiremock.client.WireMock.matching;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.matching;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
@@ -90,16 +91,21 @@ class ProductDetailApiTest extends AbstractPdpTest {
 
         UPSTREAMS.verify(1, getRequestedFor(urlEqualTo(PRODUCT_PATH))
                 .withHeader("X-Service-Identity", equalTo("product-detail-bff"))
-                .withHeader("X-Request-Id", equalTo("req-12345678")));
+                .withHeader("X-Request-Id", equalTo("req-12345678"))
+                .withHeader("X-Request-Timeout-Ms", matching("[0-9]{1,4}")));
         UPSTREAMS.verify(1, postRequestedFor(urlEqualTo(INVENTORY_PATH))
                 .withHeader("X-Service-Identity", equalTo("product-detail-bff"))
                 .withHeader("X-Correlation-ID", equalTo("req-12345678"))
+                .withHeader("X-Request-Id", equalTo("req-12345678"))
+                .withHeader("X-Request-Timeout-Ms", matching("[0-9]{1,4}"))
                 .withRequestBody(equalToJson(Fixtures.json(Map.of("sku_ids", List.of(
                         Fixtures.SKU_BLACK_42, Fixtures.SKU_WHITE_42, Fixtures.SKU_BLACK_46))))));
         UPSTREAMS.verify(1, getRequestedFor(urlPathEqualTo(REVIEW_PATH))
                 .withQueryParam("preview_limit", equalTo("3"))
-                .withHeader("Authorization", equalTo("Bearer " + REVIEW_TOKEN))
-                .withHeader("X-Request-Id", equalTo("req-12345678")));
+                .withHeader("X-Service-Identity", equalTo("product-detail-bff"))
+                .withoutHeader("Authorization")
+                .withHeader("X-Request-Id", equalTo("req-12345678"))
+                .withHeader("X-Request-Timeout-Ms", matching("[0-9]{1,4}")));
     }
 
     @Test
@@ -279,14 +285,14 @@ class ProductDetailApiTest extends AbstractPdpTest {
     }
 
     @Test
-    @DisplayName("Product 5xx trả 503 problem có trace_id, không Retry-After khi circuit chưa mở")
+    @DisplayName("Product 5xx trả 503 problem có trace_id và Retry-After mặc định khi circuit chưa mở")
     void productServerErrorIsUnavailable() {
         stubProduct(status(500));
 
         EntityExchangeResult<byte[]> result = getPdp("smart-watch")
                 .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
                 .expectHeader().valueEquals("Cache-Control", "no-store")
-                .expectHeader().doesNotExist("Retry-After")
+                .expectHeader().valueEquals("Retry-After", "2")
                 .expectBody().returnResult();
         JsonNode problem = body(result);
 

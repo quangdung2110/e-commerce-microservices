@@ -1,6 +1,6 @@
 # Kiểm chứng
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1) — bộ test §2 ở dạng bảng đối chiếu thật tại §2.8; phần "chưa" ở đó và các phép đo §3 là việc còn lại trước khi coi số liệu là cam kết.
 
 Bộ tài liệu này chứa nhiều khẳng định ("gửi đúng 1 email dù 5 điểm hỏng", "OTP đến trong 5 giây khi bulk đang xả") và nhiều con số giả định (README §5). File này liệt kê **test nào chứng minh khẳng định nào** và **phép đo nào thay con số nào**. Không có test và số đo, trạng thái vẫn là `proposed`.
 
@@ -10,7 +10,7 @@ Bộ tài liệu này chứa nhiều khẳng định ("gửi đúng 1 email dù 
 |---|---|---|---|
 | Unit | `go test ./...`, mọi PR | Không | Decide thuần (bảng 13 bước), template func, state ranking, backoff/jitter, hash email, cursor |
 | Golden / snapshot | `go test ./internal/templates/`, mọi PR | Không | Render 15 template × locale so với `.golden`; test injection |
-| Contract | mọi PR | Không | Consumer đọc được mọi example trong `contracts/examples/events/`; producer (outcome) sinh event validate được bằng schema; OpenAPI request/response validate |
+| Contract | mọi PR | Không (đọc `contracts/` trong repo) | Consumer đọc được mọi example nguồn trong `contracts/examples/events/`; event outcome do producer sinh và các example `notification-*` validate được bằng JSON Schema. **Chưa có**: validate response HTTP với OpenAPI inbox/internal (router test kiểm status, header và wire shape bằng tay, không bằng schema OpenAPI) |
 | Integration | `go test -tags integration`, mọi PR (testcontainers) | Postgres, Redis, Kafka, Mailpit, LocalStack | Các kịch bản §2 |
 | Load / soak | Thủ công hoặc nightly, môi trường riêng | Compose đầy đủ | Thay số giả định §3 |
 | Chaos (nhỏ) | Nightly | Như integration | Kill worker giữa chừng, tắt Redis, làm chậm Mailpit |
@@ -110,6 +110,48 @@ Hiện thực (`test/integration/e2e_ordering_test.go`): provider call được 
 | IT-PART-01 | Đồng hồ giả tới tháng sau khi chưa tạo partition | Job tạo partition chạy trước; INSERT không lỗi; metric `partition_future_months` đúng |
 | IT-PART-02 | DROP partition tháng cũ có row `PENDING` | Job từ chối drop, alert |
 
+### 2.8 Bản đồ test thật (đối chiếu 2026-10-10)
+
+Cột "Mức": **E2E** = `test/integration` (Testcontainers: Postgres, Redis, Kafka, Mailpit, fake SQS/Auth); **DB** = `test/integration` chỉ Postgres; **Redis** = `internal/infrastructure/redis` với Redis thật (build tag `integration`); **Unit** = `go test ./internal/...`, store và Redis giả trong bộ nhớ. Dòng "**chưa**" là nợ test, không phải test đã có.
+
+| ID | Test thật | Mức |
+|---|---|---|
+| IT-IDEM-01 | `TestE2E_IdempotencyLayerA` | E2E |
+| IT-IDEM-02 | `TestE2E_IdempotencyLayerB`; `TestDecide_DedupPairSemantics` | E2E, Unit |
+| IT-IDEM-03 | `TestE2E_AuthPasswordReset` | E2E |
+| IT-IDEM-04 | `TestLeaseExpiredPolicyPerLane` (chính sách theo lane), `TestPostgresReapExpiredLeases`; **chưa** có test kill process thật giữa `send` và `mark_sent` | Unit, DB |
+| IT-IDEM-05 | `TestE2E_TrackBounceAndSuppression` (event SES trùng không lưu hai lần), `TestPoller_DuplicateIsDeletedWithoutInsert` | E2E, Unit |
+| IT-IDEM-06 | `TestPostgresTransitionTrackedRanking`, `TestProcess_SendAfterDeliveredIsIgnoredLowerRank`, `TestProcess_BounceAfterDeliveredStillApplies` | DB, Unit |
+| IT-IDEM-07 | `TestRunOnce_ProcessedUnmatchedAndGiveUp`, `TestPlanUnmatched`, `TestProcess_Unmatched`; **chưa** có E2E tạm dừng worker rồi bơm event | Unit |
+| IT-IDEM-08 | `TestPostgresLeaseExpiredMarkerIsSticky`, `TestPostgresRedrive` | DB |
+| IT-LANE-01 | **chưa** (5.000 request bulk; thuộc phép đo tải §3) | — |
+| IT-LANE-02 | `TestE2E_PauseLane`, `TestPausedLaneReleasesWithoutAttempt` | E2E, Unit |
+| IT-PREF-01…04, 06 | `TestE2E_PreferenceEmailOff`, `TestE2E_CartAbandonedPolicies`, `TestDecide_Preferences`, `TestDecide_FrequencyCap` | E2E, Unit |
+| IT-PREF-05 | `TestDecide_QuietHours`, `TestNextQuietHoursEnd` | Unit |
+| IT-PREF-07 | `TestDecide_FrequencyCap` (Redis lỗi), `TestIntegration_FrequencyCapCountsAndFailsOpen` (Redis thật) | Unit, Redis |
+| IT-SUPP-01, 02 | `TestE2E_TrackBounceAndSuppression`, `TestSuppressionHashEqualSkips`, `TestSuppressionHashDifferentSupersedesAndSends`, `TestCriticalIgnoresSuppression` | E2E, Unit |
+| IT-SUPP-03 | `TestE2E_TrackComplaint`, `TestProcess_ComplaintDisablesMarketingAndEmits` | E2E, Unit |
+| IT-CTR-01…04 | `TestE2E_ProducerContractErrors`, `TestDecide_ProducerErrorsAndExpiry` | E2E, Unit |
+| IT-CTR-05 | `TestAllNotificationExamplesParse` và các test example của `handlers_test.go` (consumer đọc mọi example nguồn); `TestOutcomeEventsValidateAgainstContractSchemas`, `TestNotificationOutcomeExamplesValidate` (event outcome và example validate bằng JSON Schema) | Unit |
+| IT-CTR-06 | `TestValidateTemplateData` (negative case của schema `template_data`); **chưa** test trực tiếp sáu case của `notification-requested.schema.json` (consumer không validate envelope bằng schema đó mà bằng Decide) | Unit |
+| IT-CTR-07, 08, 09 | `TestE2E_OrderWithoutSequenceFails`, `TestE2E_OrderSequenceCollision`, `TestE2E_OrderReplayAfterDedupPurge` + `sequence_test.go` | E2E, Unit |
+| IT-ORD-01…06 | `TestE2E_OrderProviderCallsSerialisedPerOrder`, `TestE2E_OrderWaitingSequenceSuperseded`, `TestE2E_OrderLowerSequenceAfterHigher`, `TestE2E_OrderDeadLeaseOwner`, `TestE2E_OrderSequencesNeverInvert`, `TestE2E_OrderLeaseLostDuringSend` + `ordering_test.go` | E2E, Unit |
+| IT-SEND-01 | `TestE2E_InjectionNeutralised`, `TestE2E_CartAbandonedPolicies` (header bulk), golden test `internal/templates` | E2E, Unit |
+| IT-SEND-02 | **chưa** (cần toxiproxy làm chậm Mailpit) | — |
+| IT-SEND-03 | `TestBreakerOpenReleasesRowPerLane`, `TestOpenToHalfOpenToClosed`, `TestCriticalEmailSkipsClaimWhileHalfOpen`, `providerwatch` (health probe, auto-pause); **chưa** có kịch bản Mailpit lỗi 100 % trong 2 phút | Unit |
+| IT-TRACK-01 | `TestE2E_TrackBounceAndSuppression` (regex không có địa chỉ trong `raw`), `TestPoller_InsertsSanitizedAndDeletes` | E2E, Unit |
+| IT-TRACK-02 | `TestVerifier_TamperedMessage`, `TestPoller_InvalidSignatureDeletedNotInserted` | Unit |
+| IT-INBOX-01…04 | `TestInboxListPagination`, `TestInboxReadArchiveUnread` (router, store trong bộ nhớ), `TestPostgresInboxPagination` (SQL thật). Recompute unread (04) kiểm với counter giả, `TestIntegration_UnreadCounterNeverNegative` kiểm Redis thật | Unit, DB, Redis |
+| IT-OPS-01, 02 | `TestOpsLaneStateAndIdempotency`, `TestOpsSuppressionsAndReplayMode` (router), `TestPostgresOpsAndControl` | Unit, DB |
+| IT-DEL-01 | `TestE2E_UserDeleted` | E2E |
+| IT-DEL-02 | `TestE2E_DeletedUserReplayIsSanitised` | E2E |
+| IT-DEL-03 | `TestPostgresPrivacyKeyRotation` | DB |
+| IT-PII-01 | **chưa** (grep log mức debug + mọi bảng); chỉ có phần `provider_event.raw` ở IT-TRACK-01 | — |
+| IT-PART-01 | `TestPostgresPartitions` (`EnsurePartitions`, `FutureMonths`); **chưa** giả lập đồng hồ sang tháng sau | DB |
+| IT-PART-02 | `TestPostgresPartitions` (partition còn row `PENDING` bị từ chối drop) | DB |
+
+Test hạ tầng của Postgres (claim không chồng chéo, compare-and-set, migration idempotent) nằm ở `test/integration/postgres_test.go`. Vì worker của môi trường E2E chạy suốt vòng đời process, `quiesceE2E()` dừng chúng trước test Postgres đầu tiên có claim, nếu không hai bên tranh row trên máy chậm.
+
 ## 3. Đo để thay giả định
 
 README §5 giả định 40 request/s ổn định, burst 300k/2 phút, SES 50/s. Mỗi con số cần một phép đo, trên môi trường compose đầy đủ với Mailpit (không giới hạn) rồi với rate limiter bật ở quota giả lập:
@@ -138,7 +180,7 @@ Kết quả ghi vào README §5 với ngày đo và commit; giả định nào l
 
 ## 5. Tiêu chí hoàn thành kiểm chứng
 
-- Mọi test §2 pass trong CI trên PR.
+- Mọi test §2 pass, trừ các dòng ghi "chưa" ở §2.8 (nợ test đã biết). CI chạy bộ test Go này qua `.github/workflows/services.yml` (`go test ./...`, [contracts ADR-008](../../contracts/decisions/ADR-008-contract-ci-gates.md)); bộ `-tags integration` vẫn chạy tay bằng `scripts/go.sh`.
 - §3 có số đo cho từng dòng, ghi vào README §5.
 - §4 chạy được bằng một lệnh và có báo cáo.
 - Contract test cho SES thật (sandbox, credential riêng) pass ít nhất một lần trước khi nâng `contract_adoption` lên `complete`.

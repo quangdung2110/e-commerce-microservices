@@ -7,9 +7,6 @@ package api_test
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,14 +81,17 @@ func (r *stubAccountRepo) HardDelete(context.Context, []uuid.UUID) (int64, error
 	return 0, apperr.ErrInternal
 }
 
-// stubLimiter records the scopes it was asked about and denies on demand.
+// stubLimiter records the scopes and subjects it was asked about and denies on
+// demand.
 type stubLimiter struct {
-	scopes []string
-	deny   bool
+	scopes   []string
+	subjects []string
+	deny     bool
 }
 
-func (l *stubLimiter) Allow(_ context.Context, scope, _ string, rule port.RateLimitRule) (port.RateLimitResult, error) {
+func (l *stubLimiter) Allow(_ context.Context, scope, subject string, rule port.RateLimitRule) (port.RateLimitResult, error) {
 	l.scopes = append(l.scopes, scope)
+	l.subjects = append(l.subjects, subject)
 	return port.RateLimitResult{Allowed: !l.deny, RetryAfter: rule.Window}, nil
 }
 
@@ -121,25 +121,18 @@ type internalApp struct {
 	logs     *observer.ObservedLogs
 }
 
-// newInternalApp builds the internal engine the way cmd/server does. mTLS is
-// switched on by naming certificate files: the router only checks that they
-// are configured, and the tests supply the verified chain on the request.
-func newInternalApp(t *testing.T, mutualTLS bool) *internalApp {
+// newInternalApp builds the internal engine the way cmd/server does. Caller
+// admission is the X-Service-Identity allowlist; the mesh, which enforces the
+// real principal check, is not part of these tests.
+func newInternalApp(t *testing.T) *internalApp {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
 	core, logs := observer.New(zap.DebugLevel)
 	cfg := &config.Config{}
 	cfg.App = config.AppConfig{Name: "auth-service", Env: "test"}
-	cfg.Security.RateLimit.InternalPerClient = config.RateLimitRule{Limit: 600, Window: time.Minute}
-	if mutualTLS {
-		cfg.Internal = config.InternalConfig{
-			TLSCertFile:     "server.crt",
-			TLSKeyFile:      "server.key",
-			ClientCAFile:    "clients.crt",
-			AllowedClientCN: notification,
-		}
-	}
+	cfg.Security.RateLimit.InternalPerResource = config.RateLimitRule{Limit: 120, Window: time.Minute}
+	cfg.Internal = config.InternalConfig{AllowedCallers: []string{notification}}
 
 	accounts := newStubAccountRepo()
 	limiter := &stubLimiter{}
@@ -166,24 +159,22 @@ func (a *internalApp) verifiedAccount(t *testing.T) *entity.Account {
 	return account
 }
 
-// get performs a plain request; peer is the verified client chain, if any.
-func (a *internalApp) get(t *testing.T, path string, peer *tls.ConnectionState) *httptest.ResponseRecorder {
+// get performs a request as the named calling service; an empty caller sends no
+// X-Service-Identity header.
+func (a *internalApp) get(t *testing.T, path, caller string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.TLS = peer
+	return a.do(t, http.MethodGet, path, caller)
+}
+
+func (a *internalApp) do(t *testing.T, method, path, caller string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if caller != "" {
+		req.Header.Set(constants.HeaderServiceIdentity, caller)
+	}
 	rec := httptest.NewRecorder()
 	a.engine.ServeHTTP(rec, req)
 	return rec
-}
-
-// peerWithCommonName is what the TLS handshake leaves on the request once the
-// server verified the client certificate against the configured CA.
-func peerWithCommonName(cn string) *tls.ConnectionState {
-	return &tls.ConnectionState{
-		VerifiedChains: [][]*x509.Certificate{{
-			{Subject: pkix.Name{CommonName: cn}},
-		}},
-	}
 }
 
 func problemCode(t *testing.T, rec *httptest.ResponseRecorder) string {
@@ -201,10 +192,10 @@ func problemCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 // The 200 body carries exactly the four contract fields, locale serialized as
 // null, and the response is marked no-store.
 func TestNotificationContactReturnsTheContractPayload(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 	account := app.verifiedAccount(t)
 
-	rec := app.get(t, contactPath(account.ID.String()), nil)
+	rec := app.get(t, contactPath(account.ID.String()), notification)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, constants.NoStore, rec.Header().Get(constants.HeaderCacheControl))
 	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
@@ -217,18 +208,19 @@ func TestNotificationContactReturnsTheContractPayload(t *testing.T) {
 	require.JSONEq(t, `true`, string(body["email_verified"]))
 	require.JSONEq(t, `null`, string(body["locale"]))
 
-	require.Equal(t, []string{"internal-delivery:ip"}, app.limiter.scopes,
-		"the contact route shares the per-client budget of the internal API")
+	require.Equal(t, []string{"internal-contact"}, app.limiter.scopes)
+	require.Equal(t, []string{notification + ":" + account.ID.String()}, app.limiter.subjects,
+		"the budget belongs to the (calling service, user) pair, not to the client IP")
 }
 
 func TestNotificationContactOfAPendingAccountIsUnverified(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 	email, err := vo.NewEmail(testEmail)
 	require.NoError(t, err)
 	pending := entity.NewAccount(email, "hashed:password", testNow)
 	app.accounts.put(pending)
 
-	rec := app.get(t, contactPath(pending.ID.String()), nil)
+	rec := app.get(t, contactPath(pending.ID.String()), notification)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	var body struct {
@@ -239,9 +231,9 @@ func TestNotificationContactOfAPendingAccountIsUnverified(t *testing.T) {
 }
 
 func TestNotificationContactOfAnUnknownAccountIs404(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 
-	rec := app.get(t, contactPath(uuid.NewString()), nil)
+	rec := app.get(t, contactPath(uuid.NewString()), notification)
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.Equal(t, apperr.CodeAccountNotFound, problemCode(t, rec))
 	require.Equal(t, constants.NoStore, rec.Header().Get(constants.HeaderCacheControl))
@@ -250,65 +242,90 @@ func TestNotificationContactOfAnUnknownAccountIs404(t *testing.T) {
 // A deleted account was anonymized on the spot (AUTH-BR-007), so there is no
 // recipient: the caller sees the same 404 as for an unknown id.
 func TestNotificationContactOfADeletedAccountIs404(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 	account := app.verifiedAccount(t)
 	require.NoError(t, account.MarkDeleted(vo.DeletionGDPRRequest, testNow))
 
-	rec := app.get(t, contactPath(account.ID.String()), nil)
+	rec := app.get(t, contactPath(account.ID.String()), notification)
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.Equal(t, apperr.CodeAccountNotFound, problemCode(t, rec))
 	require.NotContains(t, rec.Body.String(), "@", "a problem never carries an address")
 }
 
 func TestNotificationContactRejectsANonUUIDPath(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 
-	rec := app.get(t, contactPath("not-a-uuid"), nil)
+	rec := app.get(t, contactPath("not-a-uuid"), notification)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.Equal(t, apperr.CodeValidationFailed, problemCode(t, rec))
 }
 
-func TestNotificationContactIsRateLimitedPerClient(t *testing.T) {
-	app := newInternalApp(t, false)
+func TestNotificationContactIsRateLimitedPerResource(t *testing.T) {
+	app := newInternalApp(t)
 	account := app.verifiedAccount(t)
 	app.limiter.deny = true
 
-	rec := app.get(t, contactPath(account.ID.String()), nil)
+	rec := app.get(t, contactPath(account.ID.String()), notification)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.Equal(t, apperr.CodeRateLimited, problemCode(t, rec))
 	require.Equal(t, "60", rec.Header().Get(constants.HeaderRetryAfter))
 }
 
-// With mTLS configured, the same ServiceIdentity gate as the delivery endpoint
-// applies: no verified peer is 401, the wrong peer is 403, Notification passes.
-func TestNotificationContactRequiresTheNotificationServiceIdentity(t *testing.T) {
-	app := newInternalApp(t, true)
-	account := app.verifiedAccount(t)
-	path := contactPath(account.ID.String())
+// The delivery route has its own scope and keys its budget by delivery id.
+func TestDeliveryContentIsRateLimitedPerDelivery(t *testing.T) {
+	app := newInternalApp(t)
+	deliveryID := uuid.NewString()
+	path := "/internal/v1/auth/notification-deliveries/" + deliveryID + "/content"
 
-	anonymous := app.get(t, path, nil)
+	rec := app.do(t, http.MethodPost, path, notification)
+	require.Equal(t, http.StatusNotFound, rec.Code, "the stub store holds no delivery")
+	require.Equal(t, []string{"internal-delivery"}, app.limiter.scopes)
+	require.Equal(t, []string{notification + ":" + deliveryID}, app.limiter.subjects)
+
+	app.limiter.deny = true
+	rec = app.do(t, http.MethodPost, path, notification)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+// Callers are admitted by the X-Service-Identity allowlist on both routes: no
+// header is 401, a service outside the list is 403, Notification passes. The
+// refusal happens before the rate limiter and the handler run.
+func TestInternalAPIRequiresTheNotificationServiceIdentity(t *testing.T) {
+	app := newInternalApp(t)
+	account := app.verifiedAccount(t)
+	contact := contactPath(account.ID.String())
+	delivery := "/internal/v1/auth/notification-deliveries/" + uuid.NewString() + "/content"
+
+	anonymous := app.get(t, contact, "")
 	require.Equal(t, http.StatusUnauthorized, anonymous.Code)
 	require.Equal(t, apperr.CodeUnauthorized, problemCode(t, anonymous))
 
-	stranger := app.get(t, path, peerWithCommonName("order-service"))
+	stranger := app.get(t, contact, "order-service")
 	require.Equal(t, http.StatusForbidden, stranger.Code)
 	require.Equal(t, apperr.CodeForbidden, problemCode(t, stranger))
 
-	trusted := app.get(t, path, peerWithCommonName(notification))
+	deliveryAnonymous := app.do(t, http.MethodPost, delivery, "")
+	require.Equal(t, http.StatusUnauthorized, deliveryAnonymous.Code)
+	deliveryStranger := app.do(t, http.MethodPost, delivery, "order-service")
+	require.Equal(t, http.StatusForbidden, deliveryStranger.Code)
+
+	require.Empty(t, app.limiter.scopes, "a refused caller must not spend any budget")
+
+	trusted := app.get(t, contact, notification)
 	require.Equal(t, http.StatusOK, trusted.Code, trusted.Body.String())
 
-	for _, rec := range []*httptest.ResponseRecorder{anonymous, stranger} {
+	for _, rec := range []*httptest.ResponseRecorder{anonymous, stranger, deliveryAnonymous, deliveryStranger} {
 		require.NotContains(t, rec.Body.String(), "@", "a refusal never leaks the address")
 	}
 }
 
 // The address is PII: whatever the outcome, no log line may carry it.
 func TestNotificationContactNeverLogsTheEmail(t *testing.T) {
-	app := newInternalApp(t, false)
+	app := newInternalApp(t)
 	account := app.verifiedAccount(t)
 
-	require.Equal(t, http.StatusOK, app.get(t, contactPath(account.ID.String()), nil).Code)
-	require.Equal(t, http.StatusNotFound, app.get(t, contactPath(uuid.NewString()), nil).Code)
+	require.Equal(t, http.StatusOK, app.get(t, contactPath(account.ID.String()), notification).Code)
+	require.Equal(t, http.StatusNotFound, app.get(t, contactPath(uuid.NewString()), notification).Code)
 	require.NotEmpty(t, app.logs.All(), "the access log must record the requests")
 
 	for _, entry := range app.logs.All() {

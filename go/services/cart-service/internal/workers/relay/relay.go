@@ -138,6 +138,22 @@ func (w *Worker) drainBucket(ctx context.Context, bucket int) int {
 	// acked is older than anything XREADGROUP would hand back, and relaying it
 	// late would reorder the stream.
 	relayed := w.relay(ctx, bucket, w.claim)
+
+	// Claim only returns entries idle for ClaimMinIdle, so an entry that just
+	// failed is still pending and invisible to it. Reading now would publish
+	// newer entries ahead of it. Wait until nothing is pending in the bucket.
+	opCtx, cancel = context.WithTimeout(ctx, w.cfg.OperationTimeout)
+	pending, err := w.outbox.PendingCount(opCtx, bucket)
+	cancel()
+	if err != nil {
+		w.metrics.RelayError(bucket, "pending_count")
+		w.logger.Warn("failed to count pending outbox entries", zap.Int("bucket", bucket), zap.Error(err))
+		return relayed
+	}
+	if pending > 0 {
+		return relayed
+	}
+
 	relayed += w.relay(ctx, bucket, w.read)
 	return relayed
 }

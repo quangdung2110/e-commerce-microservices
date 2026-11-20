@@ -6,7 +6,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -39,7 +39,7 @@ public class KafkaConsumerConfig {
     @Bean
     public ConsumerFactory<String, String> markdownConsumerFactory(KafkaProperties kafkaProperties,
                                                                    ProductProperties productProperties) {
-        Map<String, Object> config = new HashMap<>(kafkaProperties.buildConsumerProperties(null));
+        Map<String, Object> config = new HashMap<>(kafkaProperties.buildConsumerProperties());
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.GROUP_ID_CONFIG, productProperties.getMarkdown().getGroupId());
@@ -49,7 +49,7 @@ public class KafkaConsumerConfig {
 
     @Bean
     public ProducerFactory<String, String> deadLetterProducerFactory(KafkaProperties kafkaProperties) {
-        Map<String, Object> config = new HashMap<>(kafkaProperties.buildProducerProperties(null));
+        Map<String, Object> config = new HashMap<>(kafkaProperties.buildProducerProperties());
         config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.ACKS_CONFIG, "all");

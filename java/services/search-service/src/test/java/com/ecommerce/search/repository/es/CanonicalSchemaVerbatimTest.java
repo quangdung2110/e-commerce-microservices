@@ -30,7 +30,7 @@ class CanonicalSchemaVerbatimTest {
     private static final Path DOCS = Path.of("..", "..", "..", "docs", "search", "schema");
 
     private static final List<String> SCRIPTS = List.of(
-            "catalog_upsert", "catalog_tombstone", "availability_patch", "review_metrics_patch",
+            "catalog_upsert", "catalog_tombstone", "reindex_tombstone_copy", "availability_patch", "review_metrics_patch",
             "category_upsert", "category_tombstone", "category_product_count");
 
     private static List<String> scripts() {

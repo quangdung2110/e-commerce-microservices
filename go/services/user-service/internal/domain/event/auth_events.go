@@ -17,10 +17,10 @@ const (
 
 const authSource = "/services/auth"
 
-// AuthEnvelope is the incoming CloudEvent. Unknown optional members are kept in
-// Data as raw JSON, so a producer adding a field cannot break this consumer
-// (contracts/conventions/events.md).
-type AuthEnvelope struct {
+// IncomingEnvelope is a consumed CloudEvent, from Auth or from Notification.
+// Unknown optional members are kept in Data as raw JSON, so a producer adding a
+// field cannot break this consumer (contracts/conventions/events.md).
+type IncomingEnvelope struct {
 	SpecVersion   string          `json:"specversion"`
 	ID            string          `json:"id"`
 	Type          string          `json:"type"`
@@ -32,9 +32,13 @@ type AuthEnvelope struct {
 	Data          json.RawMessage `json:"data"`
 }
 
+// AuthEnvelope is the name the Auth consumer used before Notification events
+// were consumed too.
+type AuthEnvelope = IncomingEnvelope
+
 // Metadata carries the correlation identifiers of the consumed event forward,
 // so a downstream event stays attached to the same business flow.
-func (e *AuthEnvelope) Metadata() Metadata {
+func (e *IncomingEnvelope) Metadata() Metadata {
 	meta := Metadata{TraceParent: e.TraceParent}
 	if _, err := uuid.Parse(e.CorrelationID); err == nil {
 		meta.CorrelationID = e.CorrelationID
@@ -45,15 +49,19 @@ func (e *AuthEnvelope) Metadata() Metadata {
 // ParseAuthEnvelope decodes and structurally validates an incoming message.
 // A message that is not a CloudEvent 1.0 from Auth is rejected permanently: a
 // retry would decode exactly the same bytes.
-func ParseAuthEnvelope(payload []byte) (*AuthEnvelope, error) {
-	var envelope AuthEnvelope
+func ParseAuthEnvelope(payload []byte) (*IncomingEnvelope, error) {
+	return parseEnvelope(payload, authSource)
+}
+
+func parseEnvelope(payload []byte, wantSource string) (*IncomingEnvelope, error) {
+	var envelope IncomingEnvelope
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return nil, fmt.Errorf("event: payload is not a JSON CloudEvent: %w", err)
 	}
 	if envelope.SpecVersion != specVersion {
 		return nil, fmt.Errorf("event: unsupported CloudEvents specversion %q", envelope.SpecVersion)
 	}
-	if envelope.Source != authSource {
+	if envelope.Source != wantSource {
 		return nil, fmt.Errorf("event: unexpected source %q", envelope.Source)
 	}
 	if envelope.ID == "" || envelope.Type == "" {

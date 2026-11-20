@@ -7,8 +7,8 @@ import com.platform.paymentservice.application.port.out.FinancialOperationsQuery
 import com.platform.paymentservice.application.service.ReconciliationOperationsService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -24,12 +24,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@org.springframework.context.annotation.Import(PaymentHttpConfiguration.class)
 @WebMvcTest(PaymentOperationsController.class)
 class PaymentOperationsControllerTest {
     @Autowired MockMvc mvc;
-    @MockBean WebhookReplayService replays;
-    @MockBean FinancialOperationsQueryPort financialQueries;
-    @MockBean ReconciliationOperationsService reconciliation;
+    @MockitoBean WebhookReplayService replays;
+    @MockitoBean FinancialOperationsQueryPort financialQueries;
+    @MockitoBean ReconciliationOperationsService reconciliation;
 
     @Test
     void schedules_replay_with_required_attribution() throws Exception {
@@ -37,6 +38,7 @@ class PaymentOperationsControllerTest {
                 .thenReturn(new WebhookReplayResult(WebhookReplayResult.Outcome.SCHEDULED, 202));
 
         mvc.perform(post("/internal/v1/payment/webhooks/{id}/replay", "evt_123")
+                        .header("X-Service-Identity", "finance-ops")
                         .header("X-Actor", "maker-user")
                         .header("X-Approver", "checker-user")
                         .header("X-Correlation-Id", "corr-1")
@@ -50,6 +52,7 @@ class PaymentOperationsControllerTest {
     @Test
     void rejects_same_maker_and_checker() throws Exception {
         mvc.perform(post("/internal/v1/payment/webhooks/{id}/replay", "evt_123")
+                        .header("X-Service-Identity", "finance-ops")
                         .header("X-Actor", "same-user")
                         .header("X-Approver", "same-user")
                         .header("X-Correlation-Id", "corr-1")
@@ -61,20 +64,67 @@ class PaymentOperationsControllerTest {
     }
 
     @Test
+    void missing_frozen_field_cannot_silently_unfreeze() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/internal/v1/payment/reconciliation/freeze")
+                .header("X-Service-Identity", "finance-ops")
+                .header("X-Actor", "maker-user").header("X-Approver", "checker-user")
+                .header("X-Correlation-Id", "corr-freeze").header("Idempotency-Key", "freeze-idempotency-0001")
+                .contentType("application/json").content("{\"cause_ref\":\"INC-1\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+        org.mockito.Mockito.verifyNoInteractions(reconciliation);
+    }
+
+    @Test
     void returns_immutable_journal_with_contract_field_names() throws Exception {
-        when(financialQueries.findJournal("FJN_123")).thenReturn(Optional.of(
-                new FinancialOperationsQueryPort.Journal("FJN_123", "CAPTURE", 1000,
+        when(financialQueries.findJournal("FJN_01K5V7M4R8Q2K7V6W5X1Y0ZABE")).thenReturn(Optional.of(
+                new FinancialOperationsQueryPort.Journal("FJN_01K5V7M4R8Q2K7V6W5X1Y0ZABE", "CAPTURE", 1000,
                         "VND", Instant.parse("2026-09-25T10:00:00Z"), List.of(
                         new FinancialOperationsQueryPort.Line((short) 1,
                                 "PROVIDER_RECEIVABLE", "DEBIT", 1000, "VND"),
                         new FinancialOperationsQueryPort.Line((short) 2,
                                 "CUSTOMER_PAYMENT_CLEARING", "CREDIT", 1000, "VND")))));
 
-        mvc.perform(get("/internal/v1/payment/ledger/journals/{id}", "FJN_123")
+        mvc.perform(get("/internal/v1/payment/ledger/journals/{id}", "FJN_01K5V7M4R8Q2K7V6W5X1Y0ZABE")
+                        .header("X-Service-Identity", "accounting-ops")
                         .header("X-Actor", "finance-user")
                         .header("X-Correlation-Id", "corr-journal"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.journal_id").value("FJN_123"))
+                .andExpect(jsonPath("$.journal_id").value("FJN_01K5V7M4R8Q2K7V6W5X1Y0ZABE"))
                 .andExpect(jsonPath("$.lines[0].line_no").value(1));
+    }
+
+    // Payment ADR-028: valid maker-checker headers are not enough without an allowlisted caller.
+    @Test
+    void missing_service_identity_is_401_before_any_operation() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/internal/v1/payment/reconciliation/freeze")
+                        .header("X-Actor", "maker-user").header("X-Approver", "checker-user")
+                        .header("X-Correlation-Id", "corr-anon").header("Idempotency-Key", "freeze-idempotency-0002")
+                        .contentType("application/json").content("{\"frozen\":false,\"cause_ref\":\"INC-1\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Cache-Control", "private, no-store"))
+                .andExpect(jsonPath("$.code").value("UNAUTHENTICATED"))
+                .andExpect(jsonPath("$.retryable").value(false))
+                .andExpect(jsonPath("$.correlation_id").value("corr-anon"));
+        org.mockito.Mockito.verifyNoInteractions(reconciliation, replays, financialQueries);
+    }
+
+    @Test
+    void order_service_cannot_operate_payment() throws Exception {
+        mvc.perform(post("/internal/v1/payment/webhooks/{id}/replay", "evt_123")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Actor", "maker-user")
+                        .header("X-Approver", "checker-user")
+                        .header("X-Correlation-Id", "corr-order")
+                        .header("Idempotency-Key", "replay-idempotency-0003")
+                        .contentType("application/json")
+                        .content("{\"cause_ref\":\"INC-1\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mvc.perform(get("/internal/v1/payment/review-cases")
+                        .header("X-Service-Identity", "order-service")
+                        .header("X-Actor", "finance-user")
+                        .header("X-Correlation-Id", "corr-order"))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(reconciliation, replays, financialQueries);
     }
 }

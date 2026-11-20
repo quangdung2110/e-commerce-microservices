@@ -278,3 +278,36 @@ func TestHelpers(t *testing.T) {
 	assert.True(t, mentionsAddress("Invalid email address"))
 	assert.False(t, mentionsAddress("Header is too long"))
 }
+
+// healthSES answers GetAccount (GET /v2/email/account) with a canned body.
+func healthSES(t *testing.T, status int, body string) *Sender {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v2/email/account", r.URL.Path)
+		assert.Equal(t, http.MethodGet, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client := sesv2.New(sesv2.Options{
+		Region:       "ap-southeast-1",
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", ""),
+		BaseEndpoint: aws.String(srv.URL),
+		Retryer:      aws.NopRetryer{},
+	})
+	return NewSenderWithClient(client, testConfig(), clock.NewFake(time.Unix(1_700_000_000, 0)), telemetry.New(), nil)
+}
+
+func TestSender_HealthCheck(t *testing.T) {
+	t.Run("sending enabled", func(t *testing.T) {
+		require.NoError(t, healthSES(t, http.StatusOK, `{"SendingEnabled":true}`).HealthCheck(context.Background()))
+	})
+	t.Run("sending disabled is unhealthy", func(t *testing.T) {
+		err := healthSES(t, http.StatusOK, `{"SendingEnabled":false}`).HealthCheck(context.Background())
+		require.ErrorContains(t, err, "sending is disabled")
+	})
+	t.Run("API error is unhealthy", func(t *testing.T) {
+		require.Error(t, healthSES(t, http.StatusServiceUnavailable, `{"message":"down"}`).HealthCheck(context.Background()))
+	})
+}

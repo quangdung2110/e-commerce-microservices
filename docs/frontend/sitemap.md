@@ -44,6 +44,13 @@ Layout: `app/(site)/layout.tsx` (header + footer).
 | `/c/[slug]` | Trang danh mục với facet lọc thuộc tính | `GET /api/v2/search/products?category={slug}`, `GET /api/v2/search/categories/{category_id}/facets` | Công khai | 4 | có |
 | `/products/[slug]` | Chi tiết sản phẩm: gallery, chọn biến thể, giá, tình trạng hàng, tóm tắt đánh giá, thêm vào giỏ | `GET /api/v1/storefront/products/{slug}` (Product Detail BFF) | Công khai | 4 | có — PDP BFF, UNKNOWN degrade độc lập |
 | `/products/[slug]/reviews` | Toàn bộ đánh giá đã duyệt, lọc theo sao/SKU/có ảnh | `GET /api/v1/reviews/products/{product_id}`, `GET …/aggregate` | Công khai | 4 | có |
+| `/help` | Trung tâm trợ giúp và lối tắt đơn hàng/tài khoản | Nội dung tĩnh trong `lib/help-content.ts` | Công khai | UI 17/10/2026 | có |
+| `/help/[slug]` | Giới thiệu, liên hệ, trả hàng, bảo hành, vận chuyển, điều khoản, quyền riêng tư, cookie | Nội dung đối chiếu backend; không gọi API, 8 bài dựng tĩnh, slug lạ trả 404 | Công khai | UI 17/10/2026 | có |
+
+Từ 17/10/2026, trang chủ có ảnh lifestyle lưu local với attribution, hiển thị sản phẩm mới
+trước danh mục; dữ liệu Search tải trong Suspense để không chặn hero. Search/category
+giữ sidebar từ `lg`, dưới `lg` dùng Sheet có số bộ lọc; xóa bộ lọc giữ từ khóa và route
+danh mục, trả về `in_stock=false`. Xem [báo cáo UI](./storefront-ui-update-2026-10-17.md).
 
 ## 2. Xác thực
 
@@ -66,7 +73,7 @@ Layout: `app/(site)/(protected)/layout.tsx` (bọc `RequireAuth`).
 | Route | Màn hình | API chính | Quyền | Bước | Hiện trạng |
 |---|---|---|---|---|---|
 | `/cart` | Giỏ hàng: đổi số lượng theo delta, xoá đơn/nhiều dòng, cảnh báo đổi giá, xử lý giá chưa xác minh | `GET /api/v1/carts/mine`, `POST/DELETE /api/v1/carts/mine/items` | Đăng nhập | 5 | có — protected, Cart v1/Money, idempotency retry, cache chung theo account; nút sang checkout ở bước 6 |
-| `/checkout` | Chọn địa chỉ giao, chọn voucher, xem báo giá, đặt hàng | `POST /api/v1/checkout/preview` (tải trang gọi không kèm `previous_checkout_token`; `409 SUBMISSION_IN_PROGRESS` → màn trạng thái), `POST …/submit`, `GET …/submissions/{checkout_token}`; `GET /api/v1/users/me/addresses`; voucher: `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`, `PUT /api/v1/me/promotion-vouchers/{id}` (body rỗng), `POST /api/v1/me/promotion-voucher-claims`; xử lý lỗi theo `action` của `CheckoutProblem` | Đăng nhập | 6, 11 | có — checkout không voucher, token recovery/polling/Stripe; voucher bước 11 và live còn chờ |
+| `/checkout` | Chọn địa chỉ giao, chọn voucher, xem báo giá, đặt hàng | `POST /api/v1/checkout/preview` (tải trang gọi không kèm `previous_checkout_token`; `409 SUBMISSION_IN_PROGRESS` → màn trạng thái), `POST …/submit`, `GET …/submissions/{checkout_token}`; `GET /api/v1/users/me/addresses`; voucher: `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`, `PUT /api/v1/me/promotion-vouchers/{id}` (body rỗng), `POST /api/v1/me/promotion-voucher-claims`; xử lý lỗi theo `action` của `CheckoutProblem` | Đăng nhập | 6, 11 | có — khay voucher, save/claim, báo giá mới, token recovery/polling/Stripe; live toàn luồng và visual QA còn chờ ([bước 11](./step-11-verification.md)) |
 | `/orders/[orderId]/payment` | Thanh toán bằng Stripe Payment Element cho đơn từ checkout và thanh toán lại | `GET /api/v1/orders/{id}/payment-attempts/{n}`, `POST /api/v1/orders/{id}/payment-attempts` | Đăng nhập | 6, 7 | có — nối submission usable của bước 6; chờ Stripe Sandbox E2E |
 | `/orders/[orderId]/payment/complete` | Trang `return_url` sau khi Stripe chuyển hướng (3DS); poll Order vì webhook là nguồn cuối | `GET /api/v1/orders/{id}` (polling) | Đăng nhập | 6, 7 | có |
 
@@ -81,7 +88,7 @@ Layout: `app/(site)/(protected)/layout.tsx` (bọc `RequireAuth`).
 | `/reviews/new?eligibility=` | Viết đánh giá, tải ảnh/video | `POST /api/v1/reviews/media/upload-urls`, `PUT` thẳng storage, `POST /api/v1/reviews`, `GET /api/v1/reviews/me/eligibilities/{id}` (đọc phục hồi) | Đăng nhập | 9 | có — không idempotency key, phục hồi theo eligibility |
 | `/reviews/[reviewId]` | Xem đánh giá của mình (kể cả khi bị ẩn/gỡ) và sửa đúng một lần khi còn `APPROVED` | `GET /api/v1/reviews/me/{id}`, `PATCH /api/v1/reviews/{id}` | Đăng nhập | 9 | có — PATCH chỉ gửi trường đổi; media là thay toàn bộ |
 | `/notifications?filter=unread` | Hộp thông báo: đánh dấu đã đọc/chưa đọc, ẩn, đọc tất cả; mở thông báo chỉ theo link cùng origin | `GET /api/v1/notifications/inbox`, `PATCH/DELETE …/inbox/{id}`, `POST …/mark-all-read` | Đăng nhập | 9 | có |
-| `/vouchers` | Ví voucher của tôi | — | Đăng nhập | — | chờ API |
+| `/vouchers` | Ví voucher của tôi: tất cả/chưa dùng/đã dùng/hết hạn, điều kiện, hạn dùng và đơn đã dùng | `GET /api/v1/me/promotion-vouchers` | Đăng nhập | B01 | có — API đọc ví độc lập, phân trang cursor, trạng thái hiệu lực; xem [báo cáo](./voucher-wallet-2026-10-20.md) |
 
 Nút báo cáo đánh giá (`POST /api/v1/reviews/{id}/reports`) nằm ngay trong danh sách đánh
 giá ở PDP, không có route riêng. Chuông thông báo trên header dùng
@@ -136,6 +143,8 @@ sửa kho phải gửi `expected_revision` ([Inventory ADR-027](../inventory/dec
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
 | `/admin/inventory` | Trang tra cứu: nhập mã kho, mã SKU, mã movement, mã lệnh | — | 3 | có — đã kiểm chứng live |
+| `/admin/inventory/operations?view=` | Kho, tồn, movement; queue xuất kho, kiểm định, cách ly và form inspection/disposition/reversal | Operational queries và commands của `inventory/admin/v1` | 12 | có — code, xem step-12-verification |
+| `/admin/inventory/returns?order_id=` | Tìm yêu cầu trả theo đơn | `GET …/refund-scopes?order_id=` | 12 | có — code |
 | `/admin/inventory/warehouses/new` | Tạo kho | `POST /api/v1/admin/inventory/warehouses` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/warehouses/[warehouseId]` | Xem và sửa kho (tên, địa chỉ, nhận phân bổ mới, ưu tiên) | `GET/PATCH /api/v1/admin/inventory/warehouses/{id}` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/stock/[warehouseId]/[skuId]` | Toàn bộ bucket tồn của một SKU tại một kho | `GET /api/v1/admin/inventory/stock-positions/{wh}/{sku}` | 3 | có — đã kiểm chứng live |
@@ -144,7 +153,7 @@ sửa kho phải gửi `expected_revision` ([Inventory ADR-027](../inventory/dec
 | `/admin/inventory/movements/[movementId]` | Bằng chứng movement, tạo reversal | `GET /api/v1/admin/inventory/stock-movements/{id}`, `POST …/reversals` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/commands/[commandId]` | Kết quả của một lệnh admin | `GET /api/v1/admin/inventory/commands/{id}` | 3 | có — đã kiểm chứng live |
 | `/admin/inventory/reservations/[orderId]` | Phân bổ của một đơn theo kho; ghi nhận xuất kho từng dòng | `GET /api/v1/admin/inventory/reservations/{order_id}`, `POST /api/v1/admin/inventory/physical-dispatches` | 8 | có — chờ kiểm chứng live |
-| `/admin/inventory/refund-scopes/[refundScopeId]` | Hàng trả: nhận hàng vào cách ly, kiểm định PASS/FAIL, xử lý hàng cách ly | `GET /api/v1/admin/inventory/refund-scopes/{id}`, `POST …/return-receipts`, `…/inspections`, `…/quarantine-dispositions[/{id}/reversals]` | 12 | mới |
+| `/admin/inventory/refund-scopes/[refundScopeId]` | Counter hàng trả, nhận vào cách ly, link queue kiểm định/cách ly | `GET /api/v1/admin/inventory/refund-scopes/{id}`, `POST …/return-receipts` | 12 | có — code; mutation chờ live |
 
 ### 4.4. Đơn hàng
 
@@ -172,7 +181,7 @@ breadcrumb, `campaign_id` lấy từ chính resource.
 
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
-| `/admin/reviews?status=` | Hàng đợi kiểm duyệt `REPORTED` / `HIDDEN_BY_REPORT`; panel bên cạnh để gỡ báo cáo, phản hồi chính thức, takedown | `GET /api/v1/admin/reviews`, `POST …/report-dismissals`, `PUT …/reply`, `POST …/takedown` | 12 | mới |
+| `/admin/reviews?status=` | Hàng đợi kiểm duyệt `REPORTED` / `HIDDEN_BY_REPORT`; panel bên cạnh để gỡ báo cáo, phản hồi chính thức, takedown | `GET /api/v1/admin/reviews`, `POST …/report-dismissals`, `PUT …/reply`, `POST …/takedown` | 12 | có — code/offline; chờ live |
 
 Không có API đọc một review cho admin, nên chi tiết review mở trong panel từ dòng danh
 sách, không có route riêng.
@@ -181,8 +190,9 @@ sách, không có route riêng.
 
 | Route | Màn hình | API chính | Bước | Hiện trạng |
 |---|---|---|---|---|
-| `/admin/system/search-reindex` | Chạy full reindex Search và theo dõi tiến độ | `POST /api/v2/search/reindex-runs`, `GET …/{run_id}` | 12 | mới |
-| `/admin/system/account-deletion` | Xoá tài khoản theo `account_id` (không thể hoàn tác) | `POST /api/v1/auth/admin/accounts/{id}/deletion-requests` | 12 | mới |
+| `/admin/system` | Lối vào các công cụ hệ thống | — | 12 | có |
+| `/admin/system/search-reindex` | List/tra lượt, full reindex, tiến độ, huỷ và rollback | `GET/POST /api/v2/search/reindex-runs`, `GET …/{run_id}`, `POST …/cancellation`, `POST …/rollback` | 12 | có — code/offline; chờ live |
+| `/admin/system/account-deletion` | Xoá tài khoản theo `account_id` (không thể hoàn tác) | `POST /api/v1/auth/admin/accounts/{id}/deletion-requests` | 12 | có — code/offline; không thử xoá tài khoản thật |
 
 ### 4.8. Không có route
 
@@ -203,7 +213,7 @@ lộ trình.
 
 | Khoảng trống | Route bị ảnh hưởng | Cần gì |
 |---|---|---|
-| Không có API liệt kê voucher trong ví của người dùng | `/vouchers` | Endpoint đọc wallet không cần checkout context |
+| Đã bổ sung API liệt kê ví (20/10/2026) | `/vouchers` | `GET /api/v1/me/promotion-vouchers`, không cần checkout context; B01 đã triển khai |
 | User build lỗi thiếu checksum `golang.org/x/crypto`; Cart/Promotion cùng publish host 8085 | `/checkout` và live bước 6 | Đồng bộ module graph User và cổng Compose; bằng chứng tái hiện ở [step-6-verification](./step-6-verification.md) |
 | Payment README module còn nói chưa có runtime, trong khi code/Gate 3 đã hiện thực | `/checkout`, Stripe | Đồng bộ README; Sandbox E2E cần Stripe test keys và webhook thật, chưa có bằng chứng live |
 | MFA cho `ADMIN` là production gate; Auth chưa có MFA | Toàn bộ `/admin/inventory/**` (production) | ADR Auth/gateway phát hành và chuyển tiếp MFA assertion; dev/local chạy với role `ADMIN` |

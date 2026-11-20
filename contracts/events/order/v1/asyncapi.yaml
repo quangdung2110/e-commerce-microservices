@@ -1,10 +1,12 @@
 asyncapi: 3.0.0
 info:
   title: Order Service Integration Events
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Provider-owned Order facts with registered consumers, plus the provider-owned
-    Payment, Inventory and Delivery facts consumed by Order workflows. Order publishes
+    Payment and Inventory facts consumed by Order workflows. There is no Delivery fact:
+    a line becomes DELIVERED only through the Admin delivery-confirmation command of the
+    Order HTTP API (Order ADR-021). Order publishes
     only PAID for Cart cleanup and COMPLETED for Review eligibility, plus
     NOTIFICATION_REQUESTED commands on the Notification-owned transactional lane. Delivery is
     at-least-once; consumers deduplicate by CloudEvents id.
@@ -75,14 +77,6 @@ channels:
         $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/reservationLineDispatched'
       allItemsInspectionCompleted:
         $ref: '../../inventory/v1/asyncapi.yaml#/components/messages/allItemsInspectionCompleted'
-  deliveryFacts:
-    address: t.delivery.order.events.v1
-    description: Delivery-owned verified customer-delivery facts accepted by Order.
-    x-owner: delivery-service
-    x-message-key: order_id
-    messages:
-      orderLineDelivered:
-        $ref: '../../delivery/v1/asyncapi.yaml#/components/messages/orderLineDelivered'
   notificationRequests:
     address: t.notification.transactional.v1
     description: >-
@@ -107,7 +101,7 @@ operations:
   publishOrderCompleted:
     action: send
     channel: { $ref: '#/channels/orderEvents' }
-    summary: Publish once after every line is delivered by verified Delivery proof and the master completion CAS succeeds.
+    summary: Publish once after the Admin delivery confirmation of the last line and the master completion CAS succeed, in the same transaction.
     x-consumers: [review-service]
     messages: [{ $ref: '#/channels/orderEvents/messages/orderCompleted' }]
   publishNotificationRequests:
@@ -169,12 +163,6 @@ operations:
     messages:
       - { $ref: '#/channels/inventoryOrderFacts/messages/reservationLineDispatched' }
       - { $ref: '#/channels/inventoryOrderFacts/messages/allItemsInspectionCompleted' }
-  consumeDeliveryFacts:
-    action: receive
-    channel: { $ref: '#/channels/deliveryFacts' }
-    summary: Consume the only fact allowed to move one Order line from DISPATCHED to DELIVERED.
-    x-consumer-group: order-delivery-consumer
-    messages: [{ $ref: '#/channels/deliveryFacts/messages/orderLineDelivered' }]
 components:
   messages:
     orderPaid:

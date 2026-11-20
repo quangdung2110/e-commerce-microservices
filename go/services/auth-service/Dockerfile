@@ -1,19 +1,20 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 
 WORKDIR /app
 
 RUN apk add --no-cache ca-certificates
 
-COPY go.mod go.sum ./
+COPY observability /observability
+COPY services/auth-service/go.mod services/auth-service/go.sum ./
 RUN go mod download
 
-COPY . .
+COPY services/auth-service/ .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags '-w -s' -o auth-service ./cmd/server
+RUN --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -p 2 -trimpath -ldflags '-w -s' -o auth-service ./cmd/server
 
-FROM alpine:3.20
+FROM alpine:3.23
 
 RUN apk --no-cache add ca-certificates tzdata wget
 

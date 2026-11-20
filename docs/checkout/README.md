@@ -1,7 +1,7 @@
 ---
 doc_id: checkout-overview
 service: checkout-service
-scope: target
+scope: current
 status: implemented
 owners:
   - Checkout Service team
@@ -30,9 +30,9 @@ checkout trong Redis.
 |---|---|
 | Triển khai | `implemented`: `java/services/checkout-service`; compose chạy `checkout-service` (cổng host `8096`) và `checkout-redis` riêng |
 | Runtime | Java 21, Spring Boot WebFlux, Resilience4j, Lettuce, grpc-java ([ADR-013](./decisions/ADR-013-java-spring-webflux-runtime.md)); module `java/services/checkout-service`, package `com.ecommerce.checkout` |
-| Tài liệu | Overview/interfaces đã đối chiếu runtime; các SLO/production gate vẫn là mục tiêu thiết kế. Stripe E2E theo [runbook](../frontend/checkout-local-runbook.md), không suy ra từ trạng thái implemented |
+| Tài liệu | Mọi file trong `docs/checkout` đã đối chiếu với code, OpenAPI và test (2026-10-09); các SLO, ngân sách resilience và production gate vẫn là giá trị khởi điểm chờ load test. Stripe E2E theo [runbook](../frontend/checkout-local-runbook.md), không suy ra từ trạng thái implemented |
 | Contract adoption | `pilot` ([catalog](../../contracts/catalog/services.yaml)); contract test validate mọi response với OpenAPI và mọi fixture provider với OpenAPI/proto của provider |
-| Gateway route | Bốn router và ba profile rate limit `checkout-*` chạy trong compose local; production chỉ bật theo [gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc) khi readiness và load test đạt |
+| Gateway route | Bốn router chạy trong compose local: ba profile rate limit `checkout-*` cho Preview, Submit và khay voucher, còn status read dùng `api-authenticated`; production chỉ bật theo [gateway matrix](../gateway/runtime-contract.md#5-ma-trận-định-tuyến-bắt-buộc) khi readiness và load test đạt |
 
 ## 2. Mục tiêu
 
@@ -65,7 +65,7 @@ Trang checkout gọi thẳng service sở hữu cho các thao tác sau; Checkout
 |---|---|---|
 | Đổi số lượng, xoá sản phẩm | `/api/v1/carts/mine`, `/api/v1/carts/mine/items` | Cart |
 | Liệt kê, thêm, sửa địa chỉ | `/api/v1/users/me/addresses/**` | User |
-| Lưu voucher `PUBLIC_SAVE` | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` (body rỗng) | Promotion |
+| Lưu voucher `PUBLIC_SAVE` | `PUT /api/v1/me/promotion-vouchers/{promotion_id}` (body `{}`, không `context`) | Promotion |
 | Nhận voucher `LIMITED_CLAIM` | `POST /api/v1/me/promotion-voucher-claims` | Promotion |
 | Thanh toán bằng Stripe, thanh toán lại, xem đơn | `/api/v1/orders/**` | Order |
 
@@ -155,9 +155,10 @@ Giải thích chi tiết ở [domain.md](./domain.md#luật-nghiệp-vụ).
 - Chưa có kiểm thử end-to-end tự động qua Cart, User, Product, Inventory, Promotion và Order
   thật: các test của Checkout dùng fixture đã được validate với contract của từng provider
   (xem [development.md](./development.md#test-bắt-buộc)).
-- Cổng internal của User giới hạn `internal_per_client` 600 request/phút theo IP, dùng chung cho
-  mọi pod Checkout; ở mức 20 RPS Preview mỗi pod sẽ gặp `429` và Checkout trả `503`. Nâng giới
-  hạn này cho principal `checkout-service` trước load test.
+- Cổng internal của User giới hạn `internal_per_user` 120 request/phút cho mỗi cặp (service gọi,
+  `user_id`) ([User ADR-008](../user/decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md));
+  nó không còn là một bucket theo IP dùng chung cho mọi pod Checkout. Một user bấm Preview liên
+  tục vẫn có thể gặp `429` và Checkout trả `503`; kiểm tra lại ngưỡng khi load test.
 - Product gRPC không có nhãn biến thể: báo giá trả `variant_attributes` dạng mã → giá trị
   và Order nhận `variant_name` vắng mặt cho tới khi Product bổ sung nhãn.
 - User snapshot không có tên tỉnh/huyện/xã; Order nhận `province_name`, `district_name`,
@@ -165,3 +166,5 @@ Giải thích chi tiết ở [domain.md](./domain.md#luật-nghiệp-vụ).
 - Chưa có tier authority: `user_tier` luôn omit, rule theo tier không match.
 - Rate limit Gateway hiện là in-memory per replica; production cần Redis-backed shared
   state như [gateway §7](../gateway/runtime-contract.md#7-chính-sách-rate-và-concurrency).
+- Chưa có exporter OTLP: span ([operations.md](./operations.md#span)) chỉ tồn tại trong process
+  và được tương quan qua `trace_id`; xuất trace là việc chung của nền tảng, chưa service Java nào có.

@@ -1,0 +1,379 @@
+ M contracts/ADOPTION.md
+ M contracts/CHANGELOG.md
+ M contracts/README.md
+ M contracts/buf.yaml
+ M contracts/catalog/interactions.yaml
+ M contracts/catalog/services.yaml
+ M contracts/conventions/README.md
+ M contracts/conventions/compatibility.md
+ M contracts/conventions/data-types.md
+ M contracts/conventions/documentation-style.md
+ M contracts/conventions/events.md
+ M contracts/conventions/grpc.md
+ M contracts/conventions/http.md
+ M contracts/conventions/idempotency.md
+ M contracts/conventions/security-and-pii.md
+ M contracts/conventions/tracing.md
+ M contracts/decisions/ADR-001-contract-strategy.md
+ M contracts/events/auth/v1/README.md
+ M contracts/events/auth/v1/asyncapi.yaml
+ M contracts/events/auth/v1/schemas/auth-event-common.schema.json
+ M contracts/events/auth/v1/schemas/password-reset-requested.schema.json
+ M contracts/events/auth/v1/schemas/user-account-locked.schema.json
+ M contracts/events/auth/v1/schemas/user-deleted.schema.json
+ M contracts/events/auth/v1/schemas/user-email-changed.schema.json
+ M contracts/events/auth/v1/schemas/user-otp-requested.schema.json
+ M contracts/events/auth/v1/schemas/user-password-changed.schema.json
+ M contracts/events/auth/v1/schemas/user-unlocked.schema.json
+ M contracts/events/auth/v1/schemas/user-verified-success.schema.json
+ M contracts/events/cart/v1/README.md
+ M contracts/events/cart/v1/asyncapi.yaml
+ M contracts/events/cart/v1/schemas/cart-abandoned.schema.json
+ D contracts/events/delivery/v1/asyncapi.yaml
+ M contracts/events/inventory/v1/README.md
+ M contracts/events/inventory/v1/asyncapi.yaml
+ M contracts/events/inventory/v1/schemas/all-items-inspection-completed.schema.json
+ M contracts/events/inventory/v1/schemas/inventory-event-common.schema.json
+ M contracts/events/inventory/v1/schemas/reservation-line-dispatched.schema.json
+ M contracts/events/inventory/v1/schemas/sku-availability-changed.schema.json
+ M contracts/events/notification/v1/asyncapi.yaml
+ M contracts/events/notification/v1/schemas/notification-bounced.schema.json
+ M contracts/events/notification/v1/schemas/notification-complaint-received.schema.json
+ M contracts/events/notification/v1/schemas/notification-delivered.schema.json
+ M contracts/events/notification/v1/schemas/notification-event-common.schema.json
+ M contracts/events/notification/v1/schemas/notification-failed.schema.json
+ M contracts/events/notification/v1/schemas/notification-requested.schema.json
+ M contracts/events/notification/v1/templates/ORDER_CANCELLED.schema.json
+ M contracts/events/notification/v1/templates/ORDER_COMPLETED.schema.json
+ M contracts/events/notification/v1/templates/ORDER_CONFIRMED.schema.json
+ M contracts/events/notification/v1/templates/ORDER_PAYMENT_FAILED.schema.json
+ M contracts/events/notification/v1/templates/ORDER_REFUNDED.schema.json
+ M contracts/events/notification/v1/templates/catalog.yaml
+ M contracts/events/order/v1/README.md
+ M contracts/events/order/v1/asyncapi.yaml
+ M contracts/events/order/v1/schemas/order-completed.schema.json
+ M contracts/events/order/v1/schemas/order-paid.schema.json
+ M contracts/events/payment/internal/v1/README.md
+ M contracts/events/payment/internal/v1/asyncapi.yaml
+ M contracts/events/payment/internal/v1/schemas/stripe-webhook-received.schema.json
+ M contracts/events/payment/v2/README.md
+ M contracts/events/payment/v2/asyncapi.yaml
+ M contracts/events/payment/v2/schemas/dispute-funds-reinstated.schema.json
+ M contracts/events/payment/v2/schemas/dispute-funds-withdrawn.schema.json
+ M contracts/events/payment/v2/schemas/dispute-lost.schema.json
+ M contracts/events/payment/v2/schemas/dispute-opened.schema.json
+ M contracts/events/payment/v2/schemas/dispute-won.schema.json
+ M contracts/events/payment/v2/schemas/payment-canceled.schema.json
+ M contracts/events/payment/v2/schemas/payment-event-common.schema.json
+ M contracts/events/payment/v2/schemas/payment-expired.schema.json
+ M contracts/events/payment/v2/schemas/payment-failed.schema.json
+ M contracts/events/payment/v2/schemas/payment-initiated.schema.json
+ M contracts/events/payment/v2/schemas/payment-succeeded.schema.json
+ M contracts/events/payment/v2/schemas/refund-failed.schema.json
+ M contracts/events/payment/v2/schemas/refund-initiated.schema.json
+ M contracts/events/payment/v2/schemas/refund-processing.schema.json
+ M contracts/events/payment/v2/schemas/refund-reversed.schema.json
+ M contracts/events/payment/v2/schemas/refund-succeeded.schema.json
+ M contracts/events/product/v1/asyncapi.yaml
+ M contracts/events/product/v1/schemas/catalog-common.schema.json
+ M contracts/events/product/v1/schemas/catalog-reindex-requested.schema.json
+ M contracts/events/product/v1/schemas/category-deleted.schema.json
+ M contracts/events/product/v1/schemas/category-upserted.schema.json
+ M contracts/events/product/v1/schemas/product-deleted.schema.json
+ M contracts/events/product/v1/schemas/product-markdown-snapshot.schema.json
+ M contracts/events/product/v1/schemas/sku-deleted.schema.json
+ M contracts/events/product/v1/schemas/sku-upserted.schema.json
+ M contracts/events/promotion/v1/README.md
+ M contracts/events/promotion/v1/asyncapi.yaml
+ M contracts/events/promotion/v1/schemas/product-markdown-snapshot.schema.json
+ M contracts/events/promotion/v1/schemas/promotion-event-common.schema.json
+ M contracts/events/review/v1/README.md
+ M contracts/events/review/v1/asyncapi.yaml
+ M contracts/events/review/v1/schemas/review-approved.schema.json
+ M contracts/events/review/v1/schemas/review-created.schema.json
+ M contracts/events/review/v1/schemas/review-event-common.schema.json
+ M contracts/events/review/v1/schemas/review-hidden.schema.json
+ M contracts/events/review/v1/schemas/review-metrics-updated.schema.json
+ M contracts/events/review/v1/schemas/review-removal-notification-requested.schema.json
+ M contracts/events/review/v1/schemas/review-removed.schema.json
+ M contracts/events/review/v1/schemas/review-reply-notification-requested.schema.json
+ M contracts/events/review/v1/schemas/review-updated.schema.json
+ M contracts/events/user/v1/README.md
+ M contracts/events/user/v1/asyncapi.yaml
+ M contracts/events/user/v1/schemas/user-event-common.schema.json
+ M contracts/events/user/v1/schemas/user-preferences-updated.schema.json
+ M contracts/events/user/v1/schemas/user-profile-updated.schema.json
+ M contracts/examples/events/auth-user-deleted.v1.json
+ M contracts/examples/events/cart-abandoned.v1.json
+ M contracts/examples/events/catalog-category-deleted.v1.json
+ M contracts/examples/events/catalog-category-upserted.v1.json
+ M contracts/examples/events/catalog-product-deleted.v1.json
+ M contracts/examples/events/catalog-reindex-requested.v1.json
+ M contracts/examples/events/catalog-sku-deleted.v1.json
+ M contracts/examples/events/catalog-sku-upserted.v1.json
+ M contracts/examples/events/inventory-all-items-inspection-completed.v1.json
+ M contracts/examples/events/inventory-reservation-line-dispatched.v1.json
+ M contracts/examples/events/inventory-sku-availability-changed.v1.json
+ M contracts/examples/events/notification-bounced.v1.json
+ M contracts/examples/events/notification-delivered.v1.json
+ M contracts/examples/events/notification-requested.v1.json
+ M contracts/examples/events/order-completed.v1.json
+ M contracts/examples/events/order-paid.v1.json
+ M contracts/examples/events/payment-canceled.v2.json
+ M contracts/examples/events/payment-dispute-funds-reinstated.v2.json
+ M contracts/examples/events/payment-dispute-funds-withdrawn.v2.json
+ M contracts/examples/events/payment-dispute-lost.v2.json
+ M contracts/examples/events/payment-dispute-opened.v2.json
+ M contracts/examples/events/payment-dispute-won.v2.json
+ M contracts/examples/events/payment-expired.v2.json
+ M contracts/examples/events/payment-failed.v2.json
+ M contracts/examples/events/payment-initiated.v2.json
+ M contracts/examples/events/payment-refund-failed.v2.json
+ M contracts/examples/events/payment-refund-initiated.v2.json
+ M contracts/examples/events/payment-refund-processing.v2.json
+ M contracts/examples/events/payment-refund-reversed.v2.json
+ M contracts/examples/events/payment-refund-succeeded.v2.json
+ M contracts/examples/events/payment-stripe-webhook-received.v1.json
+ M contracts/examples/events/payment-succeeded.v2.json
+ M contracts/examples/events/promotion-product-markdown-inactive-snapshot.v1.json
+ M contracts/examples/events/promotion-product-markdown-snapshot.v1.json
+ M contracts/grpc/ecommerce/product/v1/README.md
+ M contracts/grpc/ecommerce/product/v1/product_service.proto
+ M contracts/http/auth/internal/v1/openapi.yaml
+ M contracts/http/auth/v1/openapi.yaml
+ M contracts/http/cart/v1/README.md
+ M contracts/http/cart/v1/openapi.yaml
+ M contracts/http/checkout/v1/README.md
+ M contracts/http/checkout/v1/openapi.yaml
+ M contracts/http/inventory/README.md
+ M contracts/http/inventory/admin/v1/README.md
+ M contracts/http/inventory/admin/v1/openapi.yaml
+ M contracts/http/inventory/exports/v1/README.md
+ M contracts/http/inventory/exports/v1/openapi.yaml
+ M contracts/http/inventory/read/v1/README.md
+ M contracts/http/inventory/read/v1/openapi.yaml
+ M contracts/http/inventory/workflow/v1/README.md
+ M contracts/http/inventory/workflow/v1/openapi.yaml
+ M contracts/http/notification/internal/v1/openapi.yaml
+ M contracts/http/notification/v1/openapi.yaml
+ M contracts/http/order/README.md
+ M contracts/http/order/internal/v1/openapi.yaml
+ M contracts/http/order/v1/openapi.yaml
+ M contracts/http/payment/internal/v1/openapi.yaml
+ M contracts/http/payment/v1/openapi.yaml
+ M contracts/http/product-detail-bff/v1/openapi.yaml
+ M contracts/http/product/v1/openapi.yaml
+ M contracts/http/promotion/v1/README.md
+ M contracts/http/promotion/v1/openapi.yaml
+ M contracts/http/review/internal/v1/openapi.yaml
+ M contracts/http/review/v1/README.md
+ M contracts/http/review/v1/openapi.yaml
+ M contracts/http/search/v2/openapi.yaml
+ M contracts/http/user/v1/openapi.yaml
+ M contracts/shared/json-schema/v1/cloud-event.schema.json
+ M contracts/shared/json-schema/v1/money.schema.json
+ M contracts/shared/json-schema/v1/problem.schema.json
+ M contracts/shared/proto/ecommerce/common/v1/money.proto
+ M contracts/shared/proto/ecommerce/common/v1/pagination.proto
+ M contracts/tools/README.md
+ M contracts/tools/package-lock.json
+ M contracts/tools/package.json
+ M contracts/tools/redocly.yaml
+ M contracts/tools/test-auth-user-deleted-to-review.ps1
+ M contracts/tools/validate-contracts.ps1
+ M docs/order/README.md
+ M docs/order/architecture.md
+ M docs/order/data.md
+ M docs/order/decisions/ADR-000-template.md
+ M docs/order/decisions/ADR-001-temporal-saga-orchestration.md
+ M docs/order/decisions/ADR-002-master-sub-order-and-snapshots.md
+ M docs/order/decisions/ADR-003-transactional-outbox-cdc.md
+ M docs/order/decisions/ADR-004-postgresql-direct-order-search.md
+ M docs/order/decisions/ADR-005-redis-and-fsm-idempotency.md
+ M docs/order/decisions/ADR-006-single-refund-with-inventory-gate.md
+ M docs/order/decisions/ADR-007-refund-voucher-policy.md
+ M docs/order/decisions/ADR-008-late-payment-recovery.md
+ M docs/order/decisions/ADR-009-customer-refund-does-not-mutate-promotion.md
+ M docs/order/decisions/ADR-010-selected-line-refund-policy.md
+ M docs/order/decisions/ADR-011-financial-saga-recovery-and-durable-dispatch.md
+ M docs/order/decisions/ADR-012-redis-request-mirror-scope.md
+ M docs/order/decisions/ADR-013-durable-refund-scope-finalization.md
+ M docs/order/decisions/ADR-014-payment-attempt-deadline-and-terminal-semantics.md
+ M docs/order/decisions/ADR-015-durable-workflow-messages-and-convergence.md
+ M docs/order/decisions/ADR-016-multi-destination-outbox-and-receipts.md
+ M docs/order/decisions/ADR-017-deterministic-line-net-refund-and-search.md
+ M docs/order/decisions/ADR-018-reconciliation-obligations.md
+ M docs/order/decisions/ADR-019-external-remediation-refund-convergence.md
+ M docs/order/decisions/ADR-020-release-1-implementation-clarifications.md
+ M docs/order/decisions/README.md
+ M docs/order/development.md
+ M docs/order/domain.md
+ M docs/order/interfaces.md
+ M docs/order/operations.md
+ M docs/order/workflows.md
+ M java/services/order-service/README.md
+ M java/services/order-service/pom.xml
+ M java/services/order-service/src/main/java/com/ecommerce/order/OrderServiceApplication.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/client/Gateways.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/client/HttpGateways.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/client/HttpRemote.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/client/RemoteResult.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/ApiException.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/CanonicalJson.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/ErrorCode.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/Ids.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/common/Json.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/config/AppConfig.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/config/KafkaConfig.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/config/OrderProperties.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/config/TemporalConfig.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/BuyerTab.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/CancelReason.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/CheckoutRules.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/DiscountAllocator.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/FulfillmentStatus.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/NameNormalizer.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/OperationTypes.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/OrderStatus.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/PaymentStatus.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/domain/RefundTypes.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/messaging/CloudEvent.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/messaging/FulfillmentIntake.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/messaging/InspectionIntake.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/messaging/KafkaListeners.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/messaging/PaymentIntake.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/CheckoutSaga.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/CheckoutSubmissionService.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/DispatchNudger.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/InboxReplayer.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/NotificationComposer.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderActivitiesImpl.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderCommandService.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderConvergence.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderQueryService.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OrderSearchService.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/OutboxWriter.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/PaymentClientDataReader.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/ProblemFactory.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/ReconciliationDecisionService.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/ReconciliationLedger.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/RefundSaga.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/RemoteCommands.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/RequestMirror.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/ScopeFinalization.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/service/WorkflowEnqueuer.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/CheckpointStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/Db.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/InboxStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/OperationStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/OrderStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/OutboxStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/PaymentAttemptStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/ReconciliationStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/RefundStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/SubmissionStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/store/WorkflowOutboxStore.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/Caller.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/GlobalExceptionHandler.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/IdentityFilter.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/InternalController.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/OrderController.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/Problems.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/dto/CheckoutDtos.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/dto/CommandDtos.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/web/dto/ReconciliationDtos.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/worker/ClosedTargetResolver.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/worker/Reconcilers.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/worker/TemporalWorkflowGateway.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/worker/WorkflowDispatcher.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/worker/WorkflowGateway.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/ActivityResults.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/CheckoutWorkflowImpl.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/FinalizationWorkflowImpl.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/MessageQueueWorkflow.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/OrderActivities.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/OrderWorkflows.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/ReconciliationWorkflowImpl.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/RefundWorkflowImpl.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/WorkflowInput.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/WorkflowMessage.java
+ M java/services/order-service/src/main/java/com/ecommerce/order/workflow/WorkflowNames.java
+ M java/services/order-service/src/main/resources/application.yml
+ M java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql
+ M java/services/order-service/src/main/resources/kafka/README.md
+ M java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json
+ M java/services/order-service/src/test/java/com/ecommerce/order/client/HttpRemoteTest.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/domain/CheckoutRulesTest.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/domain/DomainRulesTest.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/integration/CheckoutFlowIT.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/integration/QueryIT.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/integration/RefundFlowIT.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/AbstractIntegrationTest.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/ContractSchemas.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/FakeRemotes.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/Fixtures.java
+ M java/services/order-service/src/test/java/com/ecommerce/order/support/TestTemporalConfig.java
+?? contracts/conventions/deadlines.md
+?? contracts/conventions/service-identity.md
+?? contracts/decisions/ADR-002-correlation-and-trace-propagation.md
+?? contracts/decisions/ADR-003-deadline-propagation.md
+?? contracts/decisions/ADR-004-service-identity-allowlist.md
+?? contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md
+?? contracts/decisions/ADR-006-grpc-error-details.md
+?? contracts/decisions/ADR-007-grpc-channel-balancing-and-keepalive.md
+?? contracts/decisions/ADR-008-contract-ci-gates.md
+?? contracts/decisions/ADR-009-provider-verification-against-running-stack.md
+?? contracts/decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md
+?? contracts/examples/events/notification-complaint-received.v1.json
+?? contracts/examples/events/notification-failed.v1.json
+?? contracts/examples/events/review-approved.v1.json
+?? contracts/examples/events/review-created.v1.json
+?? contracts/examples/events/review-hidden.v1.json
+?? contracts/examples/events/review-metrics-updated.v1.json
+?? contracts/examples/events/review-removal-notification-requested.v1.json
+?? contracts/examples/events/review-removed.v1.json
+?? contracts/examples/events/review-reply-notification-requested.v1.json
+?? contracts/examples/events/review-updated.v1.json
+?? contracts/grpc/ecommerce/product/v1/errors.yaml
+?? contracts/tools/breaking-waivers.txt
+?? contracts/tools/check-breaking.sh
+?? contracts/tools/check_http_contracts.py
+?? contracts/tools/provider-probes.yaml
+?? contracts/tools/tests/
+?? contracts/tools/verify_providers.py
+?? docs/order/async-submission-verification-2026-10-16.md
+?? docs/order/decisions/ADR-021-admin-delivery-confirmation.md
+?? docs/order/decisions/ADR-022-purchase-variant-snapshot-fallback.md
+?? docs/order/decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md
+?? docs/order/decisions/ADR-024-remote-call-metrics-and-bulkhead.md
+?? docs/order/decisions/ADR-025-unreadable-success-body-is-unknown.md
+?? docs/order/decisions/ADR-026-retry-after-default-on-503.md
+?? docs/order/decisions/ADR-027-async-submission-checkpoint-waiters.md
+?? docs/order/decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md
+?? docs/performance/
+?? java/services/order-service/src/main/java/com/ecommerce/order/common/RequestCorrelation.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/config/SubmissionWaiterProperties.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/domain/VariantSnapshot.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/service/DeliveryConfirmationService.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/service/SubmissionNotificationListener.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/service/SubmissionWaiters.java
+?? java/services/order-service/src/main/java/com/ecommerce/order/web/RequestCorrelationFilter.java
+?? java/services/order-service/src/main/resources/db/migration/V2__admin_delivery_confirmation.sql
+?? java/services/order-service/src/main/resources/db/migration/V3__submission_checkpoint_notification.sql
+?? java/services/order-service/src/main/resources/logback-spring.xml
+?? java/services/order-service/src/test/java/com/ecommerce/order/benchmark/
+?? java/services/order-service/src/test/java/com/ecommerce/order/client/BackendHttpObservabilityTest.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/client/FaultServer.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/client/HttpRemoteFaultInjectionTest.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/client/HttpRemotePropagationTest.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/client/HttpRemoteResilienceTest.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/common/
+?? java/services/order-service/src/test/java/com/ecommerce/order/domain/VariantSnapshotTest.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/integration/DeliveryMigrationIT.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/integration/SubmissionNotificationIT.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/integration/WorkflowDispatchStoreIT.java
+?? java/services/order-service/src/test/java/com/ecommerce/order/service/
+?? java/services/order-service/src/test/java/com/ecommerce/order/web/
+?? java/services/order-service/src/test/java/com/ecommerce/order/worker/
+?? loadtest/
+?? scripts/ci/

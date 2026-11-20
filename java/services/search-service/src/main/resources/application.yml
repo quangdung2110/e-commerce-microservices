@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: search-service
 
@@ -22,16 +25,41 @@ spring:
       properties:
         max.poll.interval.ms: 600000
     listener:
+      observation-enabled: true
       concurrency: 3
+
+    template:
+      observation-enabled: true
 
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
+
 server:
   port: 8080
   shutdown: graceful
+  # The OpenAPI allows a 16384-character cursor, up to 50 filter tokens of 256 characters and a
+  # 256-character q on one GET. Tomcat's default 8KB request line would reject such a request
+  # before it reaches the controller, so the limit follows the contract.
+  max-http-request-header-size: 40KB
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -88,6 +116,32 @@ search:
     facet-max-options: 50
     facet-max-attributes: 100
 
+  # Discovery policy: only useful facets are advertised. This is not authorization.
+  storefront:
+    common-facets: [thuong-hieu, mau-sac]
+    excluded-product-ids: ${SEARCH_STOREFRONT_EXCLUDED_PRODUCT_IDS:}
+    excluded-category-ids: ${SEARCH_STOREFRONT_EXCLUDED_CATEGORY_IDS:}
+    category-facets:
+      dien-thoai: [dung-luong-luu-tru]
+      laptop: [ram, o-cung]
+      am-thanh: [ket-noi, tinh-nang-am-thanh, kieu-hop-sac, cong-suat]
+      may-tinh-bang: [dung-luong-luu-tru, ket-noi]
+      dong-ho-thong-minh: [kich-thuoc-mat, ket-noi, chat-lieu-day]
+      phu-kien: [cong-suat, dung-luong-pin, so-cong, so-chuc-nang]
+      gaming: [loai-switch, ket-noi]
+      nha-thong-minh: [do-phan-giai, dung-luong-luu-tru, cong-suat, anh-sang, tram-sac]
+
+  # Required storefront read model (ADR-029). Disabling the projector suspends new searches
+  # with a retryable 503; it never enables the unbounded SKU grouping fallback.
+  product-index:
+    enabled: ${SEARCH_PRODUCT_INDEX_ENABLED:true}
+    poll-interval: 1s
+    lookback: 10s
+    scan-page-size: 2000
+    rebuild-batch: 500
+    readiness-refresh: 5s
+    lease-duration: 30s
+
   pagination:
     default-size: 20
     max-size: 100
@@ -139,14 +193,20 @@ search:
   tombstone:
     purge-cron: "0 30 2 * * *"
     purge-enabled: true
-    # Must stay longer than the retention of every topic Search consumes, which is 14d
-    # in the AsyncAPI contracts (ADR-011).
-    protection-window: 30d
+    # Must stay strictly longer than the longest time a consumed record can still be on the
+    # broker. The longest topic is t.inventory.stock.events.v1 at exactly 30d (floor and ceiling,
+    # Inventory ADR-028); the Product, Category, catalog-control and Review topics are 14d in the
+    # AsyncAPI contracts. Kafka deletes whole segments, so a record outlives retention.ms by up
+    # to segment.ms (7d by default): 30d + 7d + 8d margin = 45d (ADR-022, which replaces the
+    # number chosen in ADR-021 and keeps ADR-011's rule).
+    protection-window: 45d
     product-count-cron: "0 0 */4 * * *"
     product-count-enabled: true
 
   media:
-    cdn-base-url: ${CDN_BASE_URL:https://cdn.local/}
+    # Absolute http(s) URL without a trailing slash, and equal to PDP_MEDIA_CDN_BASE_URL;
+    # the service refuses to start otherwise (ADR-022).
+    cdn-base-url: ${CDN_BASE_URL:https://cdn.local}
     placeholder-url: ${THUMBNAIL_PLACEHOLDER_URL:/static/placeholder-product.png}
 
   gateway:
@@ -159,19 +219,50 @@ search:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
 
   export:
-    product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8080}
+    product-base-url: ${PRODUCT_INTERNAL_URL:http://product-service:8081}
     inventory-base-url: ${INVENTORY_INTERNAL_URL:http://inventory-service:8080}
     review-base-url: ${REVIEW_INTERNAL_URL:http://review-service:8080}
-    # Bearer service identity for Review's /internal/v1/** rating export.
-    review-token: ${REVIEW_INTERNAL_TOKEN:}
     review-enabled: ${REVIEW_EXPORT_ENABLED:true}
-    timeout: 30s
+    # 25 s: the mesh allows 30 s on the export routes and the caller must stay at least 1 s under it
+    # (contracts ADR-003, Search ADR-023). It is also sent to the provider as X-Request-Timeout-Ms.
+    timeout: 25s
     # A snapshot session lives 24h and a re-created one must be paged from the start,
     # so repeatedly outliving one is a capacity problem, not a blip (WF-SEARCH-007).
     availability-snapshot-max-sessions: 2
     # Same budget for the Review rating export: an expired session forces the rating
     # import to restart from the first page (WF-SEARCH-009 step 3).
     rating-export-max-sessions: 2
+
+  consumer:
+    # Pause before an unacknowledged batch is handed back to Kafka (Acknowledgment.nack).
+    retry-backoff: 5s
+
+  # Life cycle around a full reindex (ADR-022, docs/search/workflows.md WF-SEARCH-009).
+  lifecycle:
+    # The run that owns the `full-reindex` lease renews it every renew-interval; a lease that
+    # has not been renewed for lease-duration marks the run abandoned.
+    lease-duration: 2m
+    lease-renew-interval: 30s
+    watchdog-interval: 30s
+    max-resume-attempts: 3
+    # catalog-reindex-requested starts a run once no further request arrived for this long.
+    control-debounce: 2m
+    control-auto-start: true
+    # Trigger refuses with REINDEX_PRECONDITION_FAILED on a red cluster or when free disk is
+    # below min-free-disk-ratio times the current primary store size.
+    precondition-enabled: true
+    min-free-disk-ratio: 1.5
+    # A superseded index survives this long after it stopped being current.
+    old-index-retention: 24h
+    cleanup-cron: "0 15 * * * *"
+    cleanup-enabled: true
+
+  # Checks between catch-up and cutover: sample diff against the current index and a smoke
+  # query set. hot-queries are free-text queries that must return hits when the current index does.
+  verify:
+    enabled: true
+    sample-size-per-bucket: 100
+    hot-queries: []
 
 logging:
   level:

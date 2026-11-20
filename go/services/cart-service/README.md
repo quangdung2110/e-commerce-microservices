@@ -14,6 +14,7 @@ carries exactly one outbound event, `CART_ABANDONED`, to Notification Service.
 | Cart HTTP API | Inbound | [`contracts/http/cart/v1/openapi.yaml`](../../../contracts/http/cart/v1/openapi.yaml) |
 | Checkout cart snapshot (`GET /internal/v1/carts/{user_id}/checkout-snapshot`) | Inbound, internal | Same OpenAPI, `getCheckoutCartSnapshot`; only `X-Service-Identity: checkout-service`, no Gateway route |
 | `com.ecommerce.order.paid.v1` | Inbound Kafka | [Order Events AsyncAPI v1](../../../contracts/events/order/v1/asyncapi.yaml) |
+| `com.ecommerce.auth.user-deleted.v1` | Inbound Kafka | [Auth Events AsyncAPI v1](../../../contracts/events/auth/v1/asyncapi.yaml); purges the user's cart ([ADR-014](../../../docs/cart/decisions/ADR-014-purge-cart-on-user-deleted.md)) |
 | Product lookup | Outbound gRPC | [`contracts/grpc/ecommerce/product/v1/product_service.proto`](../../../contracts/grpc/ecommerce/product/v1/product_service.proto) |
 | `CART_ABANDONED` | Outbound Kafka | [`contracts/events/cart/v1/asyncapi.yaml`](../../../contracts/events/cart/v1/asyncapi.yaml) |
 
@@ -26,7 +27,10 @@ Neither the Lua scripts nor the gRPC stubs are authored here:
   [`docs/cart/scripts`](../../../docs/cart/scripts). `make check-lua` fails the
   build on drift; `make sync-lua` re-copies them.
 - `internal/infrastructure/product/pb/` is generated from the canonical proto
-  by `make generate`.
+  by `make generate` (or `scripts/generate-pb.sh`, which runs it in Docker with the pinned protoc and plugins).
+  `pb/PROTO_SHA256` records the hash of the source protos; `make check-pb` and
+  `TestGeneratedStubsMatchCanonicalProto` fail when a proto changed and the stubs were not regenerated
+  ([Cart ADR-015](../../../docs/cart/decisions/ADR-015-proto-stub-drift-detection.md)).
 
 ## Layout
 
@@ -40,16 +44,17 @@ internal/infrastructure/cartredis       keys, Lua scripts, cart store, outbox st
 internal/infrastructure/product         Product gRPC client, breaker, validation cache
 internal/infrastructure/kafka           CloudEvent producer, com.ecommerce.order.paid.v1 consumer
 internal/infrastructure/observability   logger and metrics
-internal/workers/{marker,relay,trimmer,orderpaid}
+internal/workers/{marker,relay,trimmer,orderpaid,userdeleted}
 ```
 
 ## The parts worth knowing before changing anything
 
-**All cart writes go through one of three Lua scripts.** A script is the only
+**All cart writes go through one of four Lua scripts.** A script is the only
 transaction boundary Cart has. `upsert_item.lua` updates the item, the meta
 hash, the scheduler ZSET, both TTLs and the idempotency record together;
-`mark_abandoned.lua` flips the status and writes the outbox entry together. Do
-not add a bare `HSET` to a cart key.
+`mark_abandoned.lua` flips the status and writes the outbox entry together;
+`purge_cart.lua` deletes a deleted account's items, meta and scheduler member
+together. Do not add a bare `HSET` to a cart key.
 
 **Every key one script touches shares a `{bNN}` hash tag.** `bucket =
 xxh3_64(canonical_user_id) mod 64`. The bucket count is a data contract, not a
@@ -80,6 +85,12 @@ browsing, so the abandonment deadline must not move. It also needs no
 idempotency record: `HDEL` per SKU is already idempotent, and the path emits no
 event.
 
+**`com.ecommerce.auth.user-deleted.v1` purges the whole cart.** The consumer
+group `cart-auth-consumer` ignores every other event on `t.auth.events`. The
+purge is idempotent, so redelivery needs no record; a Redis failure returns an
+error and Kafka redelivers. Pending `CART_ABANDONED` outbox entries are left to
+the relay.
+
 ## HTTP surface
 
 | Route | Notes |
@@ -87,6 +98,7 @@ event.
 | `GET /api/v1/carts/mine` | `Cache-Control: no-store`. Never extends a TTL. |
 | `POST /api/v1/carts/mine/items` | `Idempotency-Key` required. `201` on create, `200` on update. |
 | `DELETE /api/v1/carts/mine/items` | `Idempotency-Key` required. Up to 100 SKUs. |
+| `GET /internal/v1/carts/{user_id}/checkout-snapshot` | In-network only (no Gateway route); `X-Service-Identity` on the `cart.internal_callers` allowlist. Not rate limited. |
 | `GET /health/live` | Process only. |
 | `GET /health/ready` | Redis, the synchronous source of truth for all HTTP reads. |
 | `GET /metrics` | Prometheus. |

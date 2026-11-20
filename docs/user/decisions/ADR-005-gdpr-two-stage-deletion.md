@@ -13,6 +13,10 @@ evidence:
 
 # ADR-005 — GDPR anonymization và retention purge hai giai đoạn
 
+> Cập nhật: [ADR-006](./ADR-006-auth-owns-account-deletion-event.md) thay phần phát
+> `ACCOUNT_DELETED`; [ADR-010](./ADR-010-deleted-account-invisible-to-owner.md) bổ sung
+> rằng row profile ẩn danh không còn đọc/ghi được bởi owner trong retention window.
+
 ## Bối cảnh
 
 Auth khởi tạo account deletion, nhưng User sở hữu PII đáng kể. Không thể dựa vào

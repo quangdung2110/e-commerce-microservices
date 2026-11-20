@@ -82,6 +82,22 @@ class RefundReturnIT extends AbstractIntegrationTest {
         JsonNode queue = admin(HttpMethod.GET, ADMIN + "/inspection-queue?warehouse_id=" + wh, null, null).body();
         assertThat(queue.path("items").get(0).path("uninspected_quantity").asLong()).isEqualTo(1);
         assertThat(queue.path("items").get(0).path("order_id").asText()).isEqualTo("order-1");
+        // The queue is complete without a warehouse filter; a filter only narrows it.
+        JsonNode allQueue = admin(HttpMethod.GET, ADMIN + "/inspection-queue", null, null).body();
+        assertThat(allQueue.path("items")).hasSize(1);
+        assertThat(admin(HttpMethod.GET, ADMIN + "/inspection-queue?warehouse_id=other", null, null).body()
+                .path("items")).isEmpty();
+
+        JsonNode scopes = admin(HttpMethod.GET, ADMIN + "/refund-scope-summaries", null, null).body();
+        assertThat(scopes.path("items")).hasSize(1);
+        assertThat(scopes.path("items").get(0).path("refund_scope_id").asText()).isEqualTo(scopeId);
+        assertThat(scopes.path("items").get(0).path("order_id").asText()).isEqualTo("order-1");
+        assertThat(scopes.path("items").get(0).path("state").asText()).isEqualTo("IN_PROGRESS");
+        assertThat(scopes.path("items").get(0).has("registered_at")).isTrue();
+        assertThat(admin(HttpMethod.GET, ADMIN + "/refund-scope-summaries?state=CLOSED", null, null).body()
+                .path("items")).isEmpty();
+        assertThat(admin(HttpMethod.GET, ADMIN + "/refund-scope-summaries?state=BOGUS", null, null).status())
+                .isEqualTo(400);
 
         assertThat(inspect("ret-1", 2, "PASS").body().path("code").asText()).isEqualTo("INSPECTION_REJECTED");
         assertThat(inspect("ret-1", 1, "PASS").status()).isEqualTo(200);
@@ -131,6 +147,7 @@ class RefundReturnIT extends AbstractIntegrationTest {
         assertThat(hold.status()).isEqualTo(200);
         assertThat(hold.body().has("movement_id")).isFalse();
         JsonNode items = admin(HttpMethod.GET, ADMIN + "/quarantine-items?warehouse_id=" + wh, null, null).body();
+        assertThat(admin(HttpMethod.GET, ADMIN + "/quarantine-items", null, null).body().path("items")).hasSize(1);
         assertThat(items.path("items").get(0).path("disposable_quantity").asLong()).isEqualTo(2);
         assertThat(items.path("items").get(0).path("latest_hold_reason").asText()).isEqualTo("SUPPLIER_CLAIM");
 

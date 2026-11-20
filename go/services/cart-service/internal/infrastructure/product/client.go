@@ -10,16 +10,22 @@ package product
 import (
 	"context"
 	"fmt"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
 	productv1 "cart-service/internal/infrastructure/product/pb/productv1"
+	"cart-service/internal/reqctx"
 )
 
 // Config configures the Product gRPC client.
@@ -35,6 +41,62 @@ type Config struct {
 	CacheSize int
 	CacheTTL  time.Duration
 	Breaker   BreakerConfig
+	// ServiceIdentity is sent as x-service-identity on every call (mesh runtime contract section 6).
+	// Empty means DefaultServiceIdentity.
+	ServiceIdentity string
+	// KeepAliveTime is how long an active connection may be silent before Cart pings it, and
+	// KeepAliveTimeout how long it waits for the reply before closing it (contracts ADR-007).
+	// Zero means DefaultKeepAliveTime and DefaultKeepAliveTimeout.
+	KeepAliveTime    time.Duration
+	KeepAliveTimeout time.Duration
+	// DialOptions are appended to the standard options. Tests use it to inject a resolver.
+	DialOptions []grpc.DialOption
+}
+
+// DefaultServiceIdentity is Cart's ServiceAccount name in contracts/catalog/services.yaml.
+const DefaultServiceIdentity = "cart-service"
+
+// Channel defaults (contracts ADR-007). Product allows pings no more often than every 20 seconds
+// (product.internal grpc.server.permit-keep-alive-time), so KeepAliveTime must stay above that.
+const (
+	DefaultKeepAliveTime    = 30 * time.Second
+	DefaultKeepAliveTimeout = 10 * time.Second
+
+	// serviceConfig spreads calls over every address the DNS name resolves to. Behind a waypoint the name
+	// resolves to one virtual address, so this changes nothing there.
+	serviceConfig = `{"loadBalancingConfig":[{"round_robin":{}}]}`
+)
+
+// target gives a bare host:port the dns scheme. grpc-go defaults to passthrough, which hands the
+// balancer a single address and makes round_robin pointless.
+func target(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "dns:///" + address
+}
+
+// dialOptions is the standard channel configuration: plaintext inside the mesh, round-robin over
+// resolved addresses, keepalive pings, and identity plus correlation on every call.
+func dialOptions(cfg Config) []grpc.DialOption {
+	if cfg.KeepAliveTime <= 0 {
+		cfg.KeepAliveTime = DefaultKeepAliveTime
+	}
+	if cfg.KeepAliveTimeout <= 0 {
+		cfg.KeepAliveTimeout = DefaultKeepAliveTimeout
+	}
+	options := []grpc.DialOption{
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultServiceConfig(serviceConfig),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                cfg.KeepAliveTime,
+			Timeout:             cfg.KeepAliveTimeout,
+			PermitWithoutStream: false,
+		}),
+		grpc.WithChainUnaryInterceptor(propagate(cfg.ServiceIdentity)),
+	}
+	return append(options, cfg.DialOptions...)
 }
 
 // Client is the Product Service adapter.
@@ -65,9 +127,10 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(dialCtx, cfg.Address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	if cfg.ServiceIdentity == "" {
+		cfg.ServiceIdentity = DefaultServiceIdentity
+	}
+	conn, err := grpc.DialContext(dialCtx, target(cfg.Address), dialOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("dial product service at %s: %w", cfg.Address, err)
 	}
@@ -82,6 +145,33 @@ func NewClient(ctx context.Context, cfg Config) (*Client, error) {
 }
 
 var _ port.ProductCatalog = (*Client)(nil)
+
+// propagate attaches the caller identity and the request correlation of the context to every RPC
+// (contracts ADR-002). The request ID and the inbound traceparent/tracestate come from the request
+// that triggered the call; without a request ID (not expected on this path) a new one is minted so
+// Product's log line is never anonymous. A traceparent is only forwarded, never invented.
+//
+// A call shared through singleflight carries the ID of the caller that started it.
+func propagate(identity string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		requestID := reqctx.RequestID(ctx)
+		if requestID == "" {
+			requestID = uuid.NewString()
+		}
+		pairs := []string{
+			"x-service-identity", identity,
+			"x-request-id", requestID,
+		}
+		if traceparent := reqctx.Traceparent(ctx); traceparent != "" {
+			pairs = append(pairs, "traceparent", traceparent)
+			if tracestate := reqctx.Tracestate(ctx); tracestate != "" {
+				pairs = append(pairs, "tracestate", tracestate)
+			}
+		}
+		return invoker(metadata.AppendToOutgoingContext(ctx, pairs...), method, req, reply, cc, opts...)
+	}
+}
 
 // Close releases the gRPC connection.
 func (c *Client) Close() error {
@@ -104,15 +194,20 @@ func (c *Client) GetSku(ctx context.Context, skuID string) (domain.ProductSnapsh
 		return domain.ProductSnapshot{}, unavailable(ErrBreakerOpen)
 	}
 
-	result, err, _ := c.group.Do(skuID, func() (any, error) {
-		callCtx, cancel := context.WithTimeout(ctx, c.cfg.GetSkuTimeout)
+	// The flight is shared by every caller waiting on this SKU, so it must not
+	// be tied to the cancellation of whichever caller happened to start it:
+	// one client hanging up would fail all the others and be counted against
+	// the breaker. It keeps its own deadline; each caller still leaves early
+	// when its own ctx is done.
+	flightCtx := context.WithoutCancel(ctx)
+	flight := c.group.DoChan(skuID, func() (any, error) {
+		callCtx, cancel := context.WithTimeout(flightCtx, c.cfg.GetSkuTimeout)
 		defer cancel()
 
 		response, err := c.rpc.GetSku(callCtx, &productv1.GetSkuRequest{SkuId: skuID})
 		c.observeCall("GetSku", err)
 		if err != nil {
-			c.breaker.failure()
-			return nil, unavailable(err)
+			return nil, c.failed(err)
 		}
 		c.breaker.success()
 
@@ -123,10 +218,16 @@ func (c *Client) GetSku(ctx context.Context, skuID string) (domain.ProductSnapsh
 		c.cache.put(skuID, snapshot)
 		return snapshot, nil
 	})
-	if err != nil {
-		return domain.ProductSnapshot{}, err
+
+	select {
+	case result := <-flight:
+		if result.Err != nil {
+			return domain.ProductSnapshot{}, result.Err
+		}
+		return result.Val.(domain.ProductSnapshot), nil
+	case <-ctx.Done():
+		return domain.ProductSnapshot{}, unavailable(ctx.Err())
 	}
-	return result.(domain.ProductSnapshot), nil
 }
 
 // GetBatchSkus enriches a cart read with live prices and availability.
@@ -152,8 +253,12 @@ func (c *Client) GetBatchSkus(ctx context.Context, skuIDs []string) (map[string]
 	response, err := c.rpc.GetBatchSkus(callCtx, &productv1.GetBatchSkusRequest{SkuIds: skuIDs})
 	c.observeCall("GetBatchSkus", err)
 	if err != nil {
-		c.breaker.failure()
-		return nil, unavailable(err)
+		if ctx.Err() != nil {
+			// The caller gave up; Product did not misbehave.
+			c.breaker.release()
+			return nil, unavailable(err)
+		}
+		return nil, c.failed(err)
 	}
 	c.breaker.success()
 
@@ -222,6 +327,7 @@ func snapshotFromSku(skuID string, sku *productv1.Sku) domain.ProductSnapshot {
 		ProductID:         sku.GetProductId(),
 		ProductName:       sku.GetProductName(),
 		VariantAttributes: sku.GetVariantAttributes(),
+		VariantName:       sku.GetVariantName(),
 		ImageKey:          sku.GetImageUrl(),
 		IsAvailable:       sku.GetStatus() == productv1.SkuStatus_SKU_STATUS_ACTIVE,
 	}

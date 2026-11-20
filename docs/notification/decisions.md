@@ -1,6 +1,6 @@
 # Quyết định kiến trúc
 
-**Trạng thái:** `proposed` — các quyết định dưới đây được chốt trong thảo luận thiết kế, chưa được kiểm chứng bằng runtime. Mỗi mục ghi bối cảnh, quyết định, phương án bị loại và hệ quả, để người đọc sau hiểu *tại sao* chứ không chỉ *là gì*. Khi có ADR chính thức theo template của dự án, các mục này là nguồn để viết.
+**Trạng thái:** `implemented` (phase 1) — các quyết định D-01…D-20 chốt trong thảo luận thiết kế và implement; D-21…D-24 chốt khi đồng bộ docs ↔ contract ↔ code ngày 2026-10-10; D-25 ngày 2026-10-15. Mỗi mục ghi bối cảnh, quyết định, phương án bị loại và hệ quả, để người đọc sau hiểu *tại sao* chứ không chỉ *là gì*. Dự án chưa dùng file ADR riêng cho Notification: `decisions.md` là nơi ghi.
 
 ## D-01 · Ba lane ưu tiên, tách ở topic + consumer group + quota
 
@@ -219,8 +219,8 @@ Chi tiết: [10-interfaces.md](./10-interfaces.md) §2–3, §7.
 
 **Quyết định.**
 - **Inbox** (`contracts/http/notification/v1/openapi.yaml`, qua Gateway, `gatewayIdentity`, `no-store`): list cursor `(created_at, id)` ≤ 50, `unread-count` từ Redis với contract ghi rõ có thể lệch vài giây, `PATCH {read}`, `DELETE` = archive, `POST mark-all-read`. Không realtime phase 1 (poll 30–60 s); không API preference; không API lịch sử email.
-- **Status** (`internal/v1`, mTLS, caller `order-service`, `finance-ops`): theo `request_id` và theo `subject`; trả timeline, không `template_data`, không email.
-- **Ops** (`internal/v1/notifications/ops/**`, mTLS principal `notification-ops`, **không qua Gateway**): `PUT lanes/{lane}`, `POST deliveries/{id}/redrive`, `POST dlq/redrive` (202), `POST/DELETE suppressions` (không gỡ được `HARD_BOUNCE`/`COMPLAINT`), `PUT replay-mode`. `Idempotency-Key` bắt buộc, audit mọi call. Phase 1 có thể là CLI dùng chung handler.
+- **Status** (`internal/v1`, caller `order-service`, `finance-ops`; xác thực caller do mesh, xem D-21): theo `request_id` và theo `subject`; trả timeline, không `template_data`, không email.
+- **Ops** (`internal/v1/notifications/ops/**`, principal `notification-ops` do mesh xác thực — D-21, **không qua Gateway**): `PUT lanes/{lane}`, `POST deliveries/{id}/redrive`, `POST dlq/redrive` (202), `POST/DELETE suppressions` (không gỡ được `HARD_BOUNCE`/`COMPLAINT`), `PUT replay-mode`. `Idempotency-Key` bắt buộc, audit mọi call. Phase 1 có thể là CLI dùng chung handler.
 
 **Bị loại.** *Ops qua Gateway như `/api/v1/admin/**` của Order*: admin của Order là người dùng nghiệp vụ hằng ngày; ops của Notification là SRE với thao tác hiếm và nguy hiểm — không đáng mở ra edge. *Realtime phase 1*: Gateway đã hỗ trợ WebSocket cho Chat nên thêm sau chỉ là route; poll đủ cho badge. *Gỡ được HARD_BOUNCE/COMPLAINT qua API*: làm hỏng reputation với provider; user đổi email hoặc bounce mới sẽ tự cập nhật.
 
@@ -264,7 +264,7 @@ Chi tiết: [12-render.md](./12-render.md).
 
 **Bối cảnh.** SES sandbox không dùng được cho test lặp lại; đường Track cần SNS/SQS; compose mặc định đang được các service khác dùng.
 
-**Quyết định.** `docker-compose.yml` thêm `mailpit` (SMTP `1025`, UI/API `8025`) và `localstack` (SNS/SQS, `4566`) dưới profile `notification` — `docker compose up` mặc định không đổi. `init-db.sh` tạo `notification_db`. Script `deploy/localstack/init-ses-events.sh` dựng topic → queue (+ DLQ, `maxReceiveCount 5`, envelope SNS giữ nguyên để verify chữ ký). Connector Debezium `deploy/debezium/notification-outbox-connector.json` route `t.notification.outcomes.v1`, key `aggregateid = user_id`, publication tạo bằng migration. Service là một binary với `ROLE`/`LANE`; dev chạy `ROLE=all`. Cổng HTTP host `8091` inbox và `8092` internal (`8090` là dashboard Traefik). Adapter SES thật chỉ có contract test khi có credential; internal API nhận `X-Service-Identity` không xác thực **chỉ** khi `NOTIFICATION_APP_ENV=development` (D-20 sửa tên biến).
+**Quyết định.** `docker-compose.yml` thêm `mailpit` (SMTP `1025`, UI/API `8025`) và `localstack` (SNS/SQS, `4566`) dưới profile `notification` — `docker compose up` mặc định không đổi. `init-db.sh` tạo `notification_db`. Script `deploy/localstack/init-ses-events.sh` dựng topic → queue (+ DLQ, `maxReceiveCount 5`, envelope SNS giữ nguyên để verify chữ ký). Connector Debezium `deploy/debezium/notification-outbox-connector.json` route `t.notification.outcomes.v1`, key `aggregateid = user_id`, publication tạo bằng migration. Service là một binary với `ROLE`/`LANE`; dev chạy `ROLE=all`. Cổng HTTP host `8091` inbox và `8092` internal (`8090` là dashboard Traefik). Adapter SES thật chỉ có contract test khi có credential; internal API nhận `X-Service-Identity` không xác thực ở dev (D-21 thay điều kiện "chỉ khi `NOTIFICATION_APP_ENV=development`" bằng allowlist ở mọi môi trường).
 
 **Bị loại.** *SES sandbox ở dev*: cần credential, chỉ gửi tới địa chỉ verify, 200/ngày. *LocalStack SES cho đường gửi*: không sinh event thật; Mailpit cho đường gửi + event mẫu bơm vào SNS cho đường Track là đủ và rõ ràng. *Nhiều binary theo vai trò*: hai đường code cho cùng logic.
 
@@ -317,6 +317,59 @@ Chi tiết: [13-development.md](./13-development.md), [14-observability.md](./14
 
 **Hệ quả.** Các file 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14 đã được sửa tương ứng; `contracts/http/notification/internal/v1/openapi.yaml` và Auth internal OpenAPI đổi `servers` sang 8081; catalog ghi `note` cho `REVIEW_REPLIED`. Đợt implement thứ hai (sequence/lease/tombstone) sửa thêm 02, 04, 05, 06, 08, 09, 11, 13, 14, 15, 16; code ở migration `004_ordering_privacy`, `internal/common/pii/hmac.go`, `internal/domain/service/ingest/sequence.go`, `internal/domain/service/deliver/ordering.go`.
 
+## D-21 · Cổng internal xác thực caller qua service mesh, không mTLS ở tầng ứng dụng
+
+**Bối cảnh.** Bản đầu của listener internal (`8081`: status, ops, `/metrics`, health) tự kết thúc TLS, bắt `RequireAndVerifyClientCert`, lấy Common Name của chứng chỉ client làm principal, và production không khởi động nếu thiếu `tls_cert_file`/`tls_key_file`/`client_ca_file`; header `X-Service-Identity` chỉ được nhận khi `app.env = development`. Client gọi Auth cũng nạp cert/CA riêng (`NOTIFICATION_AUTH_TLS_*`). [Mesh runtime contract](../mesh/runtime-contract.md) quy định khác: Istio ambient (ztunnel + waypoint) kết thúc mTLS và thực thi `AuthorizationPolicy` theo principal + path; ứng dụng **không nhìn thấy chứng chỉ caller**, nên sau mesh `Request.TLS` luôn rỗng — mọi lời gọi status/ops bị `401` hoặc production không lên được. Auth ([ADR-007](../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md)) và User ([ADR-008](../user/decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md)) đã chuyển sang mô hình mesh ngày 2026-10-09; Notification là service Go cuối còn mô hình cũ (audit N3 / X2).
+
+**Quyết định.** Notification không tự kết thúc TLS và không kiểm chứng chỉ client. Việc cho `order-service`, `finance-ops` chạm path status và `notification-ops` chạm path ops thuộc về mesh. Ứng dụng giữ lớp defense-in-depth giống Auth/User/Cart/Inventory/Order, **ở mọi `app.env`**: `X-Service-Identity` bắt buộc (thiếu → `401 UNAUTHORIZED`), giá trị ngoài allowlist của nhóm (`internal.status_principals`, `internal.ops_principals`) → `403 FORBIDDEN`; allowlist rỗng là lỗi cấu hình lúc khởi động. Bỏ hẳn `internal.tls_cert_file`/`tls_key_file`/`client_ca_file` và `auth.tls_cert_file`/`tls_key_file`/`ca_file` cùng điều kiện production đòi mTLS. Header không phải bằng chứng authorization duy nhất; Docker Compose không có mesh nên ở đó nó không được xác thực.
+
+**Bị loại.** *Giữ mTLS ở tầng app và cấu hình TLS hai lớp*: cert thứ hai ngoài chứng chỉ workload của istiod, ztunnel không chuyển client cert nên không có gì để kiểm. *Giữ TLS tuỳ chọn*: mã và cấu hình chết, dễ gây hiểu nhầm rằng app tự bảo vệ được. *Chỉ tin header, bỏ mesh policy*: trái mesh contract.
+
+**Hệ quả.** Biến `NOTIFICATION_INTERNAL_TLS_*`, `NOTIFICATION_INTERNAL_CLIENT_CA_FILE`, `NOTIFICATION_AUTH_TLS_*`, `NOTIFICATION_AUTH_CA_FILE` bị bỏ. Client Auth đã gửi `X-Service-Identity: notification-service` từ trước nên Auth không phải đổi. OpenAPI internal v1 → `1.1.0`: thêm header bắt buộc `X-Service-Identity`, mô tả lại `securitySchemes`, và khai báo các response thực tế còn thiếu (`400` redrive delivery, `404` `getLaneState`/`addManualSuppression`, `409` `setReplayMode`, `503`).
+
+## D-22 · DLQ consumer dùng chung topic: gắn header consumer group; webhook không recover row `lease_expired`
+
+**Bối cảnh.** Mỗi nguồn Kafka có DLQ bằng tên topic + `.dlq`. Bốn trong số đó dùng chung với service khác: `t.auth.events.dlq` (User, Review), `t.review.events.dlq`, `t.user.events.dlq` (Chat sau này) và `t.cart.events.dlq` — topic này là DLQ phía *producer* của Cart, payload JSON `{reason, outbox_key, ...}` chứ không phải CloudEvent. Message DLQ của Notification chỉ mang `x-dlq-reason` và `x-dlq-source-topic`, nên không phân biệt được với message của consumer khác (audit N6). Ngoài ra ví dụ OTP trong [04-idempotency.md](./04-idempotency.md) §4 hứa webhook `Delivery` chuyển row `FAILED (lease_expired)` thành `DELIVERED`; thực tế Track chỉ correlate theo `provider_message_id`, mà row chết trước `mark_sent` không có message id (audit N9).
+
+**Quyết định.** (1) Giữ tên topic, thêm header `x-dlq-consumer-group` (group của Notification đã đẩy message) vào mọi message DLQ do Notification ghi; tài liệu hoá danh sách DLQ dùng chung và quy tắc "lọc theo header, không redrive cả topic" ([10-interfaces.md](./10-interfaces.md) §9, R-04). (2) Sửa ví dụ OTP cho đúng hành vi: event Delivery của row đó `UNMATCHED` rồi `IGNORED` sau 24 h, delivery giữ `FAILED (lease_expired)`.
+
+**Bị loại.** *Tách topic DLQ riêng cho từng nguồn dùng chung*: đổi tên topic mặc định, vẫn cần vận hành thêm bốn topic; header đủ để phân biệt. *Chỉ ghi tài liệu*: không có gì để lọc. *Correlate theo SES tag `delivery_id` để recover row*: thêm đường correlate thứ hai và một ngoại lệ cho state ranking để cứu một trường hợp hiếm (worker chết sau khi SES nhận); email đã tới user, hậu quả duy nhất là nhãn trạng thái bảo thủ.
+
+**Hệ quả.** Tool redrive của Cart/User/Review không còn nhặt nhầm message của Notification nếu lọc theo header. Cart vẫn thấy hai định dạng trong `t.cart.events.dlq`.
+
+## D-23 · Watchdog nhà cung cấp: health probe cho breaker half-open và auto-pause bulk × email
+
+**Bối cảnh.** [06-backpressure.md](./06-backpressure.md) §5 hứa hai việc mà code không có (audit N8): bulk tự pause khi breaker mở quá 1 giờ, và thăm dò half-open bằng health-check của provider khi không có row nào để thăm dò. Code chỉ có việc nhường thăm dò của worker critical cho lane thấp hơn trong cùng process.
+
+**Quyết định.** Thêm `workers/providerwatch`, chạy trong role `deliver`. (a) **Health probe**: mỗi `deliver.health_probe_interval` (10 s), nếu breaker half-open và không ai nhận slot thăm dò trong `deliver.health_probe_idle` (15 s), gọi `HealthCheck` của adapter (SES `GetAccount` — cũng lỗi nếu `SendingEnabled=false`; SMTP `NOOP`) và báo kết quả qua `Success()`/`Failure()` của breaker. (b) **Auto-pause**: breaker không đóng quá `deliver.breaker_auto_pause_after` (1 h, tính từ lúc rời `CLOSED`, kể cả dao động open ↔ half-open) → pause **bulk × email** (in-app không phụ thuộc SES), `updated_by = system:breaker-watchdog`, ghi `ops_audit` và `ops_calls_total{operation="autoPauseBulkEmail"}`; **resume thủ công**, và nếu ops đã resume giữa đợt sự cố thì không pause lại trong cùng đợt. `health_probe_interval: 0` tắt cả watchdog, `breaker_auto_pause_after: 0` chỉ tắt auto-pause.
+
+**Bị loại.** *Chỉ sửa docs cho khớp code*: chủ dự án chọn implement để đúng điều đã hứa. *Pause cả lane bulk*: kênh in-app vẫn chạy được khi SES chết. *Tự resume khi breaker đóng*: có thể ghi đè quyết định pause thủ công của ops vì `ops_control` không phân biệt nguồn pause.
+
+**Hệ quả.** IAM production cần thêm `ses:GetAccount`. Nhiều replica `deliver` đều chạy watchdog; auto-pause là idempotent (đọc trạng thái trước khi ghi). Thêm alert `BulkAutoPaused` (R-02).
+
+## D-24 · Anonymize khi `USER_DELETED` xoá cả `dedup_key` và `source_ref`
+
+**Bối cảnh.** `dedup_key` nhúng id nghiệp vụ (`order_confirmed:1000234`, `review_replied:{review_id}`, `cart_abandoned:{cart_id}:{n}`) và `source_ref` là `delivery_id` của Auth. Đường tombstone (replay sau xoá) đã đặt cả hai về `NULL` và tài liệu giải thích lý do, nhưng đường xoá thật chỉ `NULL` `user_id`, `template_data`, `subject` ở request và `user_id`, `subject` ở delivery, để `dedup_key`/`source_ref` sống 90 ngày — cùng mức nhạy cảm với `subject` (audit N12).
+
+**Quyết định.** `AnonymizeByUser` của `notification_request` và `notification_delivery` đặt thêm `dedup_key = NULL, source_ref = NULL`. Sổ `delivery_dedup` là bảng riêng không gắn user nên dedup vẫn chặn replay; nó chỉ giữ khoá 30 ngày.
+
+**Bị loại.** *Giữ và ghi docs là pseudonymous*: chủ dự án chọn xoá, cho nhất quán với đường tombstone. *Xoá cả dòng `delivery_dedup`*: không tra được theo user và sẽ mở lại cửa gửi trùng.
+
+**Hệ quả.** Timeline support của user đã xoá mất `dedup_key`; không ảnh hưởng quyết định nào đã ghi. Test `TestE2E_UserDeleted` kiểm cả hai cột.
+
+## D-25 · `Retry-After` mặc định cho `503` retryable và làm tròn lên cửa sổ rate limit
+
+**Bối cảnh.** [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md) yêu cầu mọi `429` và mọi `503` có `retryable: true` mang `Retry-After`. Notification trả `503 DEPENDENCY_UNAVAILABLE` (kho idempotency lỗi, Auth lỗi khi resolve contact của suppression thủ công) nhưng contract internal không khai báo header và code không gửi. Helper cũ cắt phần thập phân của `RetryAfter`, nên cửa sổ 1,5 giây thành 1.
+
+**Quyết định.** `httpx.retryAfterSeconds(status, retryable, wait)`: `wait > 0` thì làm tròn lên (tối thiểu 1, tối đa 3600); không có `wait` thì `429` → 1 và `503` retryable → 2; `503` không retry được không có header. `WriteProblem` dùng nó. Contract `notification/internal/v1` khai báo header trên response `ServiceUnavailable`.
+
+**Bị loại.**
+- *Đặt `AsRetryable(2s)` ở từng chỗ dựng lỗi*: ba nơi hiện tại đều gọi `AsRetryable(0)`; một chỗ mặc định ở lớp ghi problem đáng tin hơn.
+
+**Hệ quả.** Không đổi mã lỗi hay body. `notification-ops` vẫn gọi lại bằng cùng `Idempotency-Key`. `store.go` trả `DEPENDENCY_UNAVAILABLE` không retryable khi `postgres call cancelled` nên response đó không có header — đúng với quy tắc.
+
+Kiểm chứng: `internal/api/httpx/retry_after_test.go` (bảng giá trị và ba test `WriteProblem`).
+
 ## Quyết định chưa chốt
 
-Không còn. D-01…D-20 khép kín thiết kế phase 1; việc tiếp theo là chạy bộ test tích hợp đầy đủ và thay giả định bằng số đo ([15-verification.md](./15-verification.md) §3).
+Không còn. D-01…D-24 khép kín thiết kế phase 1; việc tiếp theo là chạy bộ test tích hợp đầy đủ và thay giả định bằng số đo ([15-verification.md](./15-verification.md) §3).

@@ -1,11 +1,12 @@
 ---
 doc_id: product-adr-004
 service: product
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Product Service team
 supersedes: null
+superseded_by: ADR-011
 evidence: []
 ---
 
@@ -13,7 +14,10 @@ evidence: []
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-011](./ADR-011-markdown-consumer-only-background-processing.md), nay là
+[ADR-016](./ADR-016-state-discriminated-markdown-snapshot.md). Lock order Product → SKU vẫn là
+quy tắc hiện hành; các workload nền trong Context bên dưới (Markdown Worker, cascade, inventory
+sync, cronjob) đã bị gỡ.
 
 ## Context
 

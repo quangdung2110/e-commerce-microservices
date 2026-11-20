@@ -2,9 +2,12 @@
 doc_id: cart-development
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
+evidence:
+  - go/services/cart-service/Makefile
+  - go/services/cart-service/scripts/go.sh
 verified_against_commit: null
 ---
 
@@ -38,12 +41,33 @@ Source chuẩn là [`scripts/`](./scripts):
 - `upsert_item.lua`
 - `remove_items.lua`
 - `mark_abandoned.lua`
+- `purge_cart.lua`
 
-Mọi `KEYS[]` của từng script phải có cùng `{bNN}`. Test bắt buộc gồm Redis Cluster cross-slot, duplicate HTTP idempotency, stale Product validation, marker deadline stale, write/marker race và redelivery `com.ecommerce.order.paid.v1` idempotent.
+Service nhúng bản sao trong `internal/infrastructure/cartredis/scripts/`; `make sync-lua` copy từ thư mục
+này sang service và `make check-lua` fail khi hai bên lệch. Chỉnh script ở đây, không chỉnh bản sao.
+
+Stub Go của Product gRPC (`internal/infrastructure/product/pb`) sinh từ proto chuẩn trong `contracts/`: sửa proto
+rồi chạy `scripts/generate-pb.sh` (Docker, protoc 24.4). `pb/PROTO_SHA256` ghi hash của proto nguồn;
+`make check-pb` và `TestGeneratedStubsMatchCanonicalProto` fail khi proto đổi mà stub chưa sinh lại
+([ADR-015](./decisions/ADR-015-proto-stub-drift-detection.md)).
+
+Mọi `KEYS[]` của từng script phải có cùng `{bNN}`. Test bắt buộc gồm Redis Cluster cross-slot, duplicate HTTP idempotency, stale Product validation, marker deadline stale, write/marker race, redelivery `com.ecommerce.order.paid.v1` idempotent và purge `USER_DELETED` idempotent.
 
 ## 5. Build, test và contracts
 
-Chạy formatter/linter/test của Go service theo Makefile khi implementation tồn tại. Contract test xác nhận `CART_ABANDONED` khớp AsyncAPI/JSON Schema và Notification dedupe CloudEvent ID. Test relay phải chứng minh Kafka failure không dẫn tới `XACK`.
+Máy dev không có Go toolchain; chạy qua container bằng `bash scripts/go.sh` từ
+`go/services/cart-service`:
+
+```bash
+bash scripts/go.sh vet ./...
+bash scripts/go.sh test ./...
+```
+
+Test script chạy trên miniredis (gopher-lua) theo mặc định. Vì miniredis không phải Lua/cjson của Redis thật,
+chạy lại suite trên Redis thật khi sửa script: đặt `CART_TEST_REDIS_ADDR=host:6379` (Redis dùng chung mạng
+với container test; suite tự `FLUSHDB`). Test relay chứng minh Kafka failure không dẫn tới `XACK`. Chưa có
+test tự động validate `CART_ABANDONED` với JSON Schema hay response HTTP với OpenAPI; đó là điều kiện còn thiếu
+để chuyển contract từ `implemented` sang `verified` ([ADOPTION](../../contracts/ADOPTION.md)).
 
 ## 6. Debugging
 
@@ -54,6 +78,8 @@ Chạy formatter/linter/test của Go service theo Makefile khi implementation t
 | Event bị lặp | CloudEvent ID phải bằng `outbox_key + stream_id`; kiểm tra Notification dedupe |
 | Product bị gọi quá nhiều | Validation expiry, LRU hit rate và singleflight key |
 | Redis `CROSSSLOT` | Toàn bộ script key phải dùng cùng `{bNN}` |
+| Giỏ của account đã xóa còn đó | Consumer `cart-auth-consumer` có chạy không (`worker.user_deleted_consumer.enabled`), lag trên `t.auth.events`, metric `cart_user_deleted_outcomes_total` |
+| Biến môi trường không có tác dụng | Khóa của phần `cart:` dùng `CART_CART_*` (xem [operations.md](./operations.md) §2) |
 
 ## 7. Definition of Done
 

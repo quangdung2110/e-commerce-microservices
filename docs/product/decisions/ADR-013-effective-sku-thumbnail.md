@@ -9,6 +9,12 @@ decision_owners:
 
 # ADR-013 — Product resolve effective thumbnail theo SKU
 
+## Status
+
+`Accepted`. Phần fan-out của quyết định được làm rõ bởi
+[ADR-020](./ADR-020-media-fan-out-follows-snapshot-content.md): media cấp Product phát lại snapshot của
+mọi SKU, không chỉ các SKU đang fallback.
+
 ## Context
 
 Search lưu một document cho mỗi SKU và cần đúng một thumbnail ổn định cho product

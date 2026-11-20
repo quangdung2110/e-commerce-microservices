@@ -42,10 +42,24 @@ public final class BalanceReconciliationService {
         var run = optional.get();
         MutableCounts counts = new MutableCounts();
         try {
-            ProviderBalancePort.Page page = provider.list(windowFrom, windowTo,
-                    run.providerCursorFrom(), limit);
-            for (ProviderBalancePort.Entry entry : page.entries()) ingest(entry, counts);
-            runs.complete(run.id(), page.nextCursor(), counts.snapshot(), clock.now());
+            if (run.autoCorrectionFrozen()) throw new IllegalStateException("AUTO_CORRECTION_FROZEN");
+            String cursor = null;
+            java.util.Set<String> cursors = new java.util.HashSet<>();
+            while (true) {
+                ProviderBalancePort.Page page = provider.list(windowFrom, windowTo, cursor, Math.min(limit, 100));
+                for (ProviderBalancePort.Entry entry : page.entries())
+                    runs.owned(run.id(), () -> {
+                        if (runs.currentFreeze(run.autoCorrectionFrozen()))
+                            throw new IllegalStateException("AUTO_CORRECTION_FROZEN");
+                        ingest(entry, counts);
+                        return null;
+                    });
+                cursor = page.nextCursor();
+                if (!page.hasMore()) break;
+                if (cursor == null || cursor.isBlank() || !cursors.add(cursor))
+                    throw new IllegalStateException("BALANCE_CURSOR_NOT_ADVANCING");
+            }
+            runs.complete(run.id(), cursor, counts.snapshot(), clock.now());
             return ReconciliationService.Outcome.COMPLETED;
         } catch (RuntimeException failure) {
             runs.fail(run.id(), failure.getMessage(), clock.now());
@@ -61,20 +75,38 @@ public final class BalanceReconciliationService {
                 ? ledger.resolve(entry.sourceId()).orElseThrow(() ->
                 new IllegalStateException("BALANCE_SOURCE_UNMAPPED:" + entry.id()))
                 : ledger.resolve(entry.sourceId()).orElse(new BalanceLedgerPort.Owner(null, null, null));
+        if (Math.subtractExact(entry.amountMinor(), entry.feeMinor()) != entry.netMinor())
+            throw new IllegalStateException("BALANCE_NET_MISMATCH:" + entry.id());
         String type = journalType(entry.type(), entry.amountMinor(), owner);
+        if (("CAPTURE".equals(type) || "REFUND_REVERSAL".equals(type)) && entry.amountMinor() < 0
+                || ("REFUND".equals(type) || "PAYOUT_SETTLEMENT".equals(type)) && entry.amountMinor() > 0)
+            throw new IllegalStateException("BALANCE_SIGN_MISMATCH:" + entry.id());
         long amount = Math.abs(entry.amountMinor());
         if (amount == 0) throw new IllegalStateException("BALANCE_ZERO_AMOUNT:" + entry.id());
         Accounts accounts = accounts(type);
-        boolean inserted = ledger.post(journal(entry, owner, type, "BALANCE_TRANSACTION",
-                entry.id(), entry.id(), amount, accounts));
-        if (inserted) addTotal(type, amount, counts);
+        if ("PROCESSING_FEE".equals(type) && entry.amountMinor() > 0)
+            accounts = new Accounts(accounts.credit(), accounts.debit());
+        String sourceType = switch (type) {
+            case "CAPTURE" -> "CHARGE";
+            case "REFUND", "REFUND_REVERSAL", "DISPUTE_WITHDRAWAL", "DISPUTE_REINSTATEMENT" -> type;
+            default -> "BALANCE_TRANSACTION";
+        };
+        String sourceId = switch (type) {
+            case "CAPTURE", "REFUND" -> entry.sourceId();
+            case "REFUND_REVERSAL" -> entry.sourceId() + ":reversal";
+            case "DISPUTE_WITHDRAWAL", "DISPUTE_REINSTATEMENT" -> owner.disputeId();
+            default -> entry.id();
+        };
+        ledger.post(journal(entry, owner, type, sourceType, sourceId, entry.id(), amount, accounts));
+        addTotal(type, "PROCESSING_FEE".equals(type) && entry.amountMinor() > 0 ? -amount : amount, counts);
 
         long fee = Math.abs(entry.feeMinor());
         if (fee > 0) {
             Accounts feeAccounts = accounts("PROCESSING_FEE");
-            boolean feeInserted = ledger.post(journal(entry, owner, "PROCESSING_FEE",
+            if (entry.feeMinor() < 0) feeAccounts = new Accounts(feeAccounts.credit(), feeAccounts.debit());
+            ledger.post(journal(entry, owner, "PROCESSING_FEE",
                     "BALANCE_FEE", entry.id() + ":fee", null, fee, feeAccounts));
-            if (feeInserted) counts.fees += fee;
+            counts.fees += entry.feeMinor();
         }
     }
 
@@ -95,7 +127,7 @@ public final class BalanceReconciliationService {
 
     private static boolean requiresOwner(String type) {
         return switch (type) {
-            case "charge", "payment", "refund", "payment_refund", "adjustment" -> true;
+            case "charge", "payment", "refund", "payment_refund", "refund_failure", "adjustment" -> true;
             default -> false;
         };
     }
@@ -105,6 +137,7 @@ public final class BalanceReconciliationService {
         return switch (type) {
             case "charge", "payment" -> "CAPTURE";
             case "refund", "payment_refund" -> "REFUND";
+            case "refund_failure" -> "REFUND_REVERSAL";
             case "adjustment" -> {
                 if (owner.disputeId() == null)
                     throw new IllegalStateException("BALANCE_ADJUSTMENT_NOT_DISPUTE");
@@ -119,6 +152,7 @@ public final class BalanceReconciliationService {
     private static Accounts accounts(String type) {
         return switch (type) {
             case "CAPTURE" -> new Accounts("PROVIDER_RECEIVABLE", "CUSTOMER_PAYMENT_CLEARING");
+            case "REFUND_REVERSAL" -> new Accounts("PROVIDER_RECEIVABLE", "CUSTOMER_REFUND_CLEARING");
             case "REFUND" -> new Accounts("CUSTOMER_REFUND_CLEARING", "PROVIDER_RECEIVABLE");
             case "DISPUTE_WITHDRAWAL" -> new Accounts("DISPUTE_HOLD_OR_LOSS", "PROVIDER_RECEIVABLE");
             case "DISPUTE_REINSTATEMENT" -> new Accounts("PROVIDER_RECEIVABLE", "DISPUTE_HOLD_OR_LOSS");
@@ -132,6 +166,7 @@ public final class BalanceReconciliationService {
         switch (type) {
             case "CAPTURE" -> counts.captured += amount;
             case "REFUND" -> counts.refunded += amount;
+            case "REFUND_REVERSAL" -> counts.refunded -= amount;
             case "DISPUTE_WITHDRAWAL" -> counts.disputed += amount;
             case "DISPUTE_REINSTATEMENT" -> counts.disputed += amount;
             case "PROCESSING_FEE" -> counts.fees += amount;

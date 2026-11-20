@@ -1,3 +1,92 @@
+x-backend-logging: &backend-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '3'
+
+x-java-observability: &java-observability
+  MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+  TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+
+x-go-observability: &go-observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_TRACES_SAMPLER_ARG: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+
+# Password of the shared Redis (requirepass). It holds Auth security state (reset tokens, OTP,
+# revocation), so it is never open (mesh ADR-002). Development value only; override with
+# REDIS_PASSWORD in .env. gateway-auth repeats the same default inside its redis:// URL.
+x-redis-password: &redis-password ${REDIS_PASSWORD:-local-dev-redis-password}
+
+# Kafka SASL/SCRAM-SHA-512 (mesh ADR-003): every client authenticates as its own principal and
+# infra/kafka/acls.txt grants each principal only its own topics and consumer groups. kafka-init
+# creates the users from SCRAM_PASSWORD_<PRINCIPAL>. Development values only; override with
+# KAFKA_<PRINCIPAL>_PASSWORD in .env, then `docker compose run --rm -e SCRAM_RESET=true kafka-init`.
+# A password must not contain , [ ] " or $ (kafka-configs and JAAS syntax).
+x-kafka-passwords:
+  kafka-broker: &kafka-pw-broker ${KAFKA_BROKER_PASSWORD:-kafka-broker-local-dev}
+  kafka-admin: &kafka-pw-admin ${KAFKA_ADMIN_PASSWORD:-kafka-admin-local-dev}
+  auth-service: &kafka-pw-auth ${KAFKA_AUTH_SERVICE_PASSWORD:-auth-service-local-dev}
+  user-service: &kafka-pw-user ${KAFKA_USER_SERVICE_PASSWORD:-user-service-local-dev}
+  cart-service: &kafka-pw-cart ${KAFKA_CART_SERVICE_PASSWORD:-cart-service-local-dev}
+  notification-service: &kafka-pw-notification ${KAFKA_NOTIFICATION_SERVICE_PASSWORD:-notification-service-local-dev}
+  order-service: &kafka-pw-order ${KAFKA_ORDER_SERVICE_PASSWORD:-order-service-local-dev}
+  payment-service: &kafka-pw-payment ${KAFKA_PAYMENT_SERVICE_PASSWORD:-payment-service-local-dev}
+  product-service: &kafka-pw-product ${KAFKA_PRODUCT_SERVICE_PASSWORD:-product-service-local-dev}
+  promotion-service: &kafka-pw-promotion ${KAFKA_PROMOTION_SERVICE_PASSWORD:-promotion-service-local-dev}
+  review-service: &kafka-pw-review ${KAFKA_REVIEW_SERVICE_PASSWORD:-review-service-local-dev}
+  search-service: &kafka-pw-search ${KAFKA_SEARCH_SERVICE_PASSWORD:-search-service-local-dev}
+  kafka-connect: &kafka-pw-connect ${KAFKA_CONNECT_PASSWORD:-kafka-connect-local-dev}
+  debezium-product: &kafka-pw-debezium-product ${KAFKA_DEBEZIUM_PRODUCT_PASSWORD:-debezium-product-local-dev}
+  debezium-promotion: &kafka-pw-debezium-promotion ${KAFKA_DEBEZIUM_PROMOTION_PASSWORD:-debezium-promotion-local-dev}
+  debezium-inventory: &kafka-pw-debezium-inventory ${KAFKA_DEBEZIUM_INVENTORY_PASSWORD:-debezium-inventory-local-dev}
+  debezium-order: &kafka-pw-debezium-order ${KAFKA_DEBEZIUM_ORDER_PASSWORD:-debezium-order-local-dev}
+  debezium-payment: &kafka-pw-debezium-payment ${KAFKA_DEBEZIUM_PAYMENT_PASSWORD:-debezium-payment-local-dev}
+  debezium-review: &kafka-pw-debezium-review ${KAFKA_DEBEZIUM_REVIEW_PASSWORD:-debezium-review-local-dev}
+  kafka-exporter: &kafka-pw-exporter ${KAFKA_EXPORTER_PASSWORD:-kafka-exporter-local-dev}
+
+# Spring Kafka of the Java services. The JAAS line reads each service's KAFKA_SASL_USERNAME and
+# KAFKA_SASL_PASSWORD through Spring placeholders ($$ stops Compose from interpolating them).
+x-kafka-sasl-java: &kafka-sasl-java
+  SPRING_KAFKA_SECURITY_PROTOCOL: SASL_PLAINTEXT
+  SPRING_KAFKA_PROPERTIES_SASL_MECHANISM: SCRAM-SHA-512
+  SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required username="$${KAFKA_SASL_USERNAME}" password="$${KAFKA_SASL_PASSWORD}";'
+
+# Login of each service on the shared PostgreSQL (mesh ADR-004): postgres-init makes each role the
+# owner of its own database (infra/postgres/service-roles.txt); no service uses the superuser, which
+# is left to Temporal, Debezium, exporters and local tools. Development values only; override with
+# PG_PASSWORD_<SERVICE> in .env (postgres-init applies the new password on the next `up`).
+x-postgres-passwords:
+  auth-service: &pg-pw-auth ${PG_PASSWORD_AUTH_SERVICE:-auth-service-local-dev}
+  user-service: &pg-pw-user ${PG_PASSWORD_USER_SERVICE:-user-service-local-dev}
+  notification-service: &pg-pw-notification ${PG_PASSWORD_NOTIFICATION_SERVICE:-notification-service-local-dev}
+  product-service: &pg-pw-product ${PG_PASSWORD_PRODUCT_SERVICE:-product-service-local-dev}
+  review-service: &pg-pw-review ${PG_PASSWORD_REVIEW_SERVICE:-review-service-local-dev}
+  promotion-service: &pg-pw-promotion ${PG_PASSWORD_PROMOTION_SERVICE:-promotion-service-local-dev}
+  inventory-service: &pg-pw-inventory ${PG_PASSWORD_INVENTORY_SERVICE:-inventory-service-local-dev}
+  order-service: &pg-pw-order ${PG_PASSWORD_ORDER_SERVICE:-order-service-local-dev}
+  payment-service: &pg-pw-payment ${PG_PASSWORD_PAYMENT_SERVICE:-payment-service-local-dev}
+
+# Key of X-Service-Signature on the Auth internal API (mesh ADR-004), shared by Auth and
+# Notification. Development value: everyone with the repository has it, so here the boundary is the
+# network split below; set AUTH_INTERNAL_SIGNING_KEY in .env to make the signature count locally.
+# Outside development both services refuse to start with this value.
+x-internal-signing-key: &internal-signing-key ${AUTH_INTERNAL_SIGNING_KEY:-local-dev-auth-internal-signing-key-not-a-secret}
+
+# Review's own MinIO user, limited to the review-media bucket (minio-init); never the root user.
+x-review-s3-secret: &review-s3-secret ${REVIEW_S3_SECRET_KEY:-review-service-local-dev}
+
+# Host ports: every service, database and broker binds 127.0.0.1 only, so nothing but the gateway
+# (8088) and the frontend (3000) is reachable from another machine (mesh ADR-002). Services trust
+# X-User-* and X-Service-Identity headers without a mesh, so a reachable service port is a bypass.
+#
+# Networks (security review 2026-10-22, H4; mesh ADR-004): the frontend, the one container facing
+# the Internet, is only on ecommerce-edge with the gateway, so it cannot reach an internal listener
+# (Auth 8081, User 8083, Cart /internal/**). Mailpit and LocalStack share notification-providers
+# with Notification only, Temporal UI shares temporal-admin with Temporal only, Grafana shares
+# observability with its data sources only. Fixed addresses: the gateway (10.89.3.2) is the only
+# proxy Auth trusts for X-Real-Ip, the frontend (10.89.8.10) the only one Traefik trusts.
+
 services:
   # ── Elasticsearch ──────────────────────────────────────────
   elasticsearch:
@@ -11,7 +100,7 @@ services:
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -28,8 +117,9 @@ services:
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
-    ports:
-      - "2181:2181"
+    # No host port: ZooKeeper has no authentication and owns the Kafka metadata, including the
+    # SCRAM credentials and ACLs (mesh ADR-003). Only the broker shares its network
+    # (kafka-metadata); tools reach it there (scripts/restore-auth-topic-ids.ps1).
     # Metadata must survive alongside Kafka log volumes. Existing stacks must
     # copy the old anonymous volumes before adopting these mounts; see runbook.
     volumes:
@@ -42,32 +132,98 @@ services:
       retries: 10
       start_period: 10s
     networks:
-      - ecommerce-network
+      - kafka-metadata
 
   # ── Kafka ──────────────────────────────────────────────────
+  # SASL/SCRAM-SHA-512 on both listeners and ACLs (mesh ADR-003): an unauthenticated connection
+  # is closed, and a principal reaches only what infra/kafka/acls.txt grants it. The entrypoint
+  # stores the SCRAM credentials of kafka-broker (inter-broker) and kafka-admin (kafka-init,
+  # tools) in ZooKeeper before the broker starts. Tools inside this container use
+  # /etc/kafka/admin.properties, e.g.
+  # `docker exec kafka kafka-topics --bootstrap-server localhost:9092 --command-config /etc/kafka/admin.properties --list`.
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
+    entrypoint: ["/bin/bash", "/scripts/broker-entrypoint.sh"]
     depends_on:
       zookeeper:
         condition: service_healthy
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      # Listener names without SASL_ in them: cp-kafka's configure step otherwise demands a
+      # KAFKA_OPTS JAAS file, while the JAAS lines here are per listener (broker-entrypoint.sh).
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SASL_PLAINTEXT,HOST:SASL_PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_SASL_ENABLED_MECHANISMS: SCRAM-SHA-512
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: SCRAM-SHA-512
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Topics are created explicitly by kafka-init (infra/kafka/topics.txt): a client must not
+      # create a topic by producing to a name (mesh ADR-002).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      SCRAM_BROKER_USERNAME: kafka-broker
+      SCRAM_BROKER_PASSWORD: *kafka-pw-broker
+      SCRAM_ADMIN_USERNAME: kafka-admin
+      SCRAM_ADMIN_PASSWORD: *kafka-pw-admin
+    # 9092 advertises kafka:9092 and is not published; host tools use localhost:29092 (SASL too).
     ports:
-      - "9092:9092"
-      - "29092:29092"
+      - "127.0.0.1:29092:29092"
+    # A TCP check: a kafka-topics probe starts a JVM every 10 s. kafka-init waits for the broker
+    # to answer an authenticated request before any client starts.
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9092'"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     volumes:
       - kafka-data:/var/lib/kafka/data
+      - ./infra/kafka/broker-entrypoint.sh:/scripts/broker-entrypoint.sh:ro
+    networks:
+      - ecommerce-network
+      - kafka-metadata
+
+  # Brings the broker to infra/kafka/topics.txt and acls.txt (one-shot, idempotent): creates
+  # missing topics, the SCRAM user of every principal and its ACLs, and removes ACLs the file no
+  # longer lists (mesh ADR-002, ADR-003). Every Kafka client waits for it. Run again by hand:
+  # `docker compose up kafka-init`. A new topic or grant is a line in those files.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    entrypoint: ["/bin/sh", "/scripts/init.sh"]
+    restart: "no"
+    environment:
+      BOOTSTRAP_SERVER: kafka:9092
+      TOPICS_FILE: /scripts/topics.txt
+      ACLS_FILE: /scripts/acls.txt
+      SCRAM_ADMIN_USERNAME: kafka-admin
+      SCRAM_ADMIN_PASSWORD: *kafka-pw-admin
+      SCRAM_PASSWORD_AUTH_SERVICE: *kafka-pw-auth
+      SCRAM_PASSWORD_USER_SERVICE: *kafka-pw-user
+      SCRAM_PASSWORD_CART_SERVICE: *kafka-pw-cart
+      SCRAM_PASSWORD_NOTIFICATION_SERVICE: *kafka-pw-notification
+      SCRAM_PASSWORD_ORDER_SERVICE: *kafka-pw-order
+      SCRAM_PASSWORD_PAYMENT_SERVICE: *kafka-pw-payment
+      SCRAM_PASSWORD_PRODUCT_SERVICE: *kafka-pw-product
+      SCRAM_PASSWORD_PROMOTION_SERVICE: *kafka-pw-promotion
+      SCRAM_PASSWORD_REVIEW_SERVICE: *kafka-pw-review
+      SCRAM_PASSWORD_SEARCH_SERVICE: *kafka-pw-search
+      SCRAM_PASSWORD_KAFKA_CONNECT: *kafka-pw-connect
+      SCRAM_PASSWORD_DEBEZIUM_PRODUCT: *kafka-pw-debezium-product
+      SCRAM_PASSWORD_DEBEZIUM_PROMOTION: *kafka-pw-debezium-promotion
+      SCRAM_PASSWORD_DEBEZIUM_INVENTORY: *kafka-pw-debezium-inventory
+      SCRAM_PASSWORD_DEBEZIUM_ORDER: *kafka-pw-debezium-order
+      SCRAM_PASSWORD_DEBEZIUM_PAYMENT: *kafka-pw-debezium-payment
+      SCRAM_PASSWORD_DEBEZIUM_REVIEW: *kafka-pw-debezium-review
+      SCRAM_PASSWORD_KAFKA_EXPORTER: *kafka-pw-exporter
+    volumes:
+      - ./infra/kafka:/scripts:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
     networks:
       - ecommerce-network
 
@@ -75,6 +231,12 @@ services:
   kafka-connect:
     image: debezium/connect:3.0.0.Final
     container_name: kafka-connect
+    # The worker authenticates as kafka-connect (its group and three internal topics only). Its
+    # JAAS line is built here from SCRAM_PASSWORD_KAFKA_CONNECT so the password has one source.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - export CONNECT_SASL_JAAS_CONFIG="org.apache.kafka.common.security.scram.ScramLoginModule required username=\"kafka-connect\" password=\"$${SCRAM_PASSWORD_KAFKA_CONNECT}\";"; exec /docker-entrypoint.sh start
     environment:
       BOOTSTRAP_SERVERS: kafka:9092
       GROUP_ID: product-service-connect-cluster
@@ -85,15 +247,39 @@ services:
       VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_SASL_MECHANISM: SCRAM-SHA-512
       CONNECT_PRODUCER_BOOTSTRAP_SERVERS: kafka:9092
       CONNECT_PRODUCER_ACKS: all
+      # Source connectors produce as their own principal: each connector artifact sets
+      # producer.override.sasl.jaas.config (debezium-<service>), and the Principal policy lets a
+      # connector override only the SASL settings. A connector without it fails to authenticate.
+      CONNECT_PRODUCER_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      CONNECT_PRODUCER_SASL_MECHANISM: SCRAM-SHA-512
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: Principal
       CONNECT_CONSUMER_BOOTSTRAP_SERVERS: kafka:9092
+      # ${env:SCRAM_PASSWORD_DEBEZIUM_<SERVICE>} in a connector config reads these variables, so
+      # GET /connectors/<name>/config never returns a password. Nothing else is readable.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^SCRAM_PASSWORD_DEBEZIUM_[A-Z]+$$
+      SCRAM_PASSWORD_KAFKA_CONNECT: *kafka-pw-connect
+      SCRAM_PASSWORD_DEBEZIUM_PRODUCT: *kafka-pw-debezium-product
+      SCRAM_PASSWORD_DEBEZIUM_PROMOTION: *kafka-pw-debezium-promotion
+      SCRAM_PASSWORD_DEBEZIUM_INVENTORY: *kafka-pw-debezium-inventory
+      SCRAM_PASSWORD_DEBEZIUM_ORDER: *kafka-pw-debezium-order
+      SCRAM_PASSWORD_DEBEZIUM_PAYMENT: *kafka-pw-debezium-payment
+      SCRAM_PASSWORD_DEBEZIUM_REVIEW: *kafka-pw-debezium-review
       CONNECT_HEAP_MAX_SIZE: 512m
+    # The Connect REST API has no authentication: it can read connector configs (database
+    # credentials) and register new connectors. Loopback only.
     ports:
-      - "8084:8083"
+      - "127.0.0.1:8084:8083"
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -102,6 +288,33 @@ services:
       timeout: 10s
       retries: 5
       start_period: 40s
+    networks:
+      - ecommerce-network
+
+  # Đăng ký các Debezium outbox connector (one-shot, idempotent). Connect không tự nhớ connector
+  # nếu volume/topic cấu hình bị xoá, và event outbox tạo lúc connector vắng mặt không được
+  # phát lại (snapshot.mode=no_data), nên bước này chạy mỗi lần `docker compose up`.
+  # Chạy lại tay: `docker compose up kafka-connect-init`.
+  kafka-connect-init:
+    image: debezium/connect:3.0.0.Final
+    container_name: kafka-connect-init
+    entrypoint: ["/bin/sh", "/scripts/register-connectors.sh"]
+    restart: "no"
+    environment:
+      CONNECT_URL: http://kafka-connect:8083
+      CONNECTOR_DIR: /connectors
+      TIMEOUT_SECONDS: "600"
+    volumes:
+      - ./infra/kafka-connect/register-connectors.sh:/scripts/register-connectors.sh:ro
+      - ./java/services/product-service/src/main/resources/kafka/debezium-connector-product-outbox.json:/connectors/product-outbox.json:ro
+      - ./java/services/promotion-service/src/main/resources/kafka/debezium-connector-promotion-outbox.json:/connectors/promotion-outbox.json:ro
+      - ./java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json:/connectors/order-outbox.json:ro
+      - ./java/services/inventory-service/src/main/resources/kafka/debezium-connector-inventory-outbox.json:/connectors/inventory-outbox.json:ro
+      - ./java/services/payment-service/src/main/resources/kafka/debezium-connector-payment-outbox.json:/connectors/payment-outbox.json:ro
+      - ./java/services/review-service/src/main/resources/debezium/review-postgres-connector.json:/connectors/review-outbox.json:ro
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
     networks:
       - ecommerce-network
 
@@ -128,7 +341,7 @@ services:
       - -c
       - max_connections=300
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
@@ -141,18 +354,61 @@ services:
     networks:
       - ecommerce-network
 
+  # Brings PostgreSQL to infra/postgres/service-roles.txt (one-shot, idempotent): one LOGIN role per
+  # service, owner of its database and every object in it, the only non-superuser allowed to
+  # connect (mesh ADR-004). Every service with a database waits for it. Run again by hand, e.g.
+  # after loading a schema as postgres: `docker compose up postgres-init`.
+  postgres-init:
+    image: postgres:16-alpine
+    container_name: postgres-init
+    entrypoint: ["/bin/sh", "/scripts/service-roles.sh"]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      ROLES_FILE: /scripts/service-roles.txt
+      PG_PASSWORD_AUTH_SERVICE: *pg-pw-auth
+      PG_PASSWORD_USER_SERVICE: *pg-pw-user
+      PG_PASSWORD_NOTIFICATION_SERVICE: *pg-pw-notification
+      PG_PASSWORD_PRODUCT_SERVICE: *pg-pw-product
+      PG_PASSWORD_REVIEW_SERVICE: *pg-pw-review
+      PG_PASSWORD_PROMOTION_SERVICE: *pg-pw-promotion
+      PG_PASSWORD_INVENTORY_SERVICE: *pg-pw-inventory
+      PG_PASSWORD_ORDER_SERVICE: *pg-pw-order
+      PG_PASSWORD_PAYMENT_SERVICE: *pg-pw-payment
+    volumes:
+      - ./infra/postgres:/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ecommerce-network
+
   # ── Redis ──────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: >
-      redis-server
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-      --appendfsync everysec
+    # requirepass: Redis holds Auth reset tokens, OTPs and the revocation list, so whoever can
+    # write it can take over an account (mesh ADR-002). Every client gets REDIS_PASSWORD.
+    # A shell expands the password from the environment; the image entrypoint still drops root.
+    command:
+      - sh
+      - -c
+      - >-
+        exec docker-entrypoint.sh redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --appendonly yes
+        --appendfsync everysec
+        --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: *redis-password
+      # redis-cli inside this container authenticates with it, so `docker exec redis redis-cli …`
+      # (healthcheck, frontend/scripts/create-dev-account.sh) keeps working unchanged.
+      REDISCLI_AUTH: *redis-password
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -167,19 +423,24 @@ services:
   # Review media bytes. Review owns the metadata and the lifecycle; the bytes live
   # here, and the API never exposes an object key (ADR-011).
   minio:
-    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    build: ./infra/minio
+    image: ecommerce-minio:RELEASE.2025-10-15T17-29-55Z
     container_name: minio
     command: server /data --console-address ":9001"
+    # Root user: minio-init and the console only. Override MINIO_ROOT_USER/MINIO_ROOT_PASSWORD in .env
+    # (read on every start); Review has its own user (x-review-s3-secret).
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    # Browsers on this machine use localhost:9000 for signed Review uploads; others go through
+    # the gateway (/media/**).
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9000/minio/health/ready"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -202,7 +463,9 @@ services:
 
   # Creates the buckets once and exits; MinIO has no declarative bucket configuration
   # and no service creates buckets at runtime.
-  #  - review-media: private, Review signs every URL (ADR-011).
+  #  - review-media: private, Review signs every URL (ADR-011). Review uses its own user
+  #    review-service, whose policy (infra/minio/policies/review-media-rw.json) reaches this bucket
+  #    only (mesh ADR-004).
   #  - product-media: the local stand-in for the product CDN. Anonymous read only, served
   #    to browsers through the gateway at http://localhost:8088/media/<storage_key>; the
   #    Product Detail BFF and Search build URLs from PDP_MEDIA_CDN_BASE_URL/CDN_BASE_URL
@@ -216,21 +479,30 @@ services:
         condition: service_healthy
     volumes:
       - ./infra/minio:/seed:ro
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      REVIEW_S3_SECRET_KEY: *review-s3-secret
     # Anonymous access to product-media is GetObject only: the built-in "download" policy
-    # would also allow ListBucket and expose every storage key.
+    # would also allow ListBucket and expose every storage key. `admin user add` resets the
+    # password; attaching a policy already attached fails, hence `|| true`.
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
       mc mb --ignore-existing local/review-media &&
       mc mb --ignore-existing local/product-media &&
       mc anonymous set-json /seed/policies/product-media-read.json local/product-media &&
       mc cp --recursive /seed/product-media/ local/product-media/ &&
-      echo 'review-media and product-media buckets ready'"
+      mc admin policy create local review-media-rw /seed/policies/review-media-rw.json &&
+      mc admin user add local review-service \"$$REVIEW_S3_SECRET_KEY\" &&
+      { mc admin policy attach local review-media-rw --user review-service || true; } &&
+      echo 'review-media and product-media buckets ready, user review-service limited to review-media'"
     networks:
       - ecommerce-network
 
   # ── Search Service ─────────────────────────────────────────
   search-service:
+    logging: *backend-logging
     build:
       context: ./java/services/search-service
     container_name: search-service
@@ -239,19 +511,26 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
+      <<: [*java-observability, *kafka-sasl-java]
       ES_URIS: http://elasticsearch:9200
       KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SASL_USERNAME: search-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-search
       SPRING_PROFILES_ACTIVE: dev
-      # Bearer service identity for Review's internal rating export. It matches
-      # REVIEW_INTERNAL_EXPORT_TOKENS on review-service and reaches that route only.
-      REVIEW_INTERNAL_TOKEN: dev-search-export-token
       # Same local CDN and placeholder as the Product Detail BFF, so a product card and
       # its detail page show the same file (docs/product-detail-bff ADR-005).
       CDN_BASE_URL: http://localhost:8088/media
       THUMBNAIL_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
+      # Full reindex pulls the Product/Category export; Product listens on 8081.
+      PRODUCT_INTERNAL_URL: http://product-service:8081
+      # Local QA fixtures stay in Product/history, outside public discovery. Override for QA runs.
+      SEARCH_STOREFRONT_EXCLUDED_PRODUCT_IDS: ${SEARCH_STOREFRONT_EXCLUDED_PRODUCT_IDS:-01a13593-dab1-784a-83d0-ab76356e93ab,01a138bb-5015-74f4-a226-96e89528ccab,01a13e2f-2fb3-7de8-9890-7702b4231d97,01a1401f-b961-7dc9-abc0-97fae3fd0750,01a1402d-0981-7c79-a275-1cdb918316d7}
+      SEARCH_STOREFRONT_EXCLUDED_CATEGORY_IDS: ${SEARCH_STOREFRONT_EXCLUDED_CATEGORY_IDS:-01a1402d-08cb-7584-b7eb-3ae9b9c633b7}
     ports:
-      - "8081:8080"
+      - "127.0.0.1:8081:8080"
     networks:
       - ecommerce-network
     labels:
@@ -272,6 +551,7 @@ services:
 
   # ── Review Service ─────────────────────────────────────────
   review-service:
+    logging: *backend-logging
     build:
       context: ./java/services/review-service
     container_name: review-service
@@ -280,17 +560,28 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      postgres-init:
+        condition: service_completed_successfully
     environment:
-      SPRING_PROFILES_ACTIVE: prod
+      <<: [*java-observability, *kafka-sasl-java]
+      # local: this stack carries development secrets; outside dev/local/test StartupSecretGuard
+      # refuses them (security review 2026-10-22, H1).
+      SPRING_PROFILES_ACTIVE: prod,local
       SERVER_PORT: 8080
 
       DB_URL: jdbc:postgresql://postgres:5432/review_service?currentSchema=review,public
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_USERNAME: review_service
+      DB_PASSWORD: *pg-pw-review
 
       KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_SASL_USERNAME: review-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-review
 
       # Both HMAC secrets are required and stable. Rotating the alias secret starts a
       # new pseudonym namespace; rotating the guard secret orphans every committed
@@ -298,22 +589,20 @@ services:
       REVIEW_AUTHOR_ALIAS_HMAC_SECRET: dev-review-author-alias-secret
       REVIEW_PRIVACY_GUARD_HMAC_SECRET: dev-review-privacy-guard-secret
 
-      # Bearer service identity for /internal/v1/**, split per route group so the
-      # Product Detail BFF cannot page the rating export and Search cannot read the
-      # PDP summary.
-      REVIEW_INTERNAL_PDP_TOKENS: dev-product-detail-bff-token
-      REVIEW_INTERNAL_EXPORT_TOKENS: dev-search-export-token
+      # /internal/v1/** callers are checked by X-Service-Identity per route group: the defaults
+      # (product-detail-bff on the PDP summary, search-service on the rating export) apply;
+      # override with REVIEW_INTERNAL_PDP_CALLERS / REVIEW_INTERNAL_EXPORT_CALLERS (contracts ADR-004).
 
       REVIEW_S3_ENDPOINT: http://minio:9000
       # Browser-visible origin for upload/download signatures; internal HEAD stays on minio.
       REVIEW_S3_PUBLIC_ENDPOINT: http://localhost:9000
       REVIEW_S3_BUCKET: review-media
-      REVIEW_S3_ACCESS_KEY: minioadmin
-      REVIEW_S3_SECRET_KEY: minioadmin
+      REVIEW_S3_ACCESS_KEY: review-service
+      REVIEW_S3_SECRET_KEY: *review-s3-secret
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8087:8080"
+      - "127.0.0.1:8087:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
       interval: 30s
@@ -349,6 +638,7 @@ services:
 
   # ── Product Service ────────────────────────────────────────
   product-service:
+    logging: *backend-logging
     build:
       context: ./java/services/product-service
       dockerfile: Dockerfile
@@ -357,20 +647,28 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
-      SPRING_PROFILES_ACTIVE: prod
+      <<: [*java-observability, *kafka-sasl-java]
+      # local: stack dev mang secret dev; ngoài dev/local/test StartupSecretGuard từ chối chúng.
+      SPRING_PROFILES_ACTIVE: prod,local
       SERVER_PORT: 8081
       GRPC_PORT: 9091
 
-      # Database
+      # Database: role riêng của Product (postgres-init), không phải superuser.
       DB_URL: jdbc:postgresql://postgres:5432/product_service
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_USERNAME: product_service
+      DB_PASSWORD: *pg-pw-product
 
       # Kafka: chỉ consume markdown snapshot của Promotion.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SASL_USERNAME: product-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-product
       MARKDOWN_TOPIC: t.promotion.markdown.events
       MARKDOWN_DLQ_TOPIC: t.promotion.markdown.events.dlq
 
@@ -379,10 +677,10 @@ services:
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8082:8081"
-      - "9091:9091"
+      - "127.0.0.1:8082:8081"
+      - "127.0.0.1:9091:9091"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health/readiness || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -404,7 +702,7 @@ services:
       - "traefik.http.routers.product-service.middlewares=authenticated@file,rate-limit-api@file,compress@file"
       - "traefik.http.services.product-service.loadbalancer.server.port=8081"
       - "traefik.http.services.product-service.loadbalancer.server.scheme=http"
-      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health"
+      - "traefik.http.services.product-service.loadbalancer.healthcheck.path=/actuator/health/readiness"
       - "traefik.http.services.product-service.loadbalancer.healthcheck.interval=10s"
       - "traefik.http.services.product-service.loadbalancer.healthcheck.timeout=5s"
       - "traefik.http.services.product-service.loadbalancer.serverstransport=business-api@file"
@@ -413,33 +711,35 @@ services:
 
   # ── Product Detail BFF ─────────────────────────────────────
   # Read composition for the PDP (docs/product-detail-bff). Stateless: no database, no
-  # Kafka. Inventory availability stays disabled, so every SKU is UNKNOWN, until the PDP
-  # rollout gate (load/freshness test, README.md "Trạng thái rollout") is passed.
+  # Kafka. Local Inventory enrichment is enabled for integration testing. Production
+  # rollout still requires the load/freshness gate in docs/product-detail-bff/README.md.
   product-detail-bff:
+    logging: *backend-logging
     build:
       context: ./java/services/product-detail-bff
     container_name: product-detail-bff
-    # Chỉ để thứ tự khởi động dễ đoán: BFF tự degrade khi Review chưa sẵn sàng, và trả
-    # 503 khi Product chưa sẵn sàng, nên không cần chờ healthcheck của chúng.
+    # Product must finish its startup warm-up before BFF primes its actual HTTP pool.
+    # Review remains optional; runtime readiness never polls downstream services.
     depends_on:
-      - product-service
-      - review-service
+      product-service:
+        condition: service_healthy
+      review-service:
+        condition: service_started
     environment:
+      <<: *java-observability
       SERVER_PORT: 8080
       PDP_PRODUCT_BASE_URL: http://product-service:8081
-      PDP_INVENTORY_ENABLED: "false"
+      PDP_INVENTORY_ENABLED: "true"
+      PDP_INVENTORY_BASE_URL: http://inventory-service:8080
       PDP_REVIEW_ENABLED: "true"
       PDP_REVIEW_BASE_URL: http://review-service:8080
-      # Phải nằm trong REVIEW_INTERNAL_PDP_TOKENS của review-service. Development only.
-      PDP_REVIEW_SERVICE_TOKEN: dev-product-detail-bff-token
       # Local CDN = bucket product-media của MinIO phát qua gateway; Search dùng đúng
       # cùng hai giá trị này (CDN_BASE_URL, THUMBNAIL_PLACEHOLDER_URL).
       PDP_MEDIA_CDN_BASE_URL: http://localhost:8088/media
       PDP_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
       PDP_MEDIA_REQUIRE_HTTPS: "false"
-      TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
-      - "8093:8080"
+      - "127.0.0.1:8093:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -466,6 +766,7 @@ services:
 
   # ── Promotion Service ──────────────────────────────────────
   promotion-service:
+    logging: *backend-logging
     build:
       context: ./java/services/promotion-service
       dockerfile: Dockerfile
@@ -473,25 +774,33 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
+      <<: [*java-observability, *kafka-sasl-java]
       SPRING_PROFILES_ACTIVE: prod
       SERVER_PORT: 8085
 
-      # Database (docs/promotion/data.md): PostgreSQL la source of truth.
+      # Database (docs/promotion/data.md): PostgreSQL la source of truth; role rieng (postgres-init).
       DB_URL: jdbc:postgresql://postgres:5432/promotion_service
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_USERNAME: promotion_service
+      DB_PASSWORD: *pg-pw-promotion
 
       # Redis runtime: snapshot cache, claim gate/pool, budget reservation, campaign schedule.
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: *redis-password
 
       # Kafka: chi consume product-deleted.v1; outbound qua outbox + Debezium.
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SASL_USERNAME: promotion-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-promotion
       PRODUCT_EVENTS_TOPIC: t.product.events
       PRODUCT_EVENTS_DLQ_TOPIC: t.product.events.promotion.dlq
 
@@ -500,7 +809,7 @@ services:
 
       JAVA_OPTS: "-Xms512m -Xmx1024m -XX:+UseG1GC"
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
       interval: 30s
@@ -546,6 +855,7 @@ services:
   # commit-ordered published_event table and the Debezium connector in
   # java/services/inventory-service/src/main/resources/kafka (register it manually).
   inventory-service:
+    logging: *backend-logging
     build:
       context: ./java/services/inventory-service
       dockerfile: Dockerfile
@@ -553,17 +863,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
     environment:
+      <<: *java-observability
       SERVER_PORT: 8080
       DB_URL: jdbc:postgresql://postgres:5432/inventory_service
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_USERNAME: inventory_service
+      DB_PASSWORD: *pg-pw-inventory
       # Manual fail-closed switch (docs/inventory/operations.md §1, ADR-027).
       INVENTORY_WRITE_FREEZE: "false"
       WORKERS_ENABLED: "true"
       JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
     ports:
-      - "8094:8080"
+      - "127.0.0.1:8094:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -605,16 +918,23 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PWD: postgres
       POSTGRES_SEEDS: postgres
+      # Two networks: listen on every interface, advertise the fixed ecommerce-network address
+      # (auto-setup otherwise binds the first address only, which may be temporal-admin's).
+      BIND_ON_IP: 0.0.0.0
+      TEMPORAL_BROADCAST_ADDRESS: 10.89.3.3
     ports:
-      - "7233:7233"
+      - "127.0.0.1:7233:7233"
     healthcheck:
       test: ["CMD-SHELL", "tctl --address temporal:7233 cluster health | grep -q SERVING"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 30s
+    # Temporal has no authentication (mesh ADR-004): its UI reaches it on temporal-admin only.
     networks:
-      - ecommerce-network
+      ecommerce-network:
+        ipv4_address: 10.89.3.3
+      temporal-admin: {}
 
   temporal-ui:
     image: temporalio/ui:2.31.2
@@ -625,14 +945,15 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
     ports:
-      - "8233:8080"
+      - "127.0.0.1:8233:8080"
     networks:
-      - ecommerce-network
+      - temporal-admin
 
   # ── Order Service (docs/order, Order ADR-020) ─────────────
   # Needs the order_service database (init-db.sh) and the Debezium outbox connector in
   # java/services/order-service/src/main/resources/kafka/ for Cart/Review/Notification.
   order-service:
+    logging: *backend-logging
     build:
       context: ./java/services/order-service
       dockerfile: Dockerfile
@@ -640,19 +961,27 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       redis:
         condition: service_started
       temporal:
         condition: service_healthy
     environment:
+      <<: [*java-observability, *kafka-sasl-java]
       SERVER_PORT: 8080
       DB_URL: jdbc:postgresql://postgres:5432/order_service
-      DB_USERNAME: postgres
-      DB_PASSWORD: postgres
+      DB_USERNAME: order_service
+      DB_PASSWORD: *pg-pw-order
       KAFKA_BROKERS: kafka:9092
+      KAFKA_SASL_USERNAME: order-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-order
       REDIS_HOST: redis
+      REDIS_PASSWORD: *redis-password
       TEMPORAL_TARGET: temporal:7233
       INVENTORY_BASE_URL: http://inventory-service:8080
       PROMOTION_BASE_URL: http://promotion-service:8085
@@ -660,7 +989,7 @@ services:
       ORDER_FRONTEND_BASE_URL: http://localhost:3000
       JAVA_OPTS: "-Xms256m -Xmx768m -XX:+UseG1GC"
     ports:
-      - "8095:8080"
+      - "127.0.0.1:8095:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
       interval: 15s
@@ -694,9 +1023,10 @@ services:
 
   # ── Cart Service ───────────────────────────────────────────
   cart-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/cart-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/cart-service/Dockerfile
     container_name: cart-service
     # Cart has no PostgreSQL dependency: Redis is its only store (ADR-010).
     depends_on:
@@ -704,17 +1034,23 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       product-service:
         condition: service_healthy
     environment:
+      <<: *go-observability
       APP_ENV: development
 
       # Override yaml config via CART_-prefixed env vars (viper maps . → _)
       # Redis: the cart source of truth.
       CART_REDIS_ADDRS: redis:6379
+      CART_REDIS_PASSWORD: *redis-password
 
       # Kafka: CART_ABANDONED out, ORDER_PAID in.
       CART_KAFKA_BROKERS: kafka:9092
+      CART_KAFKA_SASL_USERNAME: cart-service
+      CART_KAFKA_SASL_PASSWORD: *kafka-pw-cart
 
       # gRPC Product Service.
       CART_PRODUCT_ADDRESS: product-service:9091
@@ -743,35 +1079,47 @@ services:
 
   # ── Auth Service ───────────────────────────────────────────
   auth-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/auth-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/auth-service/Dockerfile
     container_name: auth-service
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
+      <<: *go-observability
       # Config doc override qua tien to AUTH_ (viper SetEnvPrefix trong
       # internal/common/config). Bien khong co tien to bi bo qua im lang, tru
       # DB_PASSWORD va REDIS_PASSWORD duoc noi thang trong application.yaml.
       AUTH_DATABASE_HOST: postgres
       AUTH_DATABASE_PORT: "5432"
       AUTH_DATABASE_NAME: auth_db
-      AUTH_DATABASE_USERNAME: postgres
-      DB_PASSWORD: postgres
+      AUTH_DATABASE_USERNAME: auth_service
+      DB_PASSWORD: *pg-pw-auth
+      # Only the gateway may name the client (X-Real-Ip) for the per-IP budgets (mesh ADR-004).
+      AUTH_SECURITY_TRUSTED_PROXIES: 10.89.3.2/32
+      # X-Service-Signature of the internal listener, shared with Notification.
+      AUTH_INTERNAL_SIGNING_KEY: *internal-signing-key
       AUTH_REDIS_HOST: redis
       AUTH_REDIS_PORT: "6379"
-      REDIS_PASSWORD: ''
+      REDIS_PASSWORD: *redis-password
       AUTH_KAFKA_BROKERS: kafka:9092
+      AUTH_KAFKA_SASL_USERNAME: auth-service
+      AUTH_KAFKA_SASL_PASSWORD: *kafka-pw-auth
       # AES-256-GCM key bao ve private JWT key trong auth.jwt_keys.
       # CHI danh cho development. Production phai lay tu secret manager.
       AUTH_KEYS_MASTER_KEY: "CU5K/J8X8Ys5MfXuFncgDtQ2YOSgDTnDqcQzj+IBpj0="
     ports:
-      - "8086:8080"
+      - "127.0.0.1:8086:8080"
     volumes:
       - ./go/services/auth-service/configs:/app/configs:ro
     networks:
@@ -783,7 +1131,8 @@ services:
       - "traefik.http.routers.auth-service.rule=PathPrefix(`/api/v1/auth`)"
       - "traefik.http.routers.auth-service.entrypoints=web"
       - "traefik.http.routers.auth-service.service=auth-service"
-      - "traefik.http.routers.auth-service.middlewares=strip-identity-headers@file"
+      # rate-limit-auth: per client IP (X-Real-Ip) at the edge, before Auth's own per-IP budgets.
+      - "traefik.http.routers.auth-service.middlewares=strip-identity-headers@file,rate-limit-auth@file"
       # Nhanh can danh tinh cua contracts/http/auth/v1 (security gatewayIdentity):
       # di qua gateway-auth. Priority cao hon router cong khai o tren.
       - "traefik.http.routers.auth-service-protected.rule=(Path(`/api/v1/auth/sessions`) && (Method(`GET`) || Method(`DELETE`))) || (PathPrefix(`/api/v1/auth/sessions/`) && Method(`DELETE`)) || Path(`/api/v1/auth/password`) || Path(`/api/v1/auth/email-change-requests`) || Path(`/api/v1/auth/email-changes/confirmations`) || Path(`/api/v1/auth/accounts/me/deletion-requests`) || PathPrefix(`/api/v1/auth/admin/`)"
@@ -797,21 +1146,24 @@ services:
   # Verify JWT cho moi route can danh tinh (docs/gateway/design.md). Khong publish
   # port: chi Traefik goi http://gateway-auth:8080/verify.
   gateway-auth:
+    logging: *backend-logging
     build:
-      context: ./go/services/gateway-auth
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/gateway-auth/Dockerfile
     container_name: gateway-auth
     depends_on:
       redis:
         condition: service_healthy
     environment:
+      <<: *go-observability
       # Ten bien dung chung voi auth-service (runtime-contract.md muc 6). Gia tri
       # phai khop go/services/auth-service/configs/application.yaml.
       AUTH_JWT_ISSUER: "https://auth.ecommerce.local"
       AUTH_JWT_AUDIENCE: "ecommerce-api"
       AUTH_JWT_ALLOWED_ALGORITHMS: "RS256"
       AUTH_JWKS_URL: "http://auth-service:8080/.well-known/jwks.json"
-      AUTH_REVOCATION_REDIS_URL: "redis://redis:6379/0"
+      # Same password as x-redis-password; a URL cannot reference the anchor.
+      AUTH_REVOCATION_REDIS_URL: "redis://:${REDIS_PASSWORD:-local-dev-redis-password}@redis:6379/0"
     networks:
       - ecommerce-network
 
@@ -819,20 +1171,24 @@ services:
   # Versioned migration runs before User, including on existing root-stack volumes.
   user-migrate:
     image: migrate/migrate:v4.18.3
-    command: ["-path", "/migrations", "-database", "postgres://postgres:postgres@postgres:5432/user_service?sslmode=disable", "up"]
+    # As user_service, the owner of the database: tables it creates belong to User (mesh ADR-004).
+    command: ["-path", "/migrations", "-database", "postgres://user_service:${PG_PASSWORD_USER_SERVICE:-user-service-local-dev}@postgres:5432/user_service?sslmode=disable", "up"]
     volumes:
       - ./go/services/user-service/migrations:/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
     networks:
       - ecommerce-network
     restart: "no"
 
   user-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/user-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/user-service/Dockerfile
     container_name: user-service
     depends_on:
       user-migrate:
@@ -843,7 +1199,10 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
+      <<: *go-observability
       # Every key of configs/application.yaml is overridable with a USER_ prefix.
       USER_APP_ENV: development
       USER_DATABASE_HOST: postgres
@@ -852,10 +1211,13 @@ services:
       USER_DATABASE_NAME: user_service
       USER_REDIS_HOST: redis
       USER_KAFKA_BROKERS: kafka:9092
+      USER_KAFKA_SASL_USERNAME: user-service
+      USER_KAFKA_SASL_PASSWORD: *kafka-pw-user
       # Temporary triage switch only; buyer bootstrap requires the consumer enabled.
       USER_KAFKA_CONSUMER_ENABLED: ${USER_KAFKA_CONSUMER_ENABLED:-true}
-      DB_PASSWORD: postgres
-      REDIS_PASSWORD: ""
+      USER_DATABASE_USERNAME: user_service
+      DB_PASSWORD: *pg-pw-user
+      REDIS_PASSWORD: *redis-password
     # KHÔNG expose ports ra ngoài để bắt buộc phải đi qua API Gateway
     volumes:
       - ./go/services/user-service/configs:/app/configs:ro
@@ -882,15 +1244,16 @@ services:
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
       MP_MAX_MESSAGES: "5000"
     ports:
-      - "1025:1025"     # SMTP
-      - "8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
+      - "127.0.0.1:1025:1025"     # SMTP
+      - "127.0.0.1:8025:8025"     # Web UI + REST API (test tự động đọc hộp thư)
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # Only Notification reaches it, and it reaches no service (mesh ADR-004).
     networks:
-      - ecommerce-network
+      - notification-providers
 
   localstack:
     image: localstack/localstack:3.8
@@ -902,7 +1265,7 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
     ports:
-      - "4566:4566"
+      - "127.0.0.1:4566:4566"
     volumes:
       # Tạo SNS topic ses-events, SQS queue notification-ses-events (+ DLQ) và subscription.
       - ./go/services/notification-service/deploy/localstack/init-ses-events.sh:/etc/localstack/init/ready.d/init-ses-events.sh:ro
@@ -912,40 +1275,50 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+    # Only Notification reaches it, and it reaches no service (mesh ADR-004).
     networks:
-      - ecommerce-network
+      - notification-providers
 
   # ── Notification Service (profile: notification) ──────────
   # Một binary nhiều ROLE; dev chạy ROLE=all. Public 8080 (inbox, qua Traefik)
   # map host 8091; internal 8081 (status/ops/metrics) map host 8092 — không qua
   # Gateway. Thiết kế: docs/notification/13-development.md.
   notification-service:
+    logging: *backend-logging
     build:
-      context: ./go/services/notification-service
-      dockerfile: Dockerfile
+      context: ./go
+      dockerfile: services/notification-service/Dockerfile
     container_name: notification-service
     profiles: ["notification"]
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
       mailpit:
         condition: service_healthy
       localstack:
         condition: service_healthy
     environment:
+      <<: *go-observability
       # Mọi key của configs/application.yaml override được với tiền tố NOTIFICATION_.
       NOTIFICATION_APP_ENV: development
       NOTIFICATION_APP_ROLE: all
       NOTIFICATION_DATABASE_HOST: postgres
       NOTIFICATION_DATABASE_NAME: notification_db
-      DB_PASSWORD: postgres
+      NOTIFICATION_DATABASE_USERNAME: notification_service
+      DB_PASSWORD: *pg-pw-notification
       NOTIFICATION_REDIS_HOST: redis
-      REDIS_PASSWORD: ""
+      REDIS_PASSWORD: *redis-password
       NOTIFICATION_KAFKA_BROKERS: kafka:9092
+      NOTIFICATION_KAFKA_SASL_USERNAME: notification-service
+      NOTIFICATION_KAFKA_SASL_PASSWORD: *kafka-pw-notification
       NOTIFICATION_EMAIL_PROVIDER: smtp
       NOTIFICATION_EMAIL_SMTP_HOST: mailpit
       NOTIFICATION_EMAIL_SMTP_PORT: "1025"
@@ -954,18 +1327,20 @@ services:
       NOTIFICATION_TRACK_CORRELATE_PROVIDER: mailpit
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
-      # Auth internal listener (8081), không phải public 8080.
+      # Auth internal listener (8081), không phải public 8080; mọi request ký X-Service-Signature.
       NOTIFICATION_AUTH_BASE_URL: http://auth-service:8081
+      NOTIFICATION_AUTH_SIGNING_KEY: *internal-signing-key
       NOTIFICATION_FRONTEND_BASE_URL: http://localhost:3000
       # Outbox: debezium (cần đăng ký connector, 13-development.md §4) hoặc poller.
       NOTIFICATION_OUTBOX_PUBLISHER: poller
     ports:
-      - "8091:8080"
-      - "8092:8081"
+      - "127.0.0.1:8091:8080"
+      - "127.0.0.1:8092:8081"
     volumes:
       - ./go/services/notification-service/configs:/app/configs:ro
     networks:
       - ecommerce-network
+      - notification-providers
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.notification-service.rule=PathPrefix(`/api/v1/notifications`)"
@@ -976,6 +1351,7 @@ services:
   # Payment is opt-in because Stripe test credentials belong to an individual sandbox.
   # Start explicitly with: docker compose --profile payment up -d payment-service
   payment-service:
+    logging: *backend-logging
     profiles: ["payment"]
     build:
       context: ./java/services/payment-service
@@ -983,21 +1359,30 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     environment:
+      <<: [*java-observability, *kafka-sasl-java]
+      # dev: Stripe placeholders are accepted only together; a real sk_test_ key needs the
+      # `stripe listen` webhook secret or Payment refuses to start (StartupSecretGuard, H1).
       SPRING_PROFILES_ACTIVE: dev
       PAYMENT_DATABASE_URL: jdbc:postgresql://postgres:5432/payment_service
-      PAYMENT_DATABASE_USERNAME: postgres
-      DB_PASSWORD: postgres
+      PAYMENT_DATABASE_USERNAME: payment_service
+      DB_PASSWORD: *pg-pw-payment
       PAYMENT_KAFKA_BROKERS: kafka:9092
+      KAFKA_SASL_USERNAME: payment-service
+      KAFKA_SASL_PASSWORD: *kafka-pw-payment
       PAYMENT_STRIPE_SECRET_KEY: ${PAYMENT_STRIPE_SECRET_KEY:-sk_test_local_change_me}
       PAYMENT_STRIPE_PUBLISHABLE_KEY: ${PAYMENT_STRIPE_PUBLISHABLE_KEY:-pk_test_local_change_me}
       PAYMENT_STRIPE_WEBHOOK_SECRETS: ${PAYMENT_STRIPE_WEBHOOK_SECRETS:-whsec_local_change_me}
       PAYMENT_STRIPE_API_VERSION: 2026-08-26.dahlia
       PAYMENT_CRYPTO_LOCAL_KEY: ${PAYMENT_CRYPTO_LOCAL_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
     ports:
-      - "8089:8080"
+      - "127.0.0.1:8089:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/liveness || exit 1"]
       interval: 20s
@@ -1028,8 +1413,11 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+    # Faces the Internet: reaches the gateway only, never a service listener (mesh ADR-004). The
+    # fixed address is the one Traefik trusts to name the browser (api-gateway traefik.yml).
     networks:
-      - ecommerce-network
+      ecommerce-edge:
+        ipv4_address: 10.89.8.10
 
   # ── API Gateway (Traefik) ─────────────────────────────────
   # ── Checkout Service ───────────────────────────────────────
@@ -1058,21 +1446,22 @@ services:
       - ecommerce-network
 
   checkout-service:
+    logging: *backend-logging
     build:
       context: ./java/services/checkout-service
       dockerfile: Dockerfile
     container_name: checkout-service
-    # Order of start only. Checkout answers 503 problems while a dependency is down and keeps
-    # its own readiness (Redis + scripts), so it does not wait for their healthchecks.
+    # Required read providers must be ready for the bounded startup warm-up. Runtime
+    # readiness remains local (Redis + scripts); later outages still use 503/circuits.
     depends_on:
       checkout-redis:
         condition: service_healthy
       cart-service:
-        condition: service_started
+        condition: service_healthy
       user-service:
-        condition: service_started
+        condition: service_healthy
       product-service:
-        condition: service_started
+        condition: service_healthy
       inventory-service:
         condition: service_started
       promotion-service:
@@ -1080,6 +1469,10 @@ services:
       order-service:
         condition: service_started
     environment:
+      <<: *java-observability
+      # local: the keys below are development keys; outside dev/local/test StartupSecretGuard
+      # refuses them (security review 2026-10-22, H1).
+      SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: 8080
       CHECKOUT_REDIS_URL: redis://checkout-redis:6379/0
       # DEVELOPMENT ONLY keys (32 random bytes, base64). Production keys come from the secret
@@ -1101,9 +1494,8 @@ services:
       CHECKOUT_MEDIA_CDN_BASE_URL: http://localhost:8088/media
       CHECKOUT_MEDIA_PLACEHOLDER_URL: http://localhost:8088/media/placeholder/product.svg
       CHECKOUT_MEDIA_REQUIRE_HTTPS: "false"
-      TRACING_SAMPLING_PROBABILITY: "1.0"
     ports:
-      - "8096:8080"
+      - "127.0.0.1:8096:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:8080/health/ready || exit 1"]
       interval: 15s
@@ -1145,7 +1537,8 @@ services:
       - "traefik.http.services.checkout-service.loadbalancer.serverstransport=business-api@file"
 
   api-gateway:
-    image: traefik:v3.7.1
+    logging: *backend-logging
+    image: traefik:v3.7.19
     container_name: api-gateway
     restart: unless-stopped
     security_opt:
@@ -1153,7 +1546,7 @@ services:
     ports:
       - "8088:80"       # HTTP
       - "8443:443"      # HTTPS
-      - "8090:8090"     # Dashboard & Metrics
+      - "127.0.0.1:8090:8090"     # Dashboard & Metrics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./go/services/api-gateway/config/traefik.yml:/etc/traefik/traefik.yml:ro
@@ -1162,13 +1555,161 @@ services:
       - ./go/services/api-gateway/letsencrypt:/letsencrypt
     environment:
       - TZ=Asia/Ho_Chi_Minh
+    # Fixed addresses (mesh ADR-004): 10.89.3.2 is the only proxy Auth trusts for X-Real-Ip.
     networks:
-      - ecommerce-network
+      ecommerce-network:
+        ipv4_address: 10.89.3.2
+      ecommerce-edge:
+        ipv4_address: 10.89.8.2
     depends_on:
       - redis
 
+  # Local observability. UIs bind loopback; OTLP/exporters stay on the private Compose network.
+  observability-init:
+    image: python:3.12-alpine
+    command: [sh, -c, "mkdir -p /jaeger/keys /jaeger/values && chown -R 10001:10001 /jaeger && python /config/optional-targets.py"]
+    environment:
+      OBSERVABILITY_OPTIONAL_SERVICES: ${OBSERVABILITY_OPTIONAL_SERVICES:-}
+    volumes:
+      - ./infra/observability/optional-targets.py:/config/optional-targets.py:ro
+      - prometheus-targets:/targets
+      - jaeger-data:/jaeger
+    restart: "no"
+
+  prometheus:
+    logging: *backend-logging
+    image: prom/prometheus:v3.15.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d", "--enable-feature=exemplar-storage"]
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-targets:/etc/prometheus/targets:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      observability-init: {condition: service_completed_successfully}
+    networks: [ecommerce-network, observability]
+    restart: unless-stopped
+
+  alertmanager:
+    logging: *backend-logging
+    image: prom/alertmanager:v0.34.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [ecommerce-network, observability]
+    restart: unless-stopped
+
+  grafana:
+    logging: *backend-logging
+    image: grafana/grafana:13.2.4
+    ports: ["127.0.0.1:3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-local-observability}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./infra/observability/grafana:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    # Data sources only (prometheus, loki, jaeger, alertmanager): its default admin password must
+    # not be a way into the services (mesh ADR-004).
+    networks: [observability]
+    restart: unless-stopped
+
+  loki:
+    logging: *backend-logging
+    image: grafana/loki:3.7.8
+    command: ["-config.file=/etc/loki/config.yml"]
+    ports: ["127.0.0.1:3100:3100"]
+    volumes:
+      - ./infra/observability/loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks: [ecommerce-network, observability]
+    restart: unless-stopped
+
+  # Pinned to 2.20.x: Jaeger 2.21 removed the v1 HTTP endpoints (/api/services, trace search) that the
+  # Grafana Jaeger data source still calls (grafana/grafana-jaeger-datasource#87). Upgrade only together
+  # with a data source that queries /api/v3.
+  jaeger:
+    logging: *backend-logging
+    image: jaegertracing/jaeger:2.20.0
+    command: ["--config=/etc/jaeger/config.yml"]
+    ports: ["127.0.0.1:16686:16686"]
+    volumes:
+      - ./infra/observability/jaeger.yml:/etc/jaeger/config.yml:ro
+      - jaeger-data:/tmp/jaeger
+    depends_on:
+      observability-init: {condition: service_completed_successfully}
+    networks: [ecommerce-network, observability]
+    restart: unless-stopped
+
+  # Alloy is the OpenTelemetry collector and Docker log reader. Its persisted positions survive restarts.
+  otel-collector:
+    logging: *backend-logging
+    image: grafana/alloy:v1.20.1
+    command: [run, "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", /etc/alloy/config.alloy]
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-e-commerce-microservices}
+    volumes:
+      - ./infra/observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  redis-exporter:
+    logging: *backend-logging
+    image: oliver006/redis_exporter:v1.94.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: *redis-password
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  checkout-redis-exporter:
+    logging: *backend-logging
+    image: oliver006/redis_exporter:v1.94.0
+    environment: {REDIS_ADDR: "redis://checkout-redis:6379"}
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  postgres-exporter:
+    logging: *backend-logging
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_NAME: postgresql://postgres:postgres@postgres:5432/postgres?sslmode=disable
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+  kafka-exporter:
+    logging: *backend-logging
+    image: danielqsj/kafka-exporter:v1.10.0
+    # Principal kafka-exporter may only DESCRIBE topics and groups (offsets and lag, no messages).
+    # A shell passes the password so it has one source (x-kafka-passwords).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec /bin/kafka_exporter --kafka.server=kafka:9092 --sasl.enabled --sasl.mechanism=scram-sha512 --sasl.username=kafka-exporter --sasl.password="$${SCRAM_PASSWORD}"
+    environment:
+      SCRAM_PASSWORD: *kafka-pw-exporter
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    networks: [ecommerce-network]
+    restart: unless-stopped
+
+
 # ── Volumes ────────────────────────────────────────────────
 volumes:
+  prometheus-data:
+  prometheus-targets:
+  alertmanager-data:
+  grafana-data:
+  loki-data:
+  jaeger-data:
+  alloy-data:
   es-data:
   postgres-data:
   redis-data:
@@ -1180,6 +1721,38 @@ volumes:
 
 # ── Networks ───────────────────────────────────────────────
 networks:
+  # Services, data stores and brokers. Fixed subnet so api-gateway keeps 10.89.3.2, the one proxy
+  # Auth trusts; containers get addresses from ip_range only, below it (mesh ADR-004).
   ecommerce-network:
     name: ecommerce-network
     driver: bridge
+    ipam:
+      config:
+        - subnet: 10.89.0.0/22
+          ip_range: 10.89.0.0/23
+  # The frontend and the gateway only: the container facing the Internet reaches no service.
+  ecommerce-edge:
+    name: ecommerce-edge
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.89.8.0/24
+          ip_range: 10.89.8.128/25
+  # Mailpit, LocalStack and Notification: dev stand-ins for SES/SNS/SQS see no service.
+  notification-providers:
+    name: notification-providers
+    driver: bridge
+  # Temporal and its UI: the UI (no authentication, like Temporal itself) sees nothing else.
+  temporal-admin:
+    name: temporal-admin
+    driver: bridge
+  # Grafana and its data sources.
+  observability:
+    name: observability
+    driver: bridge
+  # ZooKeeper and the broker only: ZooKeeper has no authentication and holds the SCRAM
+  # credentials and ACLs, so no other container may reach it (mesh ADR-003).
+  kafka-metadata:
+    name: kafka-metadata
+    driver: bridge
+    internal: true

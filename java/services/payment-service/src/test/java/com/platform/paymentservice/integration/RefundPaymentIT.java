@@ -109,6 +109,24 @@ class RefundPaymentIT extends AbstractPaymentIT {
         assertThat(provider.calls).isEqualTo(1);
     }
 
+    @Test
+    void opaque_request_id_is_escaped_in_provider_metadata_and_replays_exactly() throws Exception {
+        var provider = new CapturingProvider(new ProviderOperationResult.Confirmed(
+                "re_pending", null, "{\"id\":\"re_pending\",\"status\":\"pending\"}",
+                null, "pending", "ch_refund", 1_500_000L, "VND"));
+        var original = command(KEY);
+        String opaque = "refund-\"quoted\"-\\path\nline";
+        var command = new RefundPaymentCommand(original.transactionId(), original.orderId(), opaque,
+                original.amount(), original.reason(), original.evidence(), original.idempotencyKey(), original.correlationId());
+        var service = service(provider);
+        assertThat(service.refund(command, "first-worker")).isInstanceOf(RefundPaymentResult.Processing.class);
+        assertThat(service.refund(command, "replay-worker")).isInstanceOf(RefundPaymentResult.Processing.class);
+        assertThat(provider.calls).isEqualTo(1);
+        var fingerprint = JsonMapper.builder().build().readTree(provider.operation.requestFingerprintJson());
+        assertThat(fingerprint.path("metadata").path("refund_request_id").asText()).isEqualTo(opaque);
+        assertThat(fingerprint.path("provider_transaction_id").asText()).isEqualTo("pi_refund");
+    }
+
     private RefundPaymentService service(PaymentProviderPort provider) {
         return new RefundPaymentService(refundPayments, providerOperations, provider,
                 new FixedIds(), (ClockPort) () -> NOW, new CanonicalFingerprint(),

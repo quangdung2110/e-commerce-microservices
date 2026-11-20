@@ -8,8 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	apperr "github.com/ecommerce/user-service/internal/common/errors"
 	"github.com/ecommerce/user-service/internal/common/constants"
+	apperr "github.com/ecommerce/user-service/internal/common/errors"
 	"github.com/ecommerce/user-service/internal/domain/entity"
 	"github.com/ecommerce/user-service/internal/domain/event"
 	"github.com/ecommerce/user-service/internal/domain/vo"
@@ -23,6 +23,17 @@ func TestProfileGetReturnsNotFoundForUnknownUser(t *testing.T) {
 	// A profile that was never bootstrapped and one the retention worker purged
 	// are indistinguishable to a client, on purpose.
 	require.ErrorIs(t, err, apperr.ErrProfileNotFound)
+}
+
+func TestProfileGetReturnsNotFoundOnceTheAccountIsInItsRetentionWindow(t *testing.T) {
+	h := newHarness(t)
+	userID := h.seedProfile(t)
+	h.deletions.deletions[uuid.New()] = entity.Deletion{UserID: userID}
+
+	_, err := h.profileService.Get(context.Background(), userID)
+
+	require.ErrorIs(t, err, apperr.ErrProfileNotFound,
+		"the anonymized row is kept for the purge, not for the owner")
 }
 
 func TestProfileUpdateStoresNamesAndPublishesDisplayName(t *testing.T) {

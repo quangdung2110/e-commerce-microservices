@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * Search và browse Product catalog đang hiển thị
-         * @description Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài giây so với Product/Inventory. Không dùng response này để reserve, chốt giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break; cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó. Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp, newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp. Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu.
+         * @description Public read qua API Gateway. Kết quả là Product card từ SKU projection, có thể cũ vài giây so với Product/Inventory. Không dùng response này để reserve, chốt giá hoặc xác nhận tồn kho. Chọn SKU theo selling_price_vnd asc rồi sku_id asc. Mọi sort Product dùng product_id asc làm tie-break; cursor có chữ ký, giữ snapshot PIT và chỉ hợp lệ với đúng query/filter/sort đã sinh nó. Giá tăng/giảm dùng giá của SKU đại diện; relevance lấy score cao nhất của SKU khớp, newest lấy updated_at lớn nhất, rating lấy rating lớn nhất của các SKU khớp. Snapshot hết hạn sau 2 phút không hoạt động: INVALID_CURSOR, tải lại trang đầu. Request mới đọc projection product_cards; projection chưa sẵn sàng trả 503 ELASTICSEARCH_UNAVAILABLE với Retry-After: 2, không tự quét toàn bộ SKU. Full reindex/rollback chuẩn bị cards trước rồi chuyển alias cùng SKU/Category.
          */
         get: operations["searchProducts"];
         put?: never;
@@ -53,7 +53,7 @@ export interface paths {
         };
         /**
          * Lấy cây category storefront
-         * @description Chỉ category chưa tombstone được trả. product_count là DISTINCT Product do job định kỳ tính lại, nên có thể trễ hơn search result.
+         * @description Chỉ category chưa tombstone được trả. product_count là DISTINCT Product do job định kỳ tính lại, nên có thể trễ hơn search result. Search không trả cây thiếu khi Elasticsearch quá hạn hoặc lỗi shard: kết quả đó là 504 SEARCH_TIMEOUT.
          */
         get: operations["getCategoryTree"];
         put?: never;
@@ -91,11 +91,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Liệt kê các full reindex run, mới nhất trước
+         * @description Chỉ ADMIN qua Gateway. Cần để tìm run do control event tự khởi chạy, vì admin không biết run_id của nó.
+         */
+        get: operations["listReindexRuns"];
         put?: never;
         /**
          * Trigger full reindex bất đồng bộ
-         * @description Chỉ ADMIN qua Gateway. Server lấy actor từ trusted identity header, không tin actor do body tự khai. Một reindex chưa kết thúc sẽ chặn trigger mới.
+         * @description Chỉ ADMIN qua Gateway. Server lấy actor từ trusted identity header, không tin actor do body tự khai. Một reindex chưa kết thúc sẽ chặn trigger mới (REINDEX_ALREADY_RUNNING). Một run mà process sở hữu nó đã chết được xử lý trước (resume hoặc đánh dấu bị bỏ rơi) nên không chặn trigger mãi mãi. Cluster red hoặc thiếu dung lượng đĩa cho một index thứ hai bị từ chối bằng 409 REINDEX_PRECONDITION_FAILED; cluster yellow vẫn được nhận. Search cũng tự tạo run (actor `system:catalog-control`) khi Product phát catalog-reindex-requested; run đó xuất hiện ở listReindexRuns. Build và VERIFY bảo toàn tombstone Product/SKU và Category từ index đang phục vụ, giữ nguyên revision và deleted_at để event cũ không hồi sinh document sau cutover. Count drift so SKU document is_deleted=false (mọi status/stock), không tính tombstone; không phải total_products của storefront. Scan/copy tombstone không đầy đủ hoặc count shard lỗi làm run FAILED, không chuyển alias.
          */
         post: operations["createReindexRun"];
         delete?: never;
@@ -115,6 +119,46 @@ export interface paths {
         get: operations["getReindexRun"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/search/reindex-runs/{run_id}/cancellation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Yêu cầu hủy một full reindex run
+         * @description Chỉ ADMIN qua Gateway. Run đang Build hoặc Catch-up dừng ở trang kế tiếp và kết thúc `CANCELLED`, các index nó đã dựng bị xóa, alias không đổi; response `202` vẫn mang trạng thái hiện tại và client đọc lại run để thấy `CANCELLED`. Run không còn process sở hữu được kết thúc ngay trong chính request này. Run đã kết thúc, hoặc đang kiểm tra và chuyển alias (CUTOVER), không hủy được (409 REINDEX_RUN_NOT_CANCELLABLE).
+         */
+        post: operations["cancelReindexRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v2/search/reindex-runs/{run_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Trả các alias về index mà một run đã hoàn tất thay thế
+         * @description Chỉ ADMIN qua Gateway. Chuyển cả bốn alias về index trước đó trong một lệnh `_aliases` atomic và đặt run `ROLLED_BACK`; xử lý đồng bộ nên trả 200. Chỉ run `COMPLETED` là lần cutover mới nhất mới rollback được, và chỉ khi index trước đó chưa bị job dọn dẹp xóa (giữ tối thiểu 24 giờ sau cutover). Dữ liệu ghi vào index mới sau cutover không có trong index cũ: chạy reindex mới để hội tụ.
+         */
+        post: operations["rollbackReindexRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -194,6 +238,7 @@ export interface components {
             product_count_updated_at: string | null;
             children: components["schemas"]["CategoryNode"][];
         };
+        /** @description Facet groups advertised by the configured storefront discovery policy, in editorial order. Unscoped searches advertise common groups; category searches may add category-specific groups. This is not an exhaustive list of all indexed attributes. Discovery exclusions apply before results and counts are calculated. Option values remain opaque and must be returned unchanged. */
         FacetSet: {
             /** @constant */
             count_semantics: "DISTINCT_PRODUCT";
@@ -218,15 +263,23 @@ export interface components {
         CreateReindexRunRequest: {
             reason: string;
         };
+        /**
+         * @description STARTED, BUILDING, CATCHING_UP và CUTOVER là các trạng thái chưa kết thúc; một run chưa kết thúc giữ slot singleton. CUTOVER gồm copy bổ sung tombstone và kiểm tra index mới (số SKU document chưa xóa, sample diff, smoke query) và lệnh chuyển alias. COMPLETED, FAILED, ROLLED_BACK, SUPERSEDED và CANCELLED là trạng thái kết thúc. SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc run đang chạy; run bị bỏ, alias giữ nguyên và request vẫn được lưu để một run mới được khởi chạy. CANCELLED nghĩa là admin đã hủy (failure.code RUN_CANCELLED). ROLLED_BACK nghĩa là các alias đã được trả về index cũ sau khi COMPLETED.
+         * @enum {string}
+         */
+        ReindexRunStatus: "STARTED" | "BUILDING" | "CATCHING_UP" | "CUTOVER" | "COMPLETED" | "FAILED" | "ROLLED_BACK" | "SUPERSEDED" | "CANCELLED";
+        ReindexRunList: {
+            items: components["schemas"]["ReindexRun"][];
+        };
         ReindexRun: {
             run_id: components["schemas"]["Uuid"];
-            /**
-             * @description SUPERSEDED nghĩa là một catalog-reindex-requested mới tới trong lúc Build/Catch-up; run bị bỏ, alias giữ nguyên và một run mới được coalesce.
-             * @enum {string}
-             */
-            status: "STARTED" | "BUILDING" | "CATCHING_UP" | "CUTOVER" | "COMPLETED" | "FAILED" | "ROLLED_BACK" | "SUPERSEDED";
+            status: components["schemas"]["ReindexRunStatus"];
             /** @enum {string|null} */
             phase: "BUILDING" | "CATCHING_UP" | "CUTOVER" | null;
+            /** @description Lý do admin đã khai, hoặc "catalog-reindex-requested: ..." với run tự khởi chạy. */
+            reason: string;
+            /** @description Identity đã trigger run, hoặc `system:catalog-control` với run tự khởi chạy. */
+            actor: string;
             progress: components["schemas"]["ReindexProgress"];
             /** Format: uri-reference */
             status_url: string;
@@ -249,6 +302,7 @@ export interface components {
             catch_up_lag: number | null;
         };
         ReindexFailure: {
+            /** @description REINDEX_FAILED (build, catch-up hoặc kiểm tra không đạt), RUN_SUPERSEDED, RUN_CANCELLED hoặc RUN_ABANDONED (không process nào giữ run sống sau số lần resume tối đa). */
             code: string;
             message: string;
         };
@@ -278,7 +332,7 @@ export interface components {
         };
     };
     responses: {
-        /** @description INVALID_QUERY_PARAMETER hoặc INVALID_CURSOR. */
+        /** @description INVALID_QUERY_PARAMETER (kèm errors[] theo field: tham số sai kiểu, ngoài khoảng hoặc vượt giới hạn độ dài/số lượng, token `filter` không phải giá trị facet, `category` không khớp category nào đang hiển thị, body không đọc được) hoặc INVALID_CURSOR (cursor sai chữ ký, đổi tham số, quá hạn hoặc quá dài). */
         BadRequest: {
             headers: {
                 [name: string]: unknown;
@@ -323,8 +377,26 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description REINDEX_ALREADY_RUNNING; retry after the active run completes. */
+        /** @description REINDEX_ALREADY_RUNNING (retry after the active run completes), or REINDEX_PRECONDITION_FAILED (cluster red or not enough free disk; retry once the cluster has recovered). */
         ReindexAlreadyRunning: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["problem.schema"];
+            };
+        };
+        /** @description REINDEX_RUN_NOT_CANCELLABLE; the run already finished or is switching the aliases. */
+        ReindexRunNotCancellable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["problem.schema"];
+            };
+        };
+        /** @description REINDEX_ROLLBACK_UNAVAILABLE; the run is not COMPLETED, replaced no index, is not the latest cutover, the previous index was already removed, or another run is in progress. */
+        ReindexRollbackUnavailable: {
             headers: {
                 [name: string]: unknown;
             };
@@ -335,6 +407,7 @@ export interface components {
         /** @description ELASTICSEARCH_UNAVAILABLE; retryable infrastructure failure. */
         ElasticsearchUnavailable: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
@@ -361,12 +434,13 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
         RequestId: string;
         /** @description Trim, lower-case và collapse whitespace trước khi fingerprint cursor. */
         SearchQuery: string;
-        /** @description Category ID hoặc slug; Search resolve từ projection category hiện hành. */
+        /** @description Category ID hoặc slug; Search resolve từ projection category hiện hành. Giá trị không khớp category nào đang hiển thị là 400 INVALID_QUERY_PARAMETER (field `category`), không phải tìm trên toàn catalog. */
         Category: string;
-        /** @description Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép. OR trong cùng attribute code, AND giữa code khác nhau. */
+        /** @description Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép. OR trong cùng attribute code, AND giữa code khác nhau. Một token không có dạng của FacetOption.value bị từ chối 400 INVALID_QUERY_PARAMETER (field `filter`), không bị bỏ qua. */
         Filter: string[];
         PriceMin: number;
         /** @description Must be greater than or equal to price_min when both are supplied. */
@@ -383,7 +457,10 @@ export interface components {
         ReindexRunId: components["schemas"]["Uuid"];
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Seconds to wait before repeating the request. Present on every 429 and on every 503 with retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -393,9 +470,9 @@ export interface operations {
             query?: {
                 /** @description Trim, lower-case và collapse whitespace trước khi fingerprint cursor. */
                 q?: components["parameters"]["SearchQuery"];
-                /** @description Category ID hoặc slug; Search resolve từ projection category hiện hành. */
+                /** @description Category ID hoặc slug; Search resolve từ projection category hiện hành. Giá trị không khớp category nào đang hiển thị là 400 INVALID_QUERY_PARAMETER (field `category`), không phải tìm trên toàn catalog. */
                 category?: components["parameters"]["Category"];
-                /** @description Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép. OR trong cùng attribute code, AND giữa code khác nhau. */
+                /** @description Lặp lại cho từng opaque attribute token từ FacetOption.value, ví dụ filter=brand:s:apple&filter=color:s:black. Token là chuỗi đục do Search sinh; client chỉ gửi lại nguyên văn giá trị nhận được và không tự ghép. OR trong cùng attribute code, AND giữa code khác nhau. Một token không có dạng của FacetOption.value bị từ chối 400 INVALID_QUERY_PARAMETER (field `filter`), không bị bỏ qua. */
                 filter?: components["parameters"]["Filter"];
                 price_min?: components["parameters"]["PriceMin"];
                 /** @description Must be greater than or equal to price_min when both are supplied. */
@@ -408,6 +485,7 @@ export interface operations {
                 size?: components["parameters"]["SearchSize"];
             };
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -437,6 +515,7 @@ export interface operations {
                 limit?: components["parameters"]["SuggestLimit"];
             };
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -463,6 +542,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -481,12 +561,14 @@ export interface operations {
             };
             500: components["responses"]["InternalError"];
             503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
         };
     };
     getCategoryFacets: {
         parameters: {
             query?: never;
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -511,10 +593,44 @@ export interface operations {
             504: components["responses"]["SearchTimeout"];
         };
     };
+    listReindexRuns: {
+        parameters: {
+            query?: {
+                /** @description Chỉ trả run ở trạng thái này. */
+                status?: components["schemas"]["ReindexRunStatus"];
+                limit?: number;
+            };
+            header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Các run, sắp xếp theo started_at giảm dần. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexRunList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
+        };
+    };
     createReindexRun: {
         parameters: {
             query?: never;
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -541,12 +657,14 @@ export interface operations {
             409: components["responses"]["ReindexAlreadyRunning"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
         };
     };
     getReindexRun: {
         parameters: {
             query?: never;
             header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -569,6 +687,72 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["ReindexRunNotFound"];
             500: components["responses"]["InternalError"];
+            503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
+        };
+    };
+    cancelReindexRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                run_id: components["parameters"]["ReindexRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Yêu cầu hủy đã được ghi nhận. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReindexRunNotFound"];
+            409: components["responses"]["ReindexRunNotCancellable"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
+        };
+    };
+    rollbackReindexRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Echoed in the response header and as the Problem `trace_id` when it is 16..64 characters of `[A-Za-z0-9._:-]`; a value outside that, or none, is replaced by an id Search generates. */
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                run_id: components["parameters"]["ReindexRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Alias đã về index cũ; run ở trạng thái ROLLED_BACK. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReindexRun"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["ReindexRunNotFound"];
+            409: components["responses"]["ReindexRollbackUnavailable"];
+            500: components["responses"]["InternalError"];
+            503: components["responses"]["ElasticsearchUnavailable"];
+            504: components["responses"]["SearchTimeout"];
         };
     };
 }

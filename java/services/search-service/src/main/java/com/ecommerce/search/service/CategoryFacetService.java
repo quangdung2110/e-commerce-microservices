@@ -8,6 +8,7 @@ import com.ecommerce.search.repository.ProductSearchRepository;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.Optional;
 
 /**
  * {@code WF-SEARCH-004} — the filters available on a category landing page.
@@ -24,15 +25,20 @@ public class CategoryFacetService {
     private final CategoryRepository categoryRepository;
     private final ProductQueryBuilder queryBuilder;
     private final FacetAssembler facetAssembler;
+    private final FacetLabelResolver facetLabels;
+    private final StorefrontFacetPolicy facetPolicy;
 
     public CategoryFacetService(ProductSearchRepository repository,
                                 CategoryRepository categoryRepository,
                                 ProductQueryBuilder queryBuilder,
-                                FacetAssembler facetAssembler) {
+                                FacetAssembler facetAssembler,
+                                FacetLabelResolver facetLabels, StorefrontFacetPolicy facetPolicy) {
         this.repository = repository;
         this.categoryRepository = categoryRepository;
         this.queryBuilder = queryBuilder;
         this.facetAssembler = facetAssembler;
+        this.facetLabels = facetLabels;
+        this.facetPolicy = facetPolicy;
     }
 
     public SearchDtos.FacetSet facetsOf(String categoryId) throws IOException {
@@ -47,6 +53,7 @@ public class CategoryFacetService {
         }));
 
         var response = repository.aggregate(query, queryBuilder.facetAggregations(), "category_facets");
-        return facetAssembler.assemble(response.aggregations().get(ProductQueryBuilder.FACET_AGG));
+        return facetPolicy.apply(facetAssembler.assemble(response.aggregations().get(ProductQueryBuilder.FACET_AGG),
+                facetLabels.labels(Optional.of(categoryId))), Optional.of(categoryId));
     }
 }

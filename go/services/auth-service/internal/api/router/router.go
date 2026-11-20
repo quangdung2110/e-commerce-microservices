@@ -3,6 +3,8 @@
 package router
 
 import (
+	obs "github.com/ecommerce/observability"
+	obsgin "github.com/ecommerce/observability/gin"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -13,6 +15,8 @@ import (
 	apperr "github.com/ecommerce/auth-service/internal/common/errors"
 	"github.com/ecommerce/auth-service/internal/domain/port"
 )
+
+var httpMetrics = obs.NewHTTPMetrics()
 
 // PublicDeps is everything the public listener needs.
 type PublicDeps struct {
@@ -105,14 +109,13 @@ func newEngine(cfg *config.Config, logger *zap.Logger) *gin.Engine {
 
 	engine := gin.New()
 	engine.RedirectTrailingSlash = false
-	// gin trusts every proxy by default, which would let a client forge its own
-	// X-Forwarded-For and defeat per-IP rate limiting.
-	if err := engine.SetTrustedProxies(cfg.Security.TrustedProxies); err != nil {
+	if err := configureClientIP(engine, cfg.Security); err != nil {
 		logger.Warn("could not apply the trusted proxy list", zap.Error(err))
 	}
 
-	engine.Use(middleware.Correlation(logger), middleware.Recovery(), middleware.AccessLog())
+	engine.Use(obsgin.Middleware(httpMetrics), middleware.Correlation(logger), middleware.Recovery(), middleware.AccessLog())
 
+	engine.GET("/metrics", gin.WrapH(httpMetrics.Handler()))
 	engine.HandleMethodNotAllowed = true
 	engine.NoRoute(func(c *gin.Context) {
 		httpx.WriteProblem(c, apperr.ErrNotFound)
@@ -122,6 +125,17 @@ func newEngine(cfg *config.Config, logger *zap.Logger) *gin.Engine {
 	})
 
 	return engine
+}
+
+// configureClientIP decides what c.ClientIP() returns, the key of every per-IP
+// budget. gin trusts every proxy by default, which would let a client forge its
+// own X-Forwarded-For and defeat per-IP rate limiting. Only the gateway may name
+// the client, and only in the header it controls (mesh ADR-004).
+func configureClientIP(engine *gin.Engine, security config.SecurityConfig) error {
+	if len(security.ClientIPHeaders) > 0 {
+		engine.RemoteIPHeaders = security.ClientIPHeaders
+	}
+	return engine.SetTrustedProxies(security.TrustedProxies)
 }
 
 // rule converts a configured limit into the domain type.

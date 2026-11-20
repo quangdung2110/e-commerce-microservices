@@ -19,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -79,11 +80,22 @@ public class RuntimeRebuildService {
         CampaignEntity campaign = campaigns.findById(promotion.get().getCampaignId()).orElseThrow();
         PromotionBudgetEntity budget = budgets.findById(promotionId).orElseThrow();
         writeBudgetProjection(promotionId, budget, null, null);
-        writeClaimGate(promotion.get(), campaign);
+        // Pool trước, gate sau: Lua kiểm gate trước SPOP nên pool đang nạp dở không bao giờ bị claim; ngược lại gate
+        // mở trước pool sẽ cho vài request đầu nhận OUT_OF_STOCK oan.
         if (promotion.get().getDistributionMode() == DistributionMode.LIMITED_CLAIM
                 && claimStore.poolSize(promotionId) == 0) {
             rebuildPool(promotionId);
         }
+        writeClaimGate(promotion.get(), campaign);
+    }
+
+    /**
+     * Mở lại gate từ PostgreSQL sau khi pause/cancel bị rollback (gate đã đóng bảo thủ trước DB). Transaction mới
+     * độc lập vì được gọi từ {@code afterCompletion}, khi transaction vừa rollback còn gắn vào thread.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public void reopenAfterRollback(long promotionId) {
+        rebuildPromotion(promotionId);
     }
 
     /** Claim-gate fields từ PostgreSQL: enabled chỉ khi PUBLISHED + promotion enabled + LIMITED_CLAIM. */

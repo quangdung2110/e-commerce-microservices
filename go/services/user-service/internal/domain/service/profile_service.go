@@ -28,9 +28,10 @@ func NewProfileService(profiles port.ProfileRepository, tx port.TxManager, emitt
 }
 
 // Get returns the profile of the authenticated owner, or ErrProfileNotFound
-// when it has not been bootstrapped yet or was already purged.
+// when it has not been bootstrapped yet, was anonymized after the account was
+// deleted, or was already purged.
 func (s *ProfileService) Get(ctx context.Context, userID uuid.UUID) (*entity.Profile, error) {
-	return s.profiles.GetByID(ctx, userID)
+	return s.profiles.GetActive(ctx, userID)
 }
 
 // Update applies a merge patch and publishes USER_PROFILE_UPDATED after the
@@ -44,8 +45,11 @@ func (s *ProfileService) Update(ctx context.Context, userID uuid.UUID, changes e
 	)
 	err := s.tx.WithinTx(ctx, func(txCtx context.Context) error {
 		// The row lock serializes this update against a concurrent
-		// anonymization, so a late update can never restore deleted PII.
-		current, err := s.profiles.GetForUpdate(txCtx, userID)
+		// anonymization, and the retention check that follows it refuses an
+		// update that arrives after the anonymization committed. Together they
+		// mean a late update can never write PII back into a deleted account
+		// (USER-INV-005).
+		current, err := s.profiles.GetActiveForUpdate(txCtx, userID)
 		if err != nil {
 			return err
 		}

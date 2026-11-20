@@ -118,9 +118,10 @@ type failedData struct {
 	Attempts    int                   `json:"attempts"`
 }
 
-// Failed is emitted when a delivery ends FAILED or EXPIRED. provider may be
-// empty when no provider was ever called; the schema still requires one, so
-// the channel default (inbox) or the configured email provider is used.
+// Failed is emitted when a delivery ends FAILED or EXPIRED. The schema requires
+// a provider even when none was ever called, so the caller passes the one the
+// delivery would have used (inbox for in_app, the configured email provider
+// otherwise); an empty provider is only accepted for an in_app delivery.
 func Failed(d *entity.Delivery, provider entity.Provider, finalStatus entity.DeliveryStatus, reasonCode string, at time.Time, rc Context) (*entity.OutboxEvent, error) {
 	if finalStatus != entity.StatusFailed && finalStatus != entity.StatusExpired {
 		return nil, fmt.Errorf("outcome: Failed requires FAILED or EXPIRED, got %s", finalStatus)

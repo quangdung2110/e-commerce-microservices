@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { loadStripe, type StripeError } from "@stripe/stripe-js";
 import { ArrowLeft, CreditCard, LoaderCircle } from "lucide-react";
+import { useTheme } from "next-themes";
 
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,13 +15,31 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useOrder, usePaymentAttempt } from "@/hooks/use-orders";
-import type { PaymentAttempt } from "@/lib/api/order";
+import type { OrderDetail, PaymentAttempt } from "@/lib/api/order";
 import { formatDateTime, formatVND } from "@/lib/format";
+import { canConfirmPayment, confirmationKey, confirmationUnknown, markConfirmationUnknown, paymentExpiresAt, subscribeConfirmation } from "@/lib/payment-confirmation";
+
+type PaymentRead = () => Promise<{ order: OrderDetail; attempt: PaymentAttempt }>;
 
 export function PaymentContent({ orderId, requestedAttempt }: { orderId: string; requestedAttempt: number | null }) {
-  const order = useOrder(orderId);
+  const order = useOrder(orderId, { pollPayment: true });
   const attemptNumber = requestedAttempt ?? order.data?.payment.active_attempt_number ?? null;
-  const attempt = usePaymentAttempt(orderId, attemptNumber);
+  const attempt = usePaymentAttempt(orderId, attemptNumber, { poll: true });
+  const expiresAt = order.data && attempt.data ? paymentExpiresAt(order.data, attempt.data) : null;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (expiresAt === null || now >= expiresAt) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.min(Math.max(0, expiresAt - Date.now()), 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [expiresAt, now]);
+
+  const readPayment: PaymentRead = async () => {
+    const [freshOrder, freshAttempt] = await Promise.all([order.refetch(), attempt.refetch()]);
+    if (freshOrder.isError || freshAttempt.isError || !freshOrder.data || !freshAttempt.data) {
+      throw new Error("Payment state could not be verified");
+    }
+    return { order: freshOrder.data, attempt: freshAttempt.data };
+  };
 
   if (order.isPending || (attemptNumber && attempt.isPending)) return <PaymentSkeleton />;
   if (order.isError || !order.data) {
@@ -32,7 +51,7 @@ export function PaymentContent({ orderId, requestedAttempt }: { orderId: string;
   if (attempt.isError || !attempt.data) {
     return <PaymentShell orderId={orderId}><ErrorState error={attempt.error} onRetry={() => void attempt.refetch()} /></PaymentShell>;
   }
-  if (attempt.data.status !== "PENDING" || !attempt.data.client_secret || !attempt.data.publishable_key) {
+  if (!canConfirmPayment(order.data, attempt.data, now)) {
     return (
       <PaymentShell orderId={orderId}>
         <Alert variant={attempt.data.status === "SUCCESS" ? "success" : "warning"} title={attempt.data.status === "SUCCESS" ? "Lượt thanh toán đã thành công" : "Lượt thanh toán không còn sử dụng được"}>
@@ -43,15 +62,39 @@ export function PaymentContent({ orderId, requestedAttempt }: { orderId: string;
     );
   }
 
-  return <StripePayment orderId={orderId} attempt={attempt.data} />;
+  return <StripePayment key={attempt.data.payment_transaction_id} orderId={orderId} attempt={attempt.data} expiresAt={expiresAt!} readPayment={readPayment} />;
 }
 
-function StripePayment({ orderId, attempt }: { orderId: string; attempt: PaymentAttempt }) {
-  const stripePromise = useMemo(() => loadStripe(attempt.publishable_key!), [attempt.publishable_key]);
+function StripePayment({ orderId, attempt, expiresAt, readPayment }: { orderId: string; attempt: PaymentAttempt; expiresAt: number; readPayment: PaymentRead }) {
+  const { resolvedTheme } = useTheme();
+  const dark = resolvedTheme === "dark";
+  const [sdkFailed, setSdkFailed] = useState(false);
+  const onUnavailable = useCallback(() => setSdkFailed(true), []);
+  const stripePromise = useMemo(() => {
+    try { return loadStripe(attempt.publishable_key!).catch(() => null); }
+    catch { return Promise.resolve(null); }
+  }, [attempt.publishable_key]);
+  useEffect(() => {
+    let active = true;
+    void stripePromise.then((stripe) => { if (active && !stripe) onUnavailable(); });
+    return () => { active = false; };
+  }, [stripePromise, onUnavailable]);
   const options = useMemo(() => ({
     clientSecret: attempt.client_secret!,
     locale: "vi" as const,
-  }), [attempt.client_secret]);
+    appearance: {
+      theme: dark ? "night" as const : "stripe" as const,
+      variables: {
+        colorBackground: dark ? "#1f1e1d" : "#ffffff",
+        colorText: dark ? "#faf9f5" : "#141413",
+        colorTextSecondary: dark ? "#b0aea5" : "#5e5d59",
+        colorTextPlaceholder: dark ? "#b0aea5" : "#5e5d59",
+        colorPrimary: dark ? "#d97757" : "#9c4d32",
+        colorDanger: dark ? "#e0736a" : "#bf4d43",
+        borderRadius: "8px",
+      },
+    },
+  }), [attempt.client_secret, dark]);
 
   return (
     <PaymentShell orderId={orderId}>
@@ -62,9 +105,12 @@ function StripePayment({ orderId, attempt }: { orderId: string; attempt: Payment
             <p className="text-caption text-muted-foreground">Thông tin thẻ được gửi trực tiếp tới Stripe và không đi qua máy chủ TechNova.</p>
           </CardHeader>
           <CardContent>
-            <Elements stripe={stripePromise} options={options}>
-              <StripePaymentForm orderId={orderId} attemptNumber={attempt.attempt_number} />
-            </Elements>
+            {sdkFailed ? <div className="space-y-4">
+              <Alert variant="danger" title="Không tải được Stripe">Hãy kiểm tra kết nối và tải lại trang thanh toán. Đơn hàng và lượt thanh toán hiện tại được giữ nguyên.</Alert>
+              <Button type="button" variant="outline" className="w-full" onClick={() => window.location.reload()}>Thử tải lại Stripe</Button>
+            </div> : <Elements key={attempt.payment_transaction_id} stripe={stripePromise} options={options}>
+              <StripePaymentForm orderId={orderId} attempt={attempt} readPayment={readPayment} onUnavailable={onUnavailable} />
+            </Elements>}
           </CardContent>
         </Card>
 
@@ -74,7 +120,7 @@ function StripePayment({ orderId, attempt }: { orderId: string; attempt: Payment
             <div><p className="text-caption text-muted-foreground">Đơn hàng</p><p className="font-mono text-[14px]">#{orderId}</p></div>
             <div><p className="text-caption text-muted-foreground">Lượt thanh toán</p><p>{attempt.attempt_number}</p></div>
             <div><p className="text-caption text-muted-foreground">Số tiền</p><p className="font-serif text-headline-4 font-normal tabular-nums">{formatVND(attempt.amount.amount_minor)}</p></div>
-            {attempt.expires_at ? <div><p className="text-caption text-muted-foreground">Có hiệu lực đến</p><p>{formatDateTime(attempt.expires_at)}</p></div> : null}
+            <div><p className="text-caption text-muted-foreground">Hạn thanh toán</p><p>{formatDateTime(new Date(expiresAt).toISOString())}</p></div>
           </CardContent>
         </Card>
       </div>
@@ -82,46 +128,112 @@ function StripePayment({ orderId, attempt }: { orderId: string; attempt: Payment
   );
 }
 
-function StripePaymentForm({ orderId, attemptNumber }: { orderId: string; attemptNumber: number }) {
+function StripePaymentForm({ orderId, attempt, readPayment, onUnavailable }: { orderId: string; attempt: PaymentAttempt; readPayment: PaymentRead; onUnavailable: () => void }) {
   const stripe = useStripe();
   const elements = useElements();
   const router = useRouter();
+  const [elementReady, setElementReady] = useState(false);
+  const onReady = useCallback(() => setElementReady(true), []);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const key = confirmationKey(orderId, attempt.attempt_number);
+  const unknown = useSyncExternalStore(subscribeConfirmation, () => confirmationUnknown(key), () => true);
+  useEffect(() => {
+    if (stripe && elements && elementReady) return;
+    const timer = setTimeout(onUnavailable, 20_000);
+    return () => clearTimeout(timer);
+  }, [stripe, elements, elementReady, onUnavailable]);
+
+  async function recoverResult() {
+    try {
+      const fresh = await readPayment();
+      if (fresh.order.payment_status === "PAID") {
+        markConfirmationUnknown(key, false);
+        router.push(`/orders/${orderId}/payment/complete?attempt=${attempt.attempt_number}`);
+      } else if (fresh.order.order_status !== "PENDING_PAYMENT" || fresh.attempt.status !== "PENDING") {
+        markConfirmationUnknown(key, false);
+        router.push(`/orders/${orderId}`);
+      }
+      // A fresh PENDING still cannot prove whether Stripe received confirm.
+      // Keep the marker and wait for a terminal fact, rather than send again.
+    } catch {
+      setMessage("Chưa đọc được kết quả thanh toán. Hãy kiểm tra lại trạng thái; không thanh toán lại lúc này.");
+    }
+  }
+
+  async function checkResult() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    try {
+      await recoverResult();
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!stripe || !elements || submitting) return;
+    if (!stripe || !elements || !elementReady || inFlight.current || confirmationUnknown(key)) return;
+    inFlight.current = true;
     setSubmitting(true);
     setMessage(null);
 
-    const submitResult = await elements.submit();
-    if (submitResult.error) {
-      setMessage(stripeErrorMessage(submitResult.error));
+    let confirmStarted = false;
+    try {
+      const submitResult = await elements.submit();
+      if (submitResult.error) {
+        setMessage(stripeErrorMessage(submitResult.error));
+        return;
+      }
+      const fresh = await readPayment();
+      if (!canConfirmPayment(fresh.order, fresh.attempt, Date.now())
+        || fresh.attempt.payment_transaction_id !== attempt.payment_transaction_id
+        || fresh.attempt.client_secret !== attempt.client_secret) {
+        setMessage("Lượt thanh toán đã thay đổi hoặc hết hạn. Hãy xem trạng thái mới nhất trong chi tiết đơn hàng.");
+        return;
+      }
+      // Mark before crossing the provider boundary, including a tab close or reload.
+      markConfirmationUnknown(key, true);
+      confirmStarted = true;
+      const returnUrl = `${window.location.origin}/orders/${orderId}/payment/complete?attempt=${attempt.attempt_number}`;
+      const result = await stripe.confirmPayment({ elements, confirmParams: { return_url: returnUrl }, redirect: "if_required" });
+      if (result.error) {
+        if (["card_error", "validation_error"].includes(result.error.type)
+          || result.error.code === "payment_intent_authentication_failure") {
+          markConfirmationUnknown(key, false);
+          setMessage(stripeErrorMessage(result.error));
+          return;
+        }
+        // Transport/API failures have an unknown outcome. Read the source of
+        // truth before showing any further action, even if the read also fails.
+        await recoverResult();
+        return;
+      }
+      router.push(`/orders/${orderId}/payment/complete?attempt=${attempt.attempt_number}`);
+    } catch {
+      if (confirmStarted) {
+        // SDK promise rejection is also ambiguous; never unlock confirm.
+        await recoverResult();
+      } else {
+        setMessage("Chưa thể kiểm tra lượt thanh toán. Hãy kiểm tra kết nối và thử lại; yêu cầu thanh toán chưa được gửi.");
+      }
+    } finally {
+      inFlight.current = false;
       setSubmitting(false);
-      return;
     }
-
-    const returnUrl = `${window.location.origin}/orders/${orderId}/payment/complete?attempt=${attemptNumber}`;
-    const result = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: returnUrl },
-      redirect: "if_required",
-    });
-
-    if (result.error) {
-      setMessage(stripeErrorMessage(result.error));
-      setSubmitting(false);
-      return;
-    }
-    router.push(`/orders/${orderId}/payment/complete?attempt=${attemptNumber}`);
   }
 
   return (
     <form onSubmit={submit} className="space-y-6">
-      <PaymentElement options={{ layout: "tabs" }} />
+      <PaymentElement options={{ layout: "tabs" }} onLoadError={onUnavailable} onReady={onReady} />
+      {!stripe || !elements || !elementReady ? <Alert title="Đang tải kết nối Stripe">Vui lòng chờ trong khi tải thông tin thanh toán.</Alert> : null}
+      {unknown ? <Alert title="Đang kiểm tra kết quả thanh toán">Kết quả thanh toán chưa được xác nhận. Không thanh toán lại lúc này; hãy kiểm tra trạng thái đơn hàng.</Alert> : null}
       {message ? <Alert variant="danger">{message}</Alert> : null}
-      <Button type="submit" variant="clay" className="w-full" disabled={!stripe || !elements || submitting}>
+      {unknown ? <Button type="button" variant="outline" className="w-full" disabled={submitting} onClick={() => void checkResult()}>Kiểm tra kết quả thanh toán</Button> : null}
+      <Button type="submit" variant="clay" className="w-full" disabled={!stripe || !elements || !elementReady || submitting || unknown}>
         {submitting ? <LoaderCircle className="animate-spin" aria-hidden /> : <CreditCard aria-hidden />}
         {submitting ? "Đang xác nhận thanh toán…" : "Thanh toán an toàn"}
       </Button>
@@ -130,6 +242,7 @@ function StripePaymentForm({ orderId, attemptNumber }: { orderId: string; attemp
 }
 
 function stripeErrorMessage(error: StripeError): string {
+  if (error.code === "payment_intent_authentication_failure") return "Xác thực thanh toán chưa hoàn tất. Bạn có thể thử lại hoặc dùng thẻ khác.";
   if (error.code === "card_declined") return "Thẻ đã bị từ chối. Hãy kiểm tra lại hoặc dùng thẻ khác.";
   if (error.code === "expired_card") return "Thẻ đã hết hạn. Hãy dùng thẻ khác.";
   if (error.code === "incorrect_cvc") return "Mã bảo mật của thẻ chưa đúng.";

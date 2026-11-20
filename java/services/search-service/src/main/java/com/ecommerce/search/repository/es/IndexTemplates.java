@@ -26,6 +26,7 @@ public class IndexTemplates {
     public static final String CATEGORIES = "categories";
     public static final String SEARCH_SUGGESTIONS = "search_suggestions";
     public static final String SEARCH_JOBS = "search_jobs";
+    public static final String PRODUCT_CARDS = "product_cards";
 
     private final ObjectMapper objectMapper;
     private final Map<String, JsonNode> cache = new ConcurrentHashMap<>();

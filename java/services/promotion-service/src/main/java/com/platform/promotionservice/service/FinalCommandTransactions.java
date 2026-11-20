@@ -45,20 +45,29 @@ public class FinalCommandTransactions {
 
     @Transactional
     public Result confirm(String idempotencyKey, String requestHash, ReservationStore.ReservationPayload payload) {
-        Optional<PromotionCommandReceiptEntity> concurrent = receipts.findByOperationTypeAndPromotionIdAndOrderId(
-                CommandOperation.CONFIRM, payload.promotionId(), payload.orderId());
-        if (concurrent.isPresent()) {
-            return replayOrMismatch(concurrent.get(), requestHash);
+        Optional<Result> committed = committedReceipt(CommandOperation.CONFIRM, payload.promotionId(),
+                payload.orderId(), requestHash);
+        if (committed.isPresent()) {
+            return committed.get();
         }
         Instant now = jdbc.dbNow();
         UserCouponWalletEntity wallet = wallets.lockById(payload.walletId())
                 .orElseThrow(() -> new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
                         "Reservation references an unknown wallet"));
+        // A duplicate that passed the check above may have committed while this transaction waited for the
+        // wallet lock: it is a replay, not an inconsistent wallet (PROMO-INV-012).
+        committed = committedReceipt(CommandOperation.CONFIRM, payload.promotionId(), payload.orderId(), requestHash);
+        if (committed.isPresent()) {
+            return committed.get();
+        }
         if (!wallet.getUserId().equals(payload.userId()) || wallet.getPromotionId() != payload.promotionId()) {
             throw new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
                     "Reservation payload does not match the wallet identity");
         }
-        if (wallet.getStatus() != WalletStatus.SAVED) {
+        // EXPIRED is accepted: Reserve required a wallet that was still valid, so an EXPIRED wallet under a live
+        // reservation was normalized lazily afterwards (a query of the same user). The reservation, not the lazy
+        // flag, is the authority once the Payment succeeded (ADR-017, ADR-019).
+        if (wallet.getStatus() != WalletStatus.SAVED && wallet.getStatus() != WalletStatus.EXPIRED) {
             throw new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
                     "Wallet is " + wallet.getStatus() + ", expected SAVED for CONFIRM");
         }
@@ -80,17 +89,33 @@ public class FinalCommandTransactions {
         return insert(receipt, requestHash);
     }
 
+    /** Legacy migration proof đã kiểm ở {@link FinalCommandService}: record ID và digest chữ thường. */
+    public record MigrationProof(UUID recordId, String evidenceSha256) {
+    }
+
     @Transactional
-    public Result cancelConfirmed(String idempotencyKey, String requestHash, long promotionId, long orderId) {
-        Optional<PromotionCommandReceiptEntity> concurrent = receipts.findByOperationTypeAndPromotionIdAndOrderId(
-                CommandOperation.CANCEL_CONFIRMED, promotionId, orderId);
-        if (concurrent.isPresent()) {
-            return replayOrMismatch(concurrent.get(), requestHash);
+    public Result cancelConfirmed(String idempotencyKey, String requestHash, long promotionId, long orderId,
+                                  MigrationProof proof) {
+        Optional<Result> committed = committedReceipt(CommandOperation.CANCEL_CONFIRMED, promotionId, orderId,
+                requestHash);
+        if (committed.isPresent()) {
+            return committed.get();
         }
-        UserCouponWalletEntity found = wallets.findUsedByOrder(promotionId, orderId)
-                .orElseThrow(() -> new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
-                        "No wallet is USED by this order for the promotion"));
+        UserCouponWalletEntity found = wallets.findUsedByOrder(promotionId, orderId).orElse(null);
+        if (found == null) {
+            // A duplicate that committed in between has already cleared the wallet: replay its receipt.
+            committed = committedReceipt(CommandOperation.CANCEL_CONFIRMED, promotionId, orderId, requestHash);
+            if (committed.isPresent()) {
+                return committed.get();
+            }
+            throw new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
+                    "No wallet is USED by this order for the promotion");
+        }
         UserCouponWalletEntity wallet = wallets.lockById(found.getId()).orElseThrow();
+        committed = committedReceipt(CommandOperation.CANCEL_CONFIRMED, promotionId, orderId, requestHash);
+        if (committed.isPresent()) {
+            return committed.get();
+        }
         if (wallet.getStatus() != WalletStatus.USED || wallet.getUsedOrderId() == null
                 || wallet.getUsedOrderId() != orderId) {
             throw new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
@@ -115,6 +140,8 @@ public class FinalCommandTransactions {
         PromotionCommandReceiptEntity receipt = newReceipt(CommandOperation.CANCEL_CONFIRMED, idempotencyKey,
                 requestHash, promotionId, orderId, wallet.getId(), amount, "CANCELLED_CONFIRMED", resulting,
                 write(response), now);
+        receipt.setMigrationRecordId(proof.recordId());
+        receipt.setPreWatermarkEvidenceSha256(proof.evidenceSha256());
         return insert(receipt, requestHash);
     }
 
@@ -126,6 +153,16 @@ public class FinalCommandTransactions {
             // Concurrent duplicate đã commit cùng transition: rollback transaction này, caller replay.
             throw new ConcurrentReceiptException(receipt.getIdempotencyKey(), requestHash);
         }
+    }
+
+    /**
+     * Receipt đã commit cho cùng business operation: replay nếu cùng request hash, mismatch nếu khác.
+     * Gọi lại sau khi giành khoá wallet để một bản trùng vừa commit không bị coi là state không nhất quán.
+     */
+    private Optional<Result> committedReceipt(CommandOperation operation, long promotionId, long orderId,
+                                              String requestHash) {
+        return receipts.findByOperationTypeAndPromotionIdAndOrderId(operation, promotionId, orderId)
+                .map(existing -> replayOrMismatch(existing, requestHash));
     }
 
     private static Result replayOrMismatch(PromotionCommandReceiptEntity existing, String requestHash) {

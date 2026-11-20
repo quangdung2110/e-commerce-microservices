@@ -3,6 +3,7 @@ package com.ecommerce.checkout.store;
 import com.ecommerce.checkout.config.CheckoutProperties;
 import com.ecommerce.checkout.crypto.TokenHasher;
 import com.ecommerce.checkout.domain.SessionState;
+import com.ecommerce.checkout.observability.Spans;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.springframework.core.io.ClassPathResource;
@@ -48,6 +49,7 @@ public class SessionStore {
     private final TokenHasher hasher;
     private final CheckoutProperties properties;
     private final MeterRegistry meters;
+    private final Spans spans;
 
     private final RedisScript<List> peekPreview = script("peek_preview", List.class);
     private final RedisScript<List> createPreview = script("create_preview", List.class);
@@ -58,11 +60,12 @@ public class SessionStore {
     private final RedisScript<List> finalizeScript = script("finalize", List.class);
 
     public SessionStore(ReactiveStringRedisTemplate redis, TokenHasher hasher, CheckoutProperties properties,
-                        MeterRegistry meters) {
+                        MeterRegistry meters, Spans spans) {
         this.redis = redis;
         this.hasher = hasher;
         this.properties = properties;
         this.meters = meters;
+        this.spans = spans;
     }
 
     /**
@@ -195,12 +198,16 @@ public class SessionStore {
         hasher.idempotencyRefs(idempotencyKey).forEach(ref -> keys.add(idemKey(userId, ref)));
         return run("peek_preview", () -> redis.execute(peekPreview, keys,
                 List.of(SESSION_PREFIX, PAYLOAD_PREFIX, fingerprint)).next())
-                .map(result -> switch (text(result, 0)) {
-                    case "REPLAY" -> new Peek.Replay(text(result, 1));
-                    case "MISMATCH" -> new Peek.Mismatch();
-                    case "IN_FLIGHT" -> new Peek.InFlight(text(result, 1));
-                    default -> new Peek.Proceed();
-                });
+                .map(SessionStore::peek);
+    }
+
+    private static Peek peek(List<?> result) {
+        return switch (text(result, 0)) {
+            case "REPLAY" -> new Peek.Replay(text(result, 1));
+            case "MISMATCH" -> new Peek.Mismatch();
+            case "IN_FLIGHT" -> new Peek.InFlight(text(result, 1));
+            default -> new Peek.Proceed();
+        };
     }
 
     /**
@@ -340,6 +347,20 @@ public class SessionStore {
                 .then();
     }
 
+    /** Execute the real read-only script and MULTI decoder without touching workflow keys.
+     * The caller supplies a startup budget; the production command timeout remains unchanged. */
+    public Mono<Void> warmupReadPath() {
+        return Mono.defer(() -> {
+            String prefix = "checkout:warmup:{" + java.util.UUID.randomUUID() + "}:";
+            return redis.execute(peekPreview, List.of(prefix + "active", prefix + "idem"),
+                            List.of(prefix + "session:", prefix + "payload:", "warmup"))
+                    .next().map(SessionStore::peek)
+                    .switchIfEmpty(Mono.error(new IllegalStateException("Warm-up Lua returned no result")))
+                    .flatMap(result -> result instanceof Peek.Proceed ? Mono.<Void>empty()
+                            : Mono.error(new IllegalStateException("Unexpected warm-up Lua result")));
+        });
+    }
+
     private List<RedisScript<?>> allScripts() {
         return List.of(peekPreview, createPreview, claim, recoveryClaim, mark, toRetryable, finalizeScript);
     }
@@ -347,7 +368,7 @@ public class SessionStore {
     // ------------------------------------------------------------------ plumbing
 
     private <T> Mono<T> run(String operation, Supplier<Mono<T>> command) {
-        return Mono.defer(() -> {
+        Mono<T> timed = Mono.defer(() -> {
             long started = System.nanoTime();
             return command.get()
                     .timeout(properties.redisTimeout())
@@ -358,6 +379,7 @@ public class SessionStore {
                             .record(Duration.ofNanos(System.nanoTime() - started)))
                     .onErrorMap(error -> new RedisUnavailableException(operation, error));
         });
+        return spans.in("checkout.redis", timed, "operation", operation);
     }
 
     private static Control control(String ref, List<Object> values) {

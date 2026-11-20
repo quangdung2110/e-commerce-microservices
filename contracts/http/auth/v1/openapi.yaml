@@ -3,9 +3,17 @@ info:
   title: Auth Service HTTP API
   version: 1.0.0
   description: >-
-    Contract đích cho Auth HTTP API. Auth sở hữu account, role, credential,
-    session, token và JWT key; không sở hữu user profile.
+    Auth HTTP API do `go/services/auth-service` phục vụ. Auth sở hữu account, role,
+    credential, session, token và JWT key; không sở hữu user profile. Mọi lỗi là
+    `application/problem+json` với `code` ổn định; danh mục mã, HTTP status và cờ
+    retryable nằm ở `docs/auth/domain.md` mục 7 và ma trận theo endpoint ở
+    `docs/auth/interfaces.md` mục 6.
 x-adoption-status: proposed
+servers:
+  - url: http://auth-service:8080
+    description: Cluster endpoint, chỉ tới được qua API Gateway (và JWKS cho gateway-auth)
+  - url: http://localhost:8086
+    description: Cổng host của auth-service trong root Docker Compose
 tags:
   - name: Authentication
   - name: Sessions
@@ -18,6 +26,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: registerAccount
+      security: []
       summary: Tạo account chờ xác minh email
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -41,10 +50,14 @@ paths:
     post:
       tags: [Authentication]
       operationId: requestEmailVerification
+      security: []
       summary: Gửi lại OTP xác minh email
       description: >-
         Luôn trả cùng phản hồi thành công để không tiết lộ email có account
-        chờ xác minh hay không.
+        chờ xác minh hay không. Mỗi account chỉ được gửi lại 3 lần trong 15 phút;
+        vượt ngân sách đó Auth không gửi nữa nhưng vẫn trả `202`, vì một `429` chỉ
+        xuất hiện với địa chỉ có account chờ xác minh sẽ là chính điều cần giấu.
+        `429` ở đây chỉ đến từ rate limit theo IP.
       parameters:
         - $ref: '#/components/parameters/RequestId'
       requestBody:
@@ -62,6 +75,7 @@ paths:
     post:
       tags: [Authentication]
       operationId: verifyEmail
+      security: []
       summary: Xác minh OTP email và kích hoạt account
       parameters:
         - $ref: '#/components/parameters/RequestId'
@@ -136,7 +150,14 @@ paths:
     post:
       tags: [Authentication, Sessions]
       operationId: login
+      security: []
       summary: Đăng nhập và tạo session mới
+      description: >-
+        Mật khẩu được kiểm trước trạng thái account. Sai mật khẩu luôn là `401
+        INVALID_CREDENTIALS` (email không tồn tại, account chờ xác minh, đang bị khóa
+        hay đang hoạt động đều giống nhau); chỉ người đúng mật khẩu mới thấy `403
+        ACCOUNT_NOT_VERIFIED` hoặc `423 ACCOUNT_LOCKED`. Lần sai chạm ngưỡng khóa trả
+        `423` kèm `Retry-After`. Đăng nhập đúng sau khi lock hết hạn tự mở khóa account.
       parameters:
         - $ref: '#/components/parameters/RequestId'
       requestBody:
@@ -178,6 +199,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SessionList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalError' }
 
@@ -187,7 +209,9 @@ paths:
       summary: Thu hồi toàn bộ session của account hiện tại
       description: >-
         Thu hồi toàn bộ refresh token và đặt mốc `revoked_before`; Gateway phải
-        từ chối access token được phát hành trước hoặc đúng mốc này.
+        từ chối access token được phát hành trước hoặc đúng mốc này. Mốc và `iat` đều
+        có độ phân giải một giây nên token cấp trong cùng giây với lần thu hồi cũng bị
+        từ chối; đây là chủ ý, và client phải đăng nhập lại sau thao tác này.
       security:
         - gatewayIdentity: []
       parameters:
@@ -243,6 +267,7 @@ paths:
             session hiện tại, Auth denylist `jti` và xóa refresh cookie.
           headers:
             Set-Cookie: { $ref: '#/components/headers/ClearedRefreshCookie' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/SessionNotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -278,10 +303,14 @@ paths:
     post:
       tags: [Password]
       operationId: requestPasswordReset
+      security: []
       summary: Yêu cầu email có opaque reset-token link
       description: >-
         Luôn trả cùng phản hồi thành công dù email có tồn tại hay không. Reset
-        token là opaque, single-use, có TTL và không xuất hiện trong response.
+        token là opaque, single-use, có TTL và không xuất hiện trong response. Mỗi
+        account chỉ được yêu cầu 5 lần trong 15 phút; vượt ngân sách đó Auth không gửi
+        nữa nhưng vẫn trả `202` (một `429` theo account sẽ lộ account tồn tại). `429`
+        ở đây chỉ đến từ rate limit theo IP. Một yêu cầu mới thay thế link cũ.
       parameters:
         - $ref: '#/components/parameters/RequestId'
       requestBody:
@@ -299,6 +328,7 @@ paths:
     post:
       tags: [Password]
       operationId: completePasswordReset
+      security: []
       summary: Đổi password bằng opaque reset token
       description: >-
         Reset token được nhận từ URL fragment phía frontend và gửi trong body
@@ -345,6 +375,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountDeletionAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/InvalidCredentials' }
         '409': { $ref: '#/components/responses/AccountStateConflict' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -369,6 +400,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountDeletionAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/AccountNotFound' }
@@ -379,6 +411,7 @@ paths:
     get:
       tags: [JWKS]
       operationId: getJwks
+      security: []
       summary: Công bố public signing key hiện hành và phase-out key
       responses:
         '200':
@@ -684,7 +717,9 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     AccountStateConflict:
-      description: Account đang ở trạng thái không cho phép thao tác.
+      description: >-
+        Account đang ở trạng thái không cho phép thao tác (`ACCOUNT_NOT_ACTIVE`),
+        gồm cả yêu cầu xóa account đã bị xóa.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -722,7 +757,12 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     InternalError:
-      description: Lỗi không mong đợi.
+      description: >-
+        Lỗi không mong đợi (`INTERNAL_ERROR`), hoặc lỗi retryable: `DEPENDENCY_UNAVAILABLE`
+        khi Redis không trả lời (Auth fail closed; contract chưa định nghĩa `503`) và
+        `CONCURRENT_UPDATE` khi account bị ghi đè liên tục. Với đổi mật khẩu, đổi email
+        và xóa account, thay đổi đã commit trước khi lỗi Redis xảy ra; event vẫn được phát
+        và client có thể gọi `DELETE /api/v1/auth/sessions` để ghi lại mốc thu hồi.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

@@ -160,6 +160,11 @@ $serviceIds = [System.Collections.Generic.HashSet[string]]::new([System.StringCo
 }
 
 Write-Host 'Checking CloudEvents examples...'
+$jsonValidationOptions = @{}
+# Newer PowerShell versions require opt-in to resolve relative schema files.
+if ((Get-Command Test-Json).Parameters.ContainsKey('FetchExternalReference')) {
+    $jsonValidationOptions.FetchExternalReference = $true
+}
 $requiredCloudEventFields = @(
     'specversion', 'id', 'type', 'source', 'subject', 'time',
     'datacontenttype', 'dataschema', 'data'
@@ -198,7 +203,7 @@ Get-ChildItem (Join-Path $contractRoot 'examples/events') -File -Filter '*.json'
                     ConvertFrom-Json -Depth 100).PSObject.Properties['$id']
                 if ($schemaId -and $schemaId.Value -match '^https?://') {
                     Add-ContractWarning ("Skipped JSON Schema validation of {0}: Test-Json cannot resolve a schema with an absolute `$id ({1})." -f $display, $schemaId.Value)
-                } elseif (-not (Test-Json -Json $rawEvent -SchemaFile $schemaPath -ErrorAction SilentlyContinue)) {
+                } elseif (-not (Test-Json -Json $rawEvent -SchemaFile $schemaPath @jsonValidationOptions -ErrorAction SilentlyContinue)) {
                     Add-ContractError "CloudEvent example does not match $($event.dataschema): $display"
                 }
             }
@@ -246,30 +251,17 @@ Invoke-OptionalTool -Name 'buf' -Action {
     try { & buf lint } finally { Pop-Location }
 }
 Invoke-OptionalTool -Name 'redocly' -Action {
-    @(
-        'http/checkout/v1/openapi.yaml',
-        'http/cart/v1/openapi.yaml',
-        'http/inventory/workflow/v1/openapi.yaml',
-        'http/inventory/admin/v1/openapi.yaml',
-        'http/inventory/exports/v1/openapi.yaml',
-        'http/order/v1/openapi.yaml',
-        'http/order/internal/v1/openapi.yaml',
-        'http/review/v1/openapi.yaml'
-    ) | ForEach-Object {
-        $spec = Join-Path $contractRoot $_
-        & redocly lint $spec
-        if ($LASTEXITCODE -ne 0) { throw "redocly failed for $_" }
+    # Every OpenAPI document, found on disk: a list written by hand misses the one added next (contracts ADR-008).
+    $redoclyConfig = Join-Path $PSScriptRoot 'redocly.yaml'
+    Get-ChildItem (Join-Path $contractRoot 'http') -Recurse -File -Filter 'openapi.yaml' | Sort-Object FullName | ForEach-Object {
+        & redocly lint --config $redoclyConfig $_.FullName
+        if ($LASTEXITCODE -ne 0) { throw "redocly failed for $(Get-RelativeDisplayPath $_.FullName)" }
     }
 }
 Invoke-OptionalTool -Name 'asyncapi' -Action {
-    @(
-        'events/cart/v1/asyncapi.yaml',
-        'events/inventory/v1/asyncapi.yaml',
-        'events/order/v1/asyncapi.yaml'
-    ) | ForEach-Object {
-        $spec = Join-Path $contractRoot $_
-        & asyncapi validate $spec
-        if ($LASTEXITCODE -ne 0) { throw "asyncapi failed for $_" }
+    Get-ChildItem (Join-Path $contractRoot 'events') -Recurse -File -Filter 'asyncapi.yaml' | Sort-Object FullName | ForEach-Object {
+        & asyncapi validate $_.FullName
+        if ($LASTEXITCODE -ne 0) { throw "asyncapi failed for $(Get-RelativeDisplayPath $_.FullName)" }
     }
 }
 

@@ -1,4 +1,4 @@
-.PHONY: all build run test test-unit test-coverage lint fmt deps generate docker-build docker-up docker-down clean help
+.PHONY: all build run test test-unit test-coverage lint fmt deps generate pb-hash check-pb docker-build docker-up docker-down clean help
 
 BINARY_NAME=cart-service
 DOCKER_IMAGE=cart-service:local
@@ -46,14 +46,17 @@ sync-lua:
 	cp $(LUA_SOURCE_DIR)/upsert_item.lua $(LUA_TARGET_DIR)/
 	cp $(LUA_SOURCE_DIR)/remove_items.lua $(LUA_TARGET_DIR)/
 	cp $(LUA_SOURCE_DIR)/mark_abandoned.lua $(LUA_TARGET_DIR)/
+	cp $(LUA_SOURCE_DIR)/purge_cart.lua $(LUA_TARGET_DIR)/
 
 ## check-lua fails when the embedded scripts have drifted from the canonical ones.
 check-lua:
 	diff -u $(LUA_SOURCE_DIR)/upsert_item.lua $(LUA_TARGET_DIR)/upsert_item.lua
 	diff -u $(LUA_SOURCE_DIR)/remove_items.lua $(LUA_TARGET_DIR)/remove_items.lua
 	diff -u $(LUA_SOURCE_DIR)/mark_abandoned.lua $(LUA_TARGET_DIR)/mark_abandoned.lua
+	diff -u $(LUA_SOURCE_DIR)/purge_cart.lua $(LUA_TARGET_DIR)/purge_cart.lua
 
-## generate regenerates the Product gRPC stubs from the canonical proto.
+## generate regenerates the Product gRPC stubs from the canonical proto and records the proto hashes.
+## Without protoc on the machine use scripts/generate-pb.sh, which runs this in Docker with pinned tools.
 generate:
 	rm -rf $(PB_DIR)
 	mkdir -p $(PB_DIR)
@@ -65,6 +68,18 @@ generate:
 		--go-grpc_opt=Mecommerce/product/v1/product_service.proto=$(PB_MODULE)/productv1 \
 		--go-grpc_opt=Mecommerce/common/v1/money.proto=$(PB_MODULE)/commonv1 \
 		ecommerce/product/v1/product_service.proto ecommerce/common/v1/money.proto
+	$(MAKE) pb-hash
+
+PROTO_FILES=$(CONTRACTS_DIR)/grpc/ecommerce/product/v1/product_service.proto $(CONTRACTS_DIR)/shared/proto/ecommerce/common/v1/money.proto
+PB_HASH_FILE=$(PB_DIR)/PROTO_SHA256
+
+## pb-hash records the SHA-256 of the canonical protos (line endings normalized) the stubs were built from.
+pb-hash:
+	@for f in $(PROTO_FILES); do printf '%s  %s\n' "$$(tr -d '\r' < $$f | sha256sum | cut -d' ' -f1)" "$$(basename $$f)"; done > $(PB_HASH_FILE)
+
+## check-pb fails when a canonical proto changed and the stubs were not regenerated.
+check-pb:
+	@for f in $(PROTO_FILES); do want=$$(tr -d '\r' < $$f | sha256sum | cut -d' ' -f1); grep -q "$$want  $$(basename $$f)" $(PB_HASH_FILE) || { echo "stale pb: $$f changed, run scripts/generate-pb.sh"; exit 1; }; done
 
 docker-build:
 	docker build -t $(DOCKER_IMAGE) .

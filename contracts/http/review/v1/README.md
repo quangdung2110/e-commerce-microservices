@@ -18,6 +18,21 @@ Client không được tự gửi chúng; Review vẫn phải authorize ownershi
 
 ## Semantics cần lưu ý
 
+- `OwnerReview.content_edited_at` là response field optional/nullable/read-only. Backend
+  mới luôn trả field, kể cả null; frontend cũ/mới rollout không đổi meaning các field cũ.
+  Nó chỉ ghi transaction time của author PATCH được chấp nhận (rating/content/media),
+  không đổi do report/moderation/reply/privacy. `updated_at` là record-update time chung.
+  Legacy edit thiếu hoặc mâu thuẫn outbox history giữ null; client hiện “Đã chỉnh sửa”
+  không kèm giờ và không fallback sang `updated_at`. Public/Admin/event DTO không thêm field.
+
+- Các field số nguyên (`rating`, `byte_size`) yêu cầu JSON integer token; số thập phân
+  (kể cả `1.0`) và chuỗi số bị `400 INVALID_REQUEST` trước khi claim quyền/quota.
+  Field lạ và media ID trùng cũng bị 400; errors dùng tên wire field, không phản chiếu
+  nội dung bị từ chối hay Java/framework internals.
+- Signed PUT phải giữ header đã ký `If-None-Match: *`. Storage phải enforce điều kiện:
+  ghi lần đầu thành công, PUT hợp lệ lại cùng key trả 412 và không thay byte, kể cả sau attach.
+  Client retry bằng instruction/asset mới khi không xác định được lần PUT trước đã thành công.
+
 - `X-Request-Id` là correlation ID, **không** là idempotency key. Khi create/edit
   timeout, buyer dùng recovery read theo eligibility hoặc review ID thay vì retry write
   mù quáng.
@@ -45,9 +60,17 @@ Client không được tự gửi chúng; Review vẫn phải authorize ownershi
   và owner read vẫn không cấp URL cho media đó.
 - `201`/`200` của domain command xác nhận database và outbox đã commit, không xác nhận
   Kafka publication/consumer processing hoàn thành.
+- Mọi lỗi là `application/problem+json` với `code` ổn định; danh mục đầy đủ (HTTP status,
+  `retryable`) ở [docs/review/interfaces.md mục 7](../../../../docs/review/interfaces.md#7-error-catalog).
+  `404 NOT_FOUND`, `405 METHOD_NOT_ALLOWED` và `415 UNSUPPORTED_MEDIA_TYPE` áp dụng cho mọi
+  đường dẫn nên không lặp ở từng operation.
 
 ## Compatibility
 
-Contract đang `proposed`. Thay đổi path, security, status/error code hoặc semantics
+Contract đang `implemented` (xem [ADOPTION](../../../ADOPTION.md)): `java/services/review-service`
+phục vụ đủ 14 operation và `HttpContractIT` kiểm tập route bằng đúng tập operation của file này
+và validate từng response với schema tương ứng. Chưa `verified` vì chưa có consumer contract
+test. Request body là `additionalProperties: false` và được thực thi: field lạ bị `400`.
+Thay đổi path, security, status/error code hoặc semantics
 missing/null là breaking và phải có HTTP major version mới theo
 [`contracts/conventions/compatibility.md`](../../../conventions/compatibility.md).

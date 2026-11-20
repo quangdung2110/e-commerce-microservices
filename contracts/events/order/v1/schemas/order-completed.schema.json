@@ -34,7 +34,8 @@
                 "properties": {
                   "product_id": { "type": "string", "minLength": 1, "maxLength": 64 },
                   "sku_id": { "type": "string", "minLength": 1, "maxLength": 64 },
-                  "variant_name": { "type": ["string", "null"], "maxLength": 255 },
+                  "variant_name": { "type": ["string", "null"], "maxLength": 255,
+                    "description": "Purchase snapshot label. Use OrderLine.snapshot_variant_name; when absent/blank on a legacy line, derive from its stored snapshot_attributes (sorted keys, nonblank values, key: value joined with /, capped at 255 characters). Never read the current catalog. Null only if neither a label nor usable attributes exists." },
                   "product_name": { "type": "string", "minLength": 1, "maxLength": 255,
                     "description": "Product name from the accepted checkout snapshot (OrderLine.snapshot_name), so Review can show what was bought without calling Order or Product. Optional only for compatibility with producers older than this field." },
                   "product_image_url": { "type": ["string", "null"], "maxLength": 2048,

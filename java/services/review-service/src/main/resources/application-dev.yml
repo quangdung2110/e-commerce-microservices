@@ -4,9 +4,11 @@ review:
   secrets:
     author-alias-hmac: dev-review-author-alias-secret
     privacy-guard-hmac: dev-review-privacy-guard-secret
-  internal:
-    pdp-tokens: dev-product-detail-bff-token
-    export-tokens: dev-search-export-token
+  # The review-service MinIO user that minio-init creates (bucket review-media only), as in
+  # docker-compose. Never the MinIO root user.
+  storage:
+    access-key: ${REVIEW_S3_ACCESS_KEY:review-service}
+    secret-key: ${REVIEW_S3_SECRET_KEY:review-service-local-dev}
 
 logging:
   level:

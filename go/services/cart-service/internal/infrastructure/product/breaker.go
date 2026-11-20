@@ -104,6 +104,19 @@ func (b *breaker) failure() {
 	}
 }
 
+// release gives back a half-open probe slot taken by allow when the call ended
+// for a reason that says nothing about Product, such as the caller going away.
+// Without it a cancelled probe would leave the breaker half-open and rejecting
+// every call forever.
+func (b *breaker) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == stateHalfOpen && b.halfOpenCall > 0 {
+		b.halfOpenCall--
+	}
+}
+
 // isOpen reports whether the breaker is currently rejecting calls. It is used
 // by the readiness probe, never to gate a call: use allow for that.
 func (b *breaker) isOpen() bool {

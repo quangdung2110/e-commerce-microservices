@@ -159,6 +159,11 @@ abstract class AbstractCatalogIntegrationTest {
                         .domain.enums.AttributeValueType.TEXT)).attributeId();
     }
 
+    protected UUID givenAttribute(String code, String name,
+                                  com.platform.productservice.domain.enums.AttributeValueType type) {
+        return attributeService.create(new AttributeDtos.CreateAttributeRequest(code, name, type)).attributeId();
+    }
+
     protected void givenMapping(UUID categoryId, UUID attributeId, boolean required, boolean variant) {
         categoryCommandService.putAttribute(categoryId, attributeId,
                 new CategoryDtos.PutCategoryAttributeRequest(required, variant));

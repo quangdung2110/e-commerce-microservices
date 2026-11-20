@@ -48,6 +48,21 @@ public class RefundWorkflowImpl extends MessageQueueWorkflow implements OrderWor
                 Workflow.continueAsNew(carry(input.args()));
             }
         }
+        // A signal can enqueue another result while the terminal result activity is running.
+        // Version the additional activity calls so histories that already closed can replay.
+        if (!queue.isEmpty()
+                && Workflow.getVersion("apply-pending-refund-results-on-close", Workflow.DEFAULT_VERSION, 1) == 1) {
+            applyPendingRefundResults();
+        }
+    }
+
+    private void applyPendingRefundResults() {
+        while (!queue.isEmpty()) {
+            WorkflowMessage message = queue.removeFirst();
+            if (WorkflowMessage.REFUND_RESULT.equals(message.type())) {
+                durable(() -> activities.applyRefundResult(orderId, message.attributes()));
+            }
+        }
     }
 
     private void release(String attemptId) {

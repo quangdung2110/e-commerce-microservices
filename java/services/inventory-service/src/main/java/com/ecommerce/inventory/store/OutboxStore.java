@@ -77,9 +77,17 @@ public class OutboxStore {
         return t == null ? null : t.toInstant();
     }
 
-    /** Greatest assigned (and committed) export sequence; 0 before the first fact. */
+    /**
+     * Greatest assigned (and committed) export sequence; 0 before the first fact. Retention
+     * can delete every published fact, so the retention floor (the greatest purged sequence)
+     * bounds it from below: a snapshot watermark of 0 next to a floor above 0 would make the
+     * very next change-feed read answer {@code 410}.
+     */
     public long latestSequence() {
-        Long n = jdbc.queryForObject("SELECT coalesce(max(sequence), 0) FROM published_event", Long.class);
+        Long n = jdbc.queryForObject("""
+                SELECT GREATEST(coalesce((SELECT max(sequence) FROM published_event), 0),
+                                coalesce((SELECT retention_floor FROM export_retention WHERE id = 1), 0))
+                """, Long.class);
         return n == null ? 0 : n;
     }
 

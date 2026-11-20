@@ -151,6 +151,15 @@ func (s *LifecycleService) Anonymize(ctx context.Context, userID uuid.UUID, dele
 
 	var result AnonymizationResult
 	err = s.tx.WithinTx(ctx, func(txCtx context.Context) error {
+		// The address book mutations hold this per-user lock. Taking it first
+		// serializes the anonymization against an address create that has
+		// already passed its "profile is active" check: without it, that insert
+		// would commit after DeleteAllForUser ran and leave PII behind a deleted
+		// account (USER-INV-005).
+		if err := s.addresses.LockUser(txCtx, userID); err != nil {
+			return err
+		}
+
 		created, err := s.deletions.Insert(txCtx, deletion)
 		if err != nil {
 			return err

@@ -17,6 +17,12 @@ the workflow rechecks those guards before it calls Payment. Checkout submission 
 waits until initial Payment client data is durably checkpointed because its caller needs
 that data to continue Stripe confirmation; it does not wait for capture.
 
+The open submission response uses server-side async waiters; committed DB checkpoint notifications
+resume it without a Checkout callback. Request disconnect/instance loss does not undo durable
+acceptance. Recovery always uses the same token; bounded response capacity can return retryable
+`503 ORDER_UNAVAILABLE`. Schemas/status codes are unchanged; see
+[Order ADR-027](../../../docs/order/decisions/ADR-027-async-submission-checkpoint-waiters.md).
+
 Both contracts are `implemented` by [`java/services/order-service`](../../../java/services/order-service/README.md):
 its MockMvc + Testcontainers + in-memory Temporal tests validate every response shape
 against these OpenAPI component schemas. They become `verified` only after Checkout,

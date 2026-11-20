@@ -1,0 +1,19 @@
+Live check of Inventory ADR-032 alerts, 2026-10-19 (local time +07:00).
+Stack: loadtest/inventory-bench (jar sha256 4697d0c9...), Prometheus v3.15.0 on the bench network scraping
+inventory-service:8080 every 15 s with label service=inventory-service, rule_files = infra/observability/rules.yml.
+
+Phase 1  hot SKU 400/s for 13 min (bench run 18:27:34; load ~18:30:30-18:43:30)
+  k6: reqs=217461 reserved/s=278.8 dropped=94539  p50=7051.8 p95=8433.6 p99=10104.3 ms
+      outcomes: reserved=217459 unavailable=2 (Hikari 3 s connection timeout) busy=0 timeout=0
+  ALERTS:
+    InventoryDbPoolSaturated          pending 18:31:28  firing 18:34:28 -> last firing sample 18:45:28
+    InventoryReserveLatencySloBreach  pending 18:31:28  firing 18:41:28 -> last firing sample 18:48:28 (5 m window
+                                      still held phase-1 samples after the restart for phase 2)
+    HighBackendLatency                never pending (generic, p95 > 2 s)
+  server-side maxima over the phase: reserve p95 1.17 s, p99 1.88 s; service:http_latency:p95 1.17 s;
+  hikaricp_connections_pending max 176 (2 m average max 176)
+
+Phase 2  hot SKU 200/s for 13 min (bench run 18:45:01; load ~18:47:30-19:00:30)
+  k6: reqs=156000 reserved/s=200.0 dropped=0  p50=4.2 p95=7.0 p99=16.2 ms, all reserved
+  ALERTS: none pending or firing after 18:48:28
+  server-side maxima over 18:51:43-19:01:43: reserve p95 6.9 ms, p99 19.0 ms; hikaricp_connections_pending max 0

@@ -1,8 +1,8 @@
 ---
 doc_id: checkout-operations
 service: checkout-service
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Checkout Service team
 evidence:
@@ -50,7 +50,9 @@ operations của mình; hiện là known gap):
 - `/health/live`: chỉ process.
 - `/health/ready`: Redis trả lời, Lua scripts đã `SCRIPT LOAD`, và cấu hình bắt buộc ở
   [Cấu hình](#cấu-hình) hợp lệ (khoá HMAC/mã hoá, base URL, CDN và placeholder). Không fan-out
-  tới downstream; circuit mở không làm mất readiness.
+  tới downstream; circuit mở không làm mất readiness. Spring Boot chỉ quảng bá trạng thái
+  sẵn sàng sau khi warm-up startup bên dưới hoàn tất; orchestrator phải tôn trọng readiness.
+  Lỗi downstream sau đó không chạy lại warm-up.
 
 | Điều kiện | Hành vi công khai | Tính vào circuit breaker | Owner xử lý |
 |---|---|---|---|
@@ -61,7 +63,8 @@ operations của mình; hiện là known gap):
 | Circuit mở, bulkhead đầy, deadline còn < 200 ms trước một wave | `503`, không gọi dependency (`circuit_open`/`bulkhead_rejected`/`budget_skipped`) | Không | Checkout |
 | Kết quả nghiệp vụ (giỏ rỗng, SKU unavailable, address `404`, `REJECT_ALL`, `eligible=false`) | `422` theo error catalog | Không | — |
 | Promotion voucher options lỗi | `503 VOUCHER_OPTIONS_UNAVAILABLE`; Preview/Submit không bị ảnh hưởng | Có (circuit riêng) | Promotion |
-| Order POST timeout/`503` | `202 RESULT_UNKNOWN`, recovery | Có | Order + Checkout |
+| Order POST `503 SUBMISSION_IN_PROGRESS` | `202 PREPARING`, token `RETRYABLE`; recovery cùng token | Có | Order + Checkout |
+| Order POST timeout/`503` khác, gồm response capacity `ORDER_UNAVAILABLE` | `202 RESULT_UNKNOWN`, recovery cùng token | Có | Order + Checkout |
 | Order POST `400`/`401`/`403` | `503`, token `RETRYABLE`; alert cấu hình | Không | Checkout + platform |
 | Order POST `409`/`422` ngoài catalog | `409 SUBMISSION_REJECTED`; alert `contract_violation` | Không | Checkout + Order |
 | Redis lỗi/timeout | `503 CHECKOUT_UNAVAILABLE`; readiness `false` nếu kéo dài | — | Checkout + platform |
@@ -130,12 +133,40 @@ biết.
 - Redis lỗi, eviction > 0 hoặc memory > 80 %.
 - `bulkhead_rejected` tăng đều mà dependency khoẻ (thiếu capacity).
 
-Log JSON gồm `timestamp`, `level`, `service`, `environment`, `trace_id`, `span_id`,
-`request_id`, route template, status, problem `code` và duration. Gateway và Checkout redact
-segment `{checkout_token}` trong path; token chỉ log fingerprint ngắn không đảo ngược. Không
-log payload Order, địa chỉ, header xác thực hay secret. Span chính `checkout.preview`,
-`checkout.voucher_options`, `checkout.submit`, `checkout.recovery`; span con theo dependency
-và Redis script.
+## Log và span
+
+Log production là JSON (`LogstashEncoder`; profile `dev`/`test` in dạng text). Mỗi dòng có
+`@timestamp`, `level`, `service` (`checkout-service`), `message` và `traceId`/`spanId` khi có
+span. Dòng truy cập `request completed` (một dòng cho mỗi request `/api/**`) thêm `method`,
+`route` (template, không bao giờ là path thật), `status`, `problem_code`, `duration_ms`,
+`request_id`, `trace_id`. Gateway và Checkout redact segment `{checkout_token}` trong path;
+token chỉ log fingerprint ngắn không đảo ngược. Không log payload Order, địa chỉ, header xác
+thực hay secret.
+
+### Span
+
+Spring tạo span server cho mỗi request và span client cho mỗi lời gọi `WebClient`. Checkout
+thêm các span con dưới đây (`Spans`, không sinh metric; tên và attribute cố định, giá trị
+attribute là tập hữu hạn như nhãn metric):
+
+| Span | Bao quanh | Attribute |
+|---|---|---|
+| `checkout.preview` | WF-01 Preview: replay/guard, bốn wave, ghi Redis | `problem` |
+| `checkout.voucher_options` | WF-08 khay voucher | `problem` |
+| `checkout.submit` | WF-02/WF-03 từ tra cứu token tới ghi kết quả, kể cả phần chạy tách khỏi request | `problem`, `cancelled` |
+| `checkout.recovery` | WF-04: Order GET rồi resolve hoặc re-POST (từ status hoặc Submit trùng) | `problem`, `cancelled` |
+| `checkout.dependency` | Một lời gọi qua `DependencyGuard` (Cart, User, Product gRPC, Inventory, Promotion, Order) | `dependency`, `outcome` (cùng giá trị `outcome` của `checkout_dependency_calls_seconds`) |
+| `checkout.redis` | Một lệnh hoặc script Redis | `operation` |
+
+Cây span: server → use case → `checkout.dependency` / `checkout.redis`; span client HTTP nằm
+dưới `checkout.dependency` của nó. Lời gọi không phát đi (circuit mở, bulkhead đầy, hết budget)
+không có span, chỉ có metric `budget_skipped`/`circuit_open`/`bulkhead_rejected`. Problem
+nghiệp vụ (`4xx`) không đánh dấu span lỗi; problem `5xx` và exception thì có. `cancelled=true`
+khi client ngắt kết nối giữa chừng (phần việc sau claim vẫn chạy tiếp ngoài span đã đóng).
+
+Hiện chưa có exporter OTLP: span chỉ tồn tại trong process và được tương quan qua `trace_id` của
+problem và của log. Xuất trace là việc chung của nền tảng (không service Java nào trong
+repository có exporter), không thuộc phạm vi Checkout.
 
 ## Cấu hình
 
@@ -149,6 +180,7 @@ không commit.
 | `CHECKOUT_REDIS_URL` | none | Có | Redis riêng `noeviction`, ví dụ `redis://checkout-redis:6379/0`; TLS và auth ngoài local |
 | `CHECKOUT_TOKEN_HMAC_KEYS`, `CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION` | none | Có | Secret, dạng `v1:<base64>,v2:<base64>` (≥ 32 byte mỗi khoá); giữ version cũ tới khi mọi record dùng nó hết TTL (≥ 24 giờ) |
 | `CHECKOUT_ENCRYPTION_KEYS`, `CHECKOUT_ENCRYPTION_ACTIVE_VERSION` | none | Có | Secret, cùng định dạng, đúng 32 byte mỗi khoá (AES-256); envelope encryption; xoay vòng như HMAC |
+| (guard secret) | profile khác `dev`/`local`/`test` | — | `StartupSecretGuard` dừng service khi một phiên bản khoá HMAC/AES là khoá dev của docker-compose hoặc có dấu hiệu placeholder (kể cả sau khi giải mã base64) ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)); docker-compose chạy profile `local` |
 | `CHECKOUT_CART_BASE_URL` | none | Có | Ví dụ `http://cart-service:8080` |
 | `CHECKOUT_USER_BASE_URL` | none | Có | Cổng internal, ví dụ `http://user-service:8083` |
 | `CHECKOUT_PRODUCT_GRPC_TARGET` | none | Có | Ví dụ `product-service:9091` |
@@ -166,7 +198,7 @@ không commit.
 | `CHECKOUT_SUBMIT_RETRY_WINDOW` | `2m` | Không | Phải lớn hơn timeout mesh Order + 5 giây |
 | `CHECKOUT_SUCCESS_RESULT_TTL` | `24h` | Không | |
 | Deadline, timeout, circuit breaker, bulkhead | Theo [Resilience](#resilience) | Không | Đổi giá trị production phải cập nhật ADR-014 và giữ quy tắc timeout Checkout < mesh, deadline < Gateway − 1 s |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER_ARG` | none | Không | |
+| `TRACING_SAMPLING_PROBABILITY` | `0.1` | Không | Xác suất lấy mẫu trace (`management.tracing.sampling.probability`); compose local đặt `1.0`. Chưa có biến cho exporter vì chưa có exporter |
 
 Thiếu cấu hình bắt buộc thì service không khởi động (validate lúc start) thay vì chạy với URL hỏng.
 Các bất biến timeout (Checkout < mesh, deadline < Gateway − 1 giây, owner timeout > deadline
@@ -174,6 +206,45 @@ Submit, cửa sổ retry > 20 giây) cũng được kiểm lúc khởi động. 
 probe ở `/health/live` và `/health/ready`.
 
 ## Runbook
+
+### Startup và điều tra timeout client
+
+- `CHECKOUT_CLIENT_WARMUP_TIMEOUT` mặc định `30s`, `CHECKOUT_CLIENT_WARMUP_ROUNDS` mặc định `3`
+  (hợp lệ 1–10). Một `ApplicationRunner` khởi tạo Reactor Netty và thực hiện GET chỉ đọc
+  Cart/User bằng UUID zero cùng `GetBatchSkus` UUID zero, trên chính pool/channel dùng bởi
+  request thật. GET Cart/User chấp nhận 200/404 và gRPC phải trả batch hợp lệ. Promotion phải
+  trả 200 ở readiness; khi voucher options bật, warm-up gọi chính `PromotionClient.options()`
+  bằng UUID/context kỹ thuật mới để làm nóng request encoder, response tree và contract decoder.
+  POST này chỉ là truy vấn voucher; lazy expiry cho UUID không có ví cập nhật 0 dòng. Không tạo
+  cart, quote, ví, claim, reservation, promotion hay order.
+- Mỗi read tối đa 5 giây, connect HTTP startup tối đa 1 giây, retry backoff
+  100–500 ms trong budget startup (không còn trần hai lần retry); tổng bị chặn bởi timeout startup. Đây là retry riêng lúc startup,
+  không đi qua circuit/bulkhead business và không thay đổi deadline hay retry của request.
+  Thất bại làm startup thất bại; orchestrator phải chờ readiness và retry rollout theo backoff.
+  Local Compose chờ Cart/User/Product healthy. Sau startup, readiness vẫn chỉ kiểm tra local/Redis.
+- Một runner Redis riêng `CHECKOUT_REDIS_WARMUP_TIMEOUT=30s`, `CHECKOUT_REDIS_WARMUP_ROUNDS=3`
+  nạp các script rồi chạy thật `peek_preview` qua `EVALSHA`/MULTI decoder ba lần, trên namespace
+  `checkout:warmup:{UUID}:*` không tồn tại, không tạo key. Startup retry read/load trong budget;
+  nếu không hoàn tất thì app không nhận traffic. `SCRIPT LOAD`/`SCRIPT EXISTS` không thay cho
+  bước này. `checkout_redis_startup_warmup_seconds{outcome}` ghi thời gian/kết quả startup.
+  Timeout Redis nghiệp vụ vẫn 200 ms; deadline Preview/voucher và circuit/bulkhead không đổi.
+- Probe đi qua chính WebClient/byte-array codec và observation của request thật; các reader
+  Jackson Cart/User được resolve lúc tạo client. Không chỉ gọi low-level `HttpClient.warmup()`:
+  hàm này chưa khởi tạo đầy đủ WebClient pipeline và chưa tạo kết nối tới provider.
+- `checkout_client_startup_warmup_seconds{outcome}` đo startup. HTTP transport xuất
+  `reactor_netty_http_client_*` cho DNS, connect, response và `reactor_netty_connection_provider_*`
+  cho pool/pending acquire. URI label chỉ là tên dependency; `checkout_client_decode_seconds{type}`
+  đo Jackson parse riêng. Không dùng ID/token/slug làm metric label.
+- Log `dependency call failed` có dependency, outcome, duration_ms, budget_ms, request_id,
+  trace_id. Log `Product RPC completed` có grpc_status, duration_ms và headers_ms; `-1` nghĩa là
+  chưa nhận headers. Đối chiếu với log `Product RPC handled` và metric
+  `product_grpc_server_handling_seconds` phía Product bằng request_id. Thời gian tới headers
+  gồm cả kết nối/hàng chờ/mạng/server, không được diễn giải là riêng DNS hoặc DB.
+- Nếu sau idle vẫn timeout: giữ trace/log cả hai phía, kiểm tra DNS/connect/pool, GC/CPU và
+  provider handling trước khi đổi budget. Warm-up giảm chi phí khởi tạo; không chứng minh mọi
+  timeout trước đây là cold start và không bảo đảm kết nối tồn tại qua mọi khoảng idle.
+- Regression phải có request đầu tiên không pre-warm từ fixture, empty/valid Preview, địa chỉ
+  đổi, thiếu tồn, CART_CHANGED và token superseded; outage thật vẫn fail closed.
 
 **`CHECKOUT_UNAVAILABLE` tăng:** xem `checkout_dependency_calls_seconds` theo `dependency`,
 `outcome` và circuit state để biết dependency nào; chuyển on-call owner. Không bật degraded

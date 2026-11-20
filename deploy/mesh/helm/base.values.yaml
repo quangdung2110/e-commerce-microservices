@@ -1,0 +1,4 @@
+# Values for the `base` chart (CRDs and cluster roles), Istio 1.31.3.
+# Installed by deploy/mesh/local.py from the checksum-pinned official release bundle.
+# Gateway API CRDs (versions.yaml: gateway_api) must be installed first; the waypoint is a Gateway API `Gateway`.
+defaultRevision: default

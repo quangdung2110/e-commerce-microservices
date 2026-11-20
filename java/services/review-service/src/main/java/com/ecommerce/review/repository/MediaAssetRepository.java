@@ -202,14 +202,29 @@ public class MediaAssetRepository {
                 .update();
     }
 
-    /** The cleanup backlog, oldest request first. */
-    public List<MediaAsset> listDeletePending(int batchSize) {
-        return jdbc.sql("SELECT " + COLUMNS + """
+    /**
+     * One keyset page of the cleanup backlog, oldest request first.
+     *
+     * <p>Paging by {@code (delete_requested_at, id)} lets one pass visit every pending asset
+     * exactly once: an asset whose storage call fails stays {@code DELETE_PENDING} for the
+     * next pass but is not offered again in this one, so a run of failing assets at the head
+     * of the queue cannot starve the ones behind it.
+     *
+     * @param afterRequestedAt the position of the last asset of the previous page, or
+     *                         {@code null} for the first page
+     */
+    public List<MediaAsset> listDeletePending(Instant afterRequestedAt, UUID afterId, int batchSize) {
+        String sql = "SELECT " + COLUMNS + """
                  FROM review_media_assets
                  WHERE upload_state = 'DELETE_PENDING'
-                 ORDER BY delete_requested_at
-                 LIMIT ?
-                """).param(batchSize).query(MAPPER).list();
+                """
+                + (afterRequestedAt == null ? "" : " AND (delete_requested_at, id) > (?, ?)")
+                + " ORDER BY delete_requested_at, id LIMIT ?";
+        var spec = jdbc.sql(sql);
+        if (afterRequestedAt != null) {
+            spec = spec.param(OffsetDateTime.ofInstant(afterRequestedAt, ZoneOffset.UTC)).param(afterId);
+        }
+        return spec.param(batchSize).query(MAPPER).list();
     }
 
     /**

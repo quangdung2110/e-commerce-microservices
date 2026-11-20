@@ -81,20 +81,17 @@ public class CheckpointStore {
     }
 
     /**
-     * Records the latest outcome. ACCEPTED/REJECTED are durable remote results and are
-     * never downgraded to UNKNOWN by a later transport failure.
+     * Records the outcome and its evidence together. A late UNKNOWN cannot replace
+     * any part of a durable result.
      */
     public void record(UUID id, String outcome, String errorCode, String responseJson, String responseDigest) {
         jdbc.update("""
                 UPDATE order_saga_checkpoints SET
-                    outcome = CASE WHEN outcome IN ('ACCEPTED', 'REJECTED') AND :outcome = 'UNKNOWN'
-                                   THEN outcome ELSE :outcome END,
-                    error_code = CASE WHEN outcome IN ('ACCEPTED', 'REJECTED') AND :outcome = 'UNKNOWN'
-                                   THEN error_code ELSE :error END,
-                    response = COALESCE(CAST(:response AS jsonb), response),
-                    response_digest = COALESCE(:responseDigest, response_digest),
+                    outcome = :outcome, error_code = :error,
+                    response = CAST(:response AS jsonb), response_digest = :responseDigest,
                     attempts = attempts + 1, updated_at = NOW()
                 WHERE id = :id
+                  AND (outcome NOT IN ('ACCEPTED', 'REJECTED') OR :outcome <> 'UNKNOWN')
                 """, new MapSqlParameterSource().addValue("id", id).addValue("outcome", outcome)
                 .addValue("error", errorCode).addValue("response", responseJson)
                 .addValue("responseDigest", responseDigest));

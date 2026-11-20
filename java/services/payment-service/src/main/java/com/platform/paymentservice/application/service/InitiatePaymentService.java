@@ -131,6 +131,10 @@ public final class InitiatePaymentService {
         if (preparation instanceof InitiatePaymentPreparation.ProviderRejected) {
             return new InitiatePaymentResult.ProviderRejected();
         }
+        if (preparation instanceof InitiatePaymentPreparation.NoPaymentCreated absent) {
+            return new InitiatePaymentResult.NoPaymentCreated(absent.transactionId(), absent.providerOperationId(),
+                    command.orderId(), command.paymentAttemptNumber());
+        }
         if (preparation instanceof InitiatePaymentPreparation.Replay replay) {
             return replay(replay);
         }
@@ -160,13 +164,20 @@ public final class InitiatePaymentService {
                     : new InitiatePaymentResult.Fenced();
         }
         boolean review = result instanceof ProviderOperationResult.ReviewRequired;
+        boolean noPaymentCreated = result instanceof ProviderOperationResult.Rejected rejected && rejected.noPaymentCreated()
+                && acquired.operation().status() == ProviderOperationStatus.REQUESTED
+                && acquired.operation().attemptCount() == 0 && acquired.operation().firstDispatchedAt() == null
+                && acquired.operation().providerObjectId() == null;
         boolean stored = persistence.recordTerminalFailure(
                 new InitiatePaymentPort.TerminalInitiationFailure(
                         command.idempotencyKey(), owner, acquired.commandLeaseToken(),
                         acquired.operationLeaseToken(), acquired.operation().paymentTransactionId(),
                         acquired.operation().id(), ids.nextReviewCaseId(), command.correlationId(),
-                        result.providerRequestId(), result.resultJson(), review, clock.now()));
+                        result.providerRequestId(), result.resultJson(), review, noPaymentCreated, clock.now()));
         if (!stored) return new InitiatePaymentResult.Fenced();
+        if (noPaymentCreated) return new InitiatePaymentResult.NoPaymentCreated(
+                acquired.operation().paymentTransactionId(), acquired.operation().id(),
+                command.orderId(), command.paymentAttemptNumber());
         return review ? new InitiatePaymentResult.ReviewRequired()
                 : new InitiatePaymentResult.ProviderRejected();
     }

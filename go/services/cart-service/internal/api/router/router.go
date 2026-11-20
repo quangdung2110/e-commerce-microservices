@@ -3,11 +3,12 @@
 package router
 
 import (
+	obs "github.com/ecommerce/observability"
+	obsgin "github.com/ecommerce/observability/gin"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/dto/response"
@@ -15,6 +16,8 @@ import (
 	"cart-service/internal/api/middleware"
 	"cart-service/internal/domain"
 )
+
+var httpMetrics = obs.NewHTTPMetrics()
 
 // Config holds the router's dependencies.
 type Config struct {
@@ -24,8 +27,8 @@ type Config struct {
 	// InternalCallers are the service identities allowed on /internal/v1 (the mesh enforces the
 	// principal; X-Service-Identity is checked as defence in depth).
 	InternalCallers []string
-	Registry  prometheus.Gatherer
-	Logger    *zap.Logger
+	Registry        prometheus.Gatherer
+	Logger          *zap.Logger
 	// Debug switches Gin out of release mode.
 	Debug bool
 }
@@ -38,6 +41,7 @@ func New(cfg Config) *gin.Engine {
 
 	engine := gin.New()
 	engine.Use(
+		obsgin.Middleware(httpMetrics),
 		middleware.RequestID(),
 		middleware.Recovery(cfg.Logger),
 		middleware.Logging(cfg.Logger),
@@ -47,7 +51,7 @@ func New(cfg Config) *gin.Engine {
 	engine.GET("/health/live", cfg.Health.Live)
 	engine.GET("/health/ready", cfg.Health.Ready)
 	if cfg.Registry != nil {
-		engine.GET("/metrics", gin.WrapH(promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})))
+		engine.GET("/metrics", gin.WrapH(httpMetrics.Handler(cfg.Registry)))
 	}
 
 	// Every cart route requires a trusted identity, and every write also
@@ -68,7 +72,7 @@ func New(cfg Config) *gin.Engine {
 	// Internal read for Checkout. The user comes from the path, never from X-User-Id, so this group
 	// must stay off the public gateway and behind the service identity check.
 	internal := engine.Group("/internal/v1/carts")
-	internal.Use(middleware.ServiceIdentity(cfg.InternalCallers))
+	internal.Use(middleware.ServiceIdentity(cfg.InternalCallers), middleware.CallerDeadline())
 	internal.GET("/:user_id/checkout-snapshot", cfg.Cart.CheckoutSnapshot)
 
 	return engine

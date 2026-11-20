@@ -1,0 +1,11 @@
+scenario | ops/s | ACK n | commit-to-ACK p50 / p95 / p99 ms | backlog
+saturated-starts-1 | 192.07 | 3900 | 4884.45 / 5817.42 / 5954.18 | 1019
+saturated-mixed-50-50-1 | 98.93 | 2500 | 10000.94 / 11058.52 / 11491.44 | 1016
+saturated-starts-2 | 194.00 | 4000 | 4616.63 / 7178.12 / 7385.17 | 990
+saturated-mixed-50-50-2 | 40.33 | 1700 | 12912.13 / 18583.95 / 19024.27 | 995
+saturated-starts-3 | 206.67 | 4100 | 4781.60 / 7900.10 / 8368.77 | 1000
+saturated-mixed-50-50-3 | 73.33 | 2100 | 13506.06 / 20595.77 / 21185.22 | 1000
+arrival-mixed-80 | 58.20 | 1200 | 3951.56 / 5074.19 / 5386.83 | 327
+arrival-mixed-120 | 69.93 | 1800 | 5315.48 / 9930.05 / 10299.01 | 744
+arrival-mixed-160 | 46.47 | 2400 | 11672.55 / 14891.36 / 15288.71 | 932
+VERIFIED: 23700 operations, 9 scenarios; adr028: saturated median=194.00 start/s mixed median=73.33 ops/s

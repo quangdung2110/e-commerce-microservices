@@ -8,7 +8,7 @@ info:
     availability advisory được batch-read từ Inventory và Review summary/preview do
     Review sở hữu. URL media do BFF dựng từ storage key Product trả.
     Availability chỉ là UI snapshot; Review là enrichment có thể degrade độc lập.
-x-adoption-status: proposed
+x-adoption-status: implemented
 servers:
   - url: http://product-detail-bff:8080
     description: Internal cluster endpoint via API Gateway
@@ -19,6 +19,7 @@ paths:
     get:
       tags: [Storefront product detail]
       operationId: getProductDetail
+      security: []
       summary: Lấy Product Detail cho buyer
       parameters:
         - name: slug
@@ -26,7 +27,9 @@ paths:
           required: true
           description: >-
             Cùng quy tắc slug của Product (PRODUCT-BR-013). Slug không khớp pattern hoặc dài
-            hơn 180 trả 404 mà BFF không gọi Product.
+            hơn 180 trả 404 mà BFF không gọi Product. Gateway chuyển cả prefix
+            /api/v1/storefront/products/ tới BFF, nên đường dẫn không phải một slug (rỗng, có
+            / cuối, nhiều segment) cũng là slug sai pattern và nhận cùng 404.
           schema: { type: string, minLength: 1, maxLength: 180, pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$' }
       responses:
         '200':
@@ -41,7 +44,7 @@ paths:
         '404':
           description: >-
             PRODUCT_DETAIL_NOT_FOUND; Product không tồn tại, không catalog-active hoặc slug
-            không khớp pattern. retryable=false. Luôn no-store để CDN không giữ 404 sau khi
+            không khớp pattern (gồm đường dẫn dưới prefix PDP không phải một slug). retryable=false. Luôn no-store để CDN không giữ 404 sau khi
             Product được activate (404 có thể bị cache heuristic theo RFC 9111).
           headers:
             Cache-Control:

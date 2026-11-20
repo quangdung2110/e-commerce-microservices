@@ -11,6 +11,16 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ---
 
+## CI/CD
+
+- [Đợt 1 — CI và phát hành container](./cicd/phase-1.md): required gate, test matrix,
+  frontend, security scan, SBOM, attestation, GHCR và manifest image theo digest.
+- [Đợt 2 — GitOps và bootstrap staging/production](./cicd/phase-2.md): cấu hình hạ tầng,
+  secret, migration, E2E staging, promotion và rollback qua PR.
+- [Đợt 3 — Vận hành](./cicd/phase-3.md): canary BFF, SLO, hiệu năng định kỳ và diễn tập phục hồi.
+
+---
+
 ## 0. Legacy Contract Documents — `docs/_contracts/`
 
 | File | Mô tả |
@@ -40,10 +50,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 1. Checkout Service (BFF/Stateless)
 
-> Thiết kế ở mức `target/proposed`; contracts Checkout, Cart, Product, User,
-> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát. Checkout là Java 21 +
-> Spring Boot WebFlux (`java/services/checkout-service`, Checkout ADR-013) và đã được
-> triển khai; adoption runtime là `pilot`. Chưa có kiểm thử end-to-end qua provider thật.
+> Đã `implemented` và đồng bộ với code (2026-10-09): Java 21 + Spring Boot WebFlux
+> (`java/services/checkout-service`, Checkout ADR-013); contracts Checkout, Cart, Product, User,
+> Inventory, Promotion, Order, Gateway và Mesh đã được đối soát; adoption runtime là `pilot`.
+> Chưa có kiểm thử end-to-end qua provider thật.
 
 | File | Mô tả |
 |---|---|
@@ -78,8 +88,8 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [order/architecture.md](./order/architecture.md) | Temporal/Kafka/CDC, component, consistency, concurrency và topology. |
 | [order/domain.md](./order/domain.md) | Aggregate, master/item/refund FSM, buyer tab, rule và lỗi miền. |
 | [order/data.md](./order/data.md) | PostgreSQL logical schema, search indexes/view, transaction, Redis và lifecycle. |
-| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các target contract Payment, Inventory, Delivery và Finance/Ops. |
-| [order/workflows.md](./order/workflows.md) | Checkout, timeout, delivery proof, return/refund, durable scope finalization, late recovery và financial reconciliation. |
+| [order/interfaces.md](./order/interfaces.md) | HTTP/activity/event/Temporal semantics và liên kết các contract Payment, Promotion, Inventory và Finance/Ops. |
+| [order/workflows.md](./order/workflows.md) | Checkout, timeout, Admin xác nhận giao hàng, return/refund, durable scope finalization, late recovery và financial reconciliation. |
 | [order/operations.md](./order/operations.md) | Worker, observability, failure mode, scaling, deploy và runbook. |
 | [order/development.md](./order/development.md) | Build/test/chạy local, hiện trạng test tự động và migration. |
 | [order/decisions/README.md](./order/decisions/README.md) | Danh mục ADR, gồm ADR-020 chốt runtime và các điểm làm rõ khi implement. |
@@ -88,9 +98,9 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 3. Payment Service (PG State + Outbox)
 
-> Đã refactor theo `docs/_templates/service-documentation`; thiết kế ở mức
-> `target/proposed`, bảo toàn toàn bộ quyết định của tài liệu cũ. HTTP v1 và payment
-> facts v2 đã có target contract nhưng chưa xác minh implementation/provider-consumer test.
+> Runtime Spring Boot/Stripe/PostgreSQL đã hiện thực và được kiểm chứng offline.
+> Audit 2026-10-11 bổ sung recovery/correction và đồng bộ contract;
+> [runtime status](./payment/runtime-status.md) liệt kê KMS/metrics/heartbeat và gate môi trường còn thiếu.
 
 | File | Mô tả |
 |---|---|
@@ -102,12 +112,12 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [payment/interfaces.md](./payment/interfaces.md) | API initiate/cancel/webhook/query/refund và financial facts v2 `t.payment.events.v2`. |
 | [payment/workflows.md](./payment/workflows.md) | Mười bốn workflow: payment/refund, verified webhook/inbox recovery, provider recovery, review, dispute và subledger/balance reconciliation. |
 | [payment/operations.md](./payment/operations.md) | SLO gợi ý, worker, observability, failure mode, runbook. |
-| [payment/development.md](./payment/development.md) | Checklist build/test/migration khi implementation được thêm. |
-| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 20 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
-| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; target/proposed. |
-| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; target/proposed. |
-| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; target/proposed. |
-| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; target/proposed. |
+| [payment/development.md](./payment/development.md) | Build/test/migration runtime hiện tại và gate môi trường. |
+| [payment/decisions/README.md](./payment/decisions/README.md) | Danh mục 23 ADR, gồm verified inbox, lease/fencing, provider ordering, single-shot refund, Payment-owned subledger/dispute và retention/DR. |
+| [Payment HTTP OpenAPI v1](../contracts/http/payment/v1/openapi.yaml) | Initiate/cancel/query/client-data/refund numbered payment attempt và Stripe webhook ingestion; implemented (offline). |
+| [Payment internal OpenAPI v1](../contracts/http/payment/internal/v1/openapi.yaml) | Review/replay/reconciliation/freeze/ledger/dispute cho Finance/Accounting Ops; implemented (offline). |
+| [Payment Events AsyncAPI v2](../contracts/events/payment/v2/asyncapi.yaml) | Mười lăm financial facts, full structured CloudEvents, exact namespaced type và per-event JSON Schema; implemented (offline). |
+| [Payment Internal AsyncAPI v1](../contracts/events/payment/internal/v1/asyncapi.yaml) | Verified Stripe delivery nội bộ, exact bytes base64 và DB-backed retry; implemented (offline). |
 
 ---
 
@@ -137,8 +147,10 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 
 ## 5. Promotion Service (Redis Lua + PostgreSQL)
 
-> Tài liệu đã refactor theo cấu trúc chuẩn trong `docs/_templates`; thiết kế đang ở
-> trạng thái `proposed` và chưa có implementation để verification.
+> Tài liệu theo cấu trúc chuẩn trong `docs/_templates`, `scope: current`: đã implement trong
+> `java/services/promotion-service` và đã đối soát với source/migration/test (audit 2026-10-10,
+> ADR-019). HTTP v1 và Events v1 `implemented`; chưa `verified` (chưa có consumer test với Promotion thật
+> và E2E Promotion → Product; đoạn outbox → Kafka đã test với Debezium thật).
 
 | File | Mô tả |
 |---|---|
@@ -146,42 +158,42 @@ liệu trên wire mâu thuẫn với một contract đã được đánh dấu `
 | [promotion/architecture.md](./promotion/architecture.md) | Thành phần, processing, consistency, concurrency và deployment. |
 | [promotion/domain.md](./promotion/domain.md) | Rule Engine, stacking, state machine, business rule và invariant. |
 | [promotion/interfaces.md](./promotion/interfaces.md) | HTTP semantics đích, outbox event và Product markdown snapshot v1. |
-| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 24 operations; trạng thái `proposed`. |
-| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `proposed`. |
-| [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, Saga technical compensation và recovery. |
+| [Promotion HTTP OpenAPI v1](../contracts/http/promotion/v1/openapi.yaml) | Machine-readable contract cho 25 operations; trạng thái `implemented`. |
+| [Promotion Events AsyncAPI v1](../contracts/events/promotion/v1/asyncapi.yaml) | Một message phát (markdown snapshot cho Product) và một message nhận (`product-deleted.v1`); trạng thái `implemented`. |
+| [promotion/workflows.md](./promotion/workflows.md) | Campaign schedule, claim, calculate, reserve/confirm/cancel, legacy technical cleanup (deprecated) và recovery. |
 | [promotion/data.md](./promotion/data.md) | PostgreSQL logical schema, Redis key/Lua, transaction và retention. |
 | [promotion/operations.md](./promotion/operations.md) | SLI, failure mode, alert, runbook và workers/jobs. |
 | [promotion/development.md](./promotion/development.md) | Prerequisite implementation, test matrix và Definition of Done. |
-| [promotion/decisions/](./promotion/decisions/README.md) | 16 ADR; ADR-016 chốt phạm vi event v1 và receipt-driven finalizer. |
+| [promotion/decisions/](./promotion/decisions/README.md) | 19 ADR (ADR-001..019); ADR-016 chốt phạm vi event v1 và receipt-driven finalizer, ADR-019 là các sửa sau audit. |
 
 ---
 
-## 6. Delivery Service (target)
+## 6. Delivery
 
-> Delivery là boundary target/proposed cho verified customer-delivery proof. Repository
-> chưa có provider implementation; Inventory physical-dispatch không thay thế proof này.
-
-| File | Mô tả |
-|---|---|
-| [delivery/README.md](./delivery/README.md) | Boundary, ownership và điều kiện phát verified proof cho từng order line. |
-| [Delivery Events AsyncAPI v1](../contracts/events/delivery/v1/asyncapi.yaml) | `com.ecommerce.delivery.order-line.delivered.v1` cho Order; target/proposed. |
+> Không có Delivery service. Physical dispatch thuộc Inventory; delivery state thuộc Order và chỉ đổi
+> bằng Admin delivery confirmation ([Order ADR-021](./order/decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ---
 
-## 7. Product Detail BFF (target)
+## 7. Product Detail BFF
 
-> Read composition layer cho PDP. Product giữ catalog/price; Inventory cấp advisory
-> availability qua batch read; Review giữ review/rating. BFF không persist stock,
-> đọc Review summary/preview theo request; Checkout preview allocation và Order reserve tại Inventory.
+> Read composition layer cho PDP, đã implement (`java/services/product-detail-bff`, Java 21 +
+> Spring WebFlux), `scope: current`. Product giữ catalog/price; Inventory cấp advisory
+> availability qua batch read (gọi Inventory còn tắt bằng `PDP_INVENTORY_ENABLED=false` cho tới
+> rollout gate); Review giữ review/rating. BFF không persist stock, đọc Review summary/preview
+> theo request; Checkout preview allocation và Order reserve tại Inventory.
 
 | File | Mô tả |
 |---|---|
 | [product-detail-bff/README.md](./product-detail-bff/README.md) | Boundary, ownership, dependency và rollout gate. |
 | [product-detail-bff/architecture.md](./product-detail-bff/architecture.md) | Composition và consistency model. |
+| [product-detail-bff/domain.md](./product-detail-bff/domain.md) | Ngôn ngữ chung và quy tắc hiển thị `PDP-BR-001..011`. |
 | [product-detail-bff/interfaces.md](./product-detail-bff/interfaces.md) | PDP API, Product buyer-read, Inventory batch-read và Review internal read. |
-| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; cache/data boundary, không cache response degrade. |
-| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker và runbook. |
-| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux và làm rõ hot path. |
+| [product-detail-bff/workflows.md](./product-detail-bff/workflows.md) | `WF-PDP-001` đọc Product Detail và `WF-PDP-002` degrade/recovery. |
+| [product-detail-bff/data.md](./product-detail-bff/data.md) | Không có persistent projection; catalog cache in-process TTL ngắn (ADR-011), không cache tồn kho/review hay response degrade. |
+| [product-detail-bff/operations.md](./product-detail-bff/operations.md) | SLO, resilience budget, phân chia với mesh/gateway, circuit breaker, cấu hình và runbook. |
+| [product-detail-bff/development.md](./product-detail-bff/development.md) | Stack, chạy local, test bắt buộc và Definition of Done. |
+| [product-detail-bff/decisions/](./product-detail-bff/decisions/README.md) | ADR-001..008: Inventory-owned batch read, Review read composition không đổi ownership, ranh giới Preview/Reserve, resilience budget, phạm vi catalog/URL media của PDP, runtime Java/WebFlux, làm rõ hot path và hiệu chỉnh sau audit (status ngoài contract, `storage_key`, readiness, request ID trong log). |
 
 ---
 
@@ -193,10 +205,14 @@ Service Contract Matrix legacy đã bị xóa.
 | Producer | Topic | Consumer |
 |---|---|---|
 | Order | `t.order.events` (`com.ecommerce.order.paid.v1`, `com.ecommerce.order.completed.v1`) | Cart, Review |
+| Cart | `t.cart.events` (`com.ecommerce.cart.abandoned.v1`, event Cart duy nhất phát) | Notification |
+| Review | `t.review.events` (tám type qua outbox + Debezium, key `product_id`: năm lifecycle fact `created`/`updated`/`hidden`/`approved`/`removed`, `metrics-updated`, `reply-notification-requested`, `removal-notification-requested`) | Review (aggregator tự consume năm lifecycle fact), Search (chỉ `metrics-updated`), Notification (chỉ hai notification request) |
+| Auth | `t.auth.events` (`com.ecommerce.auth.user-deleted.v1` cho mọi PII owner; `user-verified-success.v1` chỉ cho User) | User, Notification, Review, Chat, Cart |
+| User | `t.user.events` (`com.ecommerce.user.profile-updated.v1`, `com.ecommerce.user.preferences-updated.v1`; không republish `USER_DELETED`) | Chat (profile), Notification (preferences) |
+| Notification | `t.notification.outcomes.v1` (`delivered`, `bounced`, `failed`, `complaint-received`) | Analytics; User chỉ consume `complaint-received` để tắt `marketing_enabled` ở nguồn |
 | Payment | `t.payment.events.v2` (financial facts v2, full structured CloudEvents, không mang secret/provider payload) | Order, Analytics |
 | Payment | `t.payment.webhooks.raw` (internal, chỉ delivery đã verify; exact body base64) | Payment webhook processor |
 | Inventory | `t.inventory.order.events.v1` + `t.inventory.stock.events.v1` | Order consumes only physical dispatch/selected-scope inspection completion; reservation commands use HTTP receipts/query/replay; Search consumes per-SKU availability |
-| Delivery | `t.delivery.order.events.v1` (verified delivered proof từng line) | Order |
 | Product | `t.product.events` / `product-deleted.v1` | Search; Promotion chỉ consume Product tombstone |
 | Promotion | `t.promotion.markdown.events` (ACTIVE full payload hoặc INACTIVE tombstone); topic duy nhất Promotion phát, không có coupon/budget topic | Product |
 
@@ -245,19 +261,20 @@ Service Contract Matrix legacy đã bị xóa.
 
 | File | Note |
 |---|---|
-| [auth/](./auth/) | Auth Service — ngoài scope 14 phase hiện tại. |
+| [auth/README.md](./auth/README.md) | Auth Service — Identity Provider đã implement (`go/services/auth-service`), `scope: current`: account, session, JWKS, listener internal cho Notification; ADR-001..009 (gồm thứ tự publish/marker, mesh cho listener internal, compare-and-set account, đăng nhập kiểm mật khẩu trước trạng thái). Contract còn `proposed` trong `contracts/ADOPTION.md`. |
 | [cart/README.md](./cart/README.md) | Cart Service — đã refactor theo `docs/_templates/service-documentation`. |
-| [review/README.md](./review/README.md) | Review Service — đã refactor theo `docs/_templates/service-documentation`. |
-| [search/README.md](./search/README.md) | Search Service — đã refactor theo `docs/_templates/service-documentation`. |
-| [notification/README.md](./notification/README.md) | Notification Service — thiết kế `proposed`, runtime Go: lane ưu tiên, pipeline hai ranh giới, tracking SES, idempotency, ordering, backpressure, catalog template, Decide, data model, contract và interface (`contracts/events/notification/v1`, `contracts/http/notification`). |
+| [review/README.md](./review/README.md) | Review Service — entitlement, review, media, moderation, legal takedown, privacy erasure và rating aggregate; đã đồng bộ với `java/services/review-service` theo `docs/_templates/service-documentation` (ADR-001..013); HTTP v1, internal v1 và Events v1 `implemented`, `HttpContractIT` kiểm route và response với OpenAPI. |
+| [search/README.md](./search/README.md) | Search Service — Elasticsearch projection cho storefront search/browse, đã đồng bộ với `java/services/search-service` theo `docs/_templates/service-documentation` (ADR-001..022: no-DLQ, reindex ba pha có resume/cancel/rollback/verify, tombstone window 45 ngày, hiệu chỉnh sau audit 2026-10-10); HTTP v2 `implemented`, `HttpErrorMappingIT` và `ReindexLifecycleIT` kiểm lỗi giao thức và vòng đời reindex trên Elasticsearch thật. |
+| [notification/README.md](./notification/README.md) | Notification Service — đã implement phase 1 (`go/services/notification-service`, `implemented`; contract còn `proposed` trong `contracts/ADOPTION.md`), chưa load test; D-01…D-24: lane ưu tiên, pipeline hai ranh giới, tracking SES, idempotency, ordering, backpressure, catalog template, Decide, data model, contract và interface (`contracts/events/notification/v1`, `contracts/http/notification`). |
 | [analytics/](./analytics/) | Analytics Service — ngoài scope. |
 | [common/](./common/) | Common layouts (Golang/Java) — ngoài scope. |
 | [gateway/](./gateway/) | API Gateway (Traefik, north-south) — technology choice, design, runtime contract, implementation plan. |
 | [product/README.md](./product/README.md) | Product Service — đã refactor theo `docs/_templates/service-documentation`. |
+| [user/README.md](./user/README.md) | User Service — profile, address book, preferences; đã đồng bộ với `go/services/user-service` theo `docs/_templates/service-documentation` (ADR-001..012). |
 
-> Các service trên sẽ được sync ở giai đoạn tiếp theo. Năm service Checkout, Order,
-> Payment, Inventory và Promotion được đồng bộ ở mức thiết kế; Delivery chỉ là boundary
-> target/proposed, chưa có implementation (không phải Shipping Service legacy).
+> Các service trên sẽ được sync ở giai đoạn tiếp theo. Các service Checkout, Order,
+> Payment và Inventory được đồng bộ ở mức thiết kế (Promotion đã đồng bộ với code, xem §5). Không có Delivery
+> service: Admin xác nhận giao hàng qua Order ([Order ADR-021](./order/decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ---
 
@@ -273,8 +290,18 @@ attribution. Chưa có manifest Kubernetes trong repository — mọi bảo đ�
 | [mesh/design.md](./mesh/design.md) | Namespace/ztunnel/waypoint, identity SPIFFE, ranh giới tin cậy `X-User-*`/`X-Service-Identity`, traffic policy, gRPC, Traefik trong mesh, chế độ lỗi. |
 | [mesh/runtime-contract.md](./mesh/runtime-contract.md) | Quy ước bắt buộc: runtime, nhãn namespace, mTLS, ma trận `AuthorizationPolicy` dẫn xuất từ `contracts/catalog/interactions.yaml`, identity header, retry/timeout, egress, telemetry, tiêu chí xác minh, gaps. |
 | [mesh/implementation_plan.md](./mesh/implementation_plan.md) | Giai đoạn 0–7 từ baseline Kubernetes tới vận hành, kiểm thử bắt buộc, migration/rollback. |
+| [mesh/decisions/](./mesh/decisions/README.md) | ADR-001: manifest Istio sinh từ runtime contract (`deploy/mesh/`), Istio 1.24.2, dịch đường dẫn, kiểm tra không cần cluster. |
 
 ---
+
+## 11b. Hiệu năng và độ bền (`docs/performance/`)
+
+| Tài liệu | Nội dung |
+|---|---|
+| [performance/load-test.md](./performance/load-test.md) | Load test k6 chỉ đọc cho route storefront (qua gateway và thẳng service), kết quả đo, giới hạn của số đo, và fault injection ở mức socket cho Order và Search ([contracts ADR-010](../contracts/decisions/ADR-010-resilience-evidence-fault-injection-and-load-tests.md)). |
+| [performance/inventory-reserve-hot-sku-baseline-2026-10-19.md](./performance/inventory-reserve-hot-sku-baseline-2026-10-19.md) | Baseline (trước khi sửa) cho ReserveOrder của Inventory trên một SKU nóng, stack cô lập `scripts/ci/inventory-bench.sh`: đạt SLO tới 250/s, trần ≈ 330/s do hàng khoá `stock_position` (CPU còn dư một nửa); 2 000 SKU nguội đạt 600/s; trộn 50/50 làm đơn nguội chậm theo; 0 `INVENTORY_BUSY` nên alert busy không bắt được (đã thêm alert latency/pool, [Inventory ADR-032](./inventory/decisions/ADR-032-reserve-saturation-alerts.md)); mức sàn COMMIT một hàng ≈ 700–750/s; đối chiếu envelope 10 Reserve/s của Release 1. |
+| [performance/inventory-flash-sale-baseline-2026-10-19.md](./performance/inventory-flash-sale-baseline-2026-10-19.md) | Baseline flash sale (Reserve + Commit/Release trên một SKU nóng, chưa sửa code): với 64 request đồng thời như bulkhead của Order đạt SLO tới 100 đơn/s, trần ≈ 150–167 đơn/s, không sụp; không giới hạn đồng thời thì congestion collapse; đính chính trần chỉ Reserve ≈ 285–290/s; đối soát DB khớp ở mọi bậc. |
+| [performance/inventory-lock-late-benchmark-2026-10-19.md](./performance/inventory-lock-late-benchmark-2026-10-19.md) | Trước/sau Inventory ADR-033 (khoá `stock_position` sau cùng bằng UPDATE có điều kiện): flash sale đạt SLO 100 → 150 đơn/s, trần 147–165 → 192–204 đơn/s; chỉ Reserve 250 → 300/s; 60/60 test, hai đột biến bị bắt; vì sao chưa tới 2,2 lần. Bước 2 (ADR-034: kết quả command trước, dirty mark trong câu stock cuối): trần flash ≈ 208 → 241 đơn/s cùng phiên, chỉ Reserve SLO 400/s; nút thắt chuyển sang CPU. |
 
 ## 12. Frontend (`docs/frontend/`)
 

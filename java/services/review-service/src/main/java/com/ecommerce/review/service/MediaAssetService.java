@@ -111,6 +111,12 @@ public class MediaAssetService {
             throw ReviewException.invalid("media_asset_ids",
                     "a review carries at most " + properties.maxMediaPerReview() + " attachments");
         }
+        if (new java.util.HashSet<>(assetIds).size() != assetIds.size()) {
+            // The contract declares the list uniqueItems. Left to the attach step, a repeated
+            // id would surface as MEDIA_NOT_VERIFIED (the first copy had already attached it),
+            // which tells the client to re-upload something that was never wrong.
+            throw ReviewException.invalid("media_asset_ids", "asset identifiers must be unique");
+        }
         Instant now = Instant.now();
         List<VerifiedAsset> verified = new ArrayList<>(assetIds.size());
         for (UUID assetId : assetIds) {

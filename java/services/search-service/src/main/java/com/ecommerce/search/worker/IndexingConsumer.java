@@ -20,6 +20,7 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 
@@ -127,25 +128,25 @@ public class IndexingConsumer {
     public void onReviewEvents(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         String topic = properties.topics().review();
         String target = properties.aliases().productsWrite();
-        boolean commit = true;
 
-        for (ConsumerRecord<String, String> record : records) {
-            Optional<TypedEvent> typed = dispatch(topic, record)
+        for (int index = 0; index < records.size(); index++) {
+            Optional<TypedEvent> typed = dispatch(topic, records.get(index))
                     .filter(event -> event.type() == CatalogEventType.REVIEW_METRICS_UPDATED);
             if (typed.isPresent() && !reviewHandler.handle(topic, typed.get().event(), target)) {
-                commit = false;
-                break;
+                // Everything before this record is applied; hand it and the rest back.
+                retryFrom(topic, index, ack);
+                return;
             }
         }
-        if (commit) {
-            ack.acknowledge();
-        }
+        ack.acknowledge();
     }
 
     /**
      * Control events do not touch documents; they ask Search to coalesce a reindex
-     * ({@code WF-SEARCH-006} step 3). Acknowledging immediately is safe: the coalescing
-     * key makes a repeated request harmless.
+     * ({@code WF-SEARCH-006} step 3). The request is persisted <em>before</em> the batch is
+     * acknowledged — the offset is the only other place it lives — so a restart between the
+     * acknowledgement and the run can never lose a category tree change (ADR-022). The
+     * coalescing key makes a repeated request harmless.
      */
     @KafkaListener(
             topics = "${search.topics.catalog-control}",
@@ -153,10 +154,13 @@ public class IndexingConsumer {
             containerFactory = KafkaConsumerConfig.BATCH_FACTORY)
     public void onControlEvents(List<ConsumerRecord<String, String>> records, Acknowledgment ack) {
         String topic = properties.topics().catalogControl();
-        for (ConsumerRecord<String, String> record : records) {
-            dispatch(topic, record)
-                    .filter(typed -> typed.type() == CatalogEventType.CATALOG_REINDEX_REQUESTED)
-                    .ifPresent(typed -> reindexControl.onReindexRequested(typed.event()));
+        for (int index = 0; index < records.size(); index++) {
+            Optional<TypedEvent> typed = dispatch(topic, records.get(index))
+                    .filter(event -> event.type() == CatalogEventType.CATALOG_REINDEX_REQUESTED);
+            if (typed.isPresent() && !reindexControl.onReindexRequested(typed.get().event())) {
+                retryFrom(topic, index, ack);
+                return;
+            }
         }
         ack.acknowledge();
     }
@@ -165,8 +169,23 @@ public class IndexingConsumer {
         if (executor.execute(topic, batch)) {
             ack.acknowledge();
         } else {
-            log.warn("offset for {} left uncommitted; Kafka will redeliver the batch", topic);
+            retryFrom(topic, 0, ack);
         }
+    }
+
+    /**
+     * Hands the batch from {@code index} onwards back to Kafka. Simply not acknowledging does
+     * not do it: with manual acknowledgement the container keeps polling the following
+     * records, and the next batch that succeeds commits an offset beyond the failed one, so the
+     * failure would be skipped rather than retried. {@code nack} commits what came before
+     * {@code index}, seeks back to the first unprocessed record and redelivers after the pause.
+     * Every write is guarded by a revision, so applying the same record again is a no-op.
+     */
+    private void retryFrom(String topic, int index, Acknowledgment ack) {
+        Duration pause = properties.consumer().retryBackoff();
+        log.warn("batch for {} not acknowledged from record {}; redelivering after {}", topic, index, pause);
+        metrics.indexing(topic, "batch", "redelivery");
+        ack.nack(index, pause);
     }
 
     private record TypedEvent(CloudEventEnvelope event, CatalogEventType type) {

@@ -1,6 +1,6 @@
 # Track: nhận kết quả từ provider
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Vì sao Track khác mọi stage còn lại
 

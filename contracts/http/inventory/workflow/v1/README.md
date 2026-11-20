@@ -34,7 +34,11 @@ stock and leaves Order to financial reconciliation.
 
 Refund Scope is a selected set of full-quantity, already `DISPATCHED`
 `order_line_id` values, not a whole-order or partial-quantity mechanism. Inventory retains one scope identity per
-order lifetime. The admin automatic-refund path uses the separate all-or-nothing
+order lifetime; registering the same `(order_id, refund_request_id)` and lines again under a new
+command ID returns the existing scope with its current `scope_revision`. An `order_id` that
+already has a root is `RESERVATION_ALREADY_EXISTS` for any other Reserve command, also when
+two race ([Inventory ADR-028](../../../../../docs/inventory/decisions/ADR-028-post-implementation-audit-corrections.md)).
+The admin automatic-refund path uses the separate all-or-nothing
 `release-committed-before-dispatch` command and never registers a return scope.
 
 Order closes a Buyer `INSPECTION_COMPLETED` scope after its terminal refund result:

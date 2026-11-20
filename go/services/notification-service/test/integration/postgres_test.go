@@ -28,8 +28,8 @@ import (
 
 	"github.com/ecommerce/notification-service/internal/common/clock"
 	"github.com/ecommerce/notification-service/internal/common/config"
-	"github.com/ecommerce/notification-service/internal/common/pii"
 	apperr "github.com/ecommerce/notification-service/internal/common/errors"
+	"github.com/ecommerce/notification-service/internal/common/pii"
 	"github.com/ecommerce/notification-service/internal/domain/entity"
 	"github.com/ecommerce/notification-service/internal/domain/port"
 	"github.com/ecommerce/notification-service/internal/infrastructure/postgres"
@@ -134,6 +134,7 @@ func newDelivery(userID uuid.UUID, lane entity.Lane, ch entity.Channel) *entity.
 
 func insertDeliveries(t *testing.T, n int, lane entity.Lane, ch entity.Channel) []uuid.UUID {
 	t.Helper()
+	quiesceE2E()
 	ctx := context.Background()
 	userID := uuid.New()
 	ids := make([]uuid.UUID, 0, n)
@@ -150,6 +151,7 @@ func insertDeliveries(t *testing.T, n int, lane entity.Lane, ch entity.Channel) 
 // is harmless with a long lease.
 func claimIDs(t *testing.T, lane entity.Lane, ch entity.Channel, worker string, lease time.Duration, want ...uuid.UUID) map[uuid.UUID]entity.Delivery {
 	t.Helper()
+	quiesceE2E()
 	rows, err := testStore.Deliveries().Claim(context.Background(), lane, ch, worker, 500, lease)
 	require.NoError(t, err)
 	wanted := map[uuid.UUID]bool{}
@@ -395,9 +397,9 @@ func TestPostgresReapExpiredLeases(t *testing.T) {
 	require.Len(t, claimIDs(t, entity.LaneTransactional, entity.ChannelInApp, "dead-worker", time.Millisecond, id), 1)
 	time.Sleep(20 * time.Millisecond)
 
-	n, err := testStore.Deliveries().ReapExpiredLeases(ctx, time.Now().UTC())
+	reaped, err := testStore.Deliveries().ReapExpiredLeases(ctx, time.Now().UTC())
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, n, int64(1))
+	assert.GreaterOrEqual(t, reaped[entity.LaneTransactional], int64(1), "counted under the lane of the reaped row")
 
 	d := getDelivery(t, id)
 	assert.Equal(t, entity.StatusRetry, d.Status)

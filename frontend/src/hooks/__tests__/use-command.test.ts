@@ -62,6 +62,33 @@ describe("useCommand", () => {
     expect(ids[0]).not.toBe(ids[1]);
   });
 
+  it("giữ command ID khi lệnh đã được nhận nhưng kết quả cuối chưa rõ (isOutcomeUnresolved)", async () => {
+    const ids: string[] = [];
+    const { result } = renderHook(
+      () =>
+        useCommand<{ unresolved: boolean }, { unresolved: boolean }>({
+          isOutcomeUnresolved: (data) => data.unresolved,
+          mutationFn: async (vars, { commandId }) => {
+            ids.push(commandId);
+            return vars;
+          },
+        }),
+      { wrapper }
+    );
+    const send = (unresolved: boolean) =>
+      act(async () => {
+        await result.current.mutateAsync({ unresolved });
+      });
+
+    await send(true); // nhận lệnh, poll hết hạn: chưa rõ
+    await send(true); // vẫn chưa rõ → replay cùng ý định
+    await send(false); // kết thúc rõ ràng → vẫn là replay của ý định đó
+    await send(false); // ý định mới sau khi đã có kết quả cuối
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[2]).toBe(ids[0]);
+    expect(ids[3]).not.toBe(ids[0]);
+  });
+
   it("startNewIntent bỏ ID đang giữ dù lần trước lỗi mạng", async () => {
     const { ids, send, result } = setup([networkError(), "ok"]);
     await send();

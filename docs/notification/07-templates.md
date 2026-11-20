@@ -1,6 +1,6 @@
 # Catalog template
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Vì sao catalog là contract, không phải chi tiết nội bộ
 
@@ -45,7 +45,7 @@ Với fact (Cart), producer không biết tới template; bảng ánh xạ trong
 | `email_enabled = false` | **Vẫn gửi email.** `email_enabled` nghĩa là "không muốn nhận email thông báo", không phải "từ chối reset password của chính tôi". Tắt được critical thì user tắt email rồi quên mật khẩu là mất tài khoản. | Không gửi email; in-app vẫn gửi nếu `in_app_enabled` | Không gửi email |
 | `in_app_enabled = false` | Không tạo delivery in-app (email vẫn đi) | Không tạo delivery in-app | Không tạo delivery in-app |
 | `marketing_enabled = false` | Không liên quan | Không liên quan | **Không gửi kênh nào** |
-| Suppression (hard bounce / complaint) | **Vẫn thử gửi** email; bounce lại thì `FAILED`. Không có kênh thay thế cho OTP nên không có lựa chọn khác. | Không gửi email; in-app vẫn gửi | Không gửi |
+| Suppression (hard bounce / complaint) | **Vẫn thử gửi** email; bounce lại thì `FAILED`. Không có kênh thay thế cho OTP nên không có lựa chọn khác. | Không gửi email; in-app vẫn gửi | Không gửi email; in-app vẫn gửi (suppression chỉ áp cho địa chỉ email) |
 | Quiet hours (22:00–08:00 theo timezone của user; User chưa publish timezone → mặc định `Asia/Ho_Chi_Minh`) | Không áp | Không áp | Hoãn tới 08:00 nếu chưa quá `max_age`; quá thì `EXPIRED` |
 | Frequency cap per-user | Không (Auth tự giới hạn OTP) | Không | Tối đa **2 bulk / ngày / user**, tính theo ngày lịch của timezone user; vượt → `SKIPPED (frequency_cap)` |
 
@@ -69,7 +69,7 @@ Tên giữ nguyên theo enum trong `contracts/http/auth/internal/v1/openapi.yaml
 
 - Ba template OTP/reset chỉ có email vì in-app vô nghĩa khi user chưa đăng nhập được. Bốn template cảnh báo có in-app để user thấy trong app ở lần đăng nhập tới.
 - `dedup_key` của ba template OTP/reset là `none` **có chủ ý**: mỗi lần user bấm "gửi lại" là một `delivery_id` mới và phải gửi. Chặn spam là việc của Auth (rate limit OTP), không phải idempotency.
-- `EMAIL_CHANGED` nên đến **cả email cũ lẫn mới**. Đó là việc của Auth (tạo hai `delivery_id`); Notification không cần biết.
+- `EMAIL_CHANGED` là cảnh báo gửi tới **email cũ** (một `delivery_id`, Auth chốt trong [AsyncAPI Auth](../../contracts/events/auth/v1/asyncapi.yaml) `userEmailChanged`). Email **mới** nhận mã xác minh `EMAIL_CHANGE_VERIFICATION` ở bước trước đó nên không cần cảnh báo thứ hai. Notification chỉ gửi tới địa chỉ mà `content` API của Auth trả về cho `delivery_id` đó.
 
 ### 5.2 Transactional — 5 template từ Order (request, cần contract mới)
 
@@ -80,7 +80,7 @@ Order đóng gói `template_data` từ row đơn hàng và snapshot của chính
 | `ORDER_CONFIRMED` | Chuyển `PAID` | email + in_app | 6 h | `order_confirmed:{order_id}` | `order_id`, `order_code`, `placed_at`, `items[]{name, variant_name?, quantity, unit_price_minor}`, `subtotal_minor`, `discount_minor`, `shipping_fee_minor`, `total_minor`, `currency`, `payment_method_label`, `shipping_address{recipient_name, ward, district, city}`, `order_url` |
 | `ORDER_PAYMENT_FAILED` | Payment attempt thất bại (Order consume `payment.failed`/`expired`) | email + in_app | 2 h | `order_payment_failed:{order_id}:{attempt}` | `order_id`, `order_code`, `amount_minor`, `currency`, `attempt`, `can_retry`, `retry_deadline?`, `order_url` |
 | `ORDER_CANCELLED` | Chuyển `CANCELLED` pre-capture (buyer, payment timeout, admin, hết hàng, checkout failure) | email + in_app | 24 h | `order_cancelled:{order_id}` | `order_id`, `order_code`, `cancelled_at`, `reason` ∈ {`buyer`, `payment_timeout`, `admin`, `out_of_stock`, `checkout_failed`}, `refund_expected=false`, `order_url` |
-| `ORDER_COMPLETED` | Chuyển `COMPLETED` (mọi line có delivery proof) | email + in_app | 48 h | `order_completed:{order_id}` | `order_id`, `order_code`, `completed_at`, `items[]{name, variant_name?, quantity}`, `review_url` |
+| `ORDER_COMPLETED` | Chuyển `COMPLETED` (mọi line đã được Admin xác nhận đã giao) | email + in_app | 48 h | `order_completed:{order_id}` | `order_id`, `order_code`, `completed_at`, `items[]{name, variant_name?, quantity}`, `review_url` |
 | `ORDER_REFUNDED` | Refund thành công (Order consume `refund.succeeded`) | email + in_app | 48 h | `order_refunded:{order_id}:{refund_id}` | `order_id`, `order_code`, `refund_id`, `amount_minor`, `currency`, `refunded_at`, `order_url` |
 
 `governed_by` cho cả 5: `email_enabled`, `in_app_enabled`.
@@ -107,7 +107,7 @@ Theo contract Review, payload **không** mang nội dung reply, lý do gỡ, dan
 
 | Template | Kênh | `governed_by` | `max_age` | `dedup_key` (bảng ánh xạ sinh) | `template_data` |
 |---|---|---|---|---|---|
-| `CART_ABANDONED` | email + in_app | `marketing_enabled`, `email_enabled`, `in_app_enabled` | 24 h | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id`, `abandonment_cycle`; `cart_url` do Notification lắp từ base URL frontend (fact không có chỗ cho URL — ngoại lệ §2) |
+| `CART_ABANDONED` | email + in_app | `marketing_enabled`, `email_enabled`, `in_app_enabled` | 24 h | `cart_abandoned:{cart_id}:{abandonment_cycle}` | `cart_id`, `abandonment_cycle?` (schema chỉ bắt buộc `cart_id`, `cart_url`; consumer luôn điền), `cart_url` do Notification lắp từ base URL frontend (fact không có chỗ cho URL — ngoại lệ §2) |
 
 Fact `cart.abandoned.v1` chỉ có `cart_id`, `user_id`, `abandonment_cycle`, `occurred_at` — email là lời nhắc + link, không có danh sách sản phẩm. Muốn có sản phẩm thì Cart bổ sung snapshot vào event (thay đổi ở nguồn), không phải Notification gọi Cart.
 

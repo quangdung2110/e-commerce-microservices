@@ -37,4 +37,11 @@ export const SEARCH_MESSAGES: Record<string, string> = {
   ELASTICSEARCH_UNAVAILABLE: "Tìm kiếm đang tạm gián đoạn. Vui lòng thử lại sau ít phút.",
   REINDEX_ALREADY_RUNNING: "Đang có một lượt reindex chạy. Hãy chờ lượt đó kết thúc.",
   REINDEX_RUN_NOT_FOUND: "Không tìm thấy lượt reindex.",
+  REINDEX_PRECONDITION_FAILED: "Search chưa đủ điều kiện chạy reindex. Hãy kiểm tra trạng thái cluster và dung lượng đĩa.",
+  REINDEX_RUN_NOT_CANCELLABLE: "Lượt chạy đã kết thúc hoặc đang chuyển chỉ mục nên không thể huỷ. Hãy tải lại trạng thái.",
+  REINDEX_ROLLBACK_UNAVAILABLE: "Không thể trở về chỉ mục cũ cho lượt này. Hãy tải lại và kiểm tra lượt chuyển chỉ mục mới nhất.",
+  REINDEX_FAILED: "Tái lập chỉ mục không thành công. Hãy tra mã lượt chạy với người vận hành trước khi chạy lại.",
+  RUN_ABANDONED: "Lượt chạy đã dừng do tiến trình không phục hồi được.",
+  RUN_SUPERSEDED: "Lượt chạy được thay thế bởi yêu cầu cập nhật catalog mới.",
+  RUN_CANCELLED: "Quản trị viên đã huỷ lượt chạy.",
 };

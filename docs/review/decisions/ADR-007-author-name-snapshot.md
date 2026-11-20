@@ -71,6 +71,8 @@ không đưa profile/name vào Review.
   compliance ownership riêng.
 - `subject_match_key` là dữ liệu pseudonymous và chỉ được dọn sau horizon replay/
   redrive/backfill được Privacy chấp thuận; không log, xuất API hay dùng metric label.
+- Khi một bước của vòng đời xóa thất bại, request được thử lại và listener không bao giờ
+  bỏ qua một lệnh xóa vì lỗi tạm thời ([ADR-013](./ADR-013-privacy-failure-handling.md)).
 - Auth giữ contract hiện tại: publish `USER_DELETED` trực tiếp sau commit, retry tối
   đa ba lần và có thể mất event. Review không thêm Auth outbox hay synchronous lookup; Auth
   alert/reconciliation/redrive phải đưa event bị mất đến Review trước privacy SLA.

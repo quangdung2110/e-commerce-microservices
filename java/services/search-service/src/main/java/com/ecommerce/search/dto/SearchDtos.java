@@ -90,10 +90,16 @@ public final class SearchDtos {
     public record CreateReindexRunRequest(String reason) {
     }
 
+    /** Newest run first; {@code GET /api/v2/search/reindex-runs}. */
+    public record ReindexRunList(List<ReindexRun> items) {
+    }
+
     public record ReindexRun(
             String runId,
             String status,
             String phase,
+            String reason,
+            String actor,
             ReindexProgress progress,
             String statusUrl,
             Instant startedAt,

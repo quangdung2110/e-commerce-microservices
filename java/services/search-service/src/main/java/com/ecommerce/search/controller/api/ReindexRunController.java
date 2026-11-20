@@ -13,11 +13,14 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.net.URI;
 import java.util.Arrays;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * Admin reindex operations.
@@ -25,13 +28,20 @@ import java.util.Arrays;
  * <p>These live under {@code /api/v2/search/reindex-runs}, not under {@code /internal}:
  * {@code /internal/v1} is reserved for mTLS service-to-service traffic, while reindex is
  * an admin command that comes through the Gateway with a verified JWT
- * ({@code docs/search/domain.md §7}). The Gateway route for these two operations has a
+ * ({@code docs/search/domain.md §7}). The Gateway route for these operations has a
  * higher priority than the public v2 route.
  *
  * <p>The audit actor comes from the trusted identity header, never from the request body.
  */
 @RestController
 public class ReindexRunController {
+
+    private static final int REASON_MAX_LENGTH = 500;
+    private static final int LIST_DEFAULT_LIMIT = 20;
+    private static final int LIST_MAX_LIMIT = 100;
+    private static final Set<String> STATUSES = Set.of(
+            "STARTED", "BUILDING", "CATCHING_UP", "CUTOVER", "COMPLETED", "FAILED", "ROLLED_BACK",
+            "SUPERSEDED", "CANCELLED");
 
     private final ReindexRunService service;
     private final SearchProperties properties;
@@ -50,7 +60,7 @@ public class ReindexRunController {
 
         String actor = requireAdmin(httpRequest);
         String reason = request == null ? null : request.reason();
-        if (reason == null || reason.isBlank() || reason.length() > 500) {
+        if (reason == null || reason.isBlank() || reason.length() > REASON_MAX_LENGTH) {
             throw SearchException.invalidParameter("reason", "must be between 1 and 500 characters");
         }
 
@@ -58,11 +68,43 @@ public class ReindexRunController {
         return ResponseEntity.accepted().location(URI.create(run.statusUrl())).body(run);
     }
 
+    @GetMapping(value = "/api/v2/search/reindex-runs", produces = MediaType.APPLICATION_JSON_VALUE)
+    public SearchDtos.ReindexRunList listReindexRuns(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Integer limit,
+            HttpServletRequest httpRequest) throws IOException {
+
+        requireAdmin(httpRequest);
+        if (status != null && !STATUSES.contains(status)) {
+            throw SearchException.invalidParameter("status", "must be one of " + String.join(", ", STATUSES.stream().sorted().toList()));
+        }
+        int resolved = limit == null ? LIST_DEFAULT_LIMIT : limit;
+        if (resolved < 1 || resolved > LIST_MAX_LIMIT) {
+            throw SearchException.invalidParameter("limit", "must be between 1 and " + LIST_MAX_LIMIT);
+        }
+        return service.list(Optional.ofNullable(status), resolved);
+    }
+
     @GetMapping(value = "/api/v2/search/reindex-runs/{run_id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<SearchDtos.ReindexRun> getReindexRun(@PathVariable("run_id") String runId,
                                                                HttpServletRequest httpRequest) throws IOException {
         requireAdmin(httpRequest);
         return ResponseEntity.status(HttpStatus.OK).body(service.status(runId));
+    }
+
+    @PostMapping(value = "/api/v2/search/reindex-runs/{run_id}/cancellation", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<SearchDtos.ReindexRun> cancelReindexRun(@PathVariable("run_id") String runId,
+                                                                  HttpServletRequest httpRequest) throws IOException {
+        String actor = requireAdmin(httpRequest);
+        SearchDtos.ReindexRun run = service.cancel(runId, actor);
+        return ResponseEntity.accepted().location(URI.create(run.statusUrl())).body(run);
+    }
+
+    @PostMapping(value = "/api/v2/search/reindex-runs/{run_id}/rollback", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<SearchDtos.ReindexRun> rollbackReindexRun(@PathVariable("run_id") String runId,
+                                                                    HttpServletRequest httpRequest) throws IOException {
+        String actor = requireAdmin(httpRequest);
+        return ResponseEntity.ok(service.rollback(runId, actor));
     }
 
     /**

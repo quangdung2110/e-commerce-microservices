@@ -5,6 +5,8 @@
 package router
 
 import (
+	obs "github.com/ecommerce/observability"
+	obsgin "github.com/ecommerce/observability/gin"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/ecommerce/notification-service/internal/common/config"
 	apperr "github.com/ecommerce/notification-service/internal/common/errors"
 )
+
+var httpMetrics = obs.NewHTTPMetrics()
 
 // PublicDeps is everything the public listener needs.
 type PublicDeps struct {
@@ -59,7 +63,7 @@ func newEngine(cfg *config.Config, logger *zap.Logger, trustedProxies []string) 
 		logger.Warn("could not apply the trusted proxy list", zap.Error(err))
 	}
 
-	engine.Use(middleware.RequestID(logger), middleware.Recovery(), middleware.AccessLog())
+	engine.Use(obsgin.Middleware(httpMetrics), middleware.RequestID(logger), middleware.Recovery(), middleware.AccessLog())
 
 	engine.HandleMethodNotAllowed = true
 	engine.NoRoute(func(c *gin.Context) {

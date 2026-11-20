@@ -20,11 +20,24 @@ type ProfileRepository interface {
 	// already there and must not overwrite what the owner has edited
 	// (USER-BR-005).
 	Insert(ctx context.Context, profile *entity.Profile) (bool, error)
+	// GetByID reads the row whatever its lifecycle state, so it also returns a
+	// profile that was anonymized and waits for the retention purge. Only the
+	// lifecycle code and the repository tests should need that; every
+	// owner-facing path uses GetActive.
 	GetByID(ctx context.Context, userID uuid.UUID) (*entity.Profile, error)
-	// GetForUpdate reads the row and locks it for the rest of the transaction,
-	// so a profile update and an incoming deletion serialize instead of
-	// resurrecting PII (WF-USER-002).
+	// GetForUpdate is GetByID plus a row lock for the rest of the transaction.
+	// It still returns an anonymized row: Anonymize has to scrub it.
 	GetForUpdate(ctx context.Context, userID uuid.UUID) (*entity.Profile, error)
+	// GetActive reads a profile that is not in its retention window. A user with
+	// a retention record is reported as apperr.ErrProfileNotFound, exactly like a
+	// purged one, so the owner of a deleted account can never read or write the
+	// anonymized row again (USER-INV-005, docs/user/domain.md §8).
+	GetActive(ctx context.Context, userID uuid.UUID) (*entity.Profile, error)
+	// GetActiveForUpdate locks the row and then checks for a retention record.
+	// The check is a separate statement on purpose: when an anonymization held
+	// the lock, the statement only runs after that transaction committed and
+	// therefore sees its retention record.
+	GetActiveForUpdate(ctx context.Context, userID uuid.UUID) (*entity.Profile, error)
 	Update(ctx context.Context, profile *entity.Profile) error
 	// HardDelete removes the row permanently. Addresses and preferences cascade,
 	// which is only a safety net: the deletion consumer already removed them.
@@ -64,6 +77,12 @@ type PreferencesRepository interface {
 	Insert(ctx context.Context, preferences *entity.Preferences) (bool, error)
 	GetByUser(ctx context.Context, userID uuid.UUID) (*entity.Preferences, error)
 	Update(ctx context.Context, preferences *entity.Preferences) error
+	// DisableMarketing switches marketing_enabled off in one atomic statement and
+	// returns the row it changed. It returns (nil, nil) when there was nothing to
+	// change: the flag was already off, or the user has no preferences row. Being
+	// a single UPDATE keeps it from overwriting an email or in-app change the
+	// owner makes concurrently.
+	DisableMarketing(ctx context.Context, userID uuid.UUID) (*entity.Preferences, error)
 	DeleteForUser(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 

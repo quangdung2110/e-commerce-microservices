@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "performance": {
+    "approved": false,
+    "environment": "staging",
+    "fixture_slug": null,
+    "requests_per_second": 10,
+    "duration_seconds": 300,
+    "max_vus": 20,
+    "maximum_p95_ms": 1000,
+    "maximum_error_rate": 0.01,
+    "maximum_p95_regression_fraction": 0.2,
+    "baseline": {"source_revision": null, "measured_at": null, "p95_ms": null, "requests_per_second": 10}
+  },
+  "recovery": {
+    "mode": "isolated-fixture",
+    "rpo_seconds": 60,
+    "rto_seconds": 300
+  }
+}

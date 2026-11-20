@@ -17,7 +17,9 @@ evidence:
 
 ## Status
 
-`Accepted`
+`Accepted`. Redis Streams vẫn là outbox hiện hành;
+[ADR-011](./ADR-011-current-pull-read-and-redis-outbox-scope.md) giới hạn phạm vi của outbox
+chỉ còn `CART_ABANDONED`.
 
 ## Context
 

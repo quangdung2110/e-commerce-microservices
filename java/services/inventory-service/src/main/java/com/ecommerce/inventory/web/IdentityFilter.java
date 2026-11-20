@@ -11,6 +11,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -51,7 +52,10 @@ public class IdentityFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String path = request.getRequestURI();
+        // The decoded path without ';' parameters is what Spring MVC routes on. Matching the raw
+        // URI would let "/api/v1/admin/inventor%79/..." or "/internal/inventory;x=1/v1/..." reach a
+        // controller without any identity check.
+        String path = UrlPathHelper.defaultInstance.getPathWithinApplication(request);
         String correlationId = request.getHeader("X-Correlation-ID");
         String causationId = request.getHeader("X-Causation-ID");
         try {

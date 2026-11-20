@@ -22,6 +22,7 @@ describe("orderApi", () => {
     expect(api.get).toHaveBeenCalledWith("/api/v1/orders", {
       params: { tab: "TO_RECEIVE", q: "điện thoại", cursor: "next", limit: 20 },
       signal,
+      paramsSerializer: { indexes: null },
     });
   });
 
@@ -86,4 +87,14 @@ describe("orderApi", () => {
       { headers: { "Idempotency-Key": commandId } }
     );
   });
+  it("xác nhận giao hàng là lệnh đồng bộ không dùng Idempotency-Key", async () => {
+    const body = {
+      lines: [
+        { order_line_id: "44", delivered_at: "2026-10-11T03:00:00Z", delivery_reference: "VN123" },
+      ],
+    };
+    await orderApi.confirmDelivery("12/34", body);
+    expect(api.post).toHaveBeenCalledWith("/api/v1/admin/orders/12%2F34/delivery-confirmations", body);
+  });
+
 });

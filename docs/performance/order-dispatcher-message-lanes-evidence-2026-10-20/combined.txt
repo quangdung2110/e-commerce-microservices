@@ -1,0 +1,27 @@
+paired-1
+  adr028: mixed [97.27, 108.73, 107.27, 106.4] med 106.83 st 53.63 msg 53.20 | starts [235.27, 216.4, 216.67, 222.8] med 219.73 | ackTx/op 0.579 txs/op 0.600 ratio 0.486
+  parallel: mixed [251.4, 133.13, 248.47, 252.53] med 249.93 st 124.93 msg 125.00 | starts [238.4, 211.6, 214.27, 226.33] med 220.30 | ackTx/op 0.124 txs/op 0.134 ratio 1.135
+  rounds [(1, 2.58, 1.013), (2, 1.22, 0.978), (3, 2.32, 0.989), (4, 2.37, 1.016)]
+  median round mixed 2.345 starts 1.001 median speedup 2.339
+   arrival-mixed-80-adr028 80.0 79.8 3 199.2 265.2 205.5
+   arrival-mixed-80-parallel 80.0 79.8 3 92.9 124.1 95.0
+   arrival-mixed-120-parallel 120.0 119.7 4 102.7 196.3 105.3
+   arrival-mixed-120-adr028 119.9 99.5 306 2839.9 3196.1 2641.9
+   arrival-mixed-160-adr028 159.9 106.4 803 7003.5 7254.1 4898.3
+   arrival-mixed-160-parallel 159.9 159.3 10 159.4 229.8 166.9
+paired-2
+  adr028: mixed [95.87, 106.67, 102.2, 98.93] med 100.57 st 51.10 msg 49.47 | starts [233.33, 226.6, 223.33, 212.33] med 224.97 | ackTx/op 0.580 txs/op 0.601 ratio 0.447
+  parallel: mixed [248.4, 275.4, 261.8, 234.53] med 255.10 st 127.60 msg 127.50 | starts [235.67, 221.8, 220.93, 205.4] med 221.37 | ackTx/op 0.124 txs/op 0.134 ratio 1.152
+  rounds [(1, 2.59, 1.01), (2, 2.58, 0.979), (3, 2.56, 0.989), (4, 2.37, 0.967)]
+  median round mixed 2.572 starts 0.984 median speedup 2.537
+   arrival-mixed-80-adr028 80.0 79.3 10 167.4 240.2 177.2
+   arrival-mixed-80-parallel 79.9 79.9 1 61.4 104.7 59.3
+   arrival-mixed-120-parallel 119.9 119.7 4 103.8 148.5 105.7
+   arrival-mixed-120-adr028 119.9 106.7 198 1937.5 2199.4 1909.9
+   arrival-mixed-160-adr028 159.9 110.4 743 6194.0 6587.1 4526.6
+   arrival-mixed-160-parallel 160.0 159.1 13 161.7 206.4 166.0
+ALL mixed medians {'adr028': 104.30000000000001, 'parallel': 249.935} starts {'adr028': 223.065, 'parallel': 221.365}
+ALL round mixed ratios [1.22, 2.32, 2.37, 2.37, 2.56, 2.58, 2.58, 2.59] median 2.467538709788169
+ALL round start ratios [0.967, 0.978, 0.979, 0.989, 0.989, 1.01, 1.013, 1.016] median 0.9890884041331802
+ack/op [(0.5789423076923077, 0.12408045977011495), (0.5804901960784313, 0.1238265306122449)]
+ops [73700, 75600]

@@ -23,6 +23,8 @@ evidence:
 Accepted — 2026-09-16. Refines the active recovery/compensation interpretation of
 ADR-001, ADR-005, ADR-008 and ADR-010; their historical decisions remain retained.
 
+> Delivery source: ADR-021 replaces the "verified Delivery proof" with the Admin delivery
+> confirmation on Order; no Delivery service exists.
 > Current authority: ADR-014 supersedes the late-timeout/fenced-recovery paragraph;
 > ADR-015 replaces direct post-inbox signaling with durable workflow messages; ADR-018
 > models independent repairs as obligations. The remaining financial-watermark and

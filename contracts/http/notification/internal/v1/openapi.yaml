@@ -1,14 +1,15 @@
 openapi: 3.1.0
 info:
   title: Notification Internal API
-  version: 1.0.0
+  version: 1.1.0
   description: >-
     Hai nhóm endpoint không đi qua public Gateway: (1) tra cứu trạng thái cho
     support/admin tool của service khác — trả timeline, không trả template_data
     hay email; (2) ops — công tắc vận hành (pause lane, redrive, suppression thủ
     công, replay mode). Ops endpoint yêu cầu Idempotency-Key và được ghi audit.
-    Phase 1 có thể triển khai ops bằng CLI dùng chung handler; contract giữ để
-    thiết kế có chỗ. Xem docs/notification/10-interfaces.md.
+    `notifctl` gọi cùng các endpoint ops này. Người gọi được xác thực bởi service mesh;
+    ứng dụng chỉ kiểm header X-Service-Identity với allowlist (decisions.md D-21).
+    Xem docs/notification/10-interfaces.md.
 x-adoption-status: proposed
 servers:
   - url: http://notification-service:8081
@@ -25,6 +26,7 @@ paths:
       security:
         - supportServiceMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - name: request_id
           in: path
@@ -53,6 +55,7 @@ paths:
       security:
         - supportServiceMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - name: subject
           in: query
@@ -93,6 +96,7 @@ paths:
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
         - name: lane
@@ -114,13 +118,18 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     get:
       tags: [Ops]
       operationId: getLaneState
       summary: Trạng thái hiện tại của lane
+      description: >-
+        Đọc trạng thái pause hiện tại (lane chưa bao giờ đổi trả active/active). Lane ngoài
+        enum trả 404.
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - name: lane
           in: path
           required: true
@@ -133,6 +142,7 @@ paths:
               schema: { $ref: '#/components/schemas/LaneState' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /internal/v1/notifications/ops/deliveries/{delivery_id}/redrive:
     post:
       tags: [Ops]
@@ -145,6 +155,7 @@ paths:
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
         - name: delivery_id
@@ -162,10 +173,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DeliveryStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/StateConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /internal/v1/notifications/ops/dlq/redrive:
     post:
       tags: [Ops]
@@ -178,6 +191,7 @@ paths:
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -201,6 +215,7 @@ paths:
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /internal/v1/notifications/ops/suppressions:
     post:
       tags: [Ops]
@@ -208,10 +223,11 @@ paths:
       summary: Thêm suppression thủ công cho một user
       description: >-
         Ghi reason MANUAL với user_id và email_hash do Notification tự resolve qua Auth
-        (caller không gửi email). Dùng khi có yêu cầu pháp lý hoặc khiếu nại ngoài luồng SES.
+        (caller không gửi email). Dùng khi có yêu cầu pháp lý hoặc khiếu nại ngoài luồng SES. User không có contact (Auth 404) trả 404; Auth tạm thời lỗi trả 503.
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -228,7 +244,9 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /internal/v1/notifications/ops/suppressions/{suppression_id}:
     delete:
       tags: [Ops]
@@ -241,6 +259,7 @@ paths:
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - name: suppression_id
           in: path
@@ -264,6 +283,7 @@ paths:
       security:
         - opsMtls: []
       parameters:
+        - $ref: '#/components/parameters/ServiceIdentity'
         - $ref: '#/components/parameters/RequestId'
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -280,19 +300,38 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/UnauthorizedService' }
         '403': { $ref: '#/components/responses/ForbiddenService' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   securitySchemes:
     supportServiceMtls:
       type: mutualTLS
       description: >-
-        Mesh principal thuộc allowlist support/admin (phase 1: order-service cho admin
-        UI, finance-ops). X-Service-Identity là attribution.
+        Nhóm status. Transport mTLS và việc cho principal support/admin (phase 1:
+        order-service cho admin UI, finance-ops) chạm path do service mesh thực thi
+        (docs/mesh/runtime-contract.md mục 5.2); Notification không tự kết thúc TLS và
+        không nhìn thấy chứng chỉ caller (decisions.md D-21). Caller bắt buộc gửi
+        X-Service-Identity; Notification kiểm giá trị đó với allowlist cấu hình
+        (internal.status_principals) như defense-in-depth, ở mọi môi trường: thiếu header
+        trả 401, ngoài allowlist trả 403. Không có mesh (Docker Compose) header này không
+        được xác thực.
     opsMtls:
       type: mutualTLS
       description: >-
-        Mesh principal notification-ops (SRE). Không đi qua public Gateway; operator dùng
-        mesh/port-forward. Mọi call ghi audit (principal, thời điểm, tham số).
+        Nhóm ops (SRE). Mesh chỉ cho principal notification-ops chạm path; Notification
+        kiểm X-Service-Identity với allowlist internal.ops_principals như
+        defense-in-depth (thiếu header 401, ngoài allowlist 403). Không đi qua public
+        Gateway; operator dùng mesh/port-forward. Mọi call ghi audit (principal, thời
+        điểm, tham số).
   parameters:
+    ServiceIdentity:
+      name: X-Service-Identity
+      in: header
+      required: true
+      description: >-
+        Tên service/workload gọi (order-service, finance-ops, notification-ops). Thiếu header
+        trả 401, giá trị ngoài allowlist của nhóm endpoint trả 403.
+      schema: { type: string, minLength: 1, maxLength: 128 }
     RequestId:
       name: X-Request-Id
       in: header
@@ -305,6 +344,12 @@ components:
       schema: { type: string, minLength: 8, maxLength: 128 }
       description: Do caller sinh; giữ 24 h; cùng key + cùng body trả lại kết quả cũ; cùng key khác body → 409.
   headers:
+    RetryAfter:
+      description: >-
+        Seconds to wait before repeating the request. Present on every 429 and on every 503 with
+        retryable=true (contracts ADR-005); a 503 with retryable=false does not carry it.
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 3600 }
     NoStore:
       description: Không cache.
       required: true
@@ -415,7 +460,7 @@ components:
       required: [enabled]
       properties:
         enabled: { type: boolean }
-        ignore_events_older_than: { type: string, pattern: '^P(?!$)(\d+D)?(T(\d+H)?(\d+M)?)?$', description: ISO-8601 duration, ví dụ P7D. Bắt buộc khi enabled. }
+        ignore_events_older_than: { type: string, pattern: '^P(?!$)(\d+D)?(T(\d+H)?(\d+M)?)?$', description: "ISO-8601 duration, ví dụ P7D. Bắt buộc khi enabled." }
         ttl: { type: string, pattern: '^PT\d+H$', default: PT6H, description: Tự tắt sau khoảng này. }
         expires_at: { type: [string, 'null'], format: date-time, readOnly: true }
   responses:
@@ -425,17 +470,26 @@ components:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     UnauthorizedService:
-      description: Không có hoặc không xác minh được service identity mTLS.
+      description: Thiếu header X-Service-Identity.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     ForbiddenService:
-      description: Service identity không thuộc allowlist của nhóm endpoint.
+      description: X-Service-Identity không thuộc allowlist của nhóm endpoint.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
     NotFound:
       description: Không tìm thấy.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ServiceUnavailable:
+      description: >-
+        Kho idempotency hoặc dependency (Auth khi resolve contact của suppression thủ công)
+        tạm thời không dùng được; retryable, gọi lại cùng Idempotency-Key.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: review-service
 
@@ -29,17 +32,38 @@ spring:
       properties:
         max.poll.interval.ms: 300000
     listener:
+      observation-enabled: true
       ack-mode: manual_immediate
       concurrency: 3
 
+    template:
+      observation-enabled: true
+
   lifecycle:
     timeout-per-shutdown-phase: 30s
+
 
 server:
   port: ${SERVER_PORT:8080}
   shutdown: graceful
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -72,7 +96,6 @@ review:
   export-session-ttl: ${REVIEW_EXPORT_SESSION_TTL:30m}
   # Must stay above Kafka retention (14d) plus a replay safety margin.
   event-receipt-retention-days: ${REVIEW_EVENT_RECEIPT_RETENTION_DAYS:30}
-  outbox-retention-days: ${REVIEW_OUTBOX_RETENTION_DAYS:30}
 
   secrets:
     # Both are required at startup; readiness fails without them
@@ -102,8 +125,11 @@ review:
     public-endpoint: ${REVIEW_S3_PUBLIC_ENDPOINT:}
     region: ${REVIEW_S3_REGION:us-east-1}
     bucket: ${REVIEW_S3_BUCKET:review-media}
-    access-key: ${REVIEW_S3_ACCESS_KEY:minioadmin}
-    secret-key: ${REVIEW_S3_SECRET_KEY:minioadmin}
+    # No fallback (security review 2026-10-22, H1): Review's own object-store user, never the MinIO
+    # root. The dev profile and docker-compose set the local values; StartupSecretGuard stops any
+    # other environment that lacks them.
+    access-key: ${REVIEW_S3_ACCESS_KEY:}
+    secret-key: ${REVIEW_S3_SECRET_KEY:}
     # MinIO and most S3-compatible servers need path-style addressing.
     path-style-access: ${REVIEW_S3_PATH_STYLE:true}
 
@@ -114,10 +140,10 @@ review:
     admin-role: ADMIN
 
   internal:
-    # Bearer service identity for /internal/v1/**. Empty allowlists reject every
-    # caller; the dev profile supplies the local tokens.
-    pdp-tokens: ${REVIEW_INTERNAL_PDP_TOKENS:}
-    export-tokens: ${REVIEW_INTERNAL_EXPORT_TOKENS:}
+    # Callers of /internal/v1/** by X-Service-Identity, one list per route group (contracts ADR-004,
+    # Review ADR-015). An empty list rejects every caller of that group.
+    pdp-callers: ${REVIEW_INTERNAL_PDP_CALLERS:product-detail-bff}
+    export-callers: ${REVIEW_INTERNAL_EXPORT_CALLERS:search-service}
 
   topics:
     review: t.review.events
@@ -136,6 +162,9 @@ review:
     sweep-batch-size: 500
 
 logging:
+  pattern:
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    level: "%5p [%X{request_id:-},%X{trace_id:-}]"
   level:
     root: INFO
     com.ecommerce.review: INFO

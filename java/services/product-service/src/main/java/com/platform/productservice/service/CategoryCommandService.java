@@ -16,6 +16,7 @@ import com.platform.productservice.infrastructure.persistence.ProductRepository;
 import com.platform.productservice.infrastructure.persistence.SkuRepository;
 import com.platform.productservice.service.support.CatalogAssembler;
 import com.platform.productservice.service.support.CategoryTreeService;
+import com.platform.productservice.service.support.FacetDefinitionResolver;
 import com.platform.productservice.web.dto.CategoryDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -33,6 +34,10 @@ import java.util.UUID;
  * <p>Rename, đổi slug hoặc đổi parent làm path dẫn xuất của cả subtree đổi,
  * nên Product ghi thêm {@code catalog-reindex-requested} trong cùng transaction
  * thay vì fan-out event cho mọi descendant (ADR-010).
+ *
+ * <p>Mọi Category snapshot mang {@code facet_definitions} dẫn xuất từ mapping
+ * category–attribute (ADR-019); đổi tên attribute đã được map đi qua
+ * {@link AttributeService}, vốn gọi lại {@link #republishForAttribute(UUID)}.
  */
 @Service
 @RequiredArgsConstructor
@@ -44,6 +49,7 @@ public class CategoryCommandService {
     private final ProductRepository productRepository;
     private final SkuRepository skuRepository;
     private final CategoryTreeService categoryTree;
+    private final FacetDefinitionResolver facetResolver;
     private final CatalogAssembler assembler;
     private final CatalogEventPublisher eventPublisher;
 
@@ -192,6 +198,28 @@ public class CategoryCommandService {
     }
 
     /**
+     * Tên attribute là một phần của {@code facet_definitions} nên đổi tên attribute đã
+     * được map làm snapshot của mọi category đang map nó lỗi thời (ADR-019). Mỗi category
+     * nhận {@code category_revision} mới và một snapshot {@code CATEGORY_ATTRIBUTE_CHANGED}.
+     *
+     * <p>Gọi sau khi attribute đã được sửa trong cùng transaction. Category được lock theo
+     * thứ tự ID để hai lần đổi tên đồng thời không deadlock.
+     */
+    @Transactional
+    public void republishForAttribute(UUID attributeId) {
+        Instant now = Instant.now();
+        List<UUID> categoryIds = categoryAttributeRepository.findByIdAttributeId(attributeId).stream()
+                .map(mapping -> mapping.getId().getCategoryId())
+                .sorted()
+                .toList();
+        for (UUID categoryId : categoryIds) {
+            CategoryEntity category = lock(categoryId);
+            category.bumpRevision(now);
+            publishSnapshot(category, CategoryChangeKind.CATEGORY_ATTRIBUTE_CHANGED, now);
+        }
+    }
+
+    /**
      * Mapping mới không được làm Product hiện hữu trong category trở nên không
      * hợp lệ (contracts/http/product/v1/openapi.yaml — putCategoryAttribute).
      */
@@ -229,6 +257,7 @@ public class CategoryCommandService {
         eventPublisher.categoryUpserted(category,
                 categoryTree.path(category),
                 categoryTree.isLeaf(category.getCategoryId()),
+                facetResolver.of(category.getCategoryId()),
                 changeKind,
                 now);
     }

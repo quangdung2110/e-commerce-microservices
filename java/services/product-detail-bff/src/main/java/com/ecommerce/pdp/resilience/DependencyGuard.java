@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
+import reactor.util.context.ContextView;
 
 import java.time.Duration;
 import java.util.EnumMap;
@@ -26,17 +27,26 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
+import static net.logstash.logback.argument.StructuredArguments.kv;
+
 /**
  * Gói mọi lời gọi dependency trong đúng một chính sách (ADR-004, ADR-007): cờ bật/tắt,
  * kiểm tra deadline trước khi gọi, timeout {@code min(trần, deadline còn lại − dự phòng)},
  * circuit breaker và bulkhead riêng cho từng dependency, không retry.
  *
  * <p>Bulkhead bọc ngoài circuit breaker để request bị bulkhead từ chối không chạm vào
- * circuit. {@code 4xx} bị circuit breaker bỏ qua hoàn toàn; mọi lỗi khác tính là lỗi.
+ * circuit. Chỉ {@code 400}/{@code 401}/{@code 403} bị circuit breaker bỏ qua hoàn toàn;
+ * mọi lỗi khác, kể cả status lạ ngoài contract, tính là lỗi.
  * Kết quả luôn trả về dạng {@link CallResult}, không bao giờ là lỗi Reactor.
  */
 @Component
 public class DependencyGuard {
+
+    /** Khóa Reactor context mang request ID đã chuẩn hóa, để dòng log gắn được vào request. */
+    public static final String REQUEST_ID_KEY = "pdp.request-id";
+    /** Reactor context key holding the {@link Duration} a dependency call runs under (contracts ADR-003). */
+    public static final String EFFECTIVE_TIMEOUT_KEY = "pdp.effective-timeout";
+    public static final String TRACE_ID_KEY = "pdp.trace-id";
 
     private static final Logger log = LoggerFactory.getLogger(DependencyGuard.class);
 
@@ -91,9 +101,12 @@ public class DependencyGuard {
         return new Guarded(settings, circuitBreaker, bulkhead, openedAt);
     }
 
-    /** {@code 400}/{@code 401}/{@code 403}: lỗi cấu hình, không nói gì về sức khỏe provider. */
+    /**
+     * Đúng {@code 400}/{@code 401}/{@code 403}: lỗi cấu hình, không nói gì về sức khỏe
+     * provider. Status lạ khác ngoài contract (429, 408, 3xx...) vẫn tính là lỗi.
+     */
     private static boolean ignoredByBreaker(Throwable error) {
-        return error instanceof UpstreamStatusException status && !status.isServerError();
+        return error instanceof UpstreamStatusException status && status.isConfigurationError();
     }
 
     /**
@@ -112,20 +125,43 @@ public class DependencyGuard {
         Duration budget = remaining.minus(properties.composeReserve());
         Duration timeout = budget.compareTo(guarded.settings().timeout()) < 0 ? budget : guarded.settings().timeout();
 
-        return Mono.defer(() -> {
+        return Mono.deferContextual(context -> {
             long startedAt = System.nanoTime();
+            Object[] correlation = correlation(context);
             return Mono.defer(request)
                     .switchIfEmpty(Mono.error(() -> new ContractViolationException("empty response")))
                     .timeout(timeout)
                     .transformDeferred(CircuitBreakerOperator.of(guarded.breaker()))
                     .transformDeferred(BulkheadOperator.of(guarded.bulkhead()))
                     .map(CallResult::success)
-                    .onErrorResume(error -> Mono.just(classify(dependency, guarded, error)))
-                    .map(result -> recorded(dependency, result, Duration.ofNanos(System.nanoTime() - startedAt)));
+                    .onErrorResume(error -> Mono.just(classify(dependency, guarded, error, correlation)))
+                    // contracts ADR-003: clients read the timeout this call runs under and send it to the provider.
+                    .contextWrite(c -> c.put(EFFECTIVE_TIMEOUT_KEY, timeout))
+                    .map(result -> {
+                        Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+                        if (result.outcome() != Outcome.SUCCESS) {
+                            log.warn("dependency call failed", kv("dependency", dependency.tag()),
+                                    kv("outcome", result.outcome().tag()), kv("duration_ms", elapsed.toMillis()),
+                                    kv("budget_ms", timeout.toMillis()), correlation[0], correlation[1]);
+                        }
+                        return recorded(dependency, result, elapsed);
+                    });
         });
     }
 
-    private <T> CallResult<T> classify(Dependency dependency, Guarded guarded, Throwable error) {
+    /**
+     * {@code request_id} và {@code trace_id} của request đang xử lý. Logger không đọc được
+     * Reactor context nên mọi dòng log trong phạm vi một request gắn hai giá trị này bằng
+     * structured argument, để tra chéo với log của provider (operations.md §Observability).
+     */
+    private static Object[] correlation(ContextView context) {
+        return new Object[]{
+                kv("request_id", context.getOrDefault(REQUEST_ID_KEY, "-")),
+                kv("trace_id", context.getOrDefault(TRACE_ID_KEY, "-"))};
+    }
+
+    private <T> CallResult<T> classify(Dependency dependency, Guarded guarded, Throwable error,
+                                       Object[] correlation) {
         if (error instanceof CallNotPermittedException) {
             return CallResult.circuitOpen(retryAfterSeconds(guarded));
         }
@@ -136,19 +172,25 @@ public class DependencyGuard {
             return CallResult.failure(Outcome.TIMEOUT);
         }
         if (error instanceof UpstreamStatusException status) {
-            if (!status.isServerError()) {
-                log.warn("{} answered {}: identity, authorization or request configuration is wrong",
-                        dependency.tag(), status.status());
+            if (status.isServerError()) {
+                return CallResult.failure(Outcome.SERVER_ERROR);
+            }
+            if (status.isConfigurationError()) {
+                log.warn("{} answered {}: identity, authorization or request configuration is wrong {} {}",
+                        dependency.tag(), status.status(), correlation[0], correlation[1]);
                 return CallResult.failure(Outcome.CLIENT_ERROR);
             }
-            return CallResult.failure(Outcome.SERVER_ERROR);
+            log.warn("{} answered {}, a status outside its contract {} {}",
+                    dependency.tag(), status.status(), correlation[0], correlation[1]);
+            return CallResult.failure(Outcome.CONTRACT_VIOLATION);
         }
         if (error instanceof ContractViolationException violation) {
-            log.warn("{} response violates its contract: {}", dependency.tag(), violation.getMessage());
+            log.warn("{} response violates its contract: {} {} {}",
+                    dependency.tag(), violation.getMessage(), correlation[0], correlation[1]);
             return CallResult.failure(Outcome.CONTRACT_VIOLATION);
         }
         if (!(error instanceof WebClientRequestException)) {
-            log.warn("{} call failed unexpectedly", dependency.tag(), error);
+            log.warn("{} call failed unexpectedly {} {}", dependency.tag(), correlation[0], correlation[1], error);
         }
         return CallResult.failure(Outcome.CONNECT_ERROR);
     }

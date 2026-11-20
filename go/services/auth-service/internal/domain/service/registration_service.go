@@ -129,7 +129,13 @@ func (s *RegistrationService) RequestVerification(ctx context.Context, rawEmail 
 		return err
 	}
 	if s.otp.ResendLimit > 0 && count > s.otp.ResendLimit {
-		return apperr.ErrRateLimited.WithRetryAfter(s.otp.ResendWindow)
+		// A 429 here would exist only for an address with a pending account, which
+		// is the very fact this endpoint must not disclose. The request is
+		// answered like any other and simply sends nothing; the per-IP limit of
+		// the router is the throttle a client can observe.
+		s.logger.Info("verification resend suppressed by the per-account budget",
+			zap.String("account_id", account.ID.String()))
+		return nil
 	}
 
 	return s.issueVerificationCode(ctx, account)
@@ -164,15 +170,20 @@ func (s *RegistrationService) VerifyEmail(ctx context.Context, rawEmail, code st
 	}
 
 	now := s.clock.Now()
-	if err := account.Activate(now); err != nil {
-		return err
-	}
-	if err := s.accounts.Update(ctx, account); err != nil {
+	// The code is already consumed, so a lost race reloads the row and activates
+	// that one instead of failing a verification that cannot be repeated.
+	activated, _, err := updateAccount(ctx, s.accounts, account, func(a *entity.Account) (bool, error) {
+		if err := a.Activate(now); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	if err != nil {
 		return err
 	}
 
 	s.notifier.Publish(ctx, event.NewUserVerifiedSuccess(
-		account.ID, vo.RoleStrings(account.Roles), now, reqctx.EventMetadata(ctx)))
+		activated.ID, vo.RoleStrings(activated.Roles), now, reqctx.EventMetadata(ctx)))
 	return nil
 }
 

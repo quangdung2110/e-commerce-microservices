@@ -1,0 +1,193 @@
+1. Tổng quan
+Promotion Service chịu trách nhiệm quản lý 2 nhóm lợi ích độc lập cùng 1 nhóm lớp quản trị chung là Campaign
++ Platform Voucher: chỉ áp dụng tối đa 1 voucher trên tổng quá trị giỏ hàng, Promotion Service không phân bổ giảm giá xuống từng SKU/order line và không xử lý voucher của vận Chuyển
++ Product Markdown: giảm giá trực tiếp vào giá niêm yết của sản phẩm cụ thể (product_id) khi campaign đang hoạt động. Promotion Service phát snapshot qua Product Service để Product Service tự tính và lưu giá bán 
+
+
+
+
+
+2. Thiết kế Redis Keyspace cho Flash Sale Limited Claim
+
+Đây là nhóm keyspace phức tạp và quan trọng nhất về mặt xử lý tải cao (high concurrency) và tính nhất quán dữ liệu (ACID). Nhóm này giải quyết bài toán: Hàng chục ngàn người dùng tranh giành một số lượng voucher hữu hạn (ví dụ: 1.000 voucher) trong cùng 1 giây
+Cả 4 key này đều bắt buộc chứa hash tag {promotion_id} để cùng nằm trên một Redis Cluster Hash Slot với key promo:{promotion_id}:runtime
+
+1. promo:{promotion_id}:claim_pool (SET):
+Chứa danh sách các claim_id được sinh sẵn (pre-generated) từ bảng coupon_claims trong PostgreSQL
+Thao tác lấy vé dùng lệnh SPOP (O(1)) nguyên tử, tránh hoàn toàn hiện tượng row lock contention ở database
+2. promo:{promotion_id}:claimed_users (HASH):
+Lưu ánh xạ: user_id -> claim_id
+Đóng vai trò là chốt chặn chống spam/nhận trùng ở tầng Redis memory (O(1) HEXISTS)
+3. promo:{promotion_id}:pending_claims:data (HASH):
+Lưu trữ JSON payload: { user_id, claim_id, acquired_at_ms, campaign_revision }
+Đây là bằng chứng bất biến (Pending Evidence) chứng minh người dùng đã giành được vé hợp lệ từ Redis trước khi PostgreSQL commit
+4. promo:{promotion_id}:pending_claims:index (ZSET):
+Score là thời điểm quá hạn xử lý (thường là acquired_at_ms + 5 phút), Member là claim_id
+Chỉ mục để background worker quét và tìm ra những claim bị treo do sự cố
+
+
+Luồng 1: Khởi tạo và Nạp kho vé trước Flash Sale (nạp vào promo:{promotion_id}:claim_pool)
++ Chuẩn bị dữ liệu ở PostgreSQL
+    Khi Admin cấu hình voucher hữu hạn N suất, hệ thống sinh trước N bản ghi vào bảng coupon_claims với status = 'AVAILABLE', owner_id = NULL
++ Nạp dữ liệu lên Redis
+    Sau khi lệnh Publish commit ở PostgreSQL, một background job thực hiện pipeline nạp toàn bộ danh sách id từ coupon_claims vào promo:{promotion_id}:claim_pool thông qua lệnh SADD
+
+
+Luồng 2: Khách hàng giật Voucher
+Đây là luồng thực thi khi hàng ngàn người dùng bấm "Nhận voucher" đồng thời. Luồng được chia làm 2 giai đoạn: Giai đoạn 1 (Redis Lua Atomic) và Giai đoạn 2 (PostgreSQL Guarded Persistence)
++ Kiểm tra thời gian trong khoảng thời gian cho phép (opens_at_ms <= now_ms < closes_at_ms)
++ Kiểm tra chống nhận trùng: HEXISTS promo:{id}:claimed_users user_id. Nếu đã tồn tại -> Báo lỗi ALREADY_CLAIMED
++ Bốc thăm nguyên tử: Gọi SPOP promo:{id}:claim_pool. Nếu trả về nil -> Báo lỗi CLAIM_POOL_EXHAUSTED
++ Lập bằng chứng tạm thời: Trong cùng script Lua: Thêm user vào claimed_users, ghi thông tin vào pending_claims:data và ghi nhận deadline vào pending_claims:index
++ Ghi nhận bền vững xuống PostgreSQL: 
+    API mở PostgreSQL transaction: Update coupon_claims (có điều kiện WHERE status='AVAILABLE' AND owner_id IS NULL để đảm bảo an toàn tuyệt đối), Insert vào user_coupon_wallets, tăng claimed_quantity
++ Xóa Pending: 
+    Sau khi DB commit, API xóa claim_id khỏi pending_claims:data và pending_claims:index. User nhận phản hồi thành công
+
+
+Luồng 3: Recovery khi có sự cố Crash / Network Timeout
+Bài toán: API chỉ mới thực hiện được Redis Lua Script nhưng chưa kịp commit xuống DB thì bị Crash (hoặc các vấn đề khác)
++ `pending_claims:data` & `pending_claims:index` vẫn còn được Lưu
++ Sau 5 phút: Pending Rescue Sweeper Worker thức giấc, thực hiện quét các index trong vòng 5 phút -> Tìm thấy các claim_id bị treo
+    HGET `pending_claims:data` claim_id (Lấy user_id, acquired_at_ms, revision) sau đó thực hiện Database Transaction và Commit DB
+    Chỉ sau khi DB commit xong, sweeper mới gọi HDEL pending_claims:data <claim_id> và ZREM pending_claims:index <claim_id>
+
+Lưu ý: 
+Khi Sweeper chạy, có thể chiến dịch flash-sale đã kết thúc từ lâu (now > closes_at_ms) hoặc Admin đã bấm PAUSE
+Tuy nhiên, Sweeper kiểm tra thấy acquired_at_ms ghi trong pending payload là hợp lệ tại thời điểm bốc vé, do đó hệ thống vẫn tiếp tục persist vào ví cho người dùng mà không được phép từ chối
+
+
+Luồng 4: Admin tạm dừng hoặc cancel
+Đóng Gate trên Redis TRƯỚC, rồi mới mở Transaction trên PostgreSQL SAU
+
+Bước 1: Đóng Gate khẩn cấp trên Redis 
+API gửi ngay lệnh Redis:
+HSET promo:{promotion_id}:runtime claim_enabled 0
+Kể từ thời điểm này, bất kỳ request claim nào gọi vào Lua script sẽ đọc thấy claim_enabled == 0 và bị từ chối ngay tại cửa ngõ với lỗi CLAIM_DISABLED. Không có thêm bất kỳ vé nào bị bốc khỏi claim_pool
+
+Bước 2: Chốt trạng thái bền vững trên PostgreSQL
+UPDATE campaigns 
+SET publication_status = 'PAUSED',  -- hoặc 'CANCELLED'
+    revision = revision + 1,        -- Tăng revision để làm fence
+    updated_at = NOW() 
+WHERE id = :campaign_id;
+Nếu chiến dịch có các rule markdown giảm giá trên sản phẩm, hệ thống sinh sự kiện product-markdown-snapshot.v1 với trạng thái INACTIVE (kèm lý do ADMIN_DISABLED).
+Insert bản ghi này vào bảng promotion_outbox_events trong cùng transaction DB
+
+Bước 3: Đồng bộ trạng thái sau Commit
+Vô hiệu hóa Cache toàn cục
+    Gọi INCR promo:rules:version: Tăng version fence của toàn bộ rule cache. Các API Discovery/Calculate trên các pod lập tức nhận biết cache cũ đã hết hạn và đọc từ DB
+    Xóa cache cụ thể: DEL promo:{promotion_id}:snapshot
+Cập nhật Revision trên Redis Gate:
+    Cập nhật trường claim_revision trong promo:{promotion_id}:runtime bằng revision mới của PostgreSQL
+
+
+
+
+
+
+3. Thiết kế Redis Keyspace cho Reservation
+
+Redis chỉ đóng vai trò Runtime Admission Control tạm thời, không phải là nguồn lưu trữ bền vững (Source of Truth trên PostgreSQL)
+
+1. promo:{promotion_id}:reservation:{order_id}: STRING
+2. promo:{promotion_id}:reservation:index: ZSET: cho phép Background Sweeper truy vấn với độ phức tạp O(logN+M) lấy ra chính xác các đơn hàng đã hết hạn để giải phóng ngân sách một cách an toàn
+
+Toàn bộ vòng đời của 2 key này gắn liền với Saga đơn hàng theo quy trình: TRY (Reserve) -> CONFIRM -> CANCEL / EXPIRY
+
+Luồng 1: TRY - Giữ ngân sách
++ Trigger: Order Service gọi POST /internal/v1/promotion-allocation/reservations
++ Xử lý: 
+    Promotion Service kiểm tra điều kiện ví voucher trên PostgreSQL (user_coupon_wallets phải là SAVED, chưa quá hạn)
+    Kiểm tra nếu promo:{promotion_id}:reservation:{order_id} đã tồn tại: nếu cùng payload -> trả về kết quả cũ (idempotent replay); nếu khác payload -> báo lỗi IDEMPOTENCY_PAYLOAD_MISMATCH
+    Đọc counter từ hash promo:{promotion_id}:runtime (kiểm tra hạn mức reserved_quantity, reserved_budget_vnd so với total)
+    Nếu đủ ngân sách:
+        Tăng reserved_quantity và reserved_budget_vnd trong runtime.
+        Ghi key promo:{promotion_id}:reservation:{order_id} với trạng thái RESERVED cùng TTL 15 phút + grace
+        Ghi vào ZSET: ZADD promo:{promotion_id}:reservation:index <expiry_timestamp> <order_id>
+    Nếu không đủ ngân sách: Lua script trả về mã lỗi BUDGET_EXHAUSTED
+
+
+Luồng 2: CONFIRM - Xác nhận thanh toán thành công
++ Trigger: Order Service gọi POST /internal/v1/promotion-allocation/confirmations
++ Xử lý:
+    1. Preflight Receipt: Kiểm tra bảng promotion_command_receipts. Nếu đã tồn tại receipt cho (operation_type, promotion_id, order_id) với cùng request hash, trả về stored response ngay mà không cần kiểm tra Redis reservation
+    2. Confirm-Prepare Lua
+        Nếu chưa có receipt, gọi Lua kiểm tra promo:{promotion_id}:reservation:{order_id}
+        Chuyển trạng thái từ RESERVED -> CONFIRMING và gia hạn grace TTL
+        Lưu ý quan trọng: Chưa di chuyển counter từ reserved sang used ở bước này nhằm bảo vệ hệ thống nếu bước ghi DB sau đó bị crash
+    3. Commit PostgreSQL
+        Chuyển ví khách hàng SAVED -> USED, lưu used_order_id, discount_amount_vnd (lấy từ reservation), used_at.
+        Tăng counter tiêu dùng bền vững trong promotion_budgets
+        Ghi nhận promotion_command_receipts với cột redis_finalized_at = NULL
+    4. Confirm-Finalize Lua & Dọn dẹp
+        Sau khi DB commit, gọi Lua finalize trên Redis:
+            Giảm reserved và tăng used trong promo:{promotion_id}:runtime
+            Xóa key payload: DEL promo:{promotion_id}:reservation:{order_id}
+            Xóa khỏi index: ZREM promo:{promotion_id}:reservation:index <order_id>
+        Update database: UPDATE promotion_command_receipts SET redis_finalized_at = NOW() WHERE ...
+
+
+Vì Redis và PostgreSQL là hai hệ thống phân tán độc lập, vì thế chúng ta phải giải quyết bài toán non-atomic này
+Nhìn lại 4 bước cốt lõi trong pha CONFIRM:
+Bước 1 (Redis Prepare Fence): Chuyển reservation RESERVED -> CONFIRMING + gia hạn grace TTL. (Lưu ý: Counter ngân sách reserved/used chưa hề bị thay đổi!)
+Bước 2 (PostgreSQL Commit): Mở DB Transaction: Khóa ví (SAVED -> USED), tăng used budget trong DB, ghi bảng promotion_command_receipts với redis_finalized_at = NULL. Commit DB. (Đây là Durable Completion Point)
+Bước 3 (Redis Finalize): Gọi Lua chuyển counter reserved -> used, xóa reservation payload và xóa khỏi ZSET index
+Bước 4 (DB Marker): UPDATE promotion_command_receipts SET redis_finalized_at = NOW()
+
+1. Crash TRƯỚC khi PostgreSQL Commit (Giữa Bước 1 và Bước 2)
+Kịch bản: Redis đã đổi trạng thái reservation thành CONFIRMING, nhưng server bị sập nguồn/mất mạng trước khi PostgreSQL kịp commit transaction (hoặc DB transaction bị rollback do lỗi cú pháp/rớt kết nối)
+Hậu quả tức thời:
+    PostgreSQL: Hoàn toàn sạch, transaction bị rollback nên ví voucher vẫn là SAVED, ngân sách DB không tăng, không có receipt nào được tạo
+    Redis: Reservation mang trạng thái CONFIRMING và còn hạn grace TTL; counter reserved và used vẫn nguyên vẹn, không bị hao hụt
+Cơ chế phục hồi:
+    Khi Order Saga (Temporal) retry gửi lại CONFIRM: Promotion Service kiểm tra PostgreSQL thấy chưa có receipt. Nó gọi lại Lua Prepare. Lua thấy reservation đã là CONFIRMING với payload trùng khớp -> xem đây là một Prepare Replay hợp lệ và cho phép bước tiếp vào ghi PostgreSQL
+    Nếu Order Saga bị hủy hoặc không bao giờ gọi lại: Reservation mang trạng thái CONFIRMING sẽ hết hạn grace TTL. Background Sweeper kiểm tra thấy không có receipt nào trong PostgreSQL tương ứng với order_id này -> xác định đây là reservation mồ côi (orphaned) và kích hoạt giải phóng: hoàn trả reserved counter, xóa payload và index
+
+
+2. Crash SAU PostgreSQL Commit nhưng TRƯỚC Redis Finalize (Giữa Bước 2 và Bước 3)
+Kịch bản: PostgreSQL đã commit thành công (khách hàng đã chính thức bị trừ voucher trong DB), nhưng server crash ngay lập tức trước khi gọi Redis Lua Finalize
+Hậu quả tức thời:
+    PostgreSQL: Dữ liệu bền vững đã chốt (Durable Completion). Trong DB có một dòng promotion_command_receipts với redis_finalized_at = NULL
+    Redis: Reservation vẫn là CONFIRMING, counter reserved chưa giảm, used chưa tăng
+Cơ chế phục hồi: 
+    Background Finalizer Worker
+        Bảng promotion_command_receipts có partial index: CREATE INDEX ... (completed_at) WHERE redis_finalized_at IS NULL
+        Một Background Worker định kỳ quét các receipt có redis_finalized_at IS NULL quá ngưỡng timeout
+        Worker sẽ chạy lại Bước 3 (Redis Finalize Lua: chuyển reserved -> used, xóa payload và index)
+        Khi Redis báo thành công, Worker cập nhật redis_finalized_at = NOW()
+
+3. Crash GIỮA chừng khi đang Finalize Redis hoặc TRƯỚC khi cập nhật redis_finalized_at (Giữa Bước 3 và Bước 4)
+Kịch bản: Redis Lua script đã chạy xong (đã chuyển counter reserved sang used, đã xóa payload và ZSET index), nhưng chưa kịp chạy câu lệnh UPDATE ... SET redis_finalized_at = NOW() thì server sập
+
+
+
+4. Crash SAU Bước 4 nhưng TRƯỚC khi gửi Response HTTP về Order Service
+Kịch bản: Cả DB và Redis đều đã hoàn tất mỹ mãn, nhưng mạng chập chờn khiến Order Service không nhận được HTTP 200.
+
+Cơ chế giải quyết: Order Service retry với cùng Idempotency Key. Promotion Service preflight DB thấy receipt đã có completed_at và redis_finalized_at đầy đủ 
+-> Trả thẳng response_payload đã lưu sẵn trong DB receipt về cho Order Service mà không phát sinh thêm bất kỳ thay đổi nào.
+
+
+Lưu ý quan trọng:
+CONFIRMING nghĩa là: đã bắt đầu quá trình chốt kết quả vào PostgreSQL, nên có khả năng PostgreSQL đã ghi thành công dù Redis chưa kịp cập nhật xong
+Vì thế không thể coi nó là “reservation hết hạn bình thường” rồi tự nhả quota.
+    RESERVED: chưa chốt xuống PostgreSQL → hết TTL thì sweeper nhả được.
+    CONFIRMING: phải kiểm PostgreSQL trước:
+        Nếu receipt/wallet cho thấy confirm đã commit → Redis cần finalize thành used (bước 2)
+        Nếu confirm chưa commit → sau grace/recovery policy mới có thể nhả reservation (bước 1)
+        Nếu không đủ dữ liệu để kết luận → reconciliation Redis từ PostgreSQL, không đoán
+
+
+
+Luồng 3: CANCEL — Hủy giữ chỗ trước thanh toán
++ Trigger: Khách hủy đơn hoặc thanh toán thất bại, Order Service gọi POST /internal/v1/promotion-allocation/cancellations
++ Xử lý:    
+    Thực thi Lua script: Kiểm tra promo:{promotion_id}:reservation:{order_id}.
+    Chỉ giải phóng khi trạng thái là RESERVED:
+        Giảm reserved_quantity và reserved_budget_vnd trong promo:{promotion_id}:runtime.
+        Xóa key payload: DEL promo:{promotion_id}:reservation:{order_id}.
+        Xóa khỏi index: ZREM promo:{promotion_id}:reservation:index <order_id>.
+    Cấm cancel mù nếu đang là CONFIRMING: Nếu reservation đang ở trạng thái CONFIRMING, caller phải chờ hoặc đọc kết quả từ promotion_command_receipts trong database để tránh việc hủy nhầm một đơn hàng vừa được ghi nhận thanh toán thành công.
+    Ví voucher trên PostgreSQL vẫn giữ nguyên trạng thái SAVED
+

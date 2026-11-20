@@ -3,14 +3,14 @@
 import { useState } from "react";
 
 import { FormSection } from "@/components/admin/form-section";
-import { FieldBlock, MutationResult, SubmitButton } from "@/components/admin/inventory/inventory-shared";
+import { CommandRecovery, FieldBlock, MutationResult, SubmitButton } from "@/components/admin/inventory/inventory-shared";
 import { PageHeader } from "@/components/admin/page-header";
 import { Alert } from "@/components/ui/alert";
 import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { useCommand } from "@/hooks/use-command";
+import { useInventoryCommand } from "@/hooks/use-inventory-command";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import { inventoryAdminApi, type StockAdjustmentRequest, type StockMutationResponse } from "@/lib/api/inventory-admin";
 import {
@@ -35,7 +35,7 @@ export function StockAdjustmentForm() {
   const [reasonNote, setReasonNote] = useState("");
   const [evidence, setEvidence] = useState("");
 
-  const adjustment = useCommand({
+  const adjustment = useInventoryCommand({
     mutationFn: (input: StockAdjustmentRequest, context) =>
       inventoryAdminApi.recordStockAdjustment(input, context.commandId),
     onSuccess: setResult,
@@ -44,7 +44,7 @@ export function StockAdjustmentForm() {
   const effectiveDirection = directionForReason(reason, direction);
 
   function edited() {
-    if (adjustment.isError) adjustment.startNewIntent();
+    if (!adjustment.startNewIntent()) return;
     submitError.reset();
     setValidation(null);
     setResult(null);
@@ -52,6 +52,7 @@ export function StockAdjustmentForm() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (adjustment.isPending || adjustment.isRetryDelayed) return;
     submitError.reset();
     setValidation(null);
     const parsedQuantity = Number(quantity);
@@ -91,7 +92,9 @@ export function StockAdjustmentForm() {
       {validation ? <Alert variant="danger">{validation}</Alert> : null}
       {submitError.message ? <ErrorState error={adjustment.error} message={inventoryErrorMessage(adjustment.error) ?? submitError.message} /> : null}
       {result ? <MutationResult result={result} /> : null}
+      {adjustment.isUnresolved ? <CommandRecovery commandId={adjustment.commandId} /> : null}
 
+      <fieldset disabled={adjustment.inputsLocked} className="space-y-8">
       <FormSection title="Vị trí và số lượng">
         <div className="grid gap-5 sm:grid-cols-2">
           <FieldBlock id="adjustment-warehouse" label="Mã kho *"><Input id="adjustment-warehouse" required maxLength={128} value={warehouseId} onChange={(event) => setWarehouseId(event.target.value)} /></FieldBlock>
@@ -113,7 +116,8 @@ export function StockAdjustmentForm() {
         <FieldBlock id="adjustment-evidence" label="Tham chiếu bằng chứng *"><Input id="adjustment-evidence" required maxLength={512} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></FieldBlock>
       </FormSection>
 
-      <div className="flex justify-end"><SubmitButton pending={adjustment.isPending} retry={adjustment.isError} retryAfterSeconds={adjustment.retryDelaySeconds}>Ghi nhận điều chỉnh</SubmitButton></div>
+      </fieldset>
+      <div className="flex justify-end"><SubmitButton pending={adjustment.isPending} retry={adjustment.isUnresolved} retryAfterSeconds={adjustment.retryDelaySeconds}>Ghi nhận điều chỉnh</SubmitButton></div>
     </form>
   );
 }

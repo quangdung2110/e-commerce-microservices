@@ -31,13 +31,13 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-002](./ADR-002-sku-first-document.md) | Document là SKU, gom nhóm bằng field collapsing | Superseded | 2026-09-02 | Bị thay bởi ADR-012 |
 | [ADR-003](./ADR-003-vietnamese-analysis-and-autocomplete.md) | Phân tích tiếng Việt bằng ICU và autocomplete edge n-gram | Accepted | 2026-09-02 | — |
 | [ADR-004](./ADR-004-per-source-ordering-guard.md) | Guard ordering theo từng nguồn dữ liệu | Superseded | 2026-09-02 | Bị thay bởi ADR-015 |
-| [ADR-005](./ADR-005-no-dead-letter-queue.md) | Không dùng dead-letter queue | Accepted; điều khoản Inventory missing-doc đã bị thay | 2026-09-02 | Điều khoản Inventory bị ADR-019 thay |
-| [ADR-006](./ADR-006-three-phase-reindex.md) | Reindex ba pha với alias swap | Accepted | 2026-09-02 | Được ADR-016 và ADR-017 mở rộng |
+| [ADR-005](./ADR-005-no-dead-letter-queue.md) | Không dùng dead-letter queue | Accepted; điều khoản Inventory missing-doc đã bị thay | 2026-09-02 | Điều khoản Inventory bị ADR-019 thay; ADR-022 làm rõ cơ chế retry (`nack`) |
+| [ADR-006](./ADR-006-three-phase-reindex.md) | Reindex ba pha với alias swap | Accepted | 2026-09-02 | Được ADR-016, ADR-017 và ADR-022 (vòng đời reindex) mở rộng |
 | [ADR-007](./ADR-007-cursor-pagination.md) | Cursor pagination bằng `search_after` | Superseded cho storefront | 2026-09-02 | Storefront bị ADR-020 thay |
 | [ADR-008](./ADR-008-category-product-count-recompute.md) | `product_count` tính lại theo lịch, không cộng trừ | Accepted; đã đính chính field gom bucket | 2026-09-02 | Thay cách cộng trừ theo event của thiết kế cũ |
 | [ADR-009](./ADR-009-stock-projection-ownership.md) | `is_in_stock` đến từ Inventory | Superseded | 2026-09-02 | Bị thay bởi ADR-014 |
 | [ADR-010](./ADR-010-derived-category-tree.md) | Search tự dẫn xuất cây danh mục | Superseded | 2026-09-02 | Bị thay bởi ADR-013 |
-| [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted; đã được mở rộng | 2026-09-02 | Thay Draft Cleanup Job cũ; ADR-019 mở rộng gate purge |
+| [ADR-011](./ADR-011-tombstone-and-purge-window.md) | Tombstone kèm cửa sổ purge | Accepted; đã được mở rộng | 2026-09-02 | Thay Draft Cleanup Job cũ; ADR-019 mở rộng gate purge; ADR-021 chốt cửa sổ 35 ngày, ADR-022 nâng lên 45 ngày |
 | [ADR-012](./ADR-012-sku-results-with-search-after.md) | SKU hit trực tiếp, phân trang bằng `search_after` | Superseded | 2026-09-04 | Thay ADR-002; bị thay bởi ADR-020 |
 | [ADR-013](./ADR-013-product-category-snapshots.md) | Category snapshot Product và control-driven reindex | Accepted | 2026-09-04 | Thay ADR-010 |
 | [ADR-014](./ADR-014-inventory-stock-snapshot-contract.md) | Stock projection theo revision và snapshot Inventory | Superseded | 2026-09-04 | Thay ADR-009; bị thay bởi ADR-018 |
@@ -47,3 +47,12 @@ X, “Bị thay bởi Y” nghĩa là Y thay ADR này.
 | [ADR-018](./ADR-018-inventory-position-projection-contract.md) | Inventory position projection and export watermark | Superseded | 2026-09-07 | Thay ADR-014; bị thay bởi ADR-019 |
 | [ADR-019](./ADR-019-inventory-owned-sku-availability.md) | Inventory owns per-SKU availability; readiness guarantees Product document exists; no Search index added | Accepted | 2026-09-07 | Thay ADR-018 |
 | [ADR-020](./ADR-020-product-cards-with-cheapest-eligible-sku.md) | Một Product một card, SKU giá thấp nhất thỏa bộ lọc; signed PIT cursor | Accepted | 2026-09-30 | Thay ADR-012 và phần storefront của ADR-007 |
+| [ADR-021](./ADR-021-tombstone-protection-window-35d.md) | Cửa sổ bảo vệ tombstone 35 ngày, dài hơn retention dài nhất của topic Search tiêu thụ | Superseded | 2026-10-09 | Mở rộng ADR-011; bị thay bởi ADR-022 |
+| [ADR-022](./ADR-022-post-implementation-audit-corrections.md) | Sửa sau kiểm chứng audit: redelivery bằng `nack`, lỗi HTTP, vòng đời reindex (lease, resume, hủy, rollback, kiểm tra cutover, tail replay, dọn index, tự chạy theo control event), cửa sổ tombstone 45 ngày | Accepted | 2026-10-10 | Thay con số của ADR-021; làm rõ ADR-005/ADR-019; mở rộng ADR-006/013/017 |
+| [ADR-023](./ADR-023-request-correlation-and-caller-deadline.md) | Request ID, trace ID, deadline của caller và timeout export 25 giây (nhỏ hơn mesh 30 giây) | Accepted | 2026-10-15 | Làm rõ ADR-022 |
+| [ADR-024](./ADR-024-drop-review-bearer-and-outbound-metrics.md) | Bỏ bearer token Review; timer `search.outbound.http` theo dependency và outcome | Accepted | 2026-10-15 | Bổ sung ADR-023 |
+| [ADR-025](./ADR-025-retry-after-on-elasticsearch-unavailable.md) | `Retry-After: 2` trên `ELASTICSEARCH_UNAVAILABLE` | Accepted | 2026-10-15 | — |
+| [ADR-026](./ADR-026-reindex-preserves-tombstones.md) | Giữ tombstone Product/Category qua reindex; count drift chỉ so catalog chưa xóa | Accepted | 2026-10-16 | Mở rộng ADR-011/022 |
+| [ADR-027](./ADR-027-product-card-projection.md) | Projection cấp Product `product_cards` (SKU `nested`) dựng từ index SKU, truy vấn storefront một trang mỗi request | Accepted; rollout/lifecycle được ADR-029 thay | 2026-10-16 | Mở rộng ADR-020 |
+| [ADR-028](./ADR-028-storefront-facet-discovery-policy.md) | Facet theo danh mục, thứ tự biên tập và loại fixture khỏi public discovery trước query/count/pagination | Accepted | 2026-10-17 | Mở rộng ADR-020/027 |
+| [ADR-029](./ADR-029-required-product-card-read-model.md) | `product_cards` bắt buộc; không fallback request mới; chuẩn bị projection và chuyển năm alias cùng lúc; giữ PIT qua cutover | Accepted | 2026-10-19 | Thay chính sách pilot/fallback và lifecycle của ADR-027 |

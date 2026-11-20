@@ -1,0 +1,312 @@
+# Provider probes for contracts/tools/verify_providers.py (contracts ADR-009).
+#
+# Each probe calls a real provider as its consumer would and checks the answer against the OpenAPI contract of the
+# interaction. Probes only read, or ask a pure question (previews, calculations), so they are safe on a shared stack.
+# Variables: ${uuid}, ${uuid2} (random per run, so "unknown" resources really are unknown), ${run}, and anything an earlier
+# probe captured. `expect` is the set of statuses this probe is meant to produce; the contract must declare them too.
+version: 1
+
+# Provider -> base URL on the compose network (scripts/ci/verify-providers.sh runs the tool inside it).
+targets:
+  cart-service: http://cart-service:8080
+  user-service: http://user-service:8083
+  product-service: http://product-service:8081
+  review-service: http://review-service:8080
+  inventory-service: http://inventory-service:8080
+  promotion-service: http://promotion-service:8085
+  order-service: http://order-service:8080
+  payment-service: http://payment-service:8080
+  notification-service: http://notification-service:8081
+  auth-service: http://auth-service:8081
+
+probes:
+  # ---- Product (HTTP): Search, Promotion and the Product Detail BFF
+  - id: product-export-page
+    interaction: search-reindexes-product-catalog
+    as: search-service
+    request: {method: GET, path: "/internal/v1/products/export?limit=1"}
+    expect: [200]
+    capture: {product_id: "products[0].product_id", slug: "products[0].slug", sku_id: "products[0].skus[0].sku_id"}
+
+  - id: product-category-export-page
+    interaction: search-reindexes-product-catalog
+    as: search-service
+    request: {method: GET, path: "/internal/v1/categories/export?limit=1"}
+    expect: [200]
+
+  - id: product-snapshot-for-search
+    interaction: search-reindexes-product-catalog
+    as: search-service
+    request: {method: GET, path: "/internal/v1/products/${product_id}/snapshot"}
+    expect: [200]
+
+  - id: product-snapshot-for-promotion
+    interaction: promotion-validates-product-snapshot
+    as: promotion-service
+    request: {method: GET, path: "/internal/v1/products/${product_id}/snapshot"}
+    expect: [200]
+
+  - id: product-snapshot-unknown
+    interaction: search-reindexes-product-catalog
+    as: search-service
+    request: {method: GET, path: "/internal/v1/products/${uuid}/snapshot"}
+    expect: [404]
+
+  - id: product-detail-for-bff
+    interaction: product-detail-bff-queries-product-catalog
+    as: product-detail-bff
+    request: {method: GET, path: "/internal/v1/product-details/${slug}"}
+    expect: [200, 404]
+
+  - id: product-detail-unknown-slug
+    interaction: product-detail-bff-queries-product-catalog
+    as: product-detail-bff
+    request: {method: GET, path: "/internal/v1/product-details/no-such-product-${run}"}
+    expect: [404]
+
+  # ---- Review (internal)
+  - id: review-pdp-summary
+    interaction: product-detail-bff-queries-review-summary
+    as: product-detail-bff
+    request: {method: GET, path: "/internal/v1/reviews/products/${product_id}/pdp-summary"}
+    expect: [200]
+
+  - id: review-pdp-summary-wrong-caller
+    interaction: product-detail-bff-queries-review-summary
+    as: search-service
+    request: {method: GET, path: "/internal/v1/reviews/products/${product_id}/pdp-summary"}
+    expect: [403]
+
+  # ---- Inventory
+  - id: inventory-availability-for-bff
+    interaction: product-detail-bff-queries-inventory-availability
+    as: product-detail-bff
+    request: {method: POST, path: "/internal/inventory/v1/sku-availabilities:batch-get", body: {sku_ids: ["${sku_id}"]}}
+    expect: [200]
+
+  - id: inventory-allocation-preview
+    interaction: checkout-previews-inventory-allocation
+    as: checkout-service
+    request:
+      method: POST
+      path: /internal/inventory/v1/allocation-previews
+      headers: {X-Causation-Id: "verify-${run}-cause"}
+      body: {lines: [{line_reference: line-1, sku_id: "${sku_id}", quantity: 1}]}
+    expect: [200]
+
+  - id: inventory-allocation-preview-invalid
+    interaction: checkout-previews-inventory-allocation
+    as: checkout-service
+    request:
+      method: POST
+      path: /internal/inventory/v1/allocation-previews
+      headers: {X-Causation-Id: "verify-${run}-cause"}
+      body: {lines: []}
+    expect: [400]
+
+  # ---- Promotion (pure questions)
+  - id: promotion-voucher-options
+    interaction: checkout-lists-voucher-options
+    as: checkout-service
+    request:
+      method: POST
+      path: /internal/v1/promotion-voucher-options
+      body:
+        user_id: "${uuid}"
+        context:
+          subtotal: {amount_minor: 11900000, currency: VND}
+          checkout_channel: CHECKOUT
+          items:
+            - {product_id: "${product_id}", sku_id: "${sku_id}", quantity: 1, unit_price: {amount_minor: 11900000, currency: VND}, category_ids: []}
+    expect: [200]
+
+  - id: promotion-discount-without-code
+    interaction: checkout-calculates-promotions
+    as: checkout-service
+    request:
+      method: POST
+      path: /internal/v1/promotion-discount-calculations
+      body:
+        user_id: "${uuid}"
+        promotion_id: null
+        context:
+          subtotal: {amount_minor: 11900000, currency: VND}
+          checkout_channel: CHECKOUT
+          items:
+            - {product_id: "${product_id}", sku_id: "${sku_id}", quantity: 1, unit_price: {amount_minor: 11900000, currency: VND}, category_ids: []}
+    expect: [200]
+
+  # ---- Cart and User snapshots for Checkout
+  - id: cart-snapshot-empty
+    interaction: checkout-reads-cart-snapshot
+    as: checkout-service
+    request: {method: GET, path: "/internal/v1/carts/${uuid}/checkout-snapshot"}
+    expect: [200]
+
+  - id: user-address-snapshot-unknown
+    interaction: checkout-reads-user-address-snapshot
+    as: checkout-service
+    request: {method: GET, path: "/internal/v1/users/${uuid}/addresses/${uuid2}/checkout-snapshot"}
+    expect: [404]
+
+  # ---- Order (Checkout and Finance Ops)
+  - id: order-submission-unknown-token
+    interaction: checkout-creates-order
+    as: checkout-service
+    request: {method: GET, path: "/internal/v1/checkout-order-submissions/verify-${run}"}
+    expect: [404]
+
+  # ---- Payment (Order)
+  - id: payment-unknown-transaction
+    interaction: order-initiates-payment
+    as: order-service
+    request: {method: GET, path: "/v1/payments/TXN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [404]
+
+  - id: payment-wrong-caller
+    interaction: order-initiates-payment
+    as: search-service
+    request: {method: GET, path: "/v1/payments/TXN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [403]
+
+  # ---- Notification (status) and Auth (contact)
+  - id: notification-request-unknown
+    interaction: support-queries-notification-status
+    as: order-service
+    request: {method: GET, path: "/internal/v1/notifications/requests/${uuid}"}
+    expect: [404]
+
+  - id: auth-contact-unknown-user
+    interaction: notification-resolves-auth-contact
+    as: notification-service
+    request: {method: GET, path: "/internal/v1/auth/users/${uuid}/notification-contact"}
+    expect: [404]
+
+  # ---- Service identity (contracts ADR-004): every provider answers a missing identity with 401 and a caller
+  # outside its allowlist with 403, in the problem shape its own contract declares.
+  - id: identity-product-missing
+    interaction: search-reindexes-product-catalog
+    as: null
+    request: {method: GET, path: "/internal/v1/products/export?limit=1"}
+    expect: [401]
+
+  - id: identity-product-foreign
+    interaction: search-reindexes-product-catalog
+    as: payment-service
+    request: {method: GET, path: "/internal/v1/products/export?limit=1"}
+    expect: [403]
+
+  - id: identity-review-missing
+    interaction: product-detail-bff-queries-review-summary
+    as: null
+    request: {method: GET, path: "/internal/v1/reviews/products/${product_id}/pdp-summary"}
+    expect: [401]
+
+  - id: identity-inventory-missing
+    interaction: product-detail-bff-queries-inventory-availability
+    as: null
+    request: {method: POST, path: "/internal/inventory/v1/sku-availabilities:batch-get", body: {sku_ids: ["${sku_id}"]}}
+    expect: [401]
+
+  - id: identity-inventory-foreign
+    interaction: product-detail-bff-queries-inventory-availability
+    as: payment-service
+    request: {method: POST, path: "/internal/inventory/v1/sku-availabilities:batch-get", body: {sku_ids: ["${sku_id}"]}}
+    expect: [403]
+
+  - id: identity-promotion-missing
+    interaction: checkout-lists-voucher-options
+    as: null
+    request:
+      method: POST
+      path: /internal/v1/promotion-voucher-options
+      body: {user_id: "${uuid}", context: {subtotal: {amount_minor: 1, currency: VND}, checkout_channel: CHECKOUT, items: []}}
+    expect: [401]
+
+  - id: identity-promotion-foreign
+    interaction: checkout-lists-voucher-options
+    as: search-service
+    request:
+      method: POST
+      path: /internal/v1/promotion-voucher-options
+      body: {user_id: "${uuid}", context: {subtotal: {amount_minor: 1, currency: VND}, checkout_channel: CHECKOUT, items: []}}
+    expect: [403]
+
+  - id: identity-order-missing
+    interaction: checkout-creates-order
+    as: null
+    request: {method: GET, path: "/internal/v1/checkout-order-submissions/verify-${run}"}
+    expect: [401]
+
+  - id: identity-order-foreign
+    interaction: checkout-creates-order
+    as: search-service
+    request: {method: GET, path: "/internal/v1/checkout-order-submissions/verify-${run}"}
+    expect: [403]
+
+  - id: identity-payment-missing
+    interaction: order-initiates-payment
+    as: null
+    request: {method: GET, path: "/v1/payments/TXN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [401]
+
+  # Finance Ops routes have their own allowlist (Payment ADR-028); Order is not on it.
+  - id: identity-payment-ops-missing
+    interaction: finance-ops-operates-payment
+    as: null
+    request: {method: GET, path: "/internal/v1/payment/ledger/journals/FJN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [401]
+
+  - id: identity-payment-ops-foreign
+    interaction: finance-ops-operates-payment
+    as: order-service
+    request: {method: GET, path: "/internal/v1/payment/ledger/journals/FJN_01K5V7M4R8Q2K7V6W5X1Y0ZZZZ"}
+    expect: [403]
+
+  - id: identity-cart-missing
+    interaction: checkout-reads-cart-snapshot
+    as: null
+    request: {method: GET, path: "/internal/v1/carts/${uuid}/checkout-snapshot"}
+    expect: [401]
+
+  - id: identity-cart-foreign
+    interaction: checkout-reads-cart-snapshot
+    as: search-service
+    request: {method: GET, path: "/internal/v1/carts/${uuid}/checkout-snapshot"}
+    expect: [403]
+
+  - id: identity-user-missing
+    interaction: checkout-reads-user-address-snapshot
+    as: null
+    request: {method: GET, path: "/internal/v1/users/${uuid}/addresses/${uuid2}/checkout-snapshot"}
+    expect: [401]
+
+  - id: identity-user-foreign
+    interaction: checkout-reads-user-address-snapshot
+    as: search-service
+    request: {method: GET, path: "/internal/v1/users/${uuid}/addresses/${uuid2}/checkout-snapshot"}
+    expect: [403]
+
+  - id: identity-auth-missing
+    interaction: notification-resolves-auth-contact
+    as: null
+    request: {method: GET, path: "/internal/v1/auth/users/${uuid}/notification-contact"}
+    expect: [401]
+
+  - id: identity-auth-foreign
+    interaction: notification-resolves-auth-contact
+    as: order-service
+    request: {method: GET, path: "/internal/v1/auth/users/${uuid}/notification-contact"}
+    expect: [403]
+
+  - id: identity-notification-missing
+    interaction: support-queries-notification-status
+    as: null
+    request: {method: GET, path: "/internal/v1/notifications/requests/${uuid}"}
+    expect: [401]
+
+  - id: identity-notification-foreign
+    interaction: support-queries-notification-status
+    as: search-service
+    request: {method: GET, path: "/internal/v1/notifications/requests/${uuid}"}
+    expect: [403]

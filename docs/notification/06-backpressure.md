@@ -1,6 +1,6 @@
 # Backpressure, cô lập lỗi và giới hạn provider
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1) — số liệu tải trong file này là giả định thiết kế, chưa đo (README §5).
 
 ## 1. Áp lực chảy về đâu
 
@@ -106,11 +106,13 @@ Ba quyết định quan trọng hơn bản thân cơ chế:
 |---|---|
 | Critical | **Phase 1 (D-09): không có provider dự phòng.** `RETRY` với `next_attempt_at = now + 30 s`, `attempt` không tăng; alert `circuit_breaker_open{provider=ses}` ngay lập tức. In-app vẫn gửi. OTP quá `expires_at` tự `EXPIRED`; user xin mã mới khi SES hồi phục. Adapter interface phải cho phép cắm provider thứ hai ở phase sau mà không sửa worker |
 | Transactional | `RETRY`, `next_attempt_at = now + 5 phút`, chờ. Kể cả khi có provider dự phòng sau này cũng không failover lane này, vì domain/reputation của email giao dịch quan trọng và trễ 30 phút chấp nhận được |
-| Bulk | Như transactional nhưng `+ 30 phút`; tự `pause` nếu breaker mở quá 1 giờ |
+| Bulk | Như transactional nhưng `+ 30 phút`; **watchdog tự `pause` bulk × email** khi breaker không đóng quá `deliver.breaker_auto_pause_after` (1 h, tính từ lúc breaker rời `CLOSED`, kể cả khi dao động open ↔ half-open). In-app không bị pause. Chỉ pause, không bao giờ tự resume: ops resume thủ công sau khi breaker đóng (R-02); nếu ops đã resume giữa đợt sự cố thì watchdog không pause lại trong cùng đợt (D-23) |
 
 **Breaker mở không phải lỗi của notification đó.** Row bị breaker từ chối quay về `RETRY` với `attempt` **không tăng** — cụ thể: claim đã tăng `attempt`, nên worker gọi `release` (`attempt - 1`, `last_error_code = breaker_open`, `next_attempt_at` theo bảng trên). Cùng cơ chế cho `rate_limited` (hết 5 s chờ token), `lane_paused`, và với delivery Order: `ordering_busy` (delivery khác cùng order đang giữ ordering lease) / `ordering_lease_lost` ([05-ordering.md](./05-ordering.md) §4). `release` giữ nguyên dấu `lease_expired` nếu row đang mang nó. Nếu không, sự cố provider 1 giờ sẽ đốt hết số lần retry của mọi row và đẩy tất cả vào DLQ dù chưa từng được thử thật. Ngược lại, lỗi retryable **thật** (5xx, timeout) tăng `attempt`; vượt `max_attempts` của lane (config, mặc định 5 critical / 8 còn lại) → `FAILED (provider_error)`.
 
-**Half-open thăm dò bằng request thật, nhưng của lane ít quan trọng.** Không dùng OTP làm request thăm dò; dùng row bulk hoặc transactional. Không có row nào để thăm dò thì dùng health-check API của provider.
+**Half-open thăm dò bằng request thật, nhưng của lane ít quan trọng.** Không dùng OTP làm request thăm dò; dùng row bulk hoặc transactional: khi breaker half-open, worker email của lane critical nhường (không claim) nếu trong cùng process còn lane thấp hơn. Một process chỉ chạy lane critical (`app.lane=critical`) không có lane thấp hơn để nhường nên vẫn có thể dùng row critical làm probe.
+
+**Không có row nào để thăm dò thì dùng health-check của provider.** Watchdog (`workers/providerwatch`, mỗi `deliver.health_probe_interval` = 10 s) gọi `HealthCheck` của adapter — SES `GetAccount` (cũng báo lỗi nếu `SendingEnabled=false`), SMTP `NOOP` — khi breaker đang half-open và không ai (row thật hay watchdog) nhận slot thăm dò trong `deliver.health_probe_idle` (15 s). Kết quả đi qua đúng `Success()`/`Failure()` của breaker nên `half_open_successes` lần thành công đóng mạch, một lần lỗi mở lại. SES cần quyền `ses:GetAccount` ([16-operations.md](./16-operations.md) §6). Đặt `health_probe_interval: 0` để tắt cả watchdog (gồm auto-pause).
 
 ## 6. Retry budget và timeout
 

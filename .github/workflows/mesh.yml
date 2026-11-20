@@ -1,0 +1,28 @@
+name: Mesh manifests
+
+# The manifests under deploy/mesh are generated from docs/mesh/runtime-contract.md (mesh ADR-001). This job fails when they are
+# stale, disagree with the contract, or stop validating against the Kubernetes and Istio schemas. No cluster is involved.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML
+        run: python -m pip install pyyaml==6.0.2
+      - name: Validate mesh manifests
+        run: bash deploy/mesh/validate.sh

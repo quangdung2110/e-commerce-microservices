@@ -20,7 +20,9 @@ evidence:
 
 `Accepted`. Không supersede hay amend ADR nào của BFF. Phía provider là
 [Product ADR-018](../../product/decisions/ADR-018-resolved-buyer-product-detail-projection.md),
-amend Product ADR-015.
+amend Product ADR-015. Bổ sung bởi [ADR-008](./ADR-008-post-implementation-audit-corrections.md):
+`storage_key`/`thumbnail_storage_key` không có segment rỗng, `.` hoặc `..`, và chuỗi vượt giới
+hạn của contract Product cũng là response sai contract.
 
 ## Context
 

@@ -17,7 +17,9 @@ import java.util.UUID;
  * <p>A failure here must not be quietly dead-lettered. Auth publishes this event
  * directly after commit with at most three retries and no outbox, so it can already be
  * lost before Review sees it; losing it a second time on Review's side would leave a
- * legal deadline with nothing tracking it ({@code docs/review/operations.md 6}).
+ * legal deadline with nothing tracking it ({@code docs/review/operations.md 6}). This
+ * listener therefore has its own container factory: a transient fault is retried without
+ * a time limit, and only a record that violates its contract is dead-lettered (ADR-013).
  */
 @Component
 public class UserDeletedConsumer {
@@ -40,7 +42,7 @@ public class UserDeletedConsumer {
             autoStartup = "${review.consumers.auto-startup:true}",
             topics = "${review.topics.auth}",
             groupId = "${review.consumer-groups.privacy}",
-            containerFactory = "kafkaListenerContainerFactory")
+            containerFactory = "privacyKafkaListenerContainerFactory")
     public void onMessage(ConsumerRecord<String, String> record, Acknowledgment acknowledgment) {
         CloudEventEnvelope envelope = inboundEvents.parse(record.value());
         if (!USER_DELETED.equals(envelope.type())) {

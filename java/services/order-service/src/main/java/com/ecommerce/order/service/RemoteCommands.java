@@ -14,14 +14,15 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 
 /**
  * Executes one remote command with a durable checkpoint (data.md §3.9): command ID and
  * canonical request are frozen in a committed transaction before the HTTP call, the call
  * runs outside any transaction, and the classified outcome is recorded afterwards together
- * with its local side effects. A durable ACCEPTED/REJECTED is replayed from the checkpoint
- * and never re-sent; UNKNOWN re-sends the same command ID and frozen body.
+ * with its local side effects. Durable results are replayed from the checkpoint.
+ * Unresolved results re-send the same command ID and frozen body.
  */
 @Component
 public class RemoteCommands {
@@ -48,10 +49,20 @@ public class RemoteCommands {
     public RemoteResult execute(CheckpointStore.Key key, String commandId, JsonNode request,
                                 Function<CheckpointRow, RemoteResult> call, UnaryOperator<RemoteResult> interpret,
                                 Consumer<RemoteResult> onDurable) {
+        return execute(key, commandId, request, call, interpret, onDurable, result -> true);
+    }
+
+    /** A caller can re-send the frozen command when older evidence fails replay validation. */
+    public RemoteResult execute(CheckpointStore.Key key, String commandId, JsonNode request,
+                                Function<CheckpointRow, RemoteResult> call, UnaryOperator<RemoteResult> interpret,
+                                Consumer<RemoteResult> onDurable, Predicate<RemoteResult> canReplay) {
         CheckpointRow frozen = tx.execute(s -> checkpoints.freeze(key, commandId, json.write(request),
                 CanonicalJson.digest(request)));
         if (frozen.accepted() || frozen.rejected()) {
-            return replay(frozen);
+            RemoteResult recorded = replay(frozen);
+            if (canReplay.test(recorded)) {
+                return recorded;
+            }
         }
         RemoteResult raw = call.apply(frozen);
         RemoteResult result = raw.isAccepted() ? interpret.apply(raw) : raw;

@@ -45,7 +45,7 @@ client → TLS/trusted proxy → size & IP policy → route → rate/concurrency
        → logs, metrics, trace export
 ```
 
-Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti` và `X-Service-Identity` do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header `X-User-*` do `gateway-auth` trả về trong allowlist mới được forward tới service. `X-Service-Identity` không bao giờ được Traefik đặt: nó là header attribution giữa các service bên trong mesh ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)). Ánh xạ claim sang header được chốt tại mục 6.1.
+Route anonymous được limit theo trusted client IP. Route protected có IP limit thô trước authentication và identity/API-key/tenant limit sau khi identity được thiết lập. Traefik loại bỏ các header `X-User-Id`, `X-User-Roles`, `X-User-Session-Id`, `X-Token-Jti`, `X-Service-Identity` và `X-Request-Timeout-Ms` (deadline giữa các service, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) do client gửi trước ForwardAuth, kể cả trên route anonymous; chỉ các header `X-User-*` do `gateway-auth` trả về trong allowlist mới được forward tới service. `X-Service-Identity` không bao giờ được Traefik đặt: nó là header attribution giữa các service bên trong mesh ([mesh/runtime-contract.md §6](../mesh/runtime-contract.md#6-quy-ước-identity-header)). Ánh xạ claim sang header được chốt tại mục 6.1.
 
 Gateway tiếp tục `traceparent`/`tracestate` W3C hợp lệ; nếu không có thì sinh trace context W3C chuẩn. Gateway không tự tạo trace ID riêng.
 
@@ -157,8 +157,8 @@ Khi shutdown hoặc rollout, gateway ngừng nhận request mới trong 10 giây
 | JWKS URL | `AUTH_JWKS_URL` là URL HTTPS canonical do `auth-service` công bố dưới `/.well-known/**`; chỉ lấy key từ URL này. |
 | JWKS cache và rotation | Cache có TTL và kích thước giới hạn, refresh single-flight. Khi gặp `kid` mới thì refresh có kiểm soát; key cũ còn cache phải được giữ đến khi không còn JWT hợp lệ nào có thể tham chiếu nó. Nếu Auth Service/JWKS không truy cập được nhưng key cache hợp lệ, vẫn verify từ cache; chỉ fail closed khi không có key cache dùng được. |
 | Redis logical store | `AUTH_REVOCATION_REDIS_URL` trỏ tới cùng Redis logical store/database cho cả hai service, với namespace `auth:revocation:*`. `auth-service` có quyền ghi; `gateway-auth` chỉ có quyền đọc các key này. |
-| Token denylist | `auth:revocation:denylist:{jti}` do `auth-service` ghi khi thu hồi token. TTL phải bằng hoặc ngắn hơn thời gian còn lại đến claim `exp`; không tạo denylist entry sống sau `exp`. |
-| User-wide revocation | `auth:revocation:user:{sub}:revoked_before` chứa timestamp UTC. `gateway-auth` từ chối JWT có `iat` không lớn hơn giá trị này. TTL của key không được ngắn hơn access-token lifetime tối đa đang hỗ trợ. |
+| Token denylist | `auth:revocation:denylist:{jti}` do `auth-service` ghi khi thu hồi token. TTL không được ngắn hơn thời gian còn lại đến claim `exp`. `gateway-auth` chỉ chuyển tiếp `jti` đã verify (không chuyển `exp`) nên `auth-service` dùng cận trên là access-token lifetime + clock skew (mặc định 15m30s): entry có thể sống lâu hơn token vài phút, không bao giờ ngắn hơn ([Auth ADR-001](../auth/decisions/ADR-001-dual-token-revocation.md)). |
+| User-wide revocation | `auth:revocation:user:{sub}:revoked_before` chứa timestamp UTC. `gateway-auth` từ chối JWT có `iat` không lớn hơn giá trị này (`iat <= revoked_before`). Cả hai đều là Unix seconds nên token cấp trong cùng giây với lần thu hồi cũng bị từ chối; đây là chủ ý, vì không thể phân biệt token cấp ngay trước hay ngay sau lúc thu hồi. TTL của key không được ngắn hơn access-token lifetime tối đa đang hỗ trợ. |
 | JWKS invalidation payload | Message trên channel `auth:jwks:update` là JSON `{"type": "...", "kid": "...", "timestamp": "..."}`. `type` nhận `key_rotation`, `key_retirement` hoặc `all`; `kid` rỗng nghĩa là xóa toàn bộ cache. `type` là field bắt buộc — message thiếu `type` phải bị bỏ qua và ghi log, không được coi là tín hiệu xóa cache. |
 
 ### 6.1 Ánh xạ identity header
@@ -205,6 +205,13 @@ Không route authentication nào được fail open, kể cả read-only route.
 | `checkout-voucher-options` | Authenticated user ID; coarse trusted-IP guard trước ForwardAuth | 20 request/user/phút | Bảo vệ fan-out sang Promotion khi mở khay voucher; Checkout không có limiter riêng |
 | `stripe-webhook` | Stripe allow-list + endpoint quota | 50 req/s, burst 100 | Bảo vệ delivery burst |
 | `websocket-handshake` | User ID và trusted IP | 5/phút | Hạn chế connection churn |
+
+**Trusted client IP** ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)): entrypoint
+`web` chỉ nhận `X-Forwarded-For`/`X-Real-Ip` từ frontend (`forwardedHeaders.trustedIPs`: địa chỉ cố định `10.89.8.10` ở compose, pod CIDR
+ở `deploy/k8s`); frontend ghi đè hai header đó bằng địa chỉ TCP của trình duyệt. Từ mọi nguồn khác Traefik bỏ chúng và đặt `X-Real-Ip` =
+địa chỉ peer. Các profile theo IP dùng `sourceCriterion.requestHeaderName: X-Real-Ip`, không dùng `ipStrategy.depth` (độ sâu khác nhau
+giữa request qua Next và request gọi thẳng gateway). Service phía sau (Auth) chỉ tin `X-Real-Ip` khi peer là gateway. Router công khai
+`/api/v1/auth/**` mang profile `auth-public` (`rate-limit-auth`).
 
 Các giá trị là chính sách khởi điểm và phải được load test xác nhận. Khi có trên một gateway replica, shared state là bắt buộc. Traffic protected fail closed khi distributed rate-limit state không sẵn sàng; public fallback cần approval tường minh và monitoring. Khi bị limit trả `429` cùng retry guidance nếu hỗ trợ.
 

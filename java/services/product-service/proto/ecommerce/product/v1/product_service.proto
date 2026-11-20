@@ -70,6 +70,12 @@ message Sku {
   // At most 20 unique identifiers, each no longer than 64 characters; callers
   // must not derive category rules locally.
   repeated string category_ids = 12;
+  // Product-resolved Vietnamese display text: attribute name + display value,
+  // ordered by attribute code and joined with " · ". SELECT uses option labels,
+  // BOOLEAN uses Có/Không; other values use their catalog scalar text.
+  // Empty for no resolvable attributes; raw variant_attributes remains unchanged.
+  // Display only: never use this text for SKU identity, pricing or selection.
+  string variant_name = 13;
 }
 
 enum SkuStatus {

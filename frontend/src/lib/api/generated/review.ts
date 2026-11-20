@@ -292,6 +292,7 @@ export interface components {
         Uuid: string;
         ProductId: string;
         SkuId: string;
+        /** @description JSON integer token from 1 to 5. Decimal tokens (including 1.0) and numeric strings are rejected with 400 INVALID_REQUEST without consuming eligibility or edit quota. */
         Rating: number;
         /** @enum {string} */
         ReviewVisibilityStatus: "APPROVED" | "HIDDEN_BY_REPORT" | "REMOVED";
@@ -361,8 +362,16 @@ export interface components {
             edit_count: number;
             /** Format: date-time */
             created_at: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Last record update, including moderation/privacy; not the author edit time.
+             */
             updated_at: string;
+            /**
+             * Format: date-time
+             * @description Transaction time of the author's accepted PATCH (rating, content or media). Null before any edit or for legacy edited reviews whose original edit event is no longer available or unambiguous. Reporting, moderation, official replies and privacy processing never change it. Never infer it from updated_at.
+             */
+            readonly content_edited_at?: string | null;
         };
         PublicReviewPage: {
             items: components["schemas"]["PublicReview"][];
@@ -424,13 +433,14 @@ export interface components {
         };
         IssueMediaUploadRequest: {
             media_type: components["schemas"]["ReviewMediaType"];
+            /** @description Must be a type the service accepts for `media_type`: image/jpeg, image/png or image/webp for IMAGE; video/mp4 or video/webm for VIDEO (case-insensitive). The list is service configuration (`review.media.*-content-types`); any other value is `400 INVALID_REQUEST`. */
             content_type: string;
             /**
              * Format: int64
-             * @description Declared source size; effective IMAGE/VIDEO limits are server configuration and signed upload policy.
+             * @description Declared object size in bytes; the object that is uploaded must have exactly this size. Must be a JSON integer token; decimal tokens and numeric strings are rejected with 400 INVALID_REQUEST without issuing an asset or consuming quota. Above the configured limit for `media_type` (default 10 MiB for IMAGE, 100 MiB for VIDEO) is `400 INVALID_REQUEST`.
              */
             byte_size: number;
-            /** @description Optional checksum that Review verifies when supplied. */
+            /** @description Optional. Compared, case-insensitively, with the storage ETag of the uploaded object when the asset is attached, so it must be the hex MD5 digest of the body for a single-part upload (what S3-compatible storage reports as the ETag). A mismatch makes the asset `MEDIA_NOT_VERIFIED`. */
             checksum?: string;
         };
         UploadInstruction: {
@@ -438,7 +448,7 @@ export interface components {
             method: "PUT";
             /** Format: uri */
             url: string;
-            /** @description Required storage headers. Client must not add a different object key or overwrite target. */
+            /** @description Required storage headers, including signed If-None-Match '*'. Client must preserve signed headers (Content-Length is set by the browser). Storage rejects subsequent PUTs to the same object with 412 without changing bytes, including after attachment. Removing the conditional header invalidates the signature. Client must not add a different object key or overwrite target. */
             headers: {
                 [key: string]: string;
             };
@@ -666,7 +676,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["problem.schema"];
             };
         };
-        /** @description ALREADY_REPORTED or REVIEW_NOT_REPORTABLE; it never includes moderation progress. */
+        /** @description ALREADY_REPORTED, and never any moderation progress. REVIEW_NOT_REPORTABLE is reserved and is not produced in v1: a review that is not APPROVED is not on the public surface, so reporting it answers 404 REVIEW_NOT_FOUND instead of disclosing that it was hidden or removed. */
         ReportConflict: {
             headers: {
                 [name: string]: unknown;
@@ -715,7 +725,7 @@ export interface components {
         };
     };
     parameters: {
-        /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+        /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
         RequestId: string;
         ProductId: components["schemas"]["ProductId"];
         ReviewId: components["schemas"]["Uuid"];
@@ -752,7 +762,7 @@ export interface operations {
                 has_media?: components["parameters"]["HasMediaQuery"];
             };
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -779,7 +789,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -810,7 +820,7 @@ export interface operations {
                 limit?: components["parameters"]["PublicLimit"];
             };
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -827,6 +837,7 @@ export interface operations {
                     "application/json": components["schemas"]["PendingEligibilityPage"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             503: components["responses"]["RetryableUnavailable"];
         };
@@ -839,7 +850,7 @@ export interface operations {
                 limit?: components["parameters"]["PublicLimit"];
             };
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -865,7 +876,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -884,6 +895,7 @@ export interface operations {
                     "application/json": components["schemas"]["MyEligibilityReviewStatus"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["NotEligibilityOwner"];
             404: components["responses"]["EligibilityNotFound"];
@@ -894,7 +906,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -913,6 +925,7 @@ export interface operations {
                     "application/json": components["schemas"]["OwnerReview"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["NotReviewOwner"];
             404: components["responses"]["ReviewNotFound"];
@@ -923,7 +936,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -958,7 +971,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -993,7 +1006,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -1026,7 +1039,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -1063,7 +1076,7 @@ export interface operations {
                 limit?: components["parameters"]["AdminLimit"];
             };
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path?: never;
@@ -1090,7 +1103,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -1109,6 +1122,7 @@ export interface operations {
                     "application/json": components["schemas"]["AdminModerationResult"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["AdminForbidden"];
             404: components["responses"]["ReviewNotFound"];
@@ -1119,7 +1133,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {
@@ -1154,7 +1168,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Correlation/tracing identifier only; it is not an idempotency key. */
+                /** @description Correlation/tracing identifier only; it is not an idempotency key. Review echoes it as the Problem `trace_id` only when it is 16..64 characters, the bounds of that schema; a shorter or longer value is accepted but not echoed. */
                 "X-Request-Id"?: components["parameters"]["RequestId"];
             };
             path: {

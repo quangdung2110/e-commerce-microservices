@@ -1,5 +1,7 @@
 # Frontend Step 8 Verification — Admin Orders & Physical Dispatch
 
+> **Cập nhật live 11/10/2026:** xem [báo cáo bổ sung](./live-local-2026-10-11.md) và checkbox hiện hành trong implementation-plan. Các kết quả bên dưới là lịch sử kiểm chứng; blocker Stripe/CDC và một số mutation đã được kiểm tra lại.
+
 Ngày cập nhật: **06/10/2026**.
 
 ## Phạm vi đã triển khai

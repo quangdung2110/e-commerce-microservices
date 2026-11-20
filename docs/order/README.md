@@ -11,6 +11,8 @@ evidence:
   - contracts/events/order/v1/asyncapi.yaml
   - java/services/order-service/src/main/java/com/ecommerce/order
   - java/services/order-service/src/main/resources/db/migration/V1__order_baseline.sql
+  - java/services/order-service/src/main/resources/db/migration/V2__admin_delivery_confirmation.sql
+  - java/services/order-service/src/main/resources/db/migration/V3__submission_checkpoint_notification.sql
   - java/services/order-service/src/main/resources/kafka/debezium-connector-order-outbox.json
   - java/services/order-service/src/test/java/com/ecommerce/order
 verified_against_commit: null
@@ -29,15 +31,15 @@ verified_against_commit: null
 |---|---|
 | Thiết kế | `implemented`, scope `target`; tài liệu và contracts đồng bộ với code theo ADR-020 |
 | Implementation | Java 21 + Spring Boot 3.3, JDBC + Flyway (`V1__order_baseline.sql`), Spring Kafka, Temporal Java SDK 1.25 tại `java/services/order-service`; bốn workflow, durable inbox/dispatch/message/checkpoint, multi-destination outbox, receipt observer/trimmer, Redis request mirror |
-| Kiểm chứng | Unit test domain + integration test PostgreSQL (Testcontainers) + Temporal in-memory cho checkout, timeout/cancel/race, retry attempt, fulfilment/delivery, return/refund/reversal, no-payout, external remediation, Admin pre-dispatch, scope recovery và search; response HTTP validate với OpenAPI, outbox validate với JSON Schema; smoke test jar với Postgres + Temporal thật và Debezium connector với Kafka thật |
+| Kiểm chứng | Unit test domain + integration test PostgreSQL (Testcontainers) + Temporal in-memory cho checkout, timeout/cancel/race, retry attempt, fulfilment (dispatch, Admin delivery confirmation), return/refund/reversal, no-payout, external remediation, Admin pre-dispatch, scope recovery và search; response HTTP validate với OpenAPI, outbox validate với JSON Schema; smoke test jar với Postgres + Temporal thật và Debezium connector với Kafka thật |
 | Local runtime | `docker compose up -d order-service` (kèm `temporal`, `temporal-ui`); xem [development.md](./development.md) |
-| Contract | Order HTTP/AsyncAPI `x-adoption-status: implemented`; chưa `verified` vì chưa có consumer contract test |
-
-Mức áp dụng contract liên service chưa được đánh giá trong lần tái cấu trúc này.
-Contract hiện có, nếu có, không được dùng để âm thầm thay đổi đặc điểm của thiết
-kế cũ.
+| Contract | Order HTTP v1.1.0 / AsyncAPI v1.1.0 `x-adoption-status: implemented`; chưa `verified` vì chưa có consumer contract test (xem [ADOPTION](../../contracts/ADOPTION.md)) |
 
 ## 2. Mục tiêu
+
+Checkout submission dùng async HTTP waiter tới `PAYMENT_READY`: `DeferredResult`, PostgreSQL
+commit notification và bounded batch recovery, giữ nguyên response/idempotency/deadline.
+Registry RAM không thay thế DB recovery; xem [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
 
 Order Service quản lý vòng đời đơn hàng từ lúc Checkout submit đến khi thanh
 toán, thực hiện, giao đủ, hủy hoặc hoàn tiền. Service tạo attempt thanh toán có
@@ -63,8 +65,10 @@ Order Service chịu trách nhiệm:
   thúc return thiếu hàng bằng named no-payout decision, không tự đóng ở mốc 30 ngày.
 - Phục vụ chi tiết đơn và tìm kiếm/lọc lịch sử đơn trực tiếp từ PostgreSQL.
 - Phát integration event đáng tin cậy qua transactional outbox và CDC.
-- Nhận fact Payment/Inventory/Delivery vào durable inbox, commit workflow message rồi
-  route bằng dispatcher; proof sai thứ tự được park/replay theo đúng owner transition.
+- Nhận fact Payment/Inventory vào durable inbox, commit workflow message rồi route bằng
+  dispatcher; fact Payment tới trước khi attempt được bind được park/replay theo đúng owner transition.
+- Sở hữu delivery state: Admin xác nhận giao hàng qua Order API là nguồn duy nhất đưa line sang
+  `DELIVERED` (không có Delivery service, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)).
 
 Order Service không chịu trách nhiệm:
 
@@ -109,7 +113,7 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Hủy order | Resolve Payment cancel/capture fact before pre-payment compensation; admin paid action goes refund lane |
 | Yêu cầu trả hàng | Chấp nhận đúng một Buyer request hợp lệ và khóa selected full-quantity line scope |
 | Xử lý thanh toán | Validate mapped Payment attempt fact, freeze captured transaction, then forward-repair post-payment checkpoints |
-| Physical dispatch/delivery | Map Inventory fact only to `DISPATCHED`; Delivery proof v1 moves a line to `DELIVERED`/may complete master |
+| Physical dispatch/delivery | Map Inventory fact only to `DISPATCHED`; Admin delivery confirmation moves dispatched lines to `DELIVERED` and the last one completes the master |
 | Hoàn tiền | Buyer chờ Inventory final-inspect selected scope; admin chỉ automatic sau Inventory release toàn bộ committed lines trước dispatch; Payment gọi đúng một lần kể cả inspection FAIL |
 | Đóng return scope | Buyer terminal refund result tạo frozen close intent; approved no-payout Ops decision dùng incomplete close/zero-receipt cancel. Financial outcome và finalization progress được theo dõi riêng |
 | Capture/cancel anomaly | Capture thắng khi còn `CANCELLING` đi forward repair; success sau terminal non-capture mở reconciliation obligation, không hồi sinh order |
@@ -123,15 +127,15 @@ qua API, event hoặc Temporal signal được Order xử lý.
 | Inbound | Buyer/Admin qua Gateway | HTTP | Đọc, tìm kiếm, hủy, retry payment và return/refund | Bắt buộc | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
 | Inbound | Payment | Kafka | Payment/refund result | Bắt buộc | [Payment events v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | Inbound | Inventory | Kafka | Physical line-dispatch và selected-scope inspection completion | Bắt buộc | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
-| Inbound | Delivery | Kafka | Verified per-line delivery proof | Bắt buộc để auto-complete/return guard | [Delivery events v1](../../contracts/events/delivery/v1/asyncapi.yaml) |
+| Inbound | Admin qua Gateway | HTTP | Xác nhận giao hàng từng line đã dispatch (`delivery-confirmations`) | Bắt buộc để hoàn tất đơn/mở Buyer return | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
 | Outbound | Inventory | HTTP activity | Reserve exact plan/release/commit, selected scope, atomic pre-dispatch release | Bắt buộc | [Inventory workflow v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
 | Outbound | Promotion | HTTP activity | Reserve/cancel runtime and durable confirm; Order has no technical-cancellation capability | Bắt buộc khi có promotion | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) — implemented |
 | Outbound | Payment | HTTP activity | Tạo PaymentIntent attempt, cancel và refund captured transaction | Bắt buộc | [Payment HTTP v1](../../contracts/http/payment/v1/openapi.yaml) |
 | Outbound | Kafka | CDC | Hai Order facts cho Cart/Review và năm Notification commands | Bắt buộc | Order/Notification AsyncAPI v1 |
 | Internal | Temporal | Workflow/Activity/Signal | Durable saga orchestration | Bắt buộc | Workflow identity trong tài liệu |
-| Internal | PostgreSQL | SQL | Source of truth và read path | Bắt buộc | Logical design, chưa có migration evidence |
+| Internal | PostgreSQL | SQL | Source of truth và read path | Bắt buộc | Flyway `V1__order_baseline.sql`, `V2__admin_delivery_confirmation.sql` |
 | Internal | Redis | Redis commands | Replay request nhanh cho cancel/admin-refund/return/payment-attempt | Tùy chọn; lỗi thì fallback PostgreSQL | Key/TTL trong `data.md` |
-| Internal | Debezium/Kafka Connect | WAL CDC | Relay outbox sang Kafka | Bắt buộc | Cấu hình chưa có evidence |
+| Internal | Debezium/Kafka Connect | WAL CDC | Relay outbox sang Kafka | Bắt buộc | `src/main/resources/kafka/debezium-connector-order-outbox.json` (smoke test thủ công) |
 
 Inventory reservation commands return durable HTTP receipts; Order does not consume
 reservation-result acknowledgment events. Unknown Reserve/Commit/Release
@@ -153,7 +157,7 @@ Inventory Kafka contract contains only dispatch and selected-scope inspection co
   Payment sau scope completion; Admin chỉ sau Inventory atomic all-line
   pre-dispatch release evidence.
 - [`INV-ORD-006`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ phát
-  `com.ecommerce.order.completed.v1` khi tất cả line đã `DELIVERED` bằng verified Delivery proof và CAS master thành công.
+  `com.ecommerce.order.completed.v1` khi tất cả line đã `DELIVERED` bằng Admin delivery confirmation và CAS master thành công.
 - [`INV-ORD-007`](./domain.md#4-quy-tắc-và-bất-biến-nghiệp-vụ): chỉ `PAID` và
   `COMPLETED` có registered integration event; state, sequence và outbox tương ứng
   commit trong cùng transaction.
@@ -190,10 +194,14 @@ Inventory Kafka contract contains only dispatch and selected-scope inspection co
 
 ## 9. Khoảng trống đã biết
 
-- Checkout Service và Delivery Service chưa có runtime, nên chưa chạy được E2E qua Gateway
-  thật; luồng được kiểm bằng contract fake trong test tích hợp.
-- Contracts mới ở mức `implemented`: chưa có consumer contract test (Checkout, frontend,
-  Finance/Ops, Cart/Review/Notification với producer thật); Debezium mới smoke test thủ công.
+- Không có Delivery service: `DELIVERED`/`COMPLETED` đi qua Admin delivery confirmation (ADR-021), nên
+  không có bằng chứng giao hàng xác thực từ bên thứ ba, và đơn đã dispatch mà Admin quên xác nhận sẽ ở
+  `PROCESSING` (gauge `order.fulfillment.delivery_confirmation_overdue`, mặc định 7 ngày). Checkout
+  Service đã có runtime (`java/services/checkout-service`) nhưng chưa có E2E tự động qua Order
+  thật: test của Checkout dùng fixture đã validate với OpenAPI internal của Order, còn test của
+  Order dùng contract fake.
+- Contracts mới ở mức `implemented`: chưa có consumer contract test với provider thật (Checkout,
+  frontend, Finance/Ops, Cart/Review/Notification); Debezium mới smoke test thủ công.
 - Chưa có Temporal replay test trên history production, Kubernetes manifest, phân pod
   HTTP/consumer/worker hay mesh `AuthorizationPolicy` thật.
 - Analytics chưa có runtime consumer, nên không được coi là consumer của Order event cho

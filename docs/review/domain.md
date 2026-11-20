@@ -1,14 +1,20 @@
 ---
 doc_id: review-domain
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
 ---
@@ -55,7 +61,7 @@ hard purge đúng hạn. Nó không phải dữ liệu hiển thị public.
 | `REVIEW-BR-003` | Chỉ `owner_user_id` của eligibility còn `PENDING` được tạo review. |
 | `REVIEW-BR-004` | Tạo review atomically chuyển `PENDING → CLAIMED`; một eligibility sinh tối đa một review. |
 | `REVIEW-BR-005` | Rating nằm trong 1–5; content là null hoặc non-blank, không quá maximum cố định. |
-| `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1. |
+| `REVIEW-BR-006` | Review chỉ sửa khi `status=APPROVED` và `edit_count=0`; commit sửa tăng nó thành 1 và đặt `content_edited_at` bằng transaction time. Create để timestamp null; moderation/privacy không đổi nó. `updated_at` chỉ là thời gian cập nhật record chung. |
 | `REVIEW-BR-007` | Caller chỉ gửi `asset_id` của asset do mình sở hữu. Khi create/edit, Review xác minh object đã upload, rồi atomically chuyển asset hợp lệ sang `VERIFIED`/`ATTACHED`; asset phải chưa attach và không vượt số lượng tối đa. |
 | `REVIEW-BR-008` | Một account có tối đa một active report cho một review khi identity còn tồn tại; tác giả không tự report. Sau khi admin dismiss, caller có thể report lại. |
 | `REVIEW-BR-009` | Report đầu tiên của một chu kỳ ghi `first_reported_at`. Khi active report đạt threshold, review thành `HIDDEN_BY_REPORT` và ghi `hidden_at`; dismiss toàn bộ report chỉ đưa review `HIDDEN_BY_REPORT` về `APPROVED`. `REMOVED` luôn terminal và không được resurrect bởi dismiss. Vì hide chuyển mọi report `PENDING` thành `ACTIONED`, một queue lọc theo report status sẽ mất case đúng lúc cần phân xử; moderation queue vì thế khóa theo review state, và đó là đường duy nhất lấy được `review_id` cho dismiss. |
@@ -167,6 +173,11 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 
 ## 7. Error model
 
+Bảng này là các lỗi nghiệp vụ và ý nghĩa của chúng. Danh mục đầy đủ mà API thực sự trả —
+kèm lỗi chung (`INVALID_REQUEST`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`…) và lỗi hạ tầng
+(`REVIEW_STORE_UNAVAILABLE`, `MEDIA_STORAGE_UNAVAILABLE`, `INTERNAL_ERROR`), cùng `retryable` —
+nằm ở [interfaces.md mục 7](./interfaces.md#7-error-catalog).
+
 | Error | HTTP | Ý nghĩa |
 |---|---:|---|
 | `ELIGIBILITY_NOT_FOUND` | 404 | Không có entitlement |
@@ -181,8 +192,8 @@ storage trả “object not found” là xóa thành công, rồi mới ghi `DEL
 | `INVALID_MEDIA_REFERENCE` | 409 | `asset_id` không giải được thành asset khả dụng của caller. Không tồn tại và thuộc người khác trả cùng một code, cố ý không phân biệt để không thành existence oracle |
 | `MEDIA_QUOTA_EXCEEDED` | 429 | Đã chạm quota asset chưa attach hoặc byte upload của caller |
 | `ALREADY_REPORTED` | 409 | Partial unique guard từ chối report active trùng |
-| `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author hoặc không còn report identity |
-| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress. **Không phát sinh ở v1**: review không `APPROVED` thì không tồn tại trên surface public, nên report nó trả `REVIEW_NOT_FOUND`. Một code riêng cho "đã bị ẩn" sẽ nói đúng điều mà response 202 trung tính cố ý không nói (ADR-008) |
+| `REVIEW_REPORT_FORBIDDEN` | 403 | Caller là author của review. Caller đã có deletion guard không nhận mã này mà nhận `FORBIDDEN` chung, để API không thành oracle cho việc xóa tài khoản |
+| `REVIEW_NOT_REPORTABLE` | 409 | Review không còn nhận report; response không nêu moderation progress. **Dành riêng, không được phát ở v1**: review không `APPROVED` thì không tồn tại trên surface public, nên report nó trả `REVIEW_NOT_FOUND`. Một code riêng cho "đã bị ẩn" sẽ nói đúng điều mà response 202 trung tính cố ý không nói (ADR-008) |
 | `REVIEW_NOT_REPLYABLE` | 409 | Review không ở state `APPROVED` |
 | `TAKEDOWN_ALREADY_EXISTS` | 409 | Review đã có legal takedown; takedown không thể lặp hay đảo ngược |
 | `EXPORT_SESSION_NOT_FOUND` | 404 | Không có export session |

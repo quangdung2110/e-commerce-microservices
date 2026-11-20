@@ -16,7 +16,7 @@ verified_against_commit: null
 
 > Các luồng dưới đây bảo toàn happy path, timeout, retry, race, compensation và
 > recovery. Payload cross-service được chuẩn hóa tại Payment HTTP/events v1/v2,
-> Inventory workflow v1 và Delivery proof v1; Markdown không được ghi đè các contract đó.
+> và Inventory workflow v1; Markdown không được ghi đè các contract đó.
 
 ## Danh mục luồng nghiệp vụ
 
@@ -28,7 +28,7 @@ verified_against_commit: null
 | `WF-ORDER-004` | Checkout submit saga | HTTP + Temporal | Checkout | implemented |
 | `WF-ORDER-005` | Xử lý payment signal và capture/cancel race | Kafka + durable Temporal message | Payment consumer | implemented |
 | `WF-ORDER-006` | Nhận physical-dispatch fact | Kafka | Inventory consumer | implemented |
-| `WF-ORDER-006a` | Nhận verified delivery proof | Kafka | Delivery consumer | implemented |
+| `WF-ORDER-006a` | Admin xác nhận đã giao | HTTP | Admin | implemented |
 | `WF-ORDER-007` | Buyer yêu cầu return one-shot | HTTP | Buyer | implemented |
 | `WF-ORDER-008` | Refund/return saga | Temporal + Kafka | Buyer/Admin/Inventory/Payment | implemented |
 | `WF-ORDER-008a` | Đóng/recover Inventory Refund Scope | Temporal + durable dispatch | Order worker/Finance/Ops | implemented |
@@ -165,12 +165,16 @@ sequenceDiagram
   participant Y as Payment
   C->>O: POST checkout-order-submissions(snapshot, token)
   O->>T: start/attach order-checkout-{token}
+  O->>O: register DeferredResult, release HTTP thread (response open)
   T->>O: CreateOrder (không integration event)
   T->>I: ReserveInventory(allocation_plan_id, line mapping)
   T->>P: POST /internal/v1/promotion-allocation/reservations
   T->>Y: InitiatePayment(Stripe)
-  Y-->>T: txn_id, client_secret, publishable_key
-  T-->>O: payment client data
+  Y-->>T: transaction identity / initiation outcome
+  T->>O: commit PAYMENT_READY (DB trigger NOTIFY token)
+  O->>O: listener wakes response executor, read checkpoint
+  O->>Y: GET initial attempt client-data (fresh)
+  Y-->>O: usable, client_secret, publishable_key, expiry
   O-->>C: order_id + payment client data
   Note over T: chờ PaymentResult tối đa 15 phút
   Y-->>T: PAYMENT_SUCCESS signal qua consumer
@@ -179,6 +183,13 @@ sequenceDiagram
   T->>P: POST /internal/v1/promotion-allocation/confirmations
   T->>O: PAID -> PROCESSING (không integration event)
 ```
+
+HTTP wait dùng registry local theo token và `DeferredResult`, không giữ request thread. Listener
+nhận tất cả terminal transitions (ready/failure/recalculation/cancel), đọc lại DB và hoàn tất đúng
+một lần; register-before-read và shared batch recovery chống missed notification. Hết checkpoint
+budget trả `503 SUBMISSION_IN_PROGRESS`; đầy waiter/executor trả `503 ORDER_UNAVAILABLE`; workflow
+vẫn chạy. Mất instance/kết nối HTTP thì Checkout recovery bằng cùng token. Không đưa secret vào
+notification hay Temporal history. Xem [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md).
 
 ### Pre-payment happy path và compensation
 
@@ -210,6 +221,11 @@ sequenceDiagram
    one provider intent is proven; Order never continues with a blank/unknown payment.
    It returns `client_secret`, `publishable_key`, transaction ID; pre-capture cancel is
    registered only as a fact-based cancellation activity.
+   Certified `422 PROVIDER_CREATE_NOT_ACCEPTED` là ngoại lệ có bằng chứng theo
+   [Payment ADR-024](../payment/decisions/ADR-024-certified-create-non-acceptance.md):
+   validate đầy đủ proof gắn order/attempt trước khi trả rejection. Không bind attempt;
+   submission `FAILED/PAYMENT_INITIATION_REJECTED`, cleanup Inventory/Promotion rồi
+   Order `CANCELLED`. Proof không hợp lệ và generic `503` vẫn UNKNOWN/replay cùng key.
 5. Khi initial attempt đạt `PAYMENT_READY`, workflow khóa
    `payment_deadline_at = min(PAYMENT_READY + 15 phút,
    orders.inventory_reservation_expires_at - clock-skew safety,
@@ -374,35 +390,36 @@ transition from this fact.
 another item. Duplicate/stale revision is no-op. DB lỗi không ack để retry; inbox and
 outbox atomic cùng state. Test cần partial dispatch, nhiều kho, duplicate, out-of-order,
 zero-line anomaly, and proof that no physical-dispatch event creates `DELIVERED` or
-`ORDER_COMPLETED`.
+`ORDER_COMPLETED` (`CheckoutFlowIT`: dispatch alone leaves the order `PROCESSING`).
 
-## WF-ORDER-006a — Nhận verified delivery proof
+## WF-ORDER-006a — Admin xác nhận đã giao
 
-**Mục tiêu:** accept customer-delivery fact riêng biệt, đủ bằng chứng để chuyển đúng một
-line `DISPATCHED -> DELIVERED`, và complete master chỉ khi tất cả line đã được chứng minh.
+**Mục tiêu:** đưa đúng các line đã `DISPATCHED` sang `DELIVERED` bằng lời xác nhận có dấu vết của Admin,
+và hoàn tất master khi mọi line đã giao. Không có Delivery service ([ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)).
 
-**Trigger/input:** `order-delivery-consumer` nhận
-`com.ecommerce.delivery.order-line.delivered.v1` từ
-[`t.delivery.order.events.v1`](../../contracts/events/delivery/v1/asyncapi.yaml). Event
-phải có `order_id`, `order_line_id`, `warehouse_id`, unique `delivery_proof_id`, SHA-256
-của immutable provider proof record, `delivered_at` và `aggregate_revision`.
+**Trigger/input:** `POST /api/v1/admin/orders/{order_id}/delivery-confirmations`, JWT Admin qua Gateway,
+body `lines[] {order_line_id, delivered_at, delivery_reference}` (1–100 line duy nhất; `delivery_reference`
+là mã vận đơn/biên nhận, tối đa 128 ký tự, các line cùng kiện có thể dùng chung). Không có `Idempotency-Key`.
 
-**Happy path:** trong một transaction, consumer validates immutable allocation mapping,
-proof ID/digest và `aggregate_revision`, inserts durable inbox, rejects a reused proof for
-another line, and CASes exactly that line `DISPATCHED -> DELIVERED`. It persists
-`delivery_proof_id`/digest/timestamp, recalculates
-the parent `order_items.status`, and only after a locked `NOT EXISTS` check for any
-non-`DELIVERED` line CASes master `PROCESSING -> COMPLETED` plus `ORDER_COMPLETED` outbox.
+**Happy path:** trong một transaction đồng bộ: khóa `orders` rồi các line theo ID tăng dần; kiểm tra mọi
+line (thuộc order, không trùng, `delivered_at` không trước `dispatched_at` và không quá
+`order.fulfillment.delivered-at-future-skew` sau giờ máy chủ); CAS `DISPATCHED -> DELIVERED` từng line và
+lưu `delivery_reference`, `delivered_at`, `delivery_confirmed_by` (Admin `X-User-Id`); tính lại
+`order_items.status`; chạy `TryCompleteOrder`. Nếu đây là line cuối, master CAS `PROCESSING -> COMPLETED`,
+ghi `order.completed.v1` và `ORDER_COMPLETED` cùng transaction. Trả `200` với `order_status`,
+`order_completed` và các line đã xác nhận. Order phải ở `PAID`, `PROCESSING` hoặc
+`FINANCIAL_RECONCILIATION_REQUIRED` (line `DISPATCHED` có thể tồn tại khi financial repair chưa xong; khi
+về `PROCESSING` convergence hoàn tất đơn).
 
-**Failure/race:** duplicate event/proof or stale revision is a no-op; bad mapping is
-quarantined. Một proof hợp lệ đến trước dispatch được persist `PENDING_PREREQUISITE` và
-ACK sau khi inbox + convergence work commit; dispatch transition của chính line đó đánh
-thức replay. Nó không bị ACK rồi bỏ quên và không bị coerced thành delivery sớm. DB/outbox
-failure is not ACKed. `TryCompleteOrder` khóa master và chạy cả sau final-line proof lẫn
-sau financial repair về `PROCESSING`, tránh missed-final-event race. Tests cover partial
-delivery across warehouses, same proof on two lines, duplicate/out-of-order proof,
-concurrent final lines, proof-before-dispatch replay, delivery-while-master-PAID và invariant
-Buyer return chỉ mở sau khi mọi line delivered.
+**Failure/race:** all-or-nothing — một line sai thì không line nào đổi. Line còn `PROCESSING` trả
+`409 DELIVERY_REQUIRES_DISPATCH`; dữ liệu sai `422 INVALID_DELIVERY_CONFIRMATION`; order không ở trạng
+thái cho phép `409 INVALID_ORDER_TRANSITION`. Lặp lại cùng line với cùng `delivery_reference` và
+`delivered_at` là `200` no-op và không phát lại fact; khác thì `409 DELIVERY_ALREADY_CONFIRMED`. Hai Admin
+đồng thời được tuần tự hóa bởi khóa order, line cuối chỉ hoàn tất đơn một lần. Đơn đã dispatch nhưng chưa
+xác nhận sau `order.fulfillment.delivery-confirmation-overdue` (7 ngày) làm tăng gauge
+`order.fulfillment.delivery_confirmation_overdue`; hệ thống không tự đặt `DELIVERED`. Tests: dispatch trước
+khi xác nhận, authorization, validation, all-or-nothing, replay/conflict, line cuối hoàn tất đúng một lần,
+gauge quá hạn và invariant Buyer return chỉ mở sau khi mọi line `DELIVERED`.
 
 ## WF-ORDER-007 — Buyer yêu cầu return one-shot
 
@@ -558,7 +575,10 @@ resolutions cannot substitute for these scope guards or fabricate a payout.
 **Payment failure/reverse:** a normal failure keeps master `RETURN_REQUESTED`, sets
 `payment_status=REFUND_FAILED` and case `FAILED`; it also opens a typed
 `CUSTOMER_PAYOUT_REMEDIATION` obligation, so the public operation remains
-`MANUAL_REVIEW_REQUIRED` until Finance/Accounting records a permitted resolution. Buyer
+`MANUAL_REVIEW_REQUIRED` until Finance/Accounting records a permitted resolution. Its
+`failure` problem is `REFUND_MANUAL_REVIEW_REQUIRED` (`409`, `retryable=false`); the
+frontend shows "being checked manually, do not resend" for every `MANUAL_REVIEW_REQUIRED`
+operation and disables the command that produced it. Buyer
 also freezes `CLOSE` with
 reason `REJECTED` and completes/recovers that Inventory command. `REJECTED` is a
 terminal payout outcome, not inspection `FAIL`. Buyer guard không reset.

@@ -2,13 +2,19 @@
 doc_id: review-development
 service: review
 scope: current
-status: proposed
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
@@ -23,6 +29,12 @@ any S3-compatible object storage (MinIO in compose). Kafka/Connect and object st
 fixed dependencies of the design, not of the read path.
 
 ## 0. Runtime choices and why
+
+Build storage trước khi chạy integration tests: `docker compose build minio`.
+Testcontainers dùng cùng image `ecommerce-minio:RELEASE.2025-10-15T17-29-55Z` như compose.
+`infra/minio/Dockerfile` build source chính thức với archive SHA-256 cố định vì upstream
+không còn phân phối binary/image dựng sẵn. `ReviewBoundaryIT` PUT lại URL đã ký sau attach,
+assert HTTP 412 và byte vẫn nguyên; kiểm header đơn thuần không đủ chứng nhận immutability.
 
 **Spring JDBC, not an ORM.** Every command in this design is a specific statement: a
 conditional `UPDATE` that doubles as the ownership check, a `FOR UPDATE` row lock, an
@@ -46,10 +58,13 @@ not on this projection, whose every write already recomputes the whole row.
 
 ## 1. Local schema
 
-The service applies `V1__init_review_schema.sql` with Flyway at startup; that file is
-kept byte-identical to
-[`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql) and
-`SchemaSyncTest` fails the build if the two ever drift.
+The service applies `V1`–`V4` with Flyway at startup (`db/migration/`); each file is kept
+byte-identical to its counterpart under [`schema/`](./schema) — `V1__init_review_schema.sql` to
+[`0001_initial_review_schema.sql`](./schema/0001_initial_review_schema.sql),
+`V2__eligibility_product_snapshot.sql` to `0002_eligibility_product_snapshot.sql` and
+`V3__privacy_sweep_includes_failed.sql` to `0003_privacy_sweep_includes_failed.sql`, and
+`V4__review_content_edited_at.sql` to `0004_review_content_edited_at.sql` — and
+`SchemaSyncTest` fails the build if any pair ever drifts.
 
 Applying the schema by hand needs PostgreSQL only. `init-db.sh` creates the
 `review_service` database, and the compose PostgreSQL already runs with
@@ -57,9 +72,17 @@ Applying the schema by hand needs PostgreSQL only. `init-db.sh` creates the
 
 ```bash
 docker compose up -d postgres
-docker compose exec -T postgres psql -U postgres -d review_service < docs/review/schema/0001_initial_review_schema.sql
+for f in docs/review/schema/000[1234]_*.sql; do
+  docker compose exec -T postgres psql --single-transaction -U postgres -d review_service < "$f"
+done
 docker compose exec postgres psql -U postgres -d review_service -c "\dt review.*"
+docker compose up postgres-init   # hands every object to the review_service role
 ```
+
+The service itself logs in as `review_service`, the owner of the database, never as the
+superuser; `postgres-init` creates the role and moves ownership of objects created by hand,
+and runs on every `docker compose up` ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)).
+Object storage uses the MinIO user `review-service`, limited to the `review-media` bucket.
 
 `init-db.sh` only runs when the PostgreSQL volume is first created. On an existing
 volume the database will be missing; create it once rather than wiping the volume:
@@ -68,8 +91,8 @@ volume the database will be missing; create it once rather than wiping the volum
 docker compose exec postgres psql -U postgres -c "CREATE DATABASE review_service"
 ```
 
-Schema CI must apply `0001` to an empty PostgreSQL 14 database. It must also verify
-the dynamic outbox bootstrap created the current and next UTC partitions.
+Schema CI must apply `0001`–`0004` in order to an empty PostgreSQL 14 database. It
+must also verify the dynamic outbox bootstrap created the current and next UTC partitions.
 
 ### Auth → Review `USER_DELETED` persistence contract test
 
@@ -155,15 +178,17 @@ cd java/services/review-service && mvn verify
 | Area | Required proof |
 |---|---|
 | Entitlement | Order's producer contract accepts only a canonical positive decimal-string `order_id`; Review stores the accepted string without numeric coercion; duplicate order event is receipt no-op; one SKU/order creates one entitlement; an event repeating the same (product_id, sku_id) creates one eligibility carrying the first occurrence's variant_name, and an event above 200 items fails producer contract validation; create race has one winner; a late `ORDER_COMPLETED` persists `EXPIRED` with `expires_at` derived from `completed_at`, even when it predates `created_at`; a guarded subject's late order commits receipt but creates no eligibility; the product name/image snapshot is stored when supplied and stays null for historic orders; pending list and owner reads carry that snapshot; `GET /reviews/me` lists only the caller's reviews newest first, pages by keyset and keeps hidden/removed reviews without signed media |
+| HTTP contract | `HttpContractIT` runs the service over real HTTP against `contracts/http/review/v1/openapi.yaml` and `contracts/http/review/internal/v1/openapi.yaml`: the mapped routes are exactly the operations of the two documents; every response has a status its operation declares and a body that validates against the declared schema (Problem bodies included); parameter violations are `400` naming the field; an unroutable, wrong-method or wrong-media-type request is `404`/`405`/`415`; a field the contract does not define, and a repeated `media_asset_ids` entry, are `400`; `trace_id` is echoed only within the Problem schema's 16–64 characters; the admin surface needs identity and role; each internal route group accepts only its own token |
 | Review | Product/SKU composite FK rejects mismatch; only one edit succeeds; content hard cap rejects invalid content; same caller gets deterministic HMAC pseudonym and no profile/email is accepted; a guarded caller cannot create or edit |
-| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; an unknown or foreign asset_id returns 409 INVALID_MEDIA_REFERENCE and a caller-owned asset that is absent, mismatched, expired or already attached returns 409 MEDIA_NOT_VERIFIED, with unknown and foreign indistinguishable to the caller; replacement and takedown queue `DELETE_PENDING` with their distinct reasons; `ISSUED` and `VERIFIED` assets past `expires_at` queue `UNATTACHED_EXPIRED`; a never-uploaded object reaches `DELETED` when Storage returns not-found; attach/expiry race has exactly one winner and an `ATTACHED` asset is never swept; a guarded caller cannot issue or attach an asset, while a normal caller still attaches only an asset they own |
+| Media | User can issue bounded upload URLs; create/edit verifies immutable object metadata without a client verify/poll call; an unknown or foreign asset_id returns 409 INVALID_MEDIA_REFERENCE and a caller-owned asset that is absent, mismatched, expired or already attached returns 409 MEDIA_NOT_VERIFIED, with unknown and foreign indistinguishable to the caller; replacement and takedown queue `DELETE_PENDING` with their distinct reasons; `ISSUED` and `VERIFIED` assets past `expires_at` queue `UNATTACHED_EXPIRED`; a never-uploaded object reaches `DELETED` when Storage returns not-found; the daily cleanup drains more assets than one page holds; attach/expiry race has exactly one winner and an `ATTACHED` asset is never swept; a guarded caller cannot issue or attach an asset, while a normal caller still attaches only an asset they own |
 | Moderation | Concurrent threshold reports produce one hide; dismiss resets active counter without resurrecting REMOVED; ACTIONED cannot have admin resolver; a guarded caller cannot create a report; a review with reports appears once under status=REPORTED no matter how many reports it has, and moves to status=HIDDEN_BY_REPORT on the same page position when the threshold fires; dismissing by the review_id taken from that list restores it to APPROVED, closing the HIDDEN_BY_REPORT -> APPROVED edge end to end; `first_reported_at` and `hidden_at` survive the restore and a new report reopens the cycle; the list returns no reporter_user_id; `EXPLAIN` shows both statuses using `ix_review_moderation_reported`/`ix_review_moderation_hidden` and never a sequential scan |
 | Admin media | The moderation list returns signed media URLs for a HIDDEN_BY_REPORT review, with a TTL shorter than the public one; public list and owner read still return no URL for that same media; a report about an image is therefore adjudicable only through the admin surface |
 | Takedown | One record per review; authenticated acting admin is persisted as `taken_down_by_admin_id`; legal reason and actor never appear public or in either Review event |
 | Aggregate | Duplicate event changes no bucket twice; create/edit/hide/restore/remove yields exact bucket values and revision |
 | Notification | First reply creates exactly one reply request and takedown creates one removal request only when the eligibility owner has no deletion guard. With an `ANONYMIZED` guard but a still-present raw `owner_user_id`, each admin command persists normally and writes zero notification outbox rows. A concurrent privacy/admin-command test proves the shared subject lock makes a guard committed first suppress the request. Payload has no content, legal data or admin identity. |
 | Export | POST persists session offsets; every GET page echoes them; missing=404, expired=410; snapshot/replay overlap converges |
-| Privacy | Auth common schema rejects non-UUID CloudEvents `id`; the canonical Auth `USER_DELETED` UUID inserts exactly one `(privacy-sync, event_id)` receipt and one `privacy_erasure_requests.source_event_id`; event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes and the notification-producing branch of admin reply/takedown serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; a purge that clears an identifier without writing its paired `*_erased_at` is rejected by the CHECK, proving the pairing is enforced rather than assumed; one end-to-end run reaches `PURGED` with `anonymized_at` and `purged_at` both set and every identifier column NULL across all four tables; `EXPLAIN` shows anonymize and purge using `ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure` and `ix_report_reporter_erasure`, never a sequential scan; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries |
+| Privacy | Auth common schema rejects non-UUID CloudEvents `id`; the canonical Auth `USER_DELETED` UUID inserts exactly one `(privacy-sync, event_id)` receipt and one `privacy_erasure_requests.source_event_id`; event replay no-op; logical duplicate with a new event ID keeps one HMAC subject guard; anonymize changes pseudonym to `Khách hàng ẩn danh` without changing aggregate; concurrent Order/customer writes and the notification-producing branch of admin reply/takedown serialize with privacy through one subject lock; hard-purge nulls direct customer IDs and request subject ID but keeps the HMAC guard; a purge that clears an identifier without writing its paired `*_erased_at` is rejected by the CHECK, proving the pairing is enforced rather than assumed; one end-to-end run reaches `PURGED` with `anonymized_at` and `purged_at` both set and every identifier column NULL across all four tables; `EXPLAIN` shows anonymize and purge using `ix_eligibility_owner_erasure`, `ix_media_asset_owner_erasure` and `ix_report_reporter_erasure`, never a sequential scan; test Auth-redriven missed deletion event because current direct publish can be lost after at most three retries; a purge that fails marks its request `FAILED`, stays counted as overdue, keeps the guard, and is purged by the next pass with `failure_detail` cleared; a failing subject does not hold back the ones behind it even with pages of one; a request before its deadline is untouched; the sweep reads `ix_privacy_hard_delete_sweep` (`EXPLAIN`); against a real broker, a `USER_DELETED` that violates its contract goes to `t.auth.events.dlq` at once while the next record is applied, and a transient failure is retried, counted and never dead-lettered until it clears (`PrivacyConsumerIT`) |
+| Outbox partitions | Bootstrap provides the current and next month; with old history present, a missing current month is reported and readiness is `DOWN` while a missing next month is reported but readiness stays `UP` (`OutboxPartitionWindowIT`) |
 | Outbox | Every command writes correct partition key; current/next partition exists; old-row count is never used as publish backlog; stored `payload` validates against the JSON Schema of its own `type` for all eight message types; an envelope missing `subject`/`dataschema`/`time` or disagreeing with its projection columns fails the domain transaction; a payload above 16 KiB is rejected at write time |
 | Outbox CDC | Every row lands on `t.review.events` and no other topic, including a `REVIEW_METRIC` row; Kafka key equals `data.product_id`; the consumed message value is byte-equal to the stored `payload`; `table.expand.json.payload` round-trips all eight `data` shapes without dropping nullable fields |
 
@@ -185,13 +210,12 @@ the proof lives because it is not where the row suggests:
 
 ## 4. Migration and deployment rules
 
-`V1` is the initial schema and is applied by Flyway. It may still be edited in place
-only while no environment holds Review data; the moment one does, changes require
-forward-only migrations: add nullable/defaulted columns first, create large indexes
-concurrently, run dual-read/write compatibility windows, then remove obsolete fields
-later. Any edit to `V1` must be mirrored into
-`docs/review/schema/0001_initial_review_schema.sql` in the same commit — `SchemaSyncTest`
-compares the two byte for byte.
+`V1`–`V4` are applied by Flyway and environments hold Review data, so none of them is edited:
+Flyway rejects a changed checksum at startup. Every change is a new forward-only migration
+(`V5`, …): add nullable/defaulted columns first, create large indexes concurrently, run
+dual-read/write compatibility windows, then remove obsolete fields later. A new migration is
+mirrored into `docs/review/schema/` as `000N_<name>.sql` in the same commit and added to
+`SchemaSyncTest`, which compares each pair byte for byte.
 
 Schema changes to outbox need Debezium coordination. Schema changes to export endpoints
 need Search consumer contract test. Receipt cleanup must never run before the maximum

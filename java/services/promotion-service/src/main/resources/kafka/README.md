@@ -2,7 +2,9 @@
 
 `debezium-connector-promotion-outbox.json` là artifact vận hành, không phải file
 được application đọc. Đăng ký bằng Kafka Connect REST API (worker ở `kafka-connect`
-của docker-compose, cổng 8084):
+của docker-compose, cổng 8084). Với root docker-compose, service one-shot `kafka-connect-init`
+(`infra/kafka-connect/register-connectors.sh`) tự đăng ký connector này mỗi lần `docker compose up`;
+chạy lại tay bằng `docker compose up kafka-connect-init` (idempotent). Đăng ký thủ công:
 
 ```bash
 curl -sS -X PUT http://localhost:8084/connectors/promotion-outbox-connector/config \
@@ -35,8 +37,19 @@ không ghi outbox; finalizer Redis chạy từ `promotion_command_receipts.redis
 ## Yêu cầu hạ tầng
 
 PostgreSQL phải chạy với `wal_level = logical` và còn replication slot trống
-(`max_replication_slots` ở compose là 4: Product, Inventory, Promotion và một slot dự
-phòng). Không cần plugin thêm cho Kafka Connect.
+(`max_replication_slots=10` ở docker-compose, đủ cho các connector outbox của Product,
+Inventory, Order, Payment, Promotion…). Không cần plugin thêm cho Kafka Connect.
+
+Với root stack, có thể đăng ký bằng script chung (PowerShell 7):
+`pwsh -NoProfile -File scripts/register-checkout-connectors.ps1 -Services promotion`
+(thêm `-CheckOnly` để chỉ kiểm trạng thái). Script không nằm trong tập mặc định của Checkout.
+
+## Bằng chứng
+
+`OutboxCdcIntegrationTest` chạy đúng file connector này trên PostgreSQL `wal_level=logical`, Kafka và
+`debezium/connect:3.0.0.Final` thật: mỗi dòng outbox lên `t.promotion.markdown.events` với key
+`product_id`, header `ce_*` và thứ tự theo `source_revision`; envelope là JSON object khớp payload đã lưu
+(field `null` tường minh như `discount.max_discount_vnd` bị EventRouter bỏ) và hợp lệ với JSON Schema.
 
 ## Kiểm tra nhanh
 

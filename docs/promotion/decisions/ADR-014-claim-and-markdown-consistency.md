@@ -29,6 +29,19 @@ Amended bởi [ADR-016](./ADR-016-event-scope-and-receipt-driven-finalization.md
 snapshot contract chuyển sang `contracts/events/promotion/v1/` do Promotion sở hữu; không
 có coupon fact hay Auth welcome-voucher consumer ở v1.
 
+Làm rõ bởi [ADR-015](./ADR-015-lean-redis-runtime-keyspace.md): key `promo:{promotion_id}:claim_gate` nhắc bên
+dưới là tên lịch sử; hiện được gộp vào `promo:{promotion_id}:runtime` (cùng field `claim_enabled`,
+`claim_revision`, `opens_at_ms`, `closes_at_ms`).
+
+Làm rõ bởi [ADR-019](./ADR-019-post-implementation-audit-corrections.md): consumer Product tombstone
+không invalidate cache nào (không có cache theo product); câu "invalidate product-scoped Redis cache
+sau commit" bên dưới là lịch sử tại thời điểm quyết định.
+
+Làm rõ bởi [ADR-021](./ADR-021-batched-boundary-emission-and-dedup-precheck.md): scheduler START/END phát
+snapshot theo lô rule nhỏ, mỗi lô một transaction, kiểm dedup key trước khi lock; "worker re-read DB/time,
+commit outbox trước ZREM" bên dưới áp dụng cho từng lô và `ZREM` chỉ sau lô cuối. Đường admin
+publish/pause/cancel không đổi.
+
 ## Context
 
 Claim kiểm tra ACTIVE trước Lua vẫn có thể `SPOP` sau `campaign.end_time`. Campaign
@@ -70,7 +83,8 @@ Redis observation, không có PostgreSQL transition để outbox atomically.
   từ PostgreSQL. Redis/DB clock drift phải được đo và alert.
 - Publish chỉ mở/rebuild gate sau DB commit. Pause/cancel đóng gate bảo thủ trước DB
   transaction; DB rollback thì rebuild từ truth. Crash có thể false-reject tạm thời nhưng
-  không fail-open claim.
+  không fail-open claim. Không đóng được gate thì pause/cancel thất bại `503` thay vì tiếp tục
+  (xem workflows.md WF-PROMO-001).
 
 ### Markdown event và Product deletion
 

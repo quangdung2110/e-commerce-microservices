@@ -78,6 +78,10 @@ class PreviewApiTest extends AbstractCheckoutTest {
         LoggedRequest inventory = posted(INVENTORY_PATH).get(0);
         assertThat(inventory.getHeader("X-Service-Identity")).isEqualTo("checkout-service");
         assertThat(inventory.getHeader("X-Correlation-ID")).matches("^[A-Za-z0-9._:-]{8,128}$");
+        // contracts ADR-002: every hop carries X-Request-Id; Inventory's required correlation header
+        // holds the same value for a chain that is synchronous end to end.
+        assertThat(inventory.getHeader("X-Request-Id")).isEqualTo(inventory.getHeader("X-Correlation-ID"));
+        assertThat(inventory.getHeader("traceparent")).isNotBlank();
         assertThat(inventory.getHeader("X-Causation-ID")).isEqualTo(idempotencyKey);
         assertThat(inventory.containsHeader("Idempotency-Key")).isFalse();
         assertThat(inventory.containsHeader("Authorization")).isFalse();
@@ -89,6 +93,22 @@ class PreviewApiTest extends AbstractCheckoutTest {
         assertThat(PRODUCT.header("x-request-id")).isNotBlank();
         assertThat(PRODUCT.header("traceparent")).matches("^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$");
         assertThat(PRODUCT.requests().get(0)).containsExactlyInAnyOrder("sku-1", "sku-2");
+    }
+
+    @Test
+    @DisplayName("Every provider is told how long Checkout waits: X-Request-Timeout-Ms over HTTP, the deadline over gRPC")
+    void dependencyDeadlines() {
+        preview(newUser(), UUID.randomUUID().toString(), previewBody(null, null)).expectStatus().isOk();
+
+        // contracts ADR-003: the value is the timeout the call actually runs under, so it is positive and
+        // never above the 5 s Preview deadline (Inventory has the largest budget, 3 s).
+        LoggedRequest cart = UPSTREAMS.findAll(getRequestedFor(urlPathMatching(CART_PATH))).get(0);
+        LoggedRequest inventory = posted(INVENTORY_PATH).get(0);
+        for (LoggedRequest request : List.of(cart, inventory)) {
+            assertThat(request.getHeader("X-Request-Timeout-Ms")).matches("^[0-9]{1,4}$");
+            assertThat(Long.parseLong(request.getHeader("X-Request-Timeout-Ms"))).isBetween(1L, 3_000L);
+        }
+        assertThat(PRODUCT.deadlineMillis()).as("gRPC deadline reached Product").isBetween(1L, 1_000L);
     }
 
     @Test
@@ -325,12 +345,14 @@ class PreviewApiTest extends AbstractCheckoutTest {
     void clientErrorsDoNotOpenTheCircuit() {
         UPSTREAMS.stubFor(com.github.tomakehurst.wiremock.client.WireMock.get(urlPathMatching(CART_PATH))
                 .willReturn(problem(403, "FORBIDDEN")));
+        long rejectedBefore = calls(Dependency.CART, "4xx");
+        long shortCircuitedBefore = calls(Dependency.CART, "circuit_open");
         for (int i = 0; i < 25; i++) {
             preview(newUser()).expectStatus().isEqualTo(503);
         }
         assertThat(guard.isOpen(Dependency.CART)).isFalse();
-        assertThat(calls(Dependency.CART, "4xx")).isGreaterThanOrEqualTo(25);
-        assertThat(calls(Dependency.CART, "circuit_open")).isZero();
+        assertThat(calls(Dependency.CART, "4xx") - rejectedBefore).isEqualTo(25);
+        assertThat(calls(Dependency.CART, "circuit_open")).isEqualTo(shortCircuitedBefore);
     }
 
     @Test

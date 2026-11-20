@@ -128,7 +128,7 @@ templates:
     data_source: kafka-inline
     schema: ORDER_COMPLETED.schema.json
     producer: order-service
-    trigger: "Order chuyển COMPLETED (mọi line có delivery proof)"
+    trigger: "Order chuyển COMPLETED (mọi line đã được Admin xác nhận đã giao)"
     max_age: PT48H
     dedup_key: { mode: required, formula: "order_completed:{order_id}" }
   - id: ORDER_REFUNDED

@@ -20,6 +20,11 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
+    // CommonJS bootstrap patches Node's HTTP server before loading standalone server.js.
+    files: ["client-ip-server.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
     files: LEGACY_STOREFRONT,
     rules: {
       "@typescript-eslint/no-explicit-any": "warn",

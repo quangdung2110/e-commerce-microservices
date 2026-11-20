@@ -128,6 +128,7 @@ type StoredItem struct {
 	UnitPriceAtAdd    Money             `json:"unit_price_at_add"`
 	ProductName       string            `json:"product_name"`
 	VariantAttributes VariantAttributes `json:"variant_attributes,omitempty"`
+	VariantName       string            `json:"variant_name,omitempty"`
 	// ImageKey is the Product storage key of the representative image, empty
 	// when there is none. Lines written before Product switched to storage keys
 	// may still hold an absolute URL. The JSON name stays image_url so existing
@@ -198,6 +199,7 @@ type ProductSnapshot struct {
 	ProductID         string
 	ProductName       string
 	VariantAttributes map[string]string
+	VariantName       string
 	// ImageKey is Product gRPC Sku.image_url: a storage key, not a URL.
 	ImageKey    string
 	Price       Money
@@ -215,6 +217,7 @@ func (s ProductSnapshot) ToStoredItem(validatedAt, expiresAt Millis) StoredItem 
 		UnitPriceAtAdd:             s.Price,
 		ProductName:                s.ProductName,
 		VariantAttributes:          VariantAttributes(s.VariantAttributes),
+		VariantName:                s.VariantName,
 		ImageKey:                   s.ImageKey,
 		IsAvailable:                s.IsAvailable,
 		CatalogValidatedAt:         validatedAt,

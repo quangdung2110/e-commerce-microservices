@@ -1,0 +1,54 @@
+# Isolated stack for the Inventory Reserve hot-SKU benchmark (docs/performance/inventory-reserve-hot-sku-baseline-2026-10-19.md).
+#
+# Own project, network and PostgreSQL: nothing here touches the shared compose stack. Driven by
+# scripts/ci/inventory-bench.sh; it is not meant to stay up.
+#
+# Inventory runs from a jar copied by the script, so the baseline and a changed build can be swapped without
+# rebuilding an image. CPU limits stand in for pod limits: without them the JVM and PostgreSQL could take all host
+# CPUs and hide the contention the benchmark is meant to show.
+#
+#   INVENTORY_JAR   jar of the inventory-service variant under test
+name: inventory-bench
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # Durability settings stay at PostgreSQL defaults (fsync, synchronous_commit on): commit cost is part of what
+    # a Reserve holds its row lock for. pg_stat_statements counts and times the SQL per step.
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=256MB",
+              "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all",
+              "-c", "log_lock_waits=off"]
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/00-init-db.sql:ro
+      - ./seed:/seed:ro
+    cpus: 3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  inventory-service:
+    image: eclipse-temurin:21-jre-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["java", "-Xms512m", "-Xmx1024m", "-XX:+UseG1GC", "-jar", "/app/inventory.jar"]
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://postgres:5432/inventory_service
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      INVENTORY_WRITE_FREEZE: "false"
+      # Workers stay on as in production: the availability projector claims and clears the dirty marks that every
+      # Reserve upserts, and the sequencer keeps the outbox write guard below its limit.
+      WORKERS_ENABLED: "true"
+      HOSTNAME: inventory-bench-1
+      # Tracing export would add overhead that is not part of the question (no collector on this network).
+      TRACING_SAMPLING_PROBABILITY: "0.0"
+    volumes:
+      - ${INVENTORY_JAR:?set INVENTORY_JAR}:/app/inventory.jar:ro
+    cpus: 2

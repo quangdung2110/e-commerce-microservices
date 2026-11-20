@@ -6,10 +6,15 @@ date: 2026-08-27
 decision_owners:
   - Auth Service team
 supersedes: null
-evidence: []
+evidence:
+  - go/services/auth-service/internal/infrastructure/kafka/publisher.go
+  - go/services/auth-service/internal/domain/service/notifier.go
 ---
 
 # ADR-005 — Guarantee reliable identity-event publication
+
+> 2026-10-09: thứ tự các bước sau commit (phát event trước, ghi marker Redis sau) được chốt
+> tại [ADR-006](./ADR-006-publish-before-revocation-marker.md). Quyết định dưới đây không đổi.
 
 ## Context
 
@@ -38,5 +43,8 @@ vẫn cần idempotency. Alert/routine reconciliation là chi phí vận hành �
 
 ## Migration impact and verification
 
-Cần publisher retry, consumer idempotency, failure-injection test, dashboard và
-runbook. Không cần migration cho outbox/inbox.
+Đã implement: `Publisher` retry tối đa `kafka.publish_max_attempts` (3) với cùng CloudEvent
+`id`, producer idempotent, `acks=all`. Retry cạn chỉ ghi log `error` (`identity event could
+not be published`). Chưa có metric/alert, dashboard, runbook hay quy trình reconciliation
+vận hành: đây vẫn là khoảng trống phải đóng trước production. Không cần migration cho
+outbox/inbox.

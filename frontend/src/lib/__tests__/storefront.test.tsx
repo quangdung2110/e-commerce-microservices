@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { searchQueryString, parseSearchParams, flattenCategories } from "@/lib/storefront-search";
+import { searchQueryString, parseSearchParams, searchPriceErrors, flattenCategories, categoryPath } from "@/lib/storefront-search";
 import { canAddSku, resolveSku, skuGallery, scalarLabel } from "@/lib/product-detail";
 import type { ProductDetail } from "@/lib/api/product-detail";
 import { ProductCard } from "@/components/catalog/product-card";
@@ -37,14 +37,25 @@ describe("Search v2", () => {
       .toMatchObject({ category: "phones", sort: "rating", filter: ["a", "b"], in_stock: false });
     expect(parseSearchParams({ cursor: "old" })).not.toHaveProperty("cursor");
   });
-  it("defaults to contract in_stock=true and rejects unsafe prices/unsupported sort", () => {
+  it("defaults stock/sort and distinguishes invalid prices from absent prices", () => {
     const parsed = parseSearchParams({ sort: "rating_desc", price_min: "-1", price_max: "9007199254740992" });
     expect(parsed).toMatchObject({ sort: "relevance", in_stock: true, price_min: undefined, price_max: undefined });
+    expect(searchPriceErrors({ price_min: "-1", price_max: "9007199254740992" })).toHaveLength(2);
+    expect(searchPriceErrors({})).toEqual([]);
+    expect(searchPriceErrors({ price_min: "0", price_max: "150000" })).toEqual([]);
+  });
+  it.each(["abc", "1.5", "1e3", "-1", "9007199254740992"])("reports invalid URL price %s", (price_min) => {
+    expect(searchPriceErrors({ price_min })[0]).toContain("Giá tối thiểu");
+    expect(searchPriceErrors({ price_max: price_min })[0]).toContain("Giá tối đa");
+  });
+  it("rejects a reversed range coming from the URL", () => {
+    expect(searchPriceErrors({ price_min: "200", price_max: "100" })[0]).toContain("Giá tối đa");
   });
   it("walks the recursive children contract", () => {
     const leaf = { category_id: "c2", slug: "leaf", name: "Con", children: [], product_count: 0, product_count_updated_at: null };
     const parent = { ...leaf, category_id: "c1", slug: "root", children: [leaf] };
     expect(flattenCategories([parent]).map((node) => [node.slug, node.depth])).toEqual([["root", 0], ["leaf", 1]]);
+    expect(categoryPath([parent], "c2").map(node => node.slug)).toEqual(["root", "leaf"]);
   });
   it("links the product card to the cheapest eligible representative SKU", () => {
     const html = renderToStaticMarkup(<ProductCard product={{ sku_id: "s1", product_id: "p", product_slug: "canonical-slug", name: "Tên khác hoàn toàn", thumbnail_url: "/media/a", base_price_vnd: 100, selling_price_vnd: 80, discount_percentage: 20, product_rating_avg: null, product_rating_count: 0, is_in_stock: false }} />);

@@ -1,9 +1,12 @@
 package com.platform.productservice.integration;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.platform.productservice.common.DomainException;
 import com.platform.productservice.common.ErrorCode;
 import com.platform.productservice.common.ReplayOffset;
 import com.platform.productservice.domain.entity.ProductEntity;
+import com.platform.productservice.domain.enums.AttributeValueType;
+import com.platform.productservice.infrastructure.event.CatalogEventTypes;
 import com.platform.productservice.service.CatalogExportService;
 import com.platform.productservice.web.dto.CategoryDtos;
 import com.platform.productservice.web.dto.ProductDtos;
@@ -12,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -88,6 +92,44 @@ class CatalogExportAndLockingIntegrationTest extends AbstractCatalogIntegrationT
                 .findFirst()
                 .orElseThrow();
         assertThat(root.isLeaf()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Export category mang facet_definitions cùng giá trị với category-upserted")
+    void categoryExportCarriesSameFacetDefinitionsAsEvent() {
+        UUID categoryId = givenLeafCategory("phones");
+        UUID color = givenAttribute("color", "Màu sắc", AttributeValueType.SELECT);
+        UUID brand = givenAttribute("brand", "Thương hiệu", AttributeValueType.TEXT);
+        UUID empty = givenLeafCategory("books");
+        givenMapping(categoryId, color, false, true);
+        givenMapping(categoryId, brand, false, false);
+
+        CategoryDtos.CategoryExportPageResponse page = exportService.exportCategories(null, 10);
+
+        CategoryDtos.CategoryExportResponse exported = page.categories().stream()
+                .filter(item -> item.categoryId().equals(categoryId)).findFirst().orElseThrow();
+        assertThat(exported.facetDefinitions()).extracting(CategoryDtos.FacetDefinitionResponse::code)
+                .containsExactly("brand", "color");
+        assertThat(exported.facetDefinitions().get(1).label()).isEqualTo("Màu sắc");
+        assertThat(exported.facetDefinitions().get(1).type()).isEqualTo(AttributeValueType.SELECT);
+        assertThat(page.categories().stream().filter(item -> item.categoryId().equals(empty))
+                .findFirst().orElseThrow().facetDefinitions()).isEmpty();
+
+        // Event và export phải cho cùng kết quả để full reindex không lệch luồng event.
+        List<OutboxRow> events = outboxRowsOfType(CatalogEventTypes.CATEGORY_UPSERTED).stream()
+                .filter(row -> row.partitionKey().equals(categoryId)).toList();
+        OutboxRow latest = events.get(events.size() - 1);
+        assertThat(latest.sequence()).isEqualTo(exported.categoryRevision());
+        JsonNode eventFacets = latest.data().path("category").path("facet_definitions");
+        assertThat(eventFacets).hasSize(exported.facetDefinitions().size());
+        for (int i = 0; i < eventFacets.size(); i++) {
+            assertThat(eventFacets.get(i).path("code").asText())
+                    .isEqualTo(exported.facetDefinitions().get(i).code());
+            assertThat(eventFacets.get(i).path("label").asText())
+                    .isEqualTo(exported.facetDefinitions().get(i).label());
+            assertThat(eventFacets.get(i).path("type").asText())
+                    .isEqualTo(exported.facetDefinitions().get(i).type().name());
+        }
     }
 
     @Test

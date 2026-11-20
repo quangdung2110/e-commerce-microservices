@@ -1,18 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <springProfile name="dev,test">
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="review-service"/>
+    <springProfile name="test">
         <include resource="org/springframework/boot/logging/logback/base.xml"/>
     </springProfile>
-
-    <springProfile name="prod">
+    <springProfile name="!test">
         <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-                <includeMdcKeyName>request_id</includeMdcKeyName>
-                <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                <customFields>{"service":"${appName}"}</customFields>
             </encoder>
         </appender>
-        <root level="INFO">
-            <appender-ref ref="JSON"/>
-        </root>
+        <root level="INFO"><appender-ref ref="JSON"/></root>
     </springProfile>
 </configuration>

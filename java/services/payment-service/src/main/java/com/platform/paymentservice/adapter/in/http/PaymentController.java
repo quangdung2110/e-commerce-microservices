@@ -65,7 +65,7 @@ final class PaymentController {
             @RequestHeader(name = "X-Service-Identity", required = false) String serviceIdentity,
             @RequestHeader(name = "X-Correlation-Id", required = false) String correlationId,
             @RequestBody(required = false) RefundRequest request) {
-        if (idempotencyKey == null)
+        if ((idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() < 16 || idempotencyKey.length() > 255))
             return problem(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_MISSING", false, correlationId);
         if (!validCommonHeaders(serviceIdentity, correlationId) || request == null
                 || !TRANSACTION_ID.matcher(transactionId).matches())
@@ -88,9 +88,9 @@ final class PaymentController {
         if (result instanceof RefundPaymentResult.OrderMismatch)
             return problem(HttpStatus.BAD_REQUEST, "ORDER_MISMATCH", false, correlationId);
         if (result instanceof RefundPaymentResult.PaymentNotSuccess)
-            return problem(HttpStatus.UNPROCESSABLE_ENTITY, "PAYMENT_NOT_SUCCESS", false, correlationId);
+            return problem(HttpStatus.BAD_REQUEST, "PAYMENT_NOT_SUCCESS", false, correlationId);
         if (result instanceof RefundPaymentResult.AmountExceeded)
-            return problem(HttpStatus.UNPROCESSABLE_ENTITY, "REFUND_AMOUNT_EXCEEDED", false, correlationId);
+            return problem(HttpStatus.BAD_REQUEST, "REFUND_AMOUNT_EXCEEDED", false, correlationId);
         if (result instanceof RefundPaymentResult.OrderRefundAlreadyExists)
             return problem(HttpStatus.CONFLICT, "ORDER_REFUND_ALREADY_EXISTS", false, correlationId);
         if (result instanceof RefundPaymentResult.IdempotencyKeyReused)
@@ -107,7 +107,7 @@ final class PaymentController {
             @RequestHeader(name = "X-Service-Identity", required = false) String serviceIdentity,
             @RequestHeader(name = "X-Correlation-Id", required = false) String correlationId,
             @RequestBody(required = false) CancelRequest request) {
-        if (idempotencyKey == null)
+        if ((idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() < 16 || idempotencyKey.length() > 255))
             return problem(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_MISSING", false, correlationId);
         if (!validCommonHeaders(serviceIdentity, correlationId) || request == null
                 || !TRANSACTION_ID.matcher(transactionId).matches()) {
@@ -155,7 +155,7 @@ final class PaymentController {
             @RequestHeader(name = "X-Service-Identity", required = false) String serviceIdentity,
             @RequestHeader(name = "X-Correlation-Id", required = false) String correlationId,
             @RequestBody(required = false) InitiateRequest request) {
-        if (idempotencyKey == null) {
+        if ((idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() < 16 || idempotencyKey.length() > 255)) {
             return problem(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_MISSING", false, correlationId);
         }
         if (!validCommonHeaders(serviceIdentity, correlationId) || request == null) {
@@ -207,6 +207,14 @@ final class PaymentController {
         if (result instanceof InitiatePaymentResult.ProviderRejected) {
             return problem(HttpStatus.SERVICE_UNAVAILABLE, "PROVIDER_REQUEST_REJECTED", false, correlationId);
         }
+        if (result instanceof InitiatePaymentResult.NoPaymentCreated absent) {
+            return ResponseEntity.unprocessableEntity()
+                    .header("X-Correlation-Id", correlationId).header("Cache-Control", "private, no-store")
+                    .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                    .body(new NoPaymentCreatedProblem("PROVIDER_CREATE_NOT_ACCEPTED", false, correlationId,
+                            true, absent.transactionId(), absent.providerOperationId(),
+                            Long.toString(absent.orderId()), absent.paymentAttemptNumber()));
+        }
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "DEPENDENCY_UNAVAILABLE", true, correlationId);
     }
 
@@ -252,17 +260,19 @@ final class PaymentController {
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .header("X-Correlation-Id", safe)
+                .headers(headers -> RetryAfterHeader.apply(headers, status.value(), retryable))
                 .body(new Problem(code, retryable, safe));
     }
 
     private static boolean validCommonHeaders(String identity, String correlationId) {
-        return "order-service".equals(identity)
+        // The caller allowlist is enforced by ServiceIdentityFilter (contracts ADR-004); only presence is left here.
+        return identity != null && !identity.isBlank()
                 && correlationId != null && !correlationId.isBlank()
-                && correlationId.length() <= 255;
+                && correlationId.length() <= 128;
     }
 
     private static String safeCorrelation(String correlationId) {
-        return correlationId == null || correlationId.isBlank() || correlationId.length() > 255
+        return correlationId == null || correlationId.isBlank() || correlationId.length() > 128
                 ? "missing-correlation-id" : correlationId;
     }
 
@@ -368,6 +378,14 @@ final class PaymentController {
             @JsonProperty("client_secret") char[] clientSecret,
             @JsonProperty("publishable_key") String publishableKey,
             @JsonProperty("client_expires_at") Instant clientExpiresAt) {}
+
+    record NoPaymentCreatedProblem(String code, boolean retryable,
+            @JsonProperty("correlation_id") String correlationId,
+            @JsonProperty("no_payment_created") boolean noPaymentCreated,
+            @JsonProperty("transaction_id") String transactionId,
+            @JsonProperty("provider_operation_id") String providerOperationId,
+            @JsonProperty("order_id") String orderId,
+            @JsonProperty("payment_attempt_number") int paymentAttemptNumber) {}
 
     record Problem(String code, boolean retryable,
                    @JsonProperty("correlation_id") String correlationId) {}

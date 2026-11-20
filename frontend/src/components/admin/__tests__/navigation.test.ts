@@ -3,9 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   ENABLED_ADMIN_NAV,
   adminBreadcrumbLabel,
+  currentAdminNavHref,
 } from "@/components/admin/navigation";
 
 describe("điều hướng admin catalog", () => {
+  it("chỉ chọn mục cụ thể nhất trong kho và giữ nhóm hàng trả cho Refund Scope", () => {
+    expect(currentAdminNavHref("/admin/inventory/operations")).toBe("/admin/inventory/operations");
+    expect(currentAdminNavHref("/admin/inventory/receipts/new")).toBe("/admin/inventory/receipts/new");
+    expect(currentAdminNavHref("/admin/inventory/refund-scopes/scope-1")).toBe("/admin/inventory/returns");
+    expect(currentAdminNavHref("/admin/inventory/stock/wh-1/sku-1")).toBe("/admin/inventory");
+  });
   it("chỉ hiện route đã hoàn thành", () => {
     expect(ENABLED_ADMIN_NAV.flatMap((group) => group.items.map((item) => item.href))).toEqual([
       "/admin",
@@ -13,9 +20,13 @@ describe("điều hướng admin catalog", () => {
       "/admin/categories",
       "/admin/attributes",
       "/admin/inventory",
+      "/admin/inventory/operations",
+      "/admin/inventory/returns",
       "/admin/inventory/receipts/new",
       "/admin/orders",
       "/admin/promotions",
+      "/admin/reviews",
+      "/admin/system",
     ]);
   });
 

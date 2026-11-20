@@ -1,0 +1,1723 @@
+apiVersion: v1
+items:
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-auth-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/auth","/api/v1/auth/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik","cluster.local/ns/edge/sa/gateway-auth"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/.well-known","/.well-known/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/notification-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/auth/notification-deliveries/{*}/content"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/notification-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/auth/users/{*}/notification-contact"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/metrics"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"auth-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-auth-service
+    namespace: ecommerce
+    resourceVersion: "4022"
+    uid: fd68791e-e40e-4d09-9021-40b74b7f72a7
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/auth
+          - /api/v1/auth/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+          - cluster.local/ns/edge/sa/gateway-auth
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /.well-known
+          - /.well-known/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/notification-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/auth/notification-deliveries/{*}/content
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/notification-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/auth/users/{*}/notification-contact
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /metrics
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: auth-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:14.414115426Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-cart-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/carts","/api/v1/carts/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/carts/{*}/checkout-snapshot"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/metrics"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"cart-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-cart-service
+    namespace: ecommerce
+    resourceVersion: "4068"
+    uid: be9db69c-0d53-4ff7-ab5a-3901d2d28cb3
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/carts
+          - /api/v1/carts/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/carts/{*}/checkout-snapshot
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /metrics
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: cart-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:16.430603780Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-chat-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/ws","/ws/*"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"chat-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-chat-service
+    namespace: ecommerce
+    resourceVersion: "1254"
+    uid: 6782fbd0-069d-4a4f-91b3-374d022f75dc
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /ws
+          - /ws/*
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: chat-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:41.685427628Z"
+      message: Service ecommerce/chat-service was not found
+      observedGeneration: "1"
+      reason: TargetNotFound
+      status: "False"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-checkout-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/api/v1/checkout/preview","/api/v1/checkout/submit"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/api/v1/checkout/previews/{*}/voucher-options","/api/v1/checkout/submissions/{*}"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/health/ready"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"checkout-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-checkout-service
+    namespace: ecommerce
+    resourceVersion: "5936"
+    uid: 1eeaa39b-3e16-486e-8c12-256659e1ddb4
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /api/v1/checkout/preview
+          - /api/v1/checkout/submit
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /api/v1/checkout/previews/{*}/voucher-options
+          - /api/v1/checkout/submissions/{*}
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /health/ready
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: checkout-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:53.968275957Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-inventory-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/admin/inventory","/api/v1/admin/inventory/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/inventory/v1/allocation-previews"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/order-service"]}}],"to":[{"operation":{"paths":["/internal/inventory/v1/commands/{*}","/internal/inventory/v1/refund-scopes","/internal/inventory/v1/refund-scopes/*","/internal/inventory/v1/reservations","/internal/inventory/v1/reservations/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/product-detail-bff"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/inventory/v1/sku-availabilities:batch-get"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/search-service"]}}],"to":[{"operation":{"paths":["/exports/inventory/v1","/exports/inventory/v1/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"inventory-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-inventory-service
+    namespace: ecommerce
+    resourceVersion: "5939"
+    uid: 363a512f-6a98-497e-a1c7-42dd9921cfc1
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/admin/inventory
+          - /api/v1/admin/inventory/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/inventory/v1/allocation-previews
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/order-service
+      to:
+      - operation:
+          paths:
+          - /internal/inventory/v1/commands/{*}
+          - /internal/inventory/v1/refund-scopes
+          - /internal/inventory/v1/refund-scopes/*
+          - /internal/inventory/v1/reservations
+          - /internal/inventory/v1/reservations/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/product-detail-bff
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/inventory/v1/sku-availabilities:batch-get
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/search-service
+      to:
+      - operation:
+          paths:
+          - /exports/inventory/v1
+          - /exports/inventory/v1/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: inventory-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:54.068574712Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-local-provider-localstack","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/notification-service"]}}],"to":[{"operation":{"ports":["4566"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"localstack"}}}}
+    creationTimestamp: "2026-11-04T05:48:11Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-local-provider-localstack
+    namespace: ecommerce
+    resourceVersion: "5409"
+    uid: 445c5f16-35b5-44b5-895d-daab96e00b2a
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/notification-service
+      to:
+      - operation:
+          ports:
+          - "4566"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: localstack
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:48:11.286543313Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-local-provider-mailpit","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/notification-service"]}}],"to":[{"operation":{"ports":["1025"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"mailpit"}}}}
+    creationTimestamp: "2026-11-04T05:48:10Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-local-provider-mailpit
+    namespace: ecommerce
+    resourceVersion: "5408"
+    uid: ae881cac-fff7-4a82-89b9-68af18b8ccea
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/notification-service
+      to:
+      - operation:
+          ports:
+          - "1025"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: mailpit
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:48:11.013125069Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-notification-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/notifications","/api/v1/notifications/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/order-service","cluster.local/ns/ecommerce/sa/finance-ops"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/notifications/deliveries","/internal/v1/notifications/requests/{*}"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/notification-ops"]}}],"to":[{"operation":{"paths":["/internal/v1/notifications/ops","/internal/v1/notifications/ops/*"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/metrics"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"notification-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-notification-service
+    namespace: ecommerce
+    resourceVersion: "4069"
+    uid: f0a6d079-cb3a-4645-85ed-f27596fecbd0
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/notifications
+          - /api/v1/notifications/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/order-service
+          - cluster.local/ns/ecommerce/sa/finance-ops
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/notifications/deliveries
+          - /internal/v1/notifications/requests/{*}
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/notification-ops
+      to:
+      - operation:
+          paths:
+          - /internal/v1/notifications/ops
+          - /internal/v1/notifications/ops/*
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /metrics
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: notification-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:16.537578242Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-order-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/admin/order-operations","/api/v1/admin/order-operations/*","/api/v1/admin/orders","/api/v1/admin/orders/*","/api/v1/order-operations","/api/v1/order-operations/*","/api/v1/orders","/api/v1/orders/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/checkout-order-submissions"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/checkout-order-submissions/{*}"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/finance-ops","cluster.local/ns/ecommerce/sa/accounting-ops"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/orders/{*}/financial-reconciliation-case"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/finance-ops","cluster.local/ns/ecommerce/sa/accounting-ops"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/orders/{*}/financial-reconciliation-decisions"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"order-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-order-service
+    namespace: ecommerce
+    resourceVersion: "5941"
+    uid: 47322404-1c6c-4881-b373-e4252f8070dc
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/admin/order-operations
+          - /api/v1/admin/order-operations/*
+          - /api/v1/admin/orders
+          - /api/v1/admin/orders/*
+          - /api/v1/order-operations
+          - /api/v1/order-operations/*
+          - /api/v1/orders
+          - /api/v1/orders/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/checkout-order-submissions
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/checkout-order-submissions/{*}
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/finance-ops
+          - cluster.local/ns/ecommerce/sa/accounting-ops
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/orders/{*}/financial-reconciliation-case
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/finance-ops
+          - cluster.local/ns/ecommerce/sa/accounting-ops
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/orders/{*}/financial-reconciliation-decisions
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: order-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:54.173559373Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-payment-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/v1/payments/webhook/stripe"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/order-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/v1/payments/initiate","/v1/payments/{*}/cancel","/v1/payments/{*}/refund"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/order-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/v1/payments/{*}","/v1/payments/{*}/client-data","/v1/refunds/{*}"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/finance-ops","cluster.local/ns/ecommerce/sa/accounting-ops"]}}],"to":[{"operation":{"paths":["/internal/v1/payment","/internal/v1/payment/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"payment-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-payment-service
+    namespace: ecommerce
+    resourceVersion: "4067"
+    uid: bbb03cf4-a232-4d24-bd6c-c02d0be11b23
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /v1/payments/webhook/stripe
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/order-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /v1/payments/initiate
+          - /v1/payments/{*}/cancel
+          - /v1/payments/{*}/refund
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/order-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /v1/payments/{*}
+          - /v1/payments/{*}/client-data
+          - /v1/refunds/{*}
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/finance-ops
+          - cluster.local/ns/ecommerce/sa/accounting-ops
+      to:
+      - operation:
+          paths:
+          - /internal/v1/payment
+          - /internal/v1/payment/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: payment-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:16.353242399Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-product-detail-bff","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/api/v1/storefront/products","/api/v1/storefront/products/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health/readiness"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"product-detail-bff"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-product-detail-bff
+    namespace: ecommerce
+    resourceVersion: "5943"
+    uid: d45c40e9-c4f7-44bb-a3cf-743b12069a6c
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /api/v1/storefront/products
+          - /api/v1/storefront/products/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health/readiness
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: product-detail-bff
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:54.274118901Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-product-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/attributes","/api/v1/attributes/*","/api/v1/categories","/api/v1/categories/*","/api/v1/products","/api/v1/products/*"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/search-service"]}}],"to":[{"operation":{"paths":["/internal/v1/categories/export","/internal/v1/products/export"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/search-service","cluster.local/ns/ecommerce/sa/promotion-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/products/{*}/snapshot"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/product-detail-bff"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/product-details/{*}"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/cart-service","cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/ecommerce.product.v1.ProductService/{*}"],"ports":["9091"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8081"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health/readiness"],"ports":["8081"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"product-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-product-service
+    namespace: ecommerce
+    resourceVersion: "5945"
+    uid: 27a103c3-fc88-4aae-80a3-1deb51c5e3b4
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/attributes
+          - /api/v1/attributes/*
+          - /api/v1/categories
+          - /api/v1/categories/*
+          - /api/v1/products
+          - /api/v1/products/*
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/search-service
+      to:
+      - operation:
+          paths:
+          - /internal/v1/categories/export
+          - /internal/v1/products/export
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/search-service
+          - cluster.local/ns/ecommerce/sa/promotion-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/products/{*}/snapshot
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/product-detail-bff
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/product-details/{*}
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/cart-service
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /ecommerce.product.v1.ProductService/{*}
+          ports:
+          - "9091"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8081"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health/readiness
+          ports:
+          - "8081"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: product-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:54.378021117Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-promotion-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/admin","/api/v1/admin/*","/api/v1/me","/api/v1/me/*","/api/v1/promotion-discovery"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/promotion-discount-calculations"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/promotion-voucher-options"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/order-service"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/promotion-allocation/cancellations","/internal/v1/promotion-allocation/confirmations","/internal/v1/promotion-allocation/reservations"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/promotion-legacy-migrator"]}}],"to":[{"operation":{"methods":["POST"],"paths":["/internal/v1/promotion-allocation/technical-cancellations"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health"],"ports":["8085"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/health/readiness"],"ports":["8085"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"promotion-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 2
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-promotion-service
+    namespace: ecommerce
+    resourceVersion: "5947"
+    uid: 8d9db0d5-14bc-43fe-995b-896af2e17f65
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/admin
+          - /api/v1/admin/*
+          - /api/v1/me
+          - /api/v1/me/*
+          - /api/v1/promotion-discovery
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/promotion-discount-calculations
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/promotion-voucher-options
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/order-service
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/promotion-allocation/cancellations
+          - /internal/v1/promotion-allocation/confirmations
+          - /internal/v1/promotion-allocation/reservations
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/promotion-legacy-migrator
+      to:
+      - operation:
+          methods:
+          - POST
+          paths:
+          - /internal/v1/promotion-allocation/technical-cancellations
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health
+          ports:
+          - "8085"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/health/readiness
+          ports:
+          - "8085"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: promotion-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:54.509345412Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "2"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-review-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/admin/reviews","/api/v1/admin/reviews/*","/api/v1/reviews","/api/v1/reviews/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/product-detail-bff"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/reviews/products/{*}/pdp-summary"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/search-service"]}}],"to":[{"operation":{"paths":["/internal/v1/reviews/rating-aggregate-exports*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"review-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-review-service
+    namespace: ecommerce
+    resourceVersion: "4046"
+    uid: a4271d32-8cb3-412e-8b44-a959fb239c10
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/admin/reviews
+          - /api/v1/admin/reviews/*
+          - /api/v1/reviews
+          - /api/v1/reviews/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/product-detail-bff
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/reviews/products/{*}/pdp-summary
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/search-service
+      to:
+      - operation:
+          paths:
+          - /internal/v1/reviews/rating-aggregate-exports*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: review-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:15.856765576Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-search-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v2/search","/api/v2/search/*"],"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/actuator/prometheus"],"ports":["8080"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"search-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:42Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-search-service
+    namespace: ecommerce
+    resourceVersion: "4051"
+    uid: 775dfd0a-8af9-4485-9da4-b75257404827
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v2/search
+          - /api/v2/search/*
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /actuator/prometheus
+          ports:
+          - "8080"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: search-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:15.973730362Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-user-service","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"paths":["/api/v1/users","/api/v1/users/*"],"ports":["8082"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/checkout-service"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/internal/v1/users/{*}/addresses/{*}/checkout-snapshot"],"ports":["8083"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"methods":["GET"],"paths":["/metrics"],"ports":["8082"]}}]}],"targetRefs":[{"group":"","kind":"Service","name":"user-service"}]}}
+    creationTimestamp: "2026-11-04T05:30:42Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-user-service
+    namespace: ecommerce
+    resourceVersion: "4062"
+    uid: 37712293-57fd-4705-b72f-af7d176616eb
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          paths:
+          - /api/v1/users
+          - /api/v1/users/*
+          ports:
+          - "8082"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/checkout-service
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /internal/v1/users/{*}/addresses/{*}/checkout-snapshot
+          ports:
+          - "8083"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          methods:
+          - GET
+          paths:
+          - /metrics
+          ports:
+          - "8082"
+    targetRefs:
+    - group: ""
+      kind: Service
+      name: user-service
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:41:16.243833153Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"deny-all","namespace":"ecommerce"},"spec":{"action":"ALLOW","targetRefs":[{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"ecommerce-waypoint"}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: deny-all
+    namespace: ecommerce
+    resourceVersion: "1313"
+    uid: 338528f2-f9e5-43c1-a776-cd539bab8196
+  spec:
+    action: ALLOW
+    targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: ecommerce-waypoint
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:51.662909430Z"
+      message: bound to ecommerce/ecommerce-waypoint
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: WaypointAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"l4-baseline","namespace":"ecommerce"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/ecommerce/sa/ecommerce-waypoint"]}}]}]}}
+    creationTimestamp: "2026-11-04T05:30:41Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: l4-baseline
+    namespace: ecommerce
+    resourceVersion: "1244"
+    uid: 651bfefb-233e-4c9c-8490-28b84133a110
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/ecommerce/sa/ecommerce-waypoint
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:41.486063829Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-frontend","namespace":"edge"},"spec":{"action":"ALLOW","rules":[{"to":[{"operation":{"ports":["3000"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"frontend"}}}}
+    creationTimestamp: "2026-11-04T05:50:53Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-frontend
+    namespace: edge
+    resourceVersion: "5934"
+    uid: a6ed779a-cb98-41c3-99bd-34d7266001c4
+  spec:
+    action: ALLOW
+    rules:
+    - to:
+      - operation:
+          ports:
+          - "3000"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: frontend
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:50:53.558053430Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-gateway-auth","namespace":"edge"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/edge/sa/traefik"]}}],"to":[{"operation":{"ports":["8080"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"ports":["8080"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"gateway-auth"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-gateway-auth
+    namespace: edge
+    resourceVersion: "1231"
+    uid: 0c62bd70-2901-420b-bc60-13b8b77bc24c
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/edge/sa/traefik
+      to:
+      - operation:
+          ports:
+          - "8080"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          ports:
+          - "8080"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: gateway-auth
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.782505571Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-traefik","namespace":"edge"},"spec":{"action":"ALLOW","rules":[{"to":[{"operation":{"ports":["80","443"]}}]},{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/prometheus"]}}],"to":[{"operation":{"ports":["8090"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"traefik"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-traefik
+    namespace: edge
+    resourceVersion: "1233"
+    uid: 2aa10974-e4ac-420e-b351-229093e3a525
+  spec:
+    action: ALLOW
+    rules:
+    - to:
+      - operation:
+          ports:
+          - "80"
+          - "443"
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/prometheus
+      to:
+      - operation:
+          ports:
+          - "8090"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: traefik
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.806643512Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"deny-all","namespace":"edge"},"spec":{"action":"ALLOW"}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: deny-all
+    namespace: edge
+    resourceVersion: "1227"
+    uid: 0bfafdd7-3f32-4c6c-b167-34c54a94eb3e
+  spec:
+    action: ALLOW
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.739692059Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-jaeger","namespace":"observability"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/grafana"]}}],"to":[{"operation":{"ports":["16686"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"jaeger"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-jaeger
+    namespace: observability
+    resourceVersion: "1239"
+    uid: febad2cb-5103-4d78-a7e7-055ea0a73f29
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/grafana
+      to:
+      - operation:
+          ports:
+          - "16686"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: jaeger
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.888222513Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-loki","namespace":"observability"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/grafana"]}}],"to":[{"operation":{"ports":["3100"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"loki"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-loki
+    namespace: observability
+    resourceVersion: "1241"
+    uid: 11d684b8-dead-46ac-a920-c5e3cdcb6c42
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/grafana
+      to:
+      - operation:
+          ports:
+          - "3100"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: loki
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:41.100034142Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-otel-collector","namespace":"observability"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"namespaces":["edge","ecommerce","istio-system"]}}],"to":[{"operation":{"ports":["4317","4318"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"otel-collector"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-otel-collector
+    namespace: observability
+    resourceVersion: "1235"
+    uid: 56907958-055a-46bd-ad46-fa565eeb32a2
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          namespaces:
+          - edge
+          - ecommerce
+          - istio-system
+      to:
+      - operation:
+          ports:
+          - "4317"
+          - "4318"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: otel-collector
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.837563146Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"allow-prometheus","namespace":"observability"},"spec":{"action":"ALLOW","rules":[{"from":[{"source":{"principals":["cluster.local/ns/observability/sa/grafana"]}}],"to":[{"operation":{"ports":["9090"]}}]}],"selector":{"matchLabels":{"app.kubernetes.io/name":"prometheus"}}}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: allow-prometheus
+    namespace: observability
+    resourceVersion: "1237"
+    uid: 4cb41fe3-6d07-47e6-82bd-470b27314e15
+  spec:
+    action: ALLOW
+    rules:
+    - from:
+      - source:
+          principals:
+          - cluster.local/ns/observability/sa/grafana
+      to:
+      - operation:
+          ports:
+          - "9090"
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: prometheus
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.862453345Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: AuthorizationPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"AuthorizationPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"deny-all","namespace":"observability"},"spec":{"action":"ALLOW"}}
+    creationTimestamp: "2026-11-04T05:30:40Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: deny-all
+    namespace: observability
+    resourceVersion: "1229"
+    uid: 503fcda1-987e-4cc7-b1ef-b682a78b91e3
+  spec:
+    action: ALLOW
+  status:
+    conditions:
+    - lastTransitionTime: "2026-11-04T05:30:40.760509309Z"
+      message: attached to ztunnel
+      observedGeneration: "1"
+      reason: Accepted
+      status: "True"
+      type: ZtunnelAccepted
+- apiVersion: security.istio.io/v1
+  kind: PeerAuthentication
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"PeerAuthentication","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"frontend-public-port","namespace":"edge"},"spec":{"mtls":{"mode":"STRICT"},"portLevelMtls":{"3000":{"mode":"PERMISSIVE"}},"selector":{"matchLabels":{"app.kubernetes.io/name":"frontend"}}}}
+    creationTimestamp: "2026-11-04T05:50:53Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: frontend-public-port
+    namespace: edge
+    resourceVersion: "5931"
+    uid: 1c5aefe0-52c2-49b5-bf73-08af8d7b31e6
+  spec:
+    mtls:
+      mode: STRICT
+    portLevelMtls:
+      "3000":
+        mode: PERMISSIVE
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: frontend
+- apiVersion: security.istio.io/v1
+  kind: PeerAuthentication
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"PeerAuthentication","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"traefik-public-ports","namespace":"edge"},"spec":{"mtls":{"mode":"STRICT"},"portLevelMtls":{"443":{"mode":"PERMISSIVE"},"80":{"mode":"PERMISSIVE"}},"selector":{"matchLabels":{"app.kubernetes.io/name":"traefik"}}}}
+    creationTimestamp: "2026-11-04T05:30:39Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: traefik-public-ports
+    namespace: edge
+    resourceVersion: "1196"
+    uid: 1c8cc723-108c-4980-a69c-eff5ed2c9a5a
+  spec:
+    mtls:
+      mode: STRICT
+    portLevelMtls:
+      "80":
+        mode: PERMISSIVE
+      "443":
+        mode: PERMISSIVE
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: traefik
+- apiVersion: security.istio.io/v1
+  kind: PeerAuthentication
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"security.istio.io/v1","kind":"PeerAuthentication","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"deploy-mesh-generate","app.kubernetes.io/part-of":"ecommerce-mesh"},"name":"default","namespace":"istio-system"},"spec":{"mtls":{"mode":"STRICT"}}}
+    creationTimestamp: "2026-11-04T05:30:39Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: deploy-mesh-generate
+      app.kubernetes.io/part-of: ecommerce-mesh
+    name: default
+    namespace: istio-system
+    resourceVersion: "1195"
+    uid: 85348e68-02f5-4c23-aea8-eaa2218afea6
+  spec:
+    mtls:
+      mode: STRICT
+kind: List
+metadata:
+  resourceVersion: ""

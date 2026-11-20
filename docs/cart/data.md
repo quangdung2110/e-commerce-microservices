@@ -2,11 +2,13 @@
 doc_id: cart-data
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
 evidence:
   - docs/cart/scripts
+  - go/services/cart-service/internal/infrastructure/cartredis/keys.go
+  - go/services/cart-service/internal/domain/cart.go
 verified_against_commit: null
 ---
 
@@ -22,7 +24,7 @@ verified_against_commit: null
 | Redis `items` hash | SKU, quantity, display snapshot, validation snapshot | Lua scripts Cart |
 | Redis `meta` hash | Identity, lifecycle và inactivity metadata | Lua scripts Cart |
 | Redis `abandonment-index` ZSET | Deadline đánh dấu abandoned | Lua scripts Cart |
-| Redis `idemp` keys | Command fingerprint và kết quả đã xử lý | Lua scripts Cart |
+| Redis `idemp` keys | Command fingerprint và kết quả đã xử lý của HTTP write | `upsert_item.lua`, `remove_items.lua` |
 | Redis `outbox` streams | Chỉ `CART_ABANDONED` chờ relay | `mark_abandoned.lua` |
 | Kafka `t.cart.events` | Event đã relay | Relay |
 
@@ -52,15 +54,19 @@ không cần tách `cart_id` để dựng Redis key.
 | Key | Type | Nội dung / TTL |
 |---|---|---|
 | `cart:v2:{bNN}:u:<token>:items` | Hash | Field `sku_id`, value item JSON; TTL active/abandoned |
-| `cart:v2:{bNN}:u:<token>:meta` | Hash | `cart_id`, `user_id`, `status`, `last_activity_at_ms`, `abandonment_cycle`; TTL khớp items |
+| `cart:v2:{bNN}:u:<token>:meta` | Hash | `cart_id`, `user_id`, `status`, `last_activity_at_ms`; `abandonment_cycle` và `abandoned_at_ms` chỉ có sau lần abandoned đầu tiên; TTL khớp items |
 | `cart:v2:{bNN}:abandonment-index` | ZSET | Score `last_activity + abandoned_after`; không có TTL |
 | `cart:v2:{bNN}:outbox` | Stream | Record `CART_ABANDONED`; trim an toàn sau relay |
-| `cart:v2:{bNN}:u:<token>:idemp:http:<operation>:<key_sha256>` | String | Payload hash + logical response, TTL 24h |
+| `cart:v2:{bNN}:u:<token>:idemp:http:<operation>:<key_sha256>` | String | Payload hash + logical response; `<operation>` là `adjust` (POST) hoặc `delete` (DELETE); TTL `cart.idempotency_ttl` (mặc định 24h) cho cả hai |
 
 `bucket = xxh3_64(canonical_user_id) mod 64`, có đúng 64 giá trị `b00..b63`.
 Số bucket là data contract của namespace `v2`; không đổi bằng runtime config.
 
 ### 3.1 Item JSON
+
+`variant_name` tùy chọn được ghi cùng snapshot Product khi add/refresh validation.
+Cart cũ thiếu field vẫn decode bình thường. GET có thể trả tên mới từ Product nhưng
+không persist vào Redis; khi degraded/unavailable chỉ dùng tên đã lưu gần nhất.
 
 ```json
 {
@@ -69,6 +75,7 @@ Số bucket là data contract của namespace `v2`; không đổi bằng runtime
   "unit_price_at_add": { "amount_minor": 125000, "currency": "VND" },
   "product_name": "Áo thun đỏ",
   "variant_attributes": { "color": "red", "size": "M" },
+  "variant_name": "Màu sắc: Đỏ · Kích thước: M",
   "image_url": "products/tshirt/red.png",
   "catalog_validated_at_ms": "1780000000000",
   "catalog_validation_expires_at_ms": "1780000060000",
@@ -113,7 +120,8 @@ Order gọi Inventory Reserve để xác nhận stock trước khi tiếp tục 
 Một Lua invocation là transaction boundary. `upsert_item.lua` cập nhật item, meta,
 ZSET, TTL và idempotency record cùng lúc. `remove_items.lua` xóa SKU, cập nhật hoặc
 xóa meta và `ZREM` index nếu cart rỗng. `mark_abandoned.lua` cập nhật meta, gỡ index,
-đổi TTL và `XADD` event cùng lúc.
+đổi TTL và `XADD` event cùng lúc. `purge_cart.lua` (xử lý `USER_DELETED`) xóa `items`,
+`meta` và `ZREM` member của user cùng lúc; nó idempotent và không đụng outbox.
 
 Product gRPC và Kafka produce là side effect ngoài transaction. Redis Stream là
 record bền để Relay retry Kafka mà không tạo trạng thái "cart đã abandoned nhưng
@@ -135,7 +143,9 @@ qua entry an toàn sau khi consumer group tồn tại và không còn pending en
 HTTP idempotency record chứa hash canonical của request và response. Record được
 scope theo `user_token + HTTP operation + Idempotency-Key`, nên hai user cùng bucket
 hoặc hai operation khác nhau không thể xung đột. Cùng key trong đúng scope nhưng khác
-payload trả `409`; key đang xử lý trả conflict/retryable response theo OpenAPI.
+payload trả `409 IDEMPOTENCY_CONFLICT`. Record được ghi trong cùng Lua invocation với thay đổi
+cart nên không có trạng thái "đang xử lý": cùng key và cùng payload luôn nhận lại kết quả đã lưu
+(cùng status `200`/`201`).
 Order-paid event không cần record riêng: `HDEL` theo SKU, không phát Cart event và không
 gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka redeliver.
 
@@ -145,9 +155,11 @@ gia hạn activity nên bản thân thao tác remove đã idempotent khi Kafka r
 |---|---|---|
 | `ACTIVE` | Không tương tác 30 ngày | Marker chuyển `ABANDONED`, phát event |
 | `ACTIVE` | User write | Gia hạn `items`/`meta` 37 ngày và dời ZSET deadline |
-| `ABANDONED` | User write trong retention | Reactivate, dời deadline và TTL active |
+| `ABANDONED` | User write trong retention (thêm/đổi quantity, hoặc xóa SKU mà cart vẫn còn item) | Reactivate, dời deadline và TTL active |
+| `ABANDONED` | `com.ecommerce.order.paid.v1` làm cart còn item | Giữ `ABANDONED`, không gia hạn TTL, không dời deadline |
 | `ABANDONED` | 7 ngày sau marker | Redis tự expire |
 | Cart rỗng | User remove hoặc `com.ecommerce.order.paid.v1` | Xóa `items`, `meta`, `ZSET` member ngay |
+| Bất kỳ | `com.ecommerce.auth.user-deleted.v1` | `purge_cart.lua` xóa `items`, `meta`, `ZSET` member ngay |
 
 TTL 37 ngày tạo buffer 7 ngày cho scheduler sau ngưỡng abandoned 30 ngày. Nếu Redis
 key hết hạn trước khi marker chạy, marker chỉ `ZREM` member stale và không phát event.
@@ -157,3 +169,8 @@ key hết hạn trước khi marker chạy, marker chỉ `ZREM` member stale và
 Cart data là dữ liệu hành vi. Không log toàn bộ item JSON ở mức thường và không dùng
 `user_id`/`cart_id` làm metric label. Redis/Kafka dùng TLS. Event chỉ có identifier
 nội bộ cần thiết cho Notification, không chứa address, payment hay PII trực tiếp.
+
+Khi account bị xóa, Cart xóa giỏ ngay theo `USER_DELETED` ([ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)).
+Hai thứ còn lại tự hết hạn: record idempotency (chỉ chứa `sku_id`, `quantity`, `updated_at`, khóa bằng hash,
+24 giờ) và entry `CART_ABANDONED` đang chờ relay (chỉ `cart_id`/`user_id` nội bộ, được relay và trim trong
+vài phút).

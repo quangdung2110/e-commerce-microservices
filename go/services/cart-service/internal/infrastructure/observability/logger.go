@@ -22,6 +22,7 @@ func NewLogger(cfg LogConfig) (*zap.Logger, error) {
 	}
 
 	zapCfg := zap.NewProductionConfig()
+	zapCfg.InitialFields = map[string]any{"service": "cart-service"}
 	zapCfg.Level = zap.NewAtomicLevelAt(level)
 	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	if cfg.Format == "console" {

@@ -183,7 +183,7 @@ public class ReviewCommandService {
             newHasMedia = !attached.isEmpty();
         }
 
-        Review updated = reviews.applyEdit(reviewId, newRating, newContent, newHasMedia)
+        Review updated = reviews.applyEdit(reviewId, newRating, newContent, newHasMedia, now)
                 .orElseThrow(() -> new ReviewException(ErrorCode.EDIT_QUOTA_EXHAUSTED,
                         "The single permitted edit was already used"));
 

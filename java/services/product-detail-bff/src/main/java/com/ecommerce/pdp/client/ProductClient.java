@@ -21,9 +21,11 @@ public class ProductClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public ProductClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "product", properties.product());
+    public ProductClient(WebClient.Builder builder, PdpProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "product", properties.product());
         this.objectMapper = objectMapper;
+        objectMapper.readerFor(ProductPayload.class);
     }
 
     public Mono<Optional<ProductPayload>> fetch(String slug, RequestContext context) {

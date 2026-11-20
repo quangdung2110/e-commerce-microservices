@@ -115,7 +115,7 @@ public class OrderCommandService {
                     List<LineRow> lines = orders.lockLines(order.id());
                     if (lines.stream().anyMatch(l -> l.fulfillmentStatus() != FulfillmentStatus.DELIVERED)) {
                         throw new ApiException(ErrorCode.REFUND_REQUIRES_ALL_ITEMS_DELIVERED,
-                                "Every order line must be delivered by verified Delivery proof");
+                                "Every order line must be confirmed delivered by an Admin first");
                     }
                     if (order.status() != OrderStatus.COMPLETED) {
                         throw new ApiException(ErrorCode.INVALID_ORDER_TRANSITION, "Only a COMPLETED order can be returned");

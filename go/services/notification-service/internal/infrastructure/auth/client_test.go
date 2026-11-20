@@ -287,7 +287,9 @@ func TestPerLaneClientsAndLimiters(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, c.clients, 3)
 	for _, lane := range entity.AllLanes {
-		tr := c.clients[lane].Transport.(*http.Transport)
+		instrumented, ok := c.clients[lane].Transport.(interface{ Unwrap() http.RoundTripper })
+		require.True(t, ok, "tracing transport retains access to its isolated pool")
+		tr := instrumented.Unwrap().(*http.Transport)
 		assert.Equal(t, cfg.MaxConns.For(string(lane)), tr.MaxConnsPerHost)
 		assert.Equal(t, cfg.RatePerSecond.For(string(lane)), c.limiters[lane].rate)
 	}
@@ -328,13 +330,5 @@ func TestLimiterHonoursContextCancel(t *testing.T) {
 
 func TestNewClientRejectsEmptyBaseURL(t *testing.T) {
 	_, err := NewClient(config.AuthConfig{}, time.Minute, nil, nil, nil, nil)
-	require.Error(t, err)
-}
-
-func TestNewClientRejectsMissingTLSFiles(t *testing.T) {
-	cfg := testConfig("http://auth")
-	cfg.TLSCertFile = "/nonexistent/cert.pem"
-	cfg.TLSKeyFile = "/nonexistent/key.pem"
-	_, err := NewClient(cfg, time.Minute, nil, nil, nil, nil)
 	require.Error(t, err)
 }

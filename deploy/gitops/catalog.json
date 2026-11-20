@@ -1,0 +1,556 @@
+{
+  "schema_version": 1,
+  "components": {
+    "api-gateway": {
+      "kind": "gateway",
+      "ports": {
+        "web": 8080,
+        "metrics": 8090
+      },
+      "ready": "/ping",
+      "live": "/ping",
+      "probe_port": "metrics",
+      "env": {
+        "KUBERNETES_SERVICE_HOST": ""
+      },
+      "runtime_properties": [],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi"
+    },
+    "auth-service": {
+      "kind": "go",
+      "ports": {
+        "http": 8080,
+        "internal": 8081
+      },
+      "ready": "/health/ready",
+      "live": "/health/live",
+      "probe_port": "http",
+      "env": {
+        "AUTH_APP_ENV": "production",
+        "AUTH_DATABASE_SSLMODE": "verify-full",
+        "AUTH_JWT_ISSUER": "https://{domain}",
+        "AUTH_JWT_AUDIENCE": "ecommerce-api",
+        "AUTH_REFRESH_COOKIE_SECURE": "true",
+        "AUTH_SECURITY_TRUSTED_PROXIES": "{trusted_proxy_cidrs}",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
+        "AUTH_REFRESH_COOKIE_DOMAIN": "{domain}"
+      },
+      "runtime_properties": [
+        "AUTH_DATABASE_HOST",
+        "AUTH_DATABASE_NAME",
+        "AUTH_DATABASE_PORT",
+        "AUTH_DATABASE_USERNAME",
+        "AUTH_INTERNAL_SIGNING_KEY",
+        "AUTH_KAFKA_BROKERS",
+        "AUTH_KAFKA_SASL_PASSWORD",
+        "AUTH_KAFKA_SASL_USERNAME",
+        "AUTH_KEYS_MASTER_KEY",
+        "AUTH_REDIS_HOST",
+        "AUTH_REDIS_PORT",
+        "DB_PASSWORD",
+        "REDIS_PASSWORD"
+      ],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi",
+      "migration": "migrate"
+    },
+    "cart-service": {
+      "kind": "go",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/health/ready",
+      "live": "/health/live",
+      "probe_port": "http",
+      "env": {
+        "CART_PRODUCT_ADDRESS": "product-service:9091",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
+        "APP_ENV": "production",
+        "CART_APP_ENV": "production",
+        "CART_LOGGING_LEVEL": "info",
+        "CART_MEDIA_REQUIRE_HTTPS": "true",
+        "CART_MEDIA_CDN_BASE_URL": "https://{domain}/media",
+        "CART_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg"
+      },
+      "runtime_properties": [
+        "CART_KAFKA_BROKERS",
+        "CART_KAFKA_SASL_PASSWORD",
+        "CART_KAFKA_SASL_USERNAME",
+        "CART_REDIS_ADDRS",
+        "CART_REDIS_PASSWORD"
+      ],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi"
+    },
+    "checkout-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/health/ready",
+      "live": "/health/live",
+      "probe_port": "http",
+      "env": {
+        "CHECKOUT_CART_BASE_URL": "http://cart-service:8080",
+        "CHECKOUT_USER_BASE_URL": "http://user-service:8083",
+        "CHECKOUT_PRODUCT_GRPC_TARGET": "product-service:9091",
+        "CHECKOUT_INVENTORY_BASE_URL": "http://inventory-service:8080",
+        "CHECKOUT_PROMOTION_BASE_URL": "http://promotion-service:8085",
+        "CHECKOUT_ORDER_BASE_URL": "http://order-service:8080",
+        "CHECKOUT_VOUCHER_OPTIONS_ENABLED": "true",
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "CHECKOUT_MEDIA_REQUIRE_HTTPS": "true",
+        "SERVER_PORT": "8080",
+        "CHECKOUT_MEDIA_CDN_BASE_URL": "https://{domain}/media",
+        "CHECKOUT_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg"
+      },
+      "runtime_properties": [
+        "CHECKOUT_ENCRYPTION_ACTIVE_VERSION",
+        "CHECKOUT_ENCRYPTION_KEYS",
+        "CHECKOUT_REDIS_URL",
+        "CHECKOUT_TOKEN_HMAC_ACTIVE_VERSION",
+        "CHECKOUT_TOKEN_HMAC_KEYS"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app/app.jar"
+    },
+    "frontend": {
+      "kind": "node",
+      "ports": {
+        "http": 3000
+      },
+      "ready": "/help/about",
+      "live": "/help/about",
+      "probe_port": "http",
+      "env": {
+        "NODE_ENV": "production",
+        "API_UPSTREAM": "http://api-gateway:80",
+        "NEXT_TELEMETRY_DISABLED": "1",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+      },
+      "runtime_properties": [],
+      "memory_request": "256Mi",
+      "memory_limit": "1Gi"
+    },
+    "gateway-auth": {
+      "kind": "go",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/health/ready",
+      "live": "/health/live",
+      "probe_port": "http",
+      "env": {
+        "AUTH_JWT_ISSUER": "https://{domain}",
+        "AUTH_JWT_AUDIENCE": "ecommerce-api",
+        "AUTH_JWT_ALLOWED_ALGORITHMS": "RS256",
+        "AUTH_JWKS_URL": "http://auth-service:8080/.well-known/jwks.json",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+      },
+      "runtime_properties": [
+        "AUTH_REVOCATION_REDIS_URL"
+      ],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi"
+    },
+    "inventory-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SERVER_PORT": "8080"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "DB_URL",
+        "DB_USERNAME",
+        "INVENTORY_WRITE_FREEZE",
+        "WORKERS_ENABLED"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app.jar",
+      "migration": "flyway"
+    },
+    "notification-service": {
+      "kind": "go",
+      "ports": {
+        "http": 8080,
+        "internal": 8081
+      },
+      "ready": "/readyz",
+      "live": "/livez",
+      "probe_port": "internal",
+      "env": {
+        "NOTIFICATION_APP_ENV": "production",
+        "NOTIFICATION_APP_ROLE": "all",
+        "NOTIFICATION_DATABASE_SSLMODE": "verify-full",
+        "NOTIFICATION_EMAIL_PROVIDER": "ses",
+        "NOTIFICATION_TRACK_CORRELATE_PROVIDER": "ses",
+        "NOTIFICATION_TRACK_VERIFY_SIGNATURE": "true",
+        "NOTIFICATION_AUTH_BASE_URL": "http://auth-service:8081",
+        "NOTIFICATION_FRONTEND_BASE_URL": "https://{domain}",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+      },
+      "runtime_properties": [
+        "AWS_REGION",
+        "DB_PASSWORD",
+        "NOTIFICATION_AUTH_SIGNING_KEY",
+        "NOTIFICATION_DATABASE_HOST",
+        "NOTIFICATION_DATABASE_NAME",
+        "NOTIFICATION_DATABASE_USERNAME",
+        "NOTIFICATION_EMAIL_SES_ENDPOINT",
+        "NOTIFICATION_KAFKA_BROKERS",
+        "NOTIFICATION_KAFKA_SASL_PASSWORD",
+        "NOTIFICATION_KAFKA_SASL_USERNAME",
+        "NOTIFICATION_OUTBOX_PUBLISHER",
+        "NOTIFICATION_PRIVACY_HMAC_KEY",
+        "NOTIFICATION_REDIS_HOST",
+        "NOTIFICATION_TRACK_AWS_ENDPOINT",
+        "NOTIFICATION_TRACK_QUEUE_URL",
+        "REDIS_PASSWORD"
+      ],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi",
+      "migration": "migrate"
+    },
+    "order-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "INVENTORY_BASE_URL": "http://inventory-service:8080",
+        "PROMOTION_BASE_URL": "http://promotion-service:8085",
+        "PAYMENT_BASE_URL": "http://payment-service:8080",
+        "ORDER_FRONTEND_BASE_URL": "https://{domain}",
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
+        "SERVER_PORT": "8080"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "DB_URL",
+        "DB_USERNAME",
+        "KAFKA_BROKERS",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "REDIS_HOST",
+        "REDIS_PASSWORD",
+        "TEMPORAL_TARGET"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app.jar",
+      "migration": "flyway"
+    },
+    "payment-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "PAYMENT_DATABASE_URL",
+        "PAYMENT_DATABASE_USERNAME",
+        "PAYMENT_KAFKA_BROKERS",
+        "PAYMENT_STRIPE_API_VERSION",
+        "PAYMENT_STRIPE_PUBLISHABLE_KEY",
+        "PAYMENT_STRIPE_SECRET_KEY",
+        "PAYMENT_STRIPE_WEBHOOK_SECRETS"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app/payment-service.jar",
+      "migration": "flyway"
+    },
+    "product-detail-bff": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "PDP_PRODUCT_BASE_URL": "http://product-service:8081",
+        "PDP_INVENTORY_ENABLED": "true",
+        "PDP_INVENTORY_BASE_URL": "http://inventory-service:8080",
+        "PDP_REVIEW_ENABLED": "true",
+        "PDP_REVIEW_BASE_URL": "http://review-service:8080",
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "PDP_MEDIA_REQUIRE_HTTPS": "true",
+        "SERVER_PORT": "8080",
+        "PDP_MEDIA_CDN_BASE_URL": "https://{domain}/media",
+        "PDP_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg"
+      },
+      "runtime_properties": [],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app/app.jar"
+    },
+    "product-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8081,
+        "grpc": 9091
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
+        "SERVER_PORT": "8081",
+        "GRPC_PORT": "9091"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "DB_URL",
+        "DB_USERNAME",
+        "EXPORT_CURSOR_SECRET",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "MARKDOWN_DLQ_TOPIC",
+        "MARKDOWN_TOPIC"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app.jar",
+      "migration": "flyway"
+    },
+    "promotion-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8085
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "PRODUCT_BASE_URL": "http://product-service:8081",
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
+        "SERVER_PORT": "8085"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "DB_URL",
+        "DB_USERNAME",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "PRODUCT_EVENTS_DLQ_TOPIC",
+        "PRODUCT_EVENTS_TOPIC",
+        "REDIS_HOST",
+        "REDIS_PASSWORD",
+        "REDIS_PORT"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app.jar",
+      "migration": "flyway"
+    },
+    "review-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
+        "SERVER_PORT": "8080"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "DB_URL",
+        "DB_USERNAME",
+        "KAFKA_BOOTSTRAP",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "REVIEW_AUTHOR_ALIAS_HMAC_SECRET",
+        "REVIEW_PRIVACY_GUARD_HMAC_SECRET",
+        "REVIEW_S3_ACCESS_KEY",
+        "REVIEW_S3_BUCKET",
+        "REVIEW_S3_ENDPOINT",
+        "REVIEW_S3_PUBLIC_ENDPOINT",
+        "REVIEW_S3_SECRET_KEY"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app/app.jar",
+      "migration": "flyway"
+    },
+    "search-service": {
+      "kind": "java",
+      "ports": {
+        "http": 8080
+      },
+      "ready": "/actuator/health/readiness",
+      "live": "/actuator/health/liveness",
+      "probe_port": "http",
+      "env": {
+        "PRODUCT_INTERNAL_URL": "http://product-service:8081",
+        "CDN_BASE_URL": "https://{domain}/media",
+        "THUMBNAIL_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg",
+        "SPRING_PROFILES_ACTIVE": "production",
+        "SERVER_SHUTDOWN": "graceful",
+        "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE": "30s",
+        "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED": "true",
+        "SPRING_FLYWAY_ENABLED": "false",
+        "JAVA_OPTS": "-XX:MaxRAMPercentage=65.0 -XX:+UseG1GC",
+        "MANAGEMENT_OTLP_TRACING_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "{otlp_endpoint}/v1/traces",
+        "TRACING_SAMPLING_PROBABILITY": "{sampling}",
+        "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
+        "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
+        "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";"
+      },
+      "runtime_properties": [
+        "ES_PASSWORD",
+        "ES_URIS",
+        "ES_USERNAME",
+        "KAFKA_BOOTSTRAP",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME"
+      ],
+      "memory_request": "512Mi",
+      "memory_limit": "1536Mi",
+      "java_jar": "/app/app.jar"
+    },
+    "user-service": {
+      "kind": "go",
+      "ports": {
+        "http": 8082,
+        "internal": 8083
+      },
+      "ready": "/health/ready",
+      "live": "/health/live",
+      "probe_port": "http",
+      "env": {
+        "USER_APP_ENV": "production",
+        "USER_DATABASE_SSLMODE": "verify-full",
+        "USER_KAFKA_CONSUMER_ENABLED": "true",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+      },
+      "runtime_properties": [
+        "DB_PASSWORD",
+        "REDIS_PASSWORD",
+        "USER_DATABASE_HOST",
+        "USER_DATABASE_NAME",
+        "USER_DATABASE_USERNAME",
+        "USER_INTERNAL_SIGNING_KEY",
+        "USER_KAFKA_BROKERS",
+        "USER_KAFKA_SASL_PASSWORD",
+        "USER_KAFKA_SASL_USERNAME",
+        "USER_REDIS_HOST"
+      ],
+      "memory_request": "128Mi",
+      "memory_limit": "512Mi",
+      "migration": "migrate"
+    }
+  }
+}

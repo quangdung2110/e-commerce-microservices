@@ -2,26 +2,33 @@
 doc_id: cart-overview
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
 evidence:
   - docs/cart/scripts
+  - go/services/cart-service/cmd/server/main.go
+  - go/services/cart-service/internal/api/router/router.go
+  - go/services/cart-service/internal/infrastructure/cartredis
+  - go/services/cart-service/internal/workers
+  - go/services/cart-service/configs/application.yaml
 verified_against_commit: null
 ---
 
 # Cart Service — Service Overview
 
-> Điểm bắt đầu để hiểu Cart Service. Thiết kế này đã được chốt ở mức tài liệu;
-> trạng thái vẫn là `proposed` cho tới khi được đối chiếu với implementation.
+> Điểm bắt đầu để hiểu Cart Service. Tài liệu này đã được đối chiếu với
+> `go/services/cart-service` (route, DTO, mã lỗi, Lua script, worker và cấu hình).
 
 ## 1. Service status
 
-- Runtime: Go, Gin, Redis, Kafka và Product Service gRPC.
+- Runtime: Go, Gin, Redis, Kafka và Product Service gRPC; **đã implement**
+  ([`go/services/cart-service`](../../go/services/cart-service/README.md)).
 - Redis là **nguồn chân lý duy nhất** của cart state. PostgreSQL không còn là
   dependency hay cold store của Cart.
 - Kafka chỉ nhận event `CART_ABANDONED`; Notification Service là consumer duy
-  nhất hiện tại.
+  nhất hiện tại. Cart tiêu thụ `com.ecommerce.order.paid.v1` (dọn SKU đã mua) và
+  `com.ecommerce.auth.user-deleted.v1` (xóa giỏ của account đã xóa).
 - Cart data là ephemeral có kiểm soát: Redis phải bật AOF, replica và
   `maxmemory-policy noeviction`. Mất Redis toàn phần đồng nghĩa mất cart.
 
@@ -33,8 +40,9 @@ hiển thị và giá tại thời điểm thêm. Service phát đúng một tí
 
 ## 3. Boundary
 
-Cart chịu trách nhiệm thêm, đặt quantity, xóa SKU theo lô, dọn SKU sau
-`com.ecommerce.order.paid.v1`, đọc cart và đánh dấu abandoned. Cart không giữ chỗ tồn kho, không
+Cart chịu trách nhiệm thêm hoặc điều chỉnh quantity theo delta, xóa SKU theo lô, dọn SKU sau
+`com.ecommerce.order.paid.v1`, xóa cả giỏ khi nhận `com.ecommerce.auth.user-deleted.v1`, đọc cart
+(kể cả snapshot quantity cho Checkout) và đánh dấu abandoned. Cart không giữ chỗ tồn kho, không
 tính khuyến mãi/tổng tiền, không là source of truth của giá hiện tại và không có
 trách nhiệm phân tích.
 
@@ -59,7 +67,10 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 - Thêm SKU mới sau khi Product xác thực catalog; Cart không kiểm tra tồn kho.
 - Đọc cart kèm giá hiện tại từ Product, suy giảm mềm khi Product lỗi.
 - Dùng Redis idempotency record cho HTTP write.
+- Cung cấp cho Checkout snapshot `{product_id, sku_id, quantity}` qua endpoint nội bộ, không enrich
+  Product và không làm mới TTL.
 - Đánh dấu abandoned bằng Redis ZSET, phát event nguyên tử và relay Kafka.
+- Xóa toàn bộ giỏ của account đã xóa ngay khi nhận `USER_DELETED` ([ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)).
 - Không phục hồi từ cold store: cart key không tồn tại trả cart rỗng.
 
 ## 6. Dependencies
@@ -67,7 +78,9 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 | Direction | System | Protocol | Purpose |
 |---|---|---|---|
 | Inbound | API Gateway | HTTP | Identity đã xác thực và Cart API |
+| Inbound | Checkout Service | HTTP (mesh) | `GET /internal/v1/carts/{user_id}/checkout-snapshot` |
 | Inbound | Order Service | Kafka | `com.ecommerce.order.paid.v1` để xóa SKU đã mua |
+| Inbound | Auth Service | Kafka | `com.ecommerce.auth.user-deleted.v1` trên `t.auth.events` để xóa giỏ |
 | Outbound | Product Service | gRPC | Validate catalog và phủ giá hiện hành khi đọc |
 | Outbound | Redis | Redis protocol | Cart state, scheduler, idempotency, outbox |
 | Outbound | Kafka `t.cart.events` | Kafka | Chỉ `CART_ABANDONED` |
@@ -97,11 +110,18 @@ Không service nào được đọc hoặc ghi trực tiếp Redis key của Car
 | [Development](./development.md) | Local development và test |
 | [Decisions](./decisions/README.md) | ADR |
 
-Quyết định ranh giới catalog/tồn kho hiện hành: [ADR-012](./decisions/ADR-012-catalog-only-cart-validation.md).
+Quyết định ranh giới catalog/tồn kho hiện hành: [ADR-013](./decisions/ADR-013-checkout-preview-order-reserve-boundary.md)
+(thay thế [ADR-012](./decisions/ADR-012-catalog-only-cart-validation.md)).
 
 ## 9. Known gaps
 
-- Tài liệu chưa được xác minh với implementation Go.
-- `USER_DELETED` chưa có workflow xóa cart keys và schedule index.
-- Lua/OpenAPI v1 đã chốt delta semantics; implementation hiện hữu vẫn cần migrate
-  và có contract test trước khi được đánh dấu conformant.
+- Chưa có test tự động validate response HTTP với OpenAPI và payload `CART_ABANDONED` với JSON Schema,
+  cũng chưa có consumer test với Checkout/Notification thật; vì vậy contract ở trạng thái `implemented`
+  chứ chưa `verified` ([ADOPTION](../../contracts/ADOPTION.md)).
+- Xóa giỏ theo `USER_DELETED` không xóa record idempotency HTTP (tự hết hạn sau
+  `cart.idempotency_ttl`, 24 giờ) và không xóa entry `CART_ABANDONED` đang chờ relay
+  (xem [ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)).
+- Rate limit cục bộ tính theo từng pod (xem [interfaces.md](./interfaces.md) §2.2); giới hạn thực
+  tế khi scale ngang là tổng của các pod, còn policy chính thức thuộc Gateway.
+- Product lỗi vào lúc ghi vẫn từ chối SKU mới hoặc SKU có validation hết hạn (không có fallback); đây là
+  chủ ý ([ADR-005](./decisions/ADR-005-pull-model-product-data.md)).

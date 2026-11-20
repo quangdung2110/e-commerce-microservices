@@ -1,0 +1,76 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+rule_files: [/etc/prometheus/rules.yml]
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]
+scrape_configs:
+  - job_name: backend-java
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [search-service:8080]
+        labels: {service: search-service}
+      - targets: [review-service:8080]
+        labels: {service: review-service}
+      - targets: [product-service:8081]
+        labels: {service: product-service}
+      - targets: [promotion-service:8085]
+        labels: {service: promotion-service}
+      - targets: [inventory-service:8080]
+        labels: {service: inventory-service}
+      - targets: [order-service:8080]
+        labels: {service: order-service}
+      - targets: [checkout-service:8080]
+        labels: {service: checkout-service}
+      - targets: [product-detail-bff:8080]
+        labels: {service: product-detail-bff}
+  - job_name: backend-go
+    static_configs:
+      - targets: [auth-service:8080]
+        labels: {service: auth-service}
+      - targets: [user-service:8082]
+        labels: {service: user-service}
+      - targets: [cart-service:8080]
+        labels: {service: cart-service}
+      - targets: [gateway-auth:8080]
+        labels: {service: gateway-auth}
+  # Optional profiles use file discovery so an intentionally disabled service doesn't page.
+  # The init service writes only services enabled in OBSERVABILITY_OPTIONAL_SERVICES.
+  - job_name: backend-optional
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/optional.json]
+        refresh_interval: 15s
+  - job_name: traefik
+    static_configs:
+      - targets: [api-gateway:8090]
+        labels: {service: api-gateway}
+  - job_name: redis
+    static_configs:
+      - targets: [redis-exporter:9121]
+        labels: {service: redis}
+      - targets: [checkout-redis-exporter:9121]
+        labels: {service: checkout-redis}
+  - job_name: postgres
+    static_configs:
+      - targets: [postgres-exporter:9187]
+        labels: {service: postgres}
+  - job_name: kafka
+    static_configs:
+      - targets: [kafka-exporter:9308]
+        labels: {service: kafka}
+  - job_name: observability
+    static_configs:
+      - targets: [prometheus:9090]
+        labels: {service: prometheus}
+      - targets: [alertmanager:9093]
+        labels: {service: alertmanager}
+      - targets: [otel-collector:12345]
+        labels: {service: otel-collector}
+      - targets: [loki:3100]
+        labels: {service: loki}
+      - targets: [jaeger:8888]
+        labels: {service: jaeger}

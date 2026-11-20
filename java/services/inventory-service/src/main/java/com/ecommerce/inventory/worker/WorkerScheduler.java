@@ -64,6 +64,11 @@ public class WorkerScheduler {
         guarded("bucket-scan", reconciliation::scanBuckets);
     }
 
+    @Scheduled(fixedDelayString = "${inventory.workers.availability-audit-interval}")
+    public void auditAvailability() {
+        guarded("availability-audit", reconciliation::auditAvailability);
+    }
+
     @Scheduled(cron = "${inventory.workers.ledger-replay-cron}")
     public void replayLedger() {
         guarded("ledger-replay", reconciliation::replayLedger);

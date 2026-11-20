@@ -5,7 +5,7 @@ info:
   description: >-
     Contract cho event duy nhất Cart Service phát hiện tại: CART_ABANDONED.
     Redis Stream là durable outbox; Relay chuyển entry sang Kafka.
-x-adoption-status: proposed
+x-adoption-status: implemented
 defaultContentType: application/cloudevents+json
 servers:
   local:
@@ -24,9 +24,20 @@ channels:
       outbox_bucket, stream_id và cart_id; stream_id chỉ có thứ tự trong stream bucket.
     x-retention: 7d
     x-retry-policy:
-      max-attempts: 3
-      strategy: exponential-backoff-with-jitter
+      strategy: relay-retry-then-pending-redelivery
+      attempts-per-pass: 3
+      backoff: exponential-with-jitter
+      description: >-
+        Retry là của relay phía producer. Mỗi lượt relay thử produce một entry tối đa 3 lần
+        (cùng CloudEvent id). Hết 3 lần entry vẫn nằm pending trong Redis Stream và được
+        thử lại ở lượt sau qua XAUTOCLAIM, nên Kafka outage làm chậm event chứ không làm
+        mất event. Relay dừng bucket tại entry lỗi đầu tiên để giữ thứ tự trong bucket.
       dead-letter-topic: t.cart.events.dlq
+      dead-letter-scope: >-
+        Chỉ nhận entry outbox không bao giờ thành công (thiếu cart_id hoặc event type lạ).
+        Message DLQ không phải CloudEvent: JSON {reason, outbox_key, stream_id,
+        outbox_bucket, event_type}, key là CloudEvent id xác định của entry, header
+        outbox_bucket và stream_id. Lỗi Kafka tạm thời không bao giờ đi vào DLQ.
     messages:
       cartAbandoned:
         $ref: '#/components/messages/cartAbandoned'
@@ -57,6 +68,7 @@ components:
             subject: carts/c1:MD...
             time: '2026-08-30T14:30:00Z'
             datacontenttype: application/json
+            dataschema: /contracts/events/cart/v1/schemas/cart-abandoned.schema.json
             data:
               cart_id: c1:MD...
               user_id: 0198e098-94f4-7f8f-9e16-ae42dfbd93c1

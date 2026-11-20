@@ -12,7 +12,7 @@ import com.ecommerce.search.worker.job.TombstonePurgeJob;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -50,7 +50,7 @@ class TombstonePurgeIT extends AbstractSearchIntegrationTest {
     @Autowired
     private TombstonePurgeJob purgeJob;
 
-    @MockBean
+    @MockitoBean
     private InventoryReadinessClient readiness;
 
     @BeforeEach

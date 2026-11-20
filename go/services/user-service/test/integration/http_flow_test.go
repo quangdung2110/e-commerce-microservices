@@ -276,6 +276,70 @@ func TestAddressBookLifecycleOverHTTP(t *testing.T) {
 	require.Equal(t, secondID, remaining[0].(map[string]any)["id"])
 }
 
+func TestTheOnlyAddressCanBeDeletedOverHTTP(t *testing.T) {
+	resetState(t)
+	f := newAPIFixture(t)
+	userID := f.bootstrap(t)
+
+	created := f.do(t, http.MethodPost, "/api/v1/users/me/addresses", userID,
+		"application/json", addressBody())
+	require.Equal(t, http.StatusCreated, created.Code)
+	addressID := decodeBody(t, created)["id"].(string)
+
+	deleted := f.do(t, http.MethodDelete, "/api/v1/users/me/addresses/"+addressID, userID, "", nil)
+	require.Equal(t, http.StatusNoContent, deleted.Code, "USER-BR-004 only applies while a replacement exists")
+
+	list := f.do(t, http.MethodGet, "/api/v1/users/me/addresses", userID, "", nil)
+	require.Equal(t, http.StatusOK, list.Code)
+	require.Empty(t, decodeBody(t, list)["addresses"])
+}
+
+func TestADeletedAccountIsNotFoundOnEveryOwnerRoute(t *testing.T) {
+	resetState(t)
+	f := newAPIFixture(t)
+	userID := f.bootstrap(t)
+
+	require.Equal(t, http.StatusOK, f.do(t, http.MethodPatch, "/api/v1/users/me/profile", userID,
+		"application/merge-patch+json", map[string]any{"first_name": "Nguyen"}).Code)
+	require.Equal(t, http.StatusCreated, f.do(t, http.MethodPost, "/api/v1/users/me/addresses", userID,
+		"application/json", addressBody()).Code)
+	eventsBefore := len(f.publisher.events())
+
+	_, err := f.lifecycle.Anonymize(context.Background(), userID,
+		time.Now().UTC(), time.Now().UTC().Add(90*24*time.Hour), "GDPR_REQUEST")
+	require.NoError(t, err)
+
+	// The gateway's revocation can lag or fail, so the service itself must refuse
+	// an owner whose account is already anonymized (USER-INV-005).
+	for _, probe := range []struct {
+		method      string
+		path        string
+		contentType string
+		body        any
+	}{
+		{http.MethodGet, "/api/v1/users/me/profile", "", nil},
+		{http.MethodPatch, "/api/v1/users/me/profile", "application/merge-patch+json", map[string]any{"first_name": "Again"}},
+		{http.MethodGet, "/api/v1/users/me/preferences", "", nil},
+		{http.MethodGet, "/api/v1/users/me/addresses", "", nil},
+		{http.MethodPost, "/api/v1/users/me/addresses", "application/json", addressBody()},
+	} {
+		recorder := f.do(t, probe.method, probe.path, userID, probe.contentType, probe.body)
+		require.Equal(t, http.StatusNotFound, recorder.Code, probe.method+" "+probe.path)
+		require.Equal(t, "PROFILE_NOT_FOUND", decodeBody(t, recorder)["code"], probe.method+" "+probe.path)
+	}
+
+	var firstName *string
+	require.NoError(t, testPool.QueryRow(context.Background(),
+		`SELECT first_name FROM "user".user_profiles WHERE id = $1`, userID).Scan(&firstName))
+	require.Nil(t, firstName, "the late PATCH did not write the name back")
+
+	var addresses int
+	require.NoError(t, testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM "user".user_addresses WHERE user_id = $1`, userID).Scan(&addresses))
+	require.Zero(t, addresses, "the late POST did not create an address")
+	require.Len(t, f.publisher.events(), eventsBefore, "and no profile event followed")
+}
+
 func TestAddressListIsServedFromTheCacheAfterAMiss(t *testing.T) {
 	resetState(t)
 	ctx := context.Background()
@@ -364,23 +428,25 @@ func TestPreferencesReadAndReplace(t *testing.T) {
 	body := decodeBody(t, recorder)
 	require.Equal(t, "vi", body["language"])
 	require.Equal(t, "VND", body["currency"])
-	require.True(t, body["marketing_enabled"].(bool))
+	require.True(t, body["email_enabled"].(bool))
+	require.True(t, body["in_app_enabled"].(bool))
+	require.False(t, body["marketing_enabled"].(bool), "marketing is opt-in until the owner says otherwise")
 
 	recorder = f.do(t, http.MethodPut, "/api/v1/users/me/preferences", userID,
 		"application/json", map[string]any{
 			"email_enabled":     true,
 			"in_app_enabled":    true,
-			"marketing_enabled": false,
+			"marketing_enabled": true,
 		})
 	require.Equal(t, http.StatusOK, recorder.Code)
-	require.False(t, decodeBody(t, recorder)["marketing_enabled"].(bool))
+	require.True(t, decodeBody(t, recorder)["marketing_enabled"].(bool))
 
 	// Sending the same body again is idempotent.
 	recorder = f.do(t, http.MethodPut, "/api/v1/users/me/preferences", userID,
 		"application/json", map[string]any{
 			"email_enabled":     true,
 			"in_app_enabled":    true,
-			"marketing_enabled": false,
+			"marketing_enabled": true,
 		})
 	require.Equal(t, http.StatusOK, recorder.Code)
 }

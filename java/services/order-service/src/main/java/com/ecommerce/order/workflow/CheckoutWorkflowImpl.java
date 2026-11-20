@@ -189,6 +189,10 @@ public class CheckoutWorkflowImpl extends MessageQueueWorkflow implements OrderW
                 phase = "POST_PAYMENT";
                 return;
             }
+            if ("CANCELLED".equals(result.result())) {
+                phase = "DONE";
+                return;
+            }
             if ("NON_CAPTURE".equals(result.result()) || "NO_PAYMENT".equals(result.result())) {
                 break;
             }
@@ -210,20 +214,25 @@ public class CheckoutWorkflowImpl extends MessageQueueWorkflow implements OrderW
         // Payment non-capture is proven: both cleanup obligations run independently.
         List<Promise<Boolean>> cleanups = new ArrayList<>();
         for (String promotionId : promotionIds) {
-            cleanups.add(Async.function(() -> untilAccepted(() -> activities.releasePromotion(orderId, promotionId))));
+            cleanups.add(Async.function(() -> finishCancellationStep(() -> activities.releasePromotion(orderId, promotionId))));
         }
-        cleanups.add(Async.function(() -> untilAccepted(() -> activities.releaseInventory(orderId))));
+        cleanups.add(Async.function(() -> finishCancellationStep(() -> activities.releaseInventory(orderId))));
         Promise.allOf(cleanups).get();
-        durableVoid(() -> activities.completeCancellation(orderId));
-        phase = "DONE";
+        boolean released = cleanups.stream().allMatch(Promise::get);
+        phase = released && finishCancellationStep(() -> activities.completeCancellation(orderId))
+                ? "DONE" : "POST_PAYMENT";
     }
 
-    private Boolean untilAccepted(io.temporal.workflow.Functions.Func<Outcome> call) {
+    private boolean finishCancellationStep(io.temporal.workflow.Functions.Func<Outcome> call) {
         int attempt = 0;
         while (true) {
             Outcome outcome = durable(call);
-            if (outcome.isAccepted()) {
-                return Boolean.TRUE;
+            // Completion was a void activity in older workflow histories.
+            if (outcome == null || outcome.isAccepted()) {
+                return true;
+            }
+            if (outcome.isCaptured()) {
+                return false;
             }
             attempt++;
             Workflow.sleep(backoff(attempt));

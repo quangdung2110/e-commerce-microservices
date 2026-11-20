@@ -93,4 +93,45 @@ public class OutboxRepository {
                 ORDER BY c.relname
                 """).query(String.class).list();
     }
+
+    /** Whether the partitions a write can land in exist: the current and the next UTC month. */
+    public record WindowState(boolean currentExists, boolean nextExists) {
+
+        /** The rolling window the scheduler maintains is complete. */
+        public boolean complete() {
+            return currentExists && nextExists;
+        }
+    }
+
+    /**
+     * Whether the partition for the current UTC month, and the one after it, exist.
+     *
+     * <p>This asks about the months themselves rather than counting partitions. A count
+     * cannot tell the window from history: partitions are never dropped automatically, so
+     * old months keep it above any threshold while the current month is missing and every
+     * command fails to write its outbox row. The names follow the convention of the
+     * bootstrap and of {@link #ensureMonthlyPartitions()}.
+     */
+    public WindowState windowState() {
+        return jdbc.sql("""
+                WITH month AS (SELECT date_trunc('month', now() AT TIME ZONE 'UTC')::date AS start),
+                     existing AS (
+                         SELECT c.relname
+                         FROM pg_inherits i
+                         JOIN pg_class c ON c.oid = i.inhrelid
+                         JOIN pg_class p ON p.oid = i.inhparent
+                         JOIN pg_namespace n ON n.oid = p.relnamespace
+                         WHERE n.nspname = 'review' AND p.relname = 'review_outbox')
+                SELECT
+                    EXISTS (SELECT 1 FROM existing, month
+                             WHERE relname = format('review_outbox_y%sm%s',
+                                   to_char(month.start, 'YYYY'), to_char(month.start, 'MM'))) AS current_exists,
+                    EXISTS (SELECT 1 FROM existing, month
+                             WHERE relname = format('review_outbox_y%sm%s',
+                                   to_char(month.start + INTERVAL '1 month', 'YYYY'),
+                                   to_char(month.start + INTERVAL '1 month', 'MM'))) AS next_exists
+                """)
+                .query((rs, row) -> new WindowState(rs.getBoolean("current_exists"), rs.getBoolean("next_exists")))
+                .single();
+    }
 }

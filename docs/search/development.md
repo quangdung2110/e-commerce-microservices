@@ -2,11 +2,13 @@
 doc_id: search-development
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
-evidence: []
-verified_against_commit: null
+evidence:
+  - java/services/search-service/pom.xml
+  - java/services/search-service/docker-compose.yml
+  - java/services/search-service/src/test/java/com/ecommerce/search
 ---
 
 # Search Service — Development Guide
@@ -43,9 +45,13 @@ docker compose -f java/services/search-service/docker-compose.yml up -d elastics
 curl -f http://localhost:9200/_cluster/health
 ```
 
-Ở local, profile `dev` bật `search.bootstrap-indices=true`: service tự tạo
-`products_v1`, `categories_v1`, `search_suggestions_v1`, `search_jobs_v1` từ
-[`schema/`](./schema) rồi gắn alias khi khởi động. Ở mọi môi trường dùng chung, cờ này
+Ở local, profile `dev` (cả compose gốc lẫn compose riêng của service dùng nó) bật `search.bootstrap-indices=true`: service
+tự tạo `products_v1`, `categories_v1`, `search_suggestions_v1`, `search_jobs_v1` từ
+[`schema/`](./schema) rồi gắn alias khi khởi động. Profile này cũng bật lại hai job mà mặc định cũng chạy theo lịch dài:
+recompute `product_count` mỗi 5 phút và rebuild suggestion mỗi 15 phút — nếu không thì gợi ý và số đếm danh mục luôn
+trống/0 — và vẫn **tắt** purge tombstone. Bỏ qua profile `dev` thì phải tự bật chúng bằng
+`SEARCH_SUGGESTIONS_REBUILDENABLED=true` và `SEARCH_TOMBSTONE_PRODUCTCOUNTENABLED=true` (Spring relaxed binding của
+`search.suggestions.rebuild-enabled` và `search.tombstone.product-count-enabled`). Ở mọi môi trường dùng chung, cờ này
 phải để `false` và index được tạo có chủ đích từ chính các file đó — index rỗng với
 `dynamic: strict` sẽ khiến mọi lệnh ghi thất bại rõ ràng thay vì sinh mapping sai.
 Index nội bộ `search_jobs` luôn được tạo vì các job cần nó trước khi làm bất cứ việc gì
@@ -105,11 +111,11 @@ cùng lệnh này thay vì tạo quy trình riêng cho máy cá nhân.
 
 | Loại | Phạm vi | Dependency |
 |---|---|---|
-| Unit | Mã hóa/giải mã cursor, transform Product CloudEvent v1, chuẩn hóa attribute token, dispatch theo `type` | Không |
-| Integration | Consumer đến index đến API, guard revision, tombstone, category control reindex | Testcontainers Elasticsearch và Kafka |
+| Unit | Cursor, transform Product CloudEvent, attribute token, discount, query builder, facet; `IndexingConsumer` (`nack` đúng vị trí), `BatchExecutor`, `ReindexRunService` (trigger/hủy/rollback), `ReindexRecovery`, `ReindexPreconditions`, `ReindexAutoStarter`, `ReindexControlCoordinator`, `ReindexVerifier`, `ReindexProgressState` (checkpoint qua JSON), `FullReindexJob` (mock export: stage, resume, hủy, SUPERSEDED, mất lease, cutover atomic), cấu hình (`SearchPropertiesMediaTest`, `TombstoneProtectionWindowTest`), schema (`CanonicalSchemaVerbatimTest`, `SearchJobsDocumentsMatchMappingTest`), metric (`SearchMetricsGaugeTest`) | Không |
+| Integration | Consumer Kafka thật đến index (`ConsumerRedeliveryIT`: batch bị `nack` được giao lại; metric lag), projection và guard revision, tombstone, API search/facet (`ProductSearchApiIT`), nhãn facet, mọi lỗi HTTP và giới hạn tham số (`HttpErrorMappingIT`), toàn bộ vòng đời reindex (`ReindexLifecycleIT`) | Testcontainers Elasticsearch và Kafka |
 | | Image Elasticsearch phải được build kèm plugin `analysis-icu`; cả ba mapping dùng `icu_tokenizer`/`icu_folding` nên thiếu plugin là lỗi ngay ở bước tạo index | `ImageFromDockerfile` trong `AbstractSearchIntegrationTest` |
-| Job | Reindex ba pha, rebuild suggestion, recompute count, purge | Testcontainers |
-| Contract | Product CloudEvents v1 (effective thumbnail) và Inventory per-SKU availability/readiness/export v1 khớp kỳ vọng Search | Fixture chung với producer |
+| Job | `ReindexLifecycleIT` chạy full reindex (cutover → rollback, hủy, resume, bỏ rơi, verify từ chối index thụt lùi, control event → một run, dọn index) với Product/Inventory/Review giả lập bằng `ExportStubServer`; `TombstonePurgeIT` | Testcontainers + HTTP server JDK |
+| Contract | Chưa có. `SnapshotExportClientTest`/`InventoryReadinessClientTest` là client test phía consumer; fixture chưa sinh từ contract ([README §9](./README.md#9-known-gaps)) | — |
 
 Test tích hợp không được mock Elasticsearch client: phần lớn rủi ro của service nằm
 ở mapping, script và ngữ nghĩa truy vấn, mà mock không phát hiện được.
@@ -133,11 +139,10 @@ Mọi thay đổi phải chạy:
 pwsh ./contracts/tools/validate-contracts.ps1
 ```
 
-Search chưa generate server/client code từ OpenAPI. Trước khi provider migrate,
-phải chốt generator, thư mục output, phiên bản tool và CI check generated output
-không lệch contract; generated output không phải source of truth. Contract test
-bắt buộc cover cursor fingerprint, SKU-first response, Problem Details, public
-anonymous route và ADMIN reindex route.
+Search không generate server code từ OpenAPI; DTO ở `dto/SearchDtos` được viết tay theo contract. Phía consumer,
+frontend sinh type từ OpenAPI bằng `npm run gen:api` (`frontend/src/lib/api/generated/search.ts`); sinh lại và chạy
+typecheck mỗi khi OpenAPI đổi. Generated output không phải source of truth. Contract test chưa có; khi viết phải cover cursor
+fingerprint, Product-card response, Problem Details, public anonymous route và các ADMIN reindex route.
 
 ## 8. Thay đổi index và mapping
 
@@ -203,6 +208,38 @@ Một thay đổi hoàn thành khi:
   đang chạy.
 - Cập nhật trạng thái tài liệu và `evidence` khi đã đối chiếu implementation.
 
+## Chạy test bằng Docker (máy không có JDK/Maven)
+
+Từ thư mục gốc repo, mount repo để test thấy `docs/search/schema`:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "//c/<đường dẫn repo>://repo" -v "search-mvn-repo://root/.m2" \
+  --add-host=host.docker.internal:host-gateway \
+  -e DOCKER_HOST=unix:///var/run/docker.sock \
+  -e TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal \
+  -e TESTCONTAINERS_RYUK_DISABLED=true \
+  -w //repo/java/services/search-service \
+  maven:3.9-eclipse-temurin-21 mvn -B verify '-DargLine=-Dapi.version=1.44'
+```
+
+Chạy riêng một IT: thêm `-Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=ReindexLifecycleIT`.
+
+## Full reindex deletion guards (ADR-026)
+
+Full reindex regression sau [ADR-026](./decisions/ADR-026-reindex-preserves-tombstones.md): chạy `ReindexLifecycleIT`
+và `ReindexVerifierTest`. Chuỗi deletion trước watermark + deletion trong build phải cutover thành công,
+giữ SKU/Category tombstone và `deleted_at`, chặn upsert cũ sau cutover, copy lặp/older revision là no-op.
+Count gate vẫn chặn thiếu SKU chưa xóa. `CanonicalSchemaVerbatimTest` kiểm byte của script copy với classpath.
+
 ## Product-card verification (ADR-020)
+
+> [ADR-029](./decisions/ADR-029-required-product-card-read-model.md): request mới bắt buộc đọc `product_cards`.
+> Thêm `ProductCardLifecycleIT`, `ProductCardProjectorTest`, `ProductSearchServiceRoutingTest` và paired
+> alias assertions trong `FullReindexJobTest`/`ReindexRunServiceTest`. Integration fixtures dựng projection
+> đồng bộ sau các lần ghi ES trực tiếp, không dựa vào timing poll. Full suite: `mvn verify -DargLine=-Dapi.version=1.44`.
+> Native Docker client cũng cần API override này với Docker Desktop hiện tại. Benchmark có nguồn jar/fixture
+> riêng và hướng dẫn tại `loadtest/search-bench/README.md`; không dùng stack chia sẻ để seed hoặc clone index.
 
 Chạy SearchCursorTest, ProductQueryBuilderTest và ProductSearchApiIT trên ES ICU thật. Test scan batch=2 để đi qua nhiều batch; kiểm tra minimum khi lọc, price_desc, snapshot mutation và no duplicate product_id. Contract/frontend cần total_products, sinh lại Search types. Seed 28 Product/84 SKU phải hiển thị 28 card; tai nghe 3 card, giữ UNKNOWN stock. Không cần reindex.

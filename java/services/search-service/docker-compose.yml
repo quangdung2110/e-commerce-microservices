@@ -55,11 +55,11 @@ services:
       SEARCH_BOOTSTRAP_INDICES: "true"
       # Only read during a full reindex; Product, Inventory and Review are not needed
       # for ordinary local work, where events are published to Kafka by hand.
-      PRODUCT_INTERNAL_URL: http://product-service:8080
+      PRODUCT_INTERNAL_URL: http://product-service:8081
       INVENTORY_INTERNAL_URL: http://inventory-service:8080
       REVIEW_INTERNAL_URL: http://review-service:8080
       REVIEW_EXPORT_ENABLED: "false"
-      CDN_BASE_URL: http://localhost:9000/media/
+      CDN_BASE_URL: http://localhost:9000/media
     ports:
       - "8081:8080"
 

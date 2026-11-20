@@ -103,7 +103,7 @@ public class PrivacyService {
     }
 
     /**
-     * The hard purge of everything due.
+     * The hard purge of everything due, in pages of {@code batchSize} until none is left.
      *
      * <p>Each subject is one transaction under its own subject lock. Every erasable table
      * writes its identifier and its {@code *_erased_at} in the same statement: the CHECK
@@ -111,25 +111,44 @@ public class PrivacyService {
      * cleared only the identifier would fail identically on every retry while the legal
      * deadline passed (WF-REVIEW-010).
      *
+     * <p>A subject whose purge fails is marked {@code FAILED} and is due again on the next
+     * pass, which is what turns a transient fault (a lock wait, a lost connection) into a
+     * retry rather than a request that waits for a person. It stays counted by the overdue
+     * alert until it reaches {@code PURGED}, so a failure that retrying cannot fix remains
+     * visible. A page is selected by keyset, so a request that fails again within this pass
+     * is not offered twice and cannot starve the requests behind it.
+     *
      * @return how many subjects reached {@code PURGED}
      */
     public int purgeDue(int batchSize) {
-        List<PrivacyRequest> due = privacyRequests.findDueForPurge(Instant.now(), batchSize);
         int purged = 0;
-        for (PrivacyRequest request : due) {
-            try {
-                // Explicit boundaries: a self-invoked @Transactional method would run
-                // with no transaction, and a half-applied purge is the one failure mode
-                // this whole workflow exists to prevent.
-                transactions.executeWithoutResult(status -> purgeOne(request));
-                purged++;
-            } catch (RuntimeException e) {
-                // Never a silent dead-letter: an overdue privacy request is a critical
-                // alert and has to stay visible until a person resolves it.
-                log.error("privacy hard purge failed for request {}", request.id(), e);
-                transactions.executeWithoutResult(status -> markFailed(request));
+        Instant now = Instant.now();
+        Instant afterHardDeleteAfter = null;
+        UUID afterId = null;
+        List<PrivacyRequest> due;
+        do {
+            due = privacyRequests.findDueForPurge(now, afterHardDeleteAfter, afterId, batchSize);
+            for (PrivacyRequest request : due) {
+                try {
+                    // Explicit boundaries: a self-invoked @Transactional method would run
+                    // with no transaction, and a half-applied purge is the one failure mode
+                    // this whole workflow exists to prevent.
+                    transactions.executeWithoutResult(status -> purgeOne(request));
+                    purged++;
+                } catch (RuntimeException e) {
+                    // Never a silent dead-letter: an overdue privacy request is a critical
+                    // alert and stays visible until it is PURGED.
+                    log.error("privacy hard purge failed for request {}; it is retried on the next pass",
+                            request.id(), e);
+                    transactions.executeWithoutResult(status -> markFailed(request));
+                }
             }
-        }
+            if (!due.isEmpty()) {
+                PrivacyRequest last = due.get(due.size() - 1);
+                afterHardDeleteAfter = last.hardDeleteAfter();
+                afterId = last.id();
+            }
+        } while (due.size() == batchSize);
         return purged;
     }
 

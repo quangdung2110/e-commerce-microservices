@@ -1,11 +1,12 @@
 ---
 doc_id: product-adr-002
 service: product
-status: accepted
+status: superseded
 date: 2026-08-30
 decision_owners:
   - Product Service team
 supersedes: null
+superseded_by: ADR-012
 evidence: []
 ---
 
@@ -13,7 +14,8 @@ evidence: []
 
 ## Status
 
-`Accepted`
+`Superseded` bởi [ADR-012](./ADR-012-outbox-partition-key-by-product-aggregate.md), thay cách
+chọn partition key. Outbox trong cùng transaction và Debezium CDC vẫn là cơ chế phát event hiện hành.
 
 ## Context
 

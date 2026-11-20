@@ -3,6 +3,7 @@ package com.ecommerce.inventory.service;
 import com.ecommerce.inventory.command.CommandStore;
 import com.ecommerce.inventory.common.ApiException;
 import com.ecommerce.inventory.common.ErrorCode;
+import com.ecommerce.inventory.domain.RefundScopeStates;
 import com.ecommerce.inventory.store.RefundStore;
 import com.ecommerce.inventory.store.ReservationStore;
 import com.ecommerce.inventory.store.StockStore;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.function.Function;
@@ -105,7 +107,8 @@ public class QueryService {
         return stock.findMovement(movementId).map(QueryService::view).orElseThrow(QueryService::notFound);
     }
 
-    public AdminDtos.Page<AdminDtos.StockMovementView> movements(String warehouseId, String skuId, Instant from,
+    public AdminDtos.Page<AdminDtos.StockMovementView> movements(String warehouseId, String skuId,
+                                                                 String sourceOperationType, Instant from,
                                                                  Instant to, String cursor, int limit) {
         Instant afterAt = null;
         String afterId = null;
@@ -114,7 +117,8 @@ public class QueryService {
             afterAt = Cursors.instant(parts[0]);
             afterId = parts[1];
         }
-        List<StockStore.Movement> rows = stock.listMovements(warehouseId, skuId, from, to, afterAt, afterId, limit + 1);
+        List<StockStore.Movement> rows = stock.listMovements(warehouseId, skuId, sourceOperationType, from, to, afterAt, afterId,
+                limit + 1);
         return page(rows, limit, QueryService::view,
                 m -> Cursors.encode(m.recordedAt().toString(), m.movementId()));
     }
@@ -173,6 +177,28 @@ public class QueryService {
         return new AdminDtos.AdminReservation(root.orderId(), root.state().name(), root.revision(),
                 reservations.lines(orderId).stream().map(l -> new AdminDtos.AdminReservationLine(l.orderLineId(),
                         l.skuId(), l.quantity(), l.warehouseId(), l.state().name())).toList());
+    }
+
+    public AdminDtos.Page<AdminDtos.AdminRefundScopeSummary> adminRefundScopeSummaries(String state, String cursor,
+                                                                                       int limit) {
+        if (state != null) {
+            try {
+                RefundScopeStates.State.valueOf(state);
+            } catch (IllegalArgumentException e) {
+                throw ApiException.invalid("state", "must be one of " + Arrays.toString(RefundScopeStates.State.values()));
+            }
+        }
+        Instant afterAt = null;
+        String afterId = null;
+        if (cursor != null) {
+            String[] parts = Cursors.decode(cursor, 2);
+            afterAt = Cursors.instant(parts[0]);
+            afterId = parts[1];
+        }
+        List<RefundStore.Scope> rows = refunds.listScopes(state, afterAt, afterId, limit + 1);
+        return page(rows, limit, sc -> new AdminDtos.AdminRefundScopeSummary(sc.refundScopeId(), sc.refundRequestId(),
+                        sc.orderId(), sc.state().name(), sc.revision(), sc.registeredAt()),
+                sc -> Cursors.encode(sc.registeredAt().toString(), sc.refundScopeId()));
     }
 
     public AdminDtos.AdminRefundScope adminRefundScope(String refundScopeId) {

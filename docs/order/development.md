@@ -28,10 +28,10 @@ Spring Boot 3.3, JDBC + Flyway, Spring Kafka, Temporal Java SDK 1.25.1.
 | `src/main/java/com/ecommerce/order/web` | Controller public/internal, `IdentityFilter`, problem+json |
 | `.../service` | Saga activities (`CheckoutSaga`, `RefundSaga`, `ScopeFinalization`), command/query/search, outbox/notification, reconciliation |
 | `.../workflow` | Bốn Temporal workflow + `OrderActivities` |
-| `.../messaging` | Payment/Inventory/Delivery intake (durable inbox), Kafka listeners, receipt observer |
+| `.../messaging` | Payment/Inventory intake (durable inbox), Kafka listeners, receipt observer |
 | `.../worker` | Workflow dispatcher (SignalWithStart), closed-target resolver, reconcilers, trimmer |
 | `.../store` | SQL tường minh, row lock/CAS |
-| `src/main/resources/db/migration` | `V1__order_baseline.sql` |
+| `src/main/resources/db/migration` | V1 baseline, V2 Admin delivery confirmation, V3 submission checkpoint NOTIFY trigger |
 | `src/main/resources/kafka` | Debezium connector multi-destination outbox |
 
 ## 2. Chạy local và dependency
@@ -55,11 +55,13 @@ docker compose up -d --build order-service inventory-service promotion-service
 ```
 
 Payment chạy theo profile riêng (`docker compose --profile payment up -d payment-service`).
-Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout và Delivery
-chưa có runtime: gọi `POST /internal/v1/checkout-order-submissions` với
-`X-Service-Identity: checkout-service` trên service network/cổng 8095, và phát Delivery
-fact `com.ecommerce.delivery.order-line.delivered.v1` thủ công lên
-`t.delivery.order.events.v1` khi cần thử auto-complete.
+Đăng ký Debezium connector theo `src/main/resources/kafka/README.md`. Checkout có runtime
+(`docker compose up -d checkout-service`, [checkout/development.md](../checkout/development.md)); khi
+chỉ thử Order, vẫn có thể gọi `POST /internal/v1/checkout-order-submissions` thủ công với
+`X-Service-Identity: checkout-service` trên service network/cổng 8095. Không có Delivery service: để
+thử hoàn tất đơn, ghi physical dispatch ở Inventory Admin rồi gọi
+`POST /api/v1/admin/orders/{order_id}/delivery-confirmations` (nút "Xác nhận đã giao" ở trang chi tiết đơn
+của Admin, [ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)).
 
 ## 3. Cấu hình local
 
@@ -90,13 +92,37 @@ Có `TEST_DB_URL` thì test dùng PostgreSQL đó thay cho Testcontainers. Suref
 | Nhóm | Test |
 |---|---|
 | Domain | `DomainRulesTest` (largest remainder, normalizer `đ`, tab/ui status, cancel reason mapping, JCS), `CheckoutRulesTest` (hash, invariants), `HttpRemoteTest` (classify unknown/rejected) |
-| Checkout/payment | `CheckoutFlowIT`: happy path tới `COMPLETED`, replay/409, Promotion `409 PROMOTION_RECALCULATION_NEEDED`, Inventory `REJECT_ALL`, deadline cancel + capture-after-terminal, Buyer cancel idempotent, capture thắng cancel, FAILED retry attempt, duplicate/stale fact, proof trước dispatch, post-capture repair + manual fulfilment |
+| Checkout/payment | `CheckoutFlowIT`: happy path tới `COMPLETED` (dispatch rồi Admin delivery confirmation), replay/409, Promotion `409 PROMOTION_RECALCULATION_NEEDED`, Inventory `REJECT_ALL`, deadline cancel + capture-after-terminal, Buyer cancel idempotent, capture thắng cancel, FAILED retry attempt, duplicate/stale fact, Admin delivery confirmation (cần dispatch trước, 403/400/422/404, all-or-nothing, replay/409, đúng một `order.completed.v1`, gauge quá hạn), post-capture repair + manual fulfilment |
 | Refund | `RefundFlowIT`: return một lần + refund đúng một lần + close `REFUNDED`, scope sai/chưa giao, refund fail + external settlement, reversal sau success, timeout 30 ngày + no-payout close-incomplete, Admin pre-dispatch reject/accept, finalization `RECOVERY_REQUIRED` rồi hoàn tất |
 | Read/search | `QueryIT`: owner/404/admin/403/401, card/keyset/`q` không dấu |
 | Contract | Response HTTP validate với `contracts/http/order/**` (OpenAPI 3.1 components); outbox validate với `order-paid`, `order-completed`, `notification-requested` JSON Schema |
+| Migration | `DeliveryMigrationIT`: V1 có delivery lịch sử thiếu reference → V2 thành công, giữ nguyên dữ liệu/không phát outbox, cờ legacy không thể tạo mới hoặc đổi; delivery mới cần đầy đủ bản ghi Admin |
+| Async submission | `SubmissionWaitersTest`, `SubmissionNotificationIT`: bounded waiters/executor, deadline/context, same-token replay, batch repair, PostgreSQL commit/rollback/CAS, hai replica LISTEN, MockMvc async response/headers ([ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md)) |
+| Dispatcher | `WorkflowDispatcherTest`, `WorkflowDispatchStoreIT`: 8 RPC có giới hạn, ACK theo lô/straggler, retry từng row, shutdown, lease renewal, PostgreSQL rollback/reclaim, owner/generation fencing và `SKIP LOCKED` ([ADR-028](./decisions/ADR-028-parallel-workflow-starts-and-batched-ack.md)) |
+| Message lanes | `WorkflowMessageLanesTest`, `WorkflowDispatchStoreIT`: một message đang bay mỗi target theo `created_at`, start/message chia 8 slot luân phiên, ACK message theo lô chung transaction với start, defer lane sau head `RETRY`, closed target trên coordinator, renewal/shutdown; PostgreSQL: fencing hai owner và cùng pod khác generation, rollback/reclaim, hai dispatcher thật cùng DB và reclaim pod đã chết ([ADR-029](./decisions/ADR-029-parallel-workflow-messages-per-target-lanes.md)) |
+| Rolling claim | `WorkflowRollingClaimsTest`, `WorkflowDispatchStoreIT`: lô sau chạy trước khi RPC chậm kết thúc; cap 50 row mỗi loại/8 RPC, lane giữa các claim, backoff qua idle pass, empty-poll interval, lease loss không reclaim RPC đang chạy; SQL exclusion cả expired lease ([ADR-030](./decisions/ADR-030-bounded-rolling-workflow-dispatch.md)) |
+
+MockMvc helper `AbstractIntegrationTest.call` phải đợi async result rồi `asyncDispatch` cho submission
+POST; validation/identity rejection vẫn đồng bộ. Khi thêm test controller, không đọc response body
+trước async dispatch. PostgreSQL test dùng DB riêng/Testcontainers, không thử fault bằng cách dừng
+Order hoặc PostgreSQL của stack người dùng đang chạy.
+
+Kết quả 2026-10-16: Order **97 test pass**; Checkout **164 test, 0 failure/error, 1 live test skip**;
+V1→V3 migration, commit/rollback notification, reconnect và hai replica được kiểm chứng với
+PostgreSQL test thật. Chi tiết và lệnh tái chạy:
+[async-submission-verification-2026-10-16.md](./async-submission-verification-2026-10-16.md).
+
+Sau ADR-028, Order suite có **109 test, 0 failure/error, 1 benchmark opt-in skip**;
+11 test mới bao phủ dispatcher/claim fencing trên PostgreSQL thật. Benchmark dispatcher có
+[báo cáo so sánh một thread và tám worker](../performance/order-dispatcher-parallel-benchmark-2026-10-16.md).
+
+Sau ADR-029 (2026-10-20), Order suite có **124 test, 0 failure/error, 1 benchmark opt-in skip**
+(chạy với `TEST_DB_URL` trỏ tới PostgreSQL test mới); 8 unit test lane và 6 test PostgreSQL thật mới.
+So sánh với ADR-028 trong cùng phiên:
+[báo cáo message lanes](../performance/order-dispatcher-message-lanes-benchmark-2026-10-20.md).
 
 Chưa có: Temporal replay test trên history thật, consumer contract test, Debezium/Kafka
-E2E tự động, load test.
+E2E tự động, load test end-to-end đường ghi checkout/payment.
 
 ## 5. Kiểm thử
 
@@ -171,7 +197,7 @@ phân bổ discount theo largest remainder; multiplicity không deferred.
 Chạy checkout success, từng pre-payment failure, post-capture forward-repair failure,
 cancel-versus-capture, unknown remote outcome/query replay, timeout cancel, anomalous
 success after terminal non-capture (reconciliation only), multi-warehouse physical
-dispatch and separate Delivery proof including proof-before-dispatch replay,
+dispatch and the separate Admin delivery confirmation (rejected before dispatch, all-or-nothing, replay),
 Buyer one-shot return, rejected/accepted admin attempt, Inventory 30-day timeout/manual
 verification, refund success/fail/reverse after `REFUNDED`, dispute
 opened/funds-withdrawn/reinstated/won/lost theo thứ tự lệch mà không đổi FSM, external

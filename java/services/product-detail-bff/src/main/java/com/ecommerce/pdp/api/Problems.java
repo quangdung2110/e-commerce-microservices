@@ -31,7 +31,13 @@ final class Problems {
                 .body(body);
     }
 
-    /** @param retryAfterSeconds có khi circuit breaker của Product đang mở */
+    /**
+     * Wait advertised when the 503 is not caused by an open circuit: a timeout, a refused connection or a full bulkhead has no
+     * estimate of its own, so the default of contracts ADR-005 applies (PDP ADR-010).
+     */
+    static final int DEFAULT_RETRY_AFTER_SECONDS = 2;
+
+    /** @param retryAfterSeconds thời gian mở còn lại khi circuit breaker của Product đang mở; null thì dùng mặc định */
     static ResponseEntity<Object> unavailable(String instance, String traceId, Integer retryAfterSeconds) {
         Map<String, Object> body = body("PRODUCT_DETAIL_UNAVAILABLE", "Product detail temporarily unavailable",
                 HttpStatus.SERVICE_UNAVAILABLE, "The product catalog could not be read, try again shortly",
@@ -40,9 +46,8 @@ final class Problems {
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .cacheControl(CacheControl.noStore())
                 .contentType(PROBLEM_JSON);
-        if (retryAfterSeconds != null) {
-            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
-        }
+        builder.header(HttpHeaders.RETRY_AFTER,
+                String.valueOf(retryAfterSeconds != null ? retryAfterSeconds : DEFAULT_RETRY_AFTER_SECONDS));
         return builder.body(body);
     }
 

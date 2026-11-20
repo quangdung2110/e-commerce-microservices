@@ -76,7 +76,7 @@ abstract class AbstractPaymentIT {
                 jdbcClient, transactions, JsonMapper.builder().findAndAddModules().build());
         this.refundPolling = new JdbcRefundPollingAdapter(jdbcClient, transactions);
         this.retention = new JdbcRetentionAdapter(jdbcClient, transactions);
-        this.reconciliation = new JdbcReconciliationAdapter(jdbcClient, transactions);
+        this.reconciliation = new JdbcReconciliationAdapter(jdbcClient, transactions, dataSource);
         this.balanceLedger = new JdbcBalanceLedgerAdapter(jdbcClient, transactions);
         this.reviewCases = new JdbcReviewCaseAdapter(jdbcClient, transactions);
         this.initiatePayments = new JdbcInitiatePaymentAdapter(

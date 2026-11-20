@@ -78,16 +78,20 @@ func (w *Worker) Run(ctx context.Context) {
 // last_error_code = lease_expired; the next claimer applies the lane policy
 // (04-idempotency.md lớp C3).
 func (w *Worker) ReapOnce(ctx context.Context) int64 {
-	n, err := w.deliveries.ReapExpiredLeases(ctx, w.clk.Now())
+	perLane, err := w.deliveries.ReapExpiredLeases(ctx, w.clk.Now())
 	if err != nil {
 		w.logger.Error("reap expired leases", zap.Error(err))
 		return 0
 	}
+	var n int64
+	for lane, count := range perLane {
+		n += count
+		if w.metrics != nil && count > 0 {
+			w.metrics.DeliveryLeaseExpired.WithLabelValues(string(lane)).Add(float64(count))
+		}
+	}
 	if n > 0 {
 		w.logger.Warn("leases expired, rows returned to RETRY", zap.Int64("rows", n))
-		if w.metrics != nil {
-			w.metrics.DeliveryLeaseExpired.WithLabelValues("all").Add(float64(n))
-		}
 	}
 	w.reapOrdering(ctx)
 	return n

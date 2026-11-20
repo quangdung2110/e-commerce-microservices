@@ -56,10 +56,22 @@ public class Problems {
     public ResponseEntity<Object> response(ErrorCode code, String detail, List<ApiException.FieldError> errors,
                                            String commandId, Integer retryAfterSeconds) {
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(code.status()).contentType(PROBLEM_JSON);
-        if (retryAfterSeconds != null) {
-            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        Integer wait = retryAfterSeconds != null ? retryAfterSeconds : defaultRetryAfter(code);
+        if (wait != null) {
+            builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(wait));
         }
         return builder.body(body(code, detail, errors, commandId));
+    }
+
+    /**
+     * contracts ADR-005: every {@code 429} and every retryable {@code 503} carries {@code Retry-After}, also when the code
+     * that raised it had no estimate. A {@code 503} that is not retryable never does.
+     */
+    static Integer defaultRetryAfter(ErrorCode code) {
+        if (code.status() == 429) {
+            return 1;
+        }
+        return code.status() == 503 && code.retryable() ? 2 : null;
     }
 
     private static String correlationId(RequestContext context) {

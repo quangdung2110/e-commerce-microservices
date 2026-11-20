@@ -14,31 +14,42 @@ evidence:
   - contracts/http/promotion/v1/openapi.yaml
   - contracts/http/payment/v1/openapi.yaml
   - contracts/events/payment/v2/asyncapi.yaml
-  - contracts/events/delivery/v1/asyncapi.yaml
   - java/services/order-service/src/main/java/com/ecommerce/order
 verified_against_commit: null
 ---
 
 # Order Service — Giao diện tích hợp
 
-> Hợp đồng Payment, Promotion, Inventory workflow, Delivery proof và financial
+`ORDER_COMPLETED.items[].variant_name` lấy từ purchase snapshot: ưu tiên label đã lưu;
+với line cũ thiếu label, dùng `snapshot_attributes` đã lưu, bỏ value rỗng, sắp key và nối
+`key: value / key: value` (tối đa 255 ký tự). Không lookup Product hiện tại. Checkout mới
+gửi label này và Order lưu lúc tạo line; fallback lúc completion hỗ trợ order đã tồn tại.
+
+> Hợp đồng Payment, Promotion, Inventory workflow và financial
 > reconciliation được liên kết bên dưới là nguồn wire-level. Ví dụ Markdown chỉ mô tả
 > behavior và không được ghi đè schema máy đọc.
+
+Payment initiate `422 PROVIDER_CREATE_NOT_ACCEPTED` theo [ADR-024](../payment/decisions/ADR-024-certified-create-non-acceptance.md)
+là rejection chỉ sau khi Order validate `no_payment_created=true`, `retryable=false`,
+`order_id`/`payment_attempt_number` trùng request và IDs `TXN_`/`POP_` đúng format.
+Proof thiếu/sai hoặc mang HTTP khác được giữ UNKNOWN. Proof hợp lệ dẫn tới
+`PAYMENT_INITIATION_REJECTED`, không bind active payment attempt, và cleanup các hold
+đã nhận. Generic `503 PROVIDER_REQUEST_REJECTED` vẫn UNKNOWN, kể cả `retryable=false`.
+Triển khai Order consumer trước Payment producer; không đổi event contract.
 
 ## 1. Danh mục tương tác
 
 | Tương tác | Hướng | Giao thức | Provider | Consumer | Trạng thái |
 |---|---|---|---|---|---|
-| Order detail/search/cancel/return/payment retry | Inbound | HTTP | Order | Buyer/Admin qua Gateway | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
+| Order detail/search/cancel/return/payment retry/xác nhận giao hàng | Inbound | HTTP | Order | Buyer/Admin qua Gateway | [Order public OpenAPI v1](../../contracts/http/order/v1/openapi.yaml) |
 | Create from checkout | Inbound | HTTP | Order | Checkout | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
 | Inventory activities | Outbound | HTTP | Inventory | Order Temporal worker | [workflow OpenAPI v1](../../contracts/http/inventory/workflow/v1/openapi.yaml) |
-| Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | contract target exists |
+| Promotion activities | Outbound | HTTP | Promotion | Order Temporal worker | [Promotion OpenAPI v1](../../contracts/http/promotion/v1/openapi.yaml) (reservations, confirmations, cancellations; không gọi `technical-cancellations`) |
 | Payment activities | Outbound | HTTP | Payment | Order Temporal worker | [Payment OpenAPI v1](../../contracts/http/payment/v1/openapi.yaml) |
 | `t.order.events` | Outbound | Kafka | Order | Cart (`com.ecommerce.order.paid.v1`), Review (`com.ecommerce.order.completed.v1`) | [Order AsyncAPI v1](../../contracts/events/order/v1/asyncapi.yaml) |
 | `t.notification.transactional.v1` | Outbound | Kafka | Notification (topic owner) | Notification | [Notification AsyncAPI v1](../../contracts/events/notification/v1/asyncapi.yaml); Order là producer của `com.ecommerce.notification.requested.v1` cho 5 template `ORDER_*` |
 | `t.payment.events.v2` | Inbound | Kafka | Payment | Order | [Payment AsyncAPI v2](../../contracts/events/payment/v2/asyncapi.yaml) |
 | `t.inventory.order.events.v1` | Inbound | Kafka | Inventory | Order | [Inventory events v1](../../contracts/events/inventory/v1/asyncapi.yaml) |
-| `t.delivery.order.events.v1` | Inbound | Kafka | Delivery | Order | [Delivery AsyncAPI v1](../../contracts/events/delivery/v1/asyncapi.yaml); proof ID + immutable record digest, no raw PII |
 | Financial reconciliation decision | Inbound | Internal HTTP | Order | Finance/Ops | [Order internal OpenAPI v1](../../contracts/http/order/internal/v1/openapi.yaml) |
 | Temporal workflows/signals | Internal | Temporal | Order workers | Order adapters/consumers | implemented (`java/services/order-service`) |
 
@@ -66,13 +77,16 @@ order của mình; Admin dùng namespace riêng. Mọi JSON `order_id`, `order_i
 | `GET /api/v1/admin/orders/{order_id}` | Admin detail | `200` |
 | `POST /api/v1/admin/orders/{order_id}/cancellation-requests` | Admin cancel pre-payment; không dùng cho order đã capture | `202` + operation |
 | `POST /api/v1/admin/orders/{order_id}/pre-dispatch-refund-requests` | Tạo durable attempt để Inventory atomic-release toàn order trước dispatch | `202`; rejection không tạo lifetime case/khóa Buyer guard |
+| `POST /api/v1/admin/orders/{order_id}/delivery-confirmations` | Admin xác nhận các line **đã dispatch** đã tới khách: `lines[] {order_line_id, delivered_at, delivery_reference}` (1–100 line duy nhất). Đồng bộ, all-or-nothing dưới khóa order; line cuối hoàn tất đơn và phát `order.completed.v1` cùng transaction ([ADR-021](./decisions/ADR-021-admin-delivery-confirmation.md)) | `200`; line chưa dispatch `409 DELIVERY_REQUIRES_DISPATCH`, khác reference/time `409 DELIVERY_ALREADY_CONFIRMED`, sai dữ liệu `422 INVALID_DELIVERY_CONFIRMATION` |
 | `GET /api/v1/admin/order-operations/{operation_id}` | Admin theo dõi attempt/command | `200` |
 
 Cancellation và refund là hai endpoint riêng; endpoint cancel không âm thầm đổi
-thành refund theo trạng thái. Mọi POST public bắt buộc `Idempotency-Key`: cùng key +
+thành refund theo trạng thái. Mọi POST public trả `202` bắt buộc `Idempotency-Key`: cùng key +
 canonical payload replay kết quả, payload khác trả `409 IDEMPOTENCY_KEY_REUSED`.
 Command dài hạn trả `202`; operation resource chỉ biểu diễn tiến độ xử lý, còn FSM
-Order/refund case vẫn là nguồn chân lý nghiệp vụ.
+Order/refund case vẫn là nguồn chân lý nghiệp vụ. `delivery-confirmations` là command đồng bộ và
+idempotent theo trạng thái line nên không dùng `Idempotency-Key` và không có operation resource.
+Danh mục mã lỗi đầy đủ (HTTP, `retryable`, điều kiện) ở [domain.md §7](./domain.md#7-lỗi-miền-nghiệp-vụ).
 
 Search trả một card trên mỗi order với `order_id`, `buyer_id`, `buyer_tab`,
 `ui_primary_status`, `ui_status_rank`, `created_at`, `primary_item_name`,
@@ -108,12 +122,25 @@ trả** — Order không lưu bản sao; `usable=false` → secret `null`. Check
 không cache (Checkout ADR-010).
 Promotion reserve fail trả RFC 9457 `409 PROMOTION_RECALCULATION_NEEDED`; Inventory
 `REJECT_ALL` trả `409 INVENTORY_RESERVATION_REJECTED`; Payment từ chối initiate bền vững
-trả `409 PAYMENT_INITIATION_REJECTED` (cả hai terminal cho token, recovery read
-`state=FAILED`). Recovery read `state=FAILED` còn có thể mang `failure.code`
-`CHECKOUT_PAYMENT_WINDOW_EXHAUSTED` (thời gian giữ hàng không đủ để thanh toán) hoặc
-`ORDER_CANCELLED_DURING_PREPARATION` (đơn bị huỷ trước `PAYMENT_READY`); Checkout relay
-nguyên các code này ([Checkout ADR-015](../checkout/decisions/ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
-Timeout hạ tầng trả `503 retryable=true` và Checkout gửi lại cùng key/body qua luồng recovery.
+trả `409 PAYMENT_INITIATION_REJECTED`; thời gian giữ hàng không đủ để thanh toán trả
+`409 CHECKOUT_PAYMENT_WINDOW_EXHAUSTED`; đơn bị huỷ trước `PAYMENT_READY` trả
+`409 ORDER_CANCELLED_DURING_PREPARATION`. Cả năm đều terminal cho token: Order lưu đúng một
+failure và trả **cùng một problem** ở POST (lần đầu lẫn replay) và ở recovery read
+(`state=FAILED`, hoặc `RECALCULATION_REQUIRED` cho recalculation). Cùng token nhưng snapshot
+khác là `409 IDEMPOTENCY_KEY_REUSED` (không terminal). Checkout relay nguyên các code này
+([Checkout ADR-015](../checkout/decisions/ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
+
+Order chỉ chờ `PAYMENT_READY` tối đa `order.checkout.submit-wait` (12 giây). Hết hạn mà
+submission vẫn `PREPARING` thì POST trả `503 SUBMISSION_IN_PROGRESS` (`retryable=true`,
+`Retry-After`): Order **đã nhận** và vẫn đang xử lý, nên Checkout gửi lại cùng key/body hoặc
+đọc recovery, không coi là chưa nhận. Các lỗi hạ tầng khác (`DEPENDENCY_UNAVAILABLE`,
+`ORDER_UNAVAILABLE`) cũng là `503 retryable=true`; Checkout xử lý chúng bằng luồng recovery với
+cùng key/body.
+Theo [ADR-027](./decisions/ADR-027-async-submission-checkpoint-waiters.md), HTTP vẫn chờ cùng
+checkpoint nhưng controller dùng `DeferredResult`, không giữ Tomcat thread hay SELECT mỗi 100 ms.
+Terminal transition sau commit đánh thức waiter; fallback batch sweep 1 s bù mất notification.
+Waiter/response queue đầy trả `503 ORDER_UNAVAILABLE` có `Retry-After: 2`, có thể xảy ra sau durable
+accept; Checkout luôn recovery cùng token. Không đổi schema/status hay thêm API callback.
 Trạng thái submission được lưu trong `order_checkout_submissions`. `final_amount` phải
 ≥ 1 VND vì Payment chỉ nhận amount dương; `0` là `422 INVALID_CHECKOUT_SNAPSHOT`. Recovery read dùng
 `GET /internal/v1/checkout-order-submissions/{checkout_token}`.
@@ -236,6 +263,24 @@ Reserve batch là all-or-nothing. Nếu fail, lỗi phải giữ
 evaluate lại và tạo token mới. Order không gọi API gia hạn reservation: Promotion tự gia hạn
 grace khi Confirm-Prepare fence `RESERVED -> CONFIRMING`.
 
+### 3.1 Header correlation khi gọi remote
+
+Theo [contracts ADR-002](../../contracts/decisions/ADR-002-correlation-and-trace-propagation.md).
+Order không có tracer (mức 1, pass-through), nên chỉ truyền tiếp, không bao giờ bịa `traceparent`.
+
+| Header | Gọi trong phạm vi một request đến (ví dụ đọc Payment client data khi Checkout gọi `POST`/`GET` submission) | Gọi từ Temporal activity (không có request) |
+|---|---|---|
+| `X-Request-Id` | `X-Request-Id` đã chuẩn hoá của request đó (`^[A-Za-z0-9._:-]{8,128}$`; thiếu hoặc sai thì lấy trace ID của `traceparent`, rồi UUID mới) | UUID mới cho mỗi lần gửi, kể cả replay cùng command |
+| `traceparent`, `tracestate` | Gửi tiếp nếu `traceparent` đến hợp lệ; `tracestate` chỉ đi cùng | Không gửi |
+| `X-Correlation-Id` | Workflow ID (Payment, Inventory bắt buộc) | Workflow ID |
+| `X-Request-Timeout-Ms` | Timeout hiệu dụng = `min(timeout provider, deadline còn lại của request đến − 500 ms)`; không gửi lời gọi nếu còn dưới 200 ms (`DEADLINE_EXHAUSTED`) | Timeout provider: Inventory 8 giây, Promotion 8 giây, Payment 10 giây ([ADR-023](./decisions/ADR-023-per-dependency-timeouts-and-inbound-deadline.md)) |
+| `X-Causation-Id`, `Idempotency-Key` | Theo từng contract provider | Giữ nguyên khi replay (command ID đã đóng băng) |
+
+Inbound, Order đọc `X-Request-Id`/`traceparent` của Checkout và Gateway, đưa `request_id`/`trace_id` vào
+MDC của mọi dòng log trong request và trả `X-Request-Id` trong response. Chuỗi từ activity về request
+gốc nối bằng Workflow ID (chứa `checkout_token`), không bằng `X-Request-Id`; lưu context request gốc để
+nối thẳng là việc của mức 2 (tracing đầy đủ).
+
 ## 4. Event envelope, delivery và ordering
 
 Order dùng CloudEvents 1.0 structured JSON cho mọi message trên `t.order.events`.
@@ -257,7 +302,7 @@ Order chỉ phát event có consumer runtime và interaction đã đăng ký:
 | CloudEvents type | Trigger | Payload | Consumer/hành vi |
 |---|---|---|---|
 | `com.ecommerce.order.paid.v1` | Commit mốc tài chính `PENDING_PAYMENT/CANCELLING -> PAID` khi capture thắng race trước terminal non-capture | canonical `order_id`, UUID `user_id`, unique purchased `sku_ids[]` | Cart xóa đúng SKU đã mua, không đổi activity |
-| `com.ecommerce.order.completed.v1` | Mọi line có verified Delivery proof và master CAS sang `COMPLETED` | `order_id`, `user_id`, `completed_at`, immutable product/SKU/variant/product-name/product-image/quantity items | Review cấp tối đa một entitlement cho mỗi `(order_id,product_id,sku_id)` |
+| `com.ecommerce.order.completed.v1` | Admin xác nhận giao line cuối (mọi line `DELIVERED`) và master CAS sang `COMPLETED` | `order_id`, `user_id`, `completed_at`, immutable product/SKU/variant/product-name/product-image/quantity items | Review cấp tối đa một entitlement cho mỗi `(order_id,product_id,sku_id)` |
 
 `com.ecommerce.order.paid.v1` không mang amount, payment transaction/provider hay recovery flag vì
 Cart không dùng. `com.ecommerce.order.completed.v1` giữ item snapshot vì Review không gọi đồng bộ
@@ -277,7 +322,7 @@ mới chỉ được thêm sau khi consumer, business effect và catalog interac
 
 Thông báo cho buyer về vòng đời đơn hàng **không** đi bằng fact của Order, Payment hay
 Delivery mà bằng request Order gửi thẳng lên lane transactional do Notification sở hữu.
-Lý do: Payment và Delivery fact không mang `user_id` theo thiết kế, còn Order sở hữu đủ
+Lý do: Payment fact không mang `user_id` theo thiết kế, còn Order sở hữu đủ
 snapshot (tên sản phẩm, số tiền, địa chỉ) để Notification render mà không phải gọi ngược
 Order lúc gửi. Interaction `order-requests-notifications`; quy tắc phân loại ở
 [Notification D-07](../notification/decisions.md).
@@ -385,7 +430,7 @@ state. Retry exhaustion retains durable recovery work and alerting. See
 
 | Event/group | Payload semantics tối thiểu | Xử lý |
 |---|---|---|
-| `com.ecommerce.inventory.reservation.line-dispatched.v1` / `order-inventory-ship-consumer` | order, order line, warehouse, event ID, `reservation_revision`, dispatched time | Durable inbox/stream revision validate immutable allocation, CAS `PROCESSING -> DISPATCHED`, replay pending Delivery proof rồi chạy convergence; no customer-delivery inference |
+| `com.ecommerce.inventory.reservation.line-dispatched.v1` / `order-inventory-ship-consumer` | order, order line, warehouse, event ID, `reservation_revision`, dispatched time | Durable inbox/stream revision validate immutable allocation, CAS `PROCESSING -> DISPATCHED`; no customer-delivery inference, không bao giờ complete order |
 | `com.ecommerce.inventory.refund.all-items-inspection-completed.v1` / `order-inventory-return-consumer` | scope ID, order, request, revision, selected lines with expected/received/passed/failed | Validate immutable case scope, persist evidence + `InventoryReturnScopeInspectionCompleted` workflow message atomically |
 
 Consumers persist event identity/digest, exact event type, stream ID and
@@ -397,15 +442,13 @@ initiate Payment. Inventory closure has no new integration event; the accepted H
 command receipt proves it. Late completion for a terminal no-payout case is reconciled,
 never used to reopen the scope or mint a refund.
 
-### 6.3. Delivery events — `order-delivery-consumer`
+### 6.3. Xác nhận giao hàng (không phải event)
 
-| Event | Payload semantics tối thiểu | Xử lý |
-|---|---|---|
-| `com.ecommerce.delivery.order-line.delivered.v1` | order, order line, warehouse, unique `delivery_proof_id` + immutable proof-record SHA-256, delivered time, aggregate revision | Durable inbox/proof/mapping validate; nếu dispatch chưa có thì park `PENDING_PREREQUISITE`; khi đủ proof CAS line `DISPATCHED -> DELIVERED`, derive item, rồi chạy `TryCompleteOrder` |
-
-The exact CloudEvents schema/topic is the [Delivery AsyncAPI v1](../../contracts/events/delivery/v1/asyncapi.yaml). A proof received before physical dispatch is parked and replayed
-after matching dispatch; a duplicate proof bound to another line or mismatched warehouse
-is rejected/reconciliation evidence and never mapped to delivery.
+Không có Delivery service và không có Kafka topic cho "đã giao". `DELIVERED` chỉ được đặt bởi
+`POST /api/v1/admin/orders/{order_id}/delivery-confirmations` (§2.1, WF-ORDER-006a, ADR-021). Admin chỉ
+xác nhận được line mà Inventory đã báo `DISPATCHED`; vì vậy không còn trường hợp "proof tới trước dispatch".
+Thứ tự đúng là: Inventory physical dispatch → Order `DISPATCHED` → Admin xác nhận → `DELIVERED` → (line cuối)
+`COMPLETED`.
 
 ## 7. Temporal interface
 

@@ -170,6 +170,7 @@ export function AddressList() {
                 key={address.id}
                 address={address}
                 busy={busy}
+                isOnlyAddress={addresses.length === 1}
                 onEdit={(item) => setEditing({ kind: "edit", address: item })}
                 onDelete={setPendingDelete}
                 onSetDefault={(item) => void handleSetDefault(item)}

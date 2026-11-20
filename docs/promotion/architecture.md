@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-architecture
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -64,6 +64,10 @@ flowchart LR
 
 - Discovery/calculate là synchronous read path. Snapshot JSON từ Redis; cache miss đọc
   PostgreSQL. Rule AST được parse request-scoped.
+- Discovery/suggestion/voucher options duyệt keyset projection cho wallet/public, snapshot và budget
+  đọc theo batch; public loại ownership ngay trong query. Heap giữ top `limit` toàn cục, không trần 200
+  candidate và không giữ managed entity theo tổng số candidate. Bộ nhớ `O(batchSize + limit)`, chọn kết
+  quả `O(N log limit)`; vẫn phải đánh giá N candidate ([ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md)).
 - Claim hữu hạn chạy một Lua: dùng Redis TIME kiểm claim-gate fields trong runtime hash
   (`enabled`/revision/[open,close)), rồi kiểm tra user, `SPOP`, ghi claimed-user và pending
   acquisition evidence. API chạy guarded PostgreSQL claim + wallet transaction và chỉ trả
@@ -82,8 +86,9 @@ flowchart LR
 - Product tombstone consumer và mọi admin markdown mutation serialize bằng cùng PostgreSQL
   advisory transaction lock theo product. Consumer persist catalog-revision watermark dù
   chưa có rule, rồi ghi operational invalidation; mutation reject nếu watermark đã
-  tồn tại. Sau commit mới xóa product-scoped cache. Không bump campaign revision/claim gate
-  vì voucher definition không đổi và không phát INACTIVE ngược về Product đã bị xóa.
+  tồn tại. Không có cache nào theo product để xóa (markdown rule không nằm trong Redis) nên consumer chỉ commit
+  rồi ack. Không bump campaign revision/claim gate hay version fence của snapshot voucher vì voucher
+  definition không đổi, và không phát INACTIVE ngược về Product đã bị xóa.
 - Customer refund không đi qua Promotion. Không có refund consumer/API/allocation.
 
 ## 5. Consistency model
@@ -124,6 +129,17 @@ outbox dùng deterministic dedup key/`INSERT ... ON CONFLICT DO NOTHING`, còn `
 idempotent. Business/outbox commit trước `ZREM`; nếu crash sau commit, retry bị outbox dedup
 key chặn. Nếu START được xử lý sau `end_time`, worker chỉ phát trạng thái hội tụ `INACTIVE`,
 không phát `ACTIVE` muộn.
+
+Với một member, worker không phát cả campaign trong một transaction
+([ADR-021](./decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md)): rule được duyệt bằng
+keyset theo `promotion.schedule.emit-batch-size` (mặc định 200), **mỗi lô một transaction** nên advisory
+lock product chỉ giữ trong lô. Mỗi lô kiểm lại `revision`/`publication_status` của campaign rồi lọc
+trước các product đã có dedup key bằng một query (không lock, không tính winner, không tiêu
+`source_revision`); `ON CONFLICT DO NOTHING` vẫn là hàng rào chính xác. Lô lỗi chỉ rollback chính nó, các lô
+sau vẫn chạy và member **chỉ bị `ZREM` khi không còn lô lỗi**; vòng sau chạy lại, phần đã commit bị bỏ qua.
+Vì vậy START/END của một campaign không còn nguyên tử: một số product có thể đổi trạng thái trước số khác
+trong khoảng ngắn, và downstream chỉ dựa vào `source_revision` theo từng product. Đường admin
+(publish/pause/cancel) vẫn chạy trong transaction của lệnh admin, không chia lô.
 
 DB fallback 10–30 giây và startup/failover rebuild ngăn ZSET bị thiếu vĩnh viễn. Đây là
 bounded eventual propagation, không phải hard real-time 0 ms; API eligibility luôn tự
@@ -189,5 +205,13 @@ vào scheduler: Lua tự kiểm hard boundary từ claim gate bằng Redis TIME.
   fields gộp vào runtime hash và edge-owned discovery rate limit.
 - [ADR-016](./decisions/ADR-016-event-scope-and-receipt-driven-finalization.md): phạm vi
   integration event v1 và finalizer/repair trigger bằng command receipt.
+- [ADR-017](./decisions/ADR-017-post-capture-forward-repair.md): lỗi sau payment dùng forward repair;
+  `cancel-confirmed` chỉ còn legacy.
+- [ADR-018](./decisions/ADR-018-checkout-voucher-options-and-context-free-save.md): voucher options cho
+  Checkout, lưu voucher không cần context.
+- [ADR-019](./decisions/ADR-019-post-implementation-audit-corrections.md): sửa sau audit (guard legacy,
+  channel `CHECKOUT`, final command trùng đồng thời, `EXPIRED→USED` ở Confirm, route lạ là lỗi client).
+- [ADR-021](./decisions/ADR-021-batched-boundary-emission-and-dedup-precheck.md): phát snapshot START/END
+  theo lô nhỏ (mỗi lô một transaction), kiểm dedup key trước khi lock, cô lập lô lỗi.
 
 ADR-001, ADR-003..008 và ADR-010..012 đã được supersede.

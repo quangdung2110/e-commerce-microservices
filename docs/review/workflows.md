@@ -1,14 +1,20 @@
 ---
 doc_id: review-workflows
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
   - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
 verified_against_commit: null
@@ -55,7 +61,8 @@ verified_against_commit: null
    otherwise set it `EXPIRED`.
 4. Commit then ACK.
 
-Missing product/SKU is contract failure and goes DLQ. Missing variant name is accepted
+Missing product/SKU is contract failure and goes to the DLQ at once, without retries, because no
+retry can repair it. Missing variant name is accepted
 as null for old orders, but new producers must send it; the same holds for the product name
 and image snapshots (ADR-012). `created_at` records ingestion
 only; it never extends the review window. `now()` is the transaction timestamp. No
@@ -140,10 +147,15 @@ locks review and joins eligibility to authorize owner. Require `status=APPROVED`
 `edit_count=0`. Review preserves fields absent from PATCH; `content: null` clears text,
 an absent `media_asset_ids` preserves attachments and an empty array removes all of
 them. It verifies any newly supplied object metadata before its transaction, then
-saves old rating/media presence, replaces requested assets, sets `edit_count=1`, and
+saves old rating/media presence, replaces requested assets, sets `edit_count=1` and
+`content_edited_at` to the transaction time, and
 writes `REVIEW_UPDATED` carrying old/new metric values and `affects_aggregate`.
 Content-only edits and media replacement retaining `has_media=true` set
 `affects_aggregate=false`.
+
+`content_edited_at` is null at creation; it is immutable across reporting, moderation,
+replies and privacy. Owner reads use it for author-edit history; `updated_at` remains
+a general record timestamp. Legacy missing/ambiguous edit history remains null.
 
 Second edit returns `409 EDIT_QUOTA_EXHAUSTED`. A lost successful response is resolved
 by reading review; retry must not apply an additional edit.
@@ -272,7 +284,8 @@ changes, Search aborts and starts a new export after topology stabilizes.
    the same subject lock and still completes, but its notification-producing branch is
    suppressed when the guard exists.
 4. At `hard_delete_after`, a worker takes the same subject lock and, in one transaction,
-   writes every column in the table below. It retains the HMAC subject key to suppress
+   writes every column in the table below. The worker is the daily pass (WF-REVIEW-011); it
+   works through every due request, `FAILED` ones included. It retains the HMAC subject key to suppress
    late/replayed input without retaining a direct identifier.
 
 Each erasable table pairs its identifier with an erasure timestamp under a CHECK that
@@ -296,8 +309,20 @@ lookups uses a partial index on `<identifier> IS NOT NULL`
 anonymize nor the purge scans a whole table on a deadline-bound path.
 
 Reviews, rating, content and opaque asset keys remain. Admin/legal identity retention
-is not altered by customer-erasure worker. A failed privacy request alerts at critical
-severity and retries; it must not silently DLQ. Auth deliberately retains its current
+is not altered by customer-erasure worker.
+
+A purge that fails in its transaction marks the request `FAILED`, logs it at `error` and
+leaves every erasable row as it was. The request is due again on the next daily pass and is
+purged then if the cause has cleared; until it reaches `PURGED` it stays counted by
+`review_privacy_hard_delete_overdue_total`, so the critical alert holds whether the cause is
+transient or a defect that a retry cannot fix. The guard is unaffected by `FAILED`: late or
+replayed input is still suppressed. A `USER_DELETED` that cannot be applied is likewise never
+dead-lettered for a transient fault. The listener retries it without a time limit, backoff
+capped at one minute, and counts every failed delivery in
+`review_privacy_consumer_failure_total`; only a record that violates its contract goes to
+`t.auth.events.dlq`, at once ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)).
+
+Auth deliberately retains its current
 direct post-commit publish with at most three retries: a `USER_DELETED` lost before Review
 receives it creates no guard. Review cannot detect that absence; Auth operations must
 reconcile/redrive the event, without adding an Auth outbox.
@@ -311,23 +336,29 @@ Every five minutes: atomically transition every `PENDING` eligibility with
 `expires_at <= now()` to `EXPIRED`; transition every `ISSUED` or `VERIFIED` asset with
 `expires_at <= now()` to `DELETE_PENDING`, setting
 `deletion_reason=UNATTACHED_EXPIRED` and `delete_requested_at`; expire export sessions;
-alert on privacy deadline; and create the outbox partition for the next UTC month.
-The asset sweep locks each candidate asset row and performs a conditional state
+alert on privacy deadline; and create the outbox partitions of the current and next UTC
+month. The asset sweep locks each candidate asset row and performs a conditional state
 transition. It races safely with attach: attach that commits `ATTACHED` first removes
 the row from the sweep; a sweep that commits `DELETE_PENDING` first makes later attach
 fail as unusable. No storage operation happens in this scheduler transaction.
 
-Daily: process every asset `DELETE_PENDING` regardless of reason; delete its
-`object_key` and only then mark it `DELETED`. “Object not found” is idempotent success;
-transient or definitive storage failures leave it `DELETE_PENDING` for safe retry and
-alerting. Also run privacy hard purge, compare aggregate with approved reviews, and
-repair drift with a revision increment plus metric outbox event. Aggregate replay
-duplicates should no longer cause drift; reconciliation remains a corruption/bug
-safety net.
+Daily: process every asset `DELETE_PENDING` regardless of reason, in pages until none is
+left; delete its `object_key` and only then mark it `DELETED`. “Object not found” is
+idempotent success; transient or definitive storage failures leave it `DELETE_PENDING` for
+the next pass and alerting, and an asset that fails does not hold back the ones behind it.
+Also run the privacy hard purge (every due request, `FAILED` included, in pages until none
+is left), compare aggregate with approved reviews, and repair drift with a revision
+increment plus metric outbox event. Aggregate replay duplicates should no longer cause
+drift; reconciliation remains a corruption/bug safety net. It is not exact against events
+still in flight: a review created moments before the run, whose event the aggregator has not
+yet applied, is counted by the recount and then again by the late event, and the next run
+corrects it ([ADR-005](./decisions/ADR-005-async-rating-aggregation.md)). The run is at
+02:15 to keep that window small.
 
-Outbox cleanup drops a partition only after Kafka Connect and replication-slot
-telemetry prove all changes passed its range. It never counts old outbox rows as
-“unpublished backlog”.
+Review never drops outbox partitions. Dropping one needs proof from Kafka Connect and the
+replication-slot telemetry that every change in its range was published, which Review cannot
+observe, so it is an operator action ([operations.md](./operations.md#5-outbox-operational-rule)).
+Review never counts old outbox rows as “unpublished backlog”.
 
 ## WF-REVIEW-012 — Takedown and PDP summary
 

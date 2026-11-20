@@ -1,16 +1,22 @@
 ---
 doc_id: review-interfaces
 service: review
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Review Service team
 evidence:
+  - docs/review/schema/0001_initial_review_schema.sql
+  - docs/review/schema/0002_eligibility_product_snapshot.sql
+  - docs/review/schema/0003_privacy_sweep_includes_failed.sql
+  - docs/review/schema/0004_review_content_edited_at.sql
   - contracts/http/review/v1/openapi.yaml
+  - contracts/http/review/internal/v1/openapi.yaml
   - contracts/events/review/v1/asyncapi.yaml
+  - java/services/review-service/src/main/java/com/ecommerce/review
+  - java/services/review-service/src/test/java/com/ecommerce/review
   - contracts/events/order/v1/asyncapi.yaml
   - contracts/events/auth/v1/asyncapi.yaml
-  - contracts/http/review/internal/v1/openapi.yaml
 verified_against_commit: null
 ---
 
@@ -62,6 +68,31 @@ when `CLAIMED`, its review ID. `GET /api/v1/reviews/me/{review_id}` is the recov
 read for a lost edit response. Neither endpoint exposes reports, reporter identity,
 legal record or takedown reason.
 
+`OwnerReview` also exposes optional, nullable, read-only `content_edited_at` on
+create/PATCH responses and owner single/list reads. The current server always emits
+it (including null). It is the transaction time of the accepted author PATCH, whether
+it changes rating, content or media. Moderation, reports, official replies and privacy
+never change it. `updated_at` remains a general record-update timestamp. Public review,
+Admin snapshots and event payloads keep their existing fields.
+
+For legacy edited reviews, migration V4 recovers the timestamp only from unambiguous
+retained `REVIEW_UPDATED` history; otherwise it stays null. A client must not fall back
+to `updated_at`. With `edit_count=1` and null/absent time, show “Đã chỉnh sửa” without a
+date. Keeping the new response field optional permits the frontend to handle an older
+backend during rollout; requests cannot set or overwrite it.
+
+### Request bodies
+
+Integer fields reject fractional JSON tokens (including `1.0`) and numeric strings
+before any entitlement claim or upload quota reservation. Validation errors carry
+wire field names only; rejected content and framework/Java internals are never returned.
+
+Every request body schema is `additionalProperties: false`, and Review enforces it: a field
+the contract does not define is `400 INVALID_REQUEST` and `errors[].field` names it. That is
+what keeps a client from smuggling an actor, a status or a display name into a command
+(`author_name` on create, `approved_by_admin_id` on takedown). `PATCH` always behaved this
+way; the other bodies now do too.
+
 ### Create and edit
 
 `POST /api/v1/reviews` receives `eligibility_id`, rating, optional content and
@@ -94,7 +125,18 @@ material, holds no identifier, and the signature opens nothing else. A client ne
 chooses a key and never sends a key or an arbitrary URL back to Review.
 Client uploads directly to storage, then simply sends `asset_id`
 in create/edit; there is no client-facing verify/poll endpoint. Review verifies
-existence/type/size/checksum when declared before attachment. An asset belongs to one
+existence/type/size/checksum when declared before attachment.
+
+The issue request is checked before any key is generated. `content_type` must be one of
+`image/jpeg`, `image/png`, `image/webp` for `IMAGE` or `video/mp4`, `video/webm` for `VIDEO`
+(case-insensitive); `byte_size` must not exceed the limit for the type (10 MiB image, 100 MiB
+video by default); anything else is `400 INVALID_REQUEST`. The signed upload pins that
+content type and length, and the uploaded object must have exactly the declared size.
+`checksum` is optional and is compared, case-insensitively, with the storage ETag of the
+uploaded object: for the single-part `PUT` the instruction describes that is the hex MD5 of
+the body. A different value makes the asset `MEDIA_NOT_VERIFIED` at attach time. A
+`media_asset_ids` list that repeats an id is `400 INVALID_REQUEST`, as is one with more than
+nine entries. An asset belongs to one
 user, attaches to at most one review and is bounded by attachment and unattached-upload
 quotas. In v1 the returned expiry is also the deadline to attach that asset: if an
 `ISSUED` or `VERIFIED` asset reaches it un-attached, Review queues storage cleanup with
@@ -154,8 +196,15 @@ Both internal surfaces are reachable only through the service mesh: an
 and the `search-service` principal on the export routes
 ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint));
 a wrong principal receives `403 text/plain` from the waypoint before reaching Review.
-The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
-`REVIEW_INTERNAL_EXPORT_TOKENS`) are defense-in-depth, not the authorization boundary.
+The `X-Service-Identity` allowlists (`REVIEW_INTERNAL_PDP_CALLERS`, default `product-detail-bff`, and
+`REVIEW_INTERNAL_EXPORT_CALLERS`, default `search-service`) are defense-in-depth, not the authorization
+boundary ([contracts ADR-004](../../contracts/decisions/ADR-004-service-identity-allowlist.md), [ADR-015](decisions/ADR-015-service-identity-header-replaces-bearer-tokens.md)). A
+request with no `X-Service-Identity` header is `401 UNAUTHENTICATED`; a caller that is not on
+the allowlist of the route's group is `403 FORBIDDEN`, so the BFF cannot page the export
+and Search cannot read the PDP summary. An internal route that belongs to no group
+rejects every caller. The filter matches the decoded path without `;` parameters (the path
+Spring MVC routes on), not the raw URI, so `/%69nternal/v1/...` or `/internal/v1;x=1/...` cannot
+skip the check (`InternalIdentityFilterPathTest`). There are no bearer tokens to rotate.
 
 ### PDP summary
 
@@ -163,13 +212,12 @@ The static bearer token allowlists (`REVIEW_INTERNAL_PDP_TOKENS`,
 endpoint. It returns aggregate and a bounded preview of `APPROVED` reviews. A product
 with no review returns aggregate zero; PostgreSQL failure returns 503, never fake zero.
 BFF propagates `traceparent` and a normalized `X-Request-Id` (8–128 characters, never a raw
-client value), sends the bearer token from its `PDP_REVIEW_SERVICE_TOKEN` and
+client value), sends `X-Service-Identity: product-detail-bff` and
 `preview_limit=3` by default, does not retry in the hot path and maps timeout/5xx to
 `review_section.status = UNAVAILABLE`
 ([Product Detail BFF ADR-004](../product-detail-bff/decisions/ADR-004-resilience-budget-and-mesh-split.md),
-[ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md)). Token
-rotation order: add the new token to `REVIEW_INTERNAL_PDP_TOKENS`, roll BFF, then remove
-the old token.
+[ADR-007](../product-detail-bff/decisions/ADR-007-hot-path-clarifications.md),
+[ADR-009](../product-detail-bff/decisions/ADR-009-service-identity-replaces-review-bearer-token.md)).
 
 ### Rating aggregate export
 
@@ -291,16 +339,22 @@ subject key with the receipt and
 reply/takedown uses that guard, under the same subject lock, to suppress a new
 notification request while preserving the command itself. A later worker performs hard
 purge at the requested time; it nulls direct customer IDs but retains the HMAC guard,
-reviews and aggregate. Auth keeps its current best-effort direct publish:
+reviews and aggregate. The listener never drops this event for a transient fault: it retries
+without a time limit (backoff capped at one minute, every failed delivery counted by
+`review_privacy_consumer_failure_total`), and only a record that violates its contract is
+dead-lettered to `t.auth.events.dlq` ([ADR-013](./decisions/ADR-013-privacy-failure-handling.md)). Auth keeps its current best-effort direct publish:
 after at most three retry attempts `USER_DELETED` can be missing. Review has no synchronous
 Auth lookup or Auth outbox; Auth operational reconciliation/redrive must supply a
 missed event before Review can start this lifecycle.
 
 ## 6. Compatibility
 
-All contracts remain `proposed`; the replacement export endpoints are deliberately still
-v1. Search already calls the session endpoints, and any other consumer must move off the
-removed stateless endpoint before adoption is marked verified.
+The three contracts are `implemented` ([ADOPTION](../../contracts/ADOPTION.md)): the provider
+has tests that hold it to them (`HttpContractIT` for both OpenAPI documents,
+`ReviewEventFactoryTest` for the events). They are not `verified`, which also needs consumer
+contract tests. The replacement export endpoints are deliberately still v1; Search already
+calls the session endpoints, and any other consumer must have moved off the removed stateless
+endpoint before adoption is marked verified.
 
 New producers must populate nullable `ORDER_COMPLETED.items[].variant_name`,
 `product_name` and `product_image_url` whenever the source snapshot exists. For outbound events, adding an optional field is
@@ -308,3 +362,48 @@ compatible; changing a message type, `partition_key`, CloudEvents `id`, or the m
 of `review_revision` is breaking. Contract tests must cover duplicate event no-op,
 content-only update, notification payload redaction, export-session expiry,
 snapshot/replay overlap and revision guard.
+
+## 7. Error catalog
+
+Every failure is `application/problem+json` with `type`, `title`, `status`, `detail`,
+`instance`, `code`, `retryable` and, when there is something to say about a field, `errors[]`
+(`field` in the wire's snake_case name, `message`). `detail` and `errors[].message` are written
+by Review; framework exception text, class names and stack traces never reach a client
+(`contracts/conventions/http.md`). `trace_id` echoes `X-Request-Id` only when it is 16–64
+characters, the bounds of the shared Problem schema. A retryable error carries
+`Retry-After: 5`.
+
+| `code` | HTTP | Retryable | When |
+|---|---:|:---:|---|
+| `INVALID_REQUEST` | 400 | no | A parameter outside its range or of the wrong type, a missing required parameter, an invalid cursor, an unreadable body, a field the contract does not define, or a value the service refuses (content type, size, repeated asset id) |
+| `UNAUTHENTICATED` | 401 | no | No trusted `X-User-Id`, or an internal route without `X-Service-Identity` |
+| `FORBIDDEN` | 403 | no | A non-admin on an admin route; a service token not allowed on the route group; a caller with a deletion guard (deliberately generic) |
+| `NOT_FOUND` | 404 | no | A request for which the service has no operation |
+| `METHOD_NOT_ALLOWED` | 405 | no | A known path with a method it does not accept; `Allow` lists the ones it does |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | no | A request body that is not `application/json` |
+| `ELIGIBILITY_NOT_FOUND` | 404 | no | No such entitlement |
+| `NOT_ELIGIBILITY_OWNER` | 403 | no | The entitlement belongs to another caller or its owner identity was purged |
+| `ELIGIBILITY_EXPIRED` | 410 | no | A `PENDING` entitlement past `expires_at` |
+| `ALREADY_REVIEWED` | 409 | no | The entitlement is already `CLAIMED` |
+| `REVIEW_NOT_FOUND` | 404 | no | No such review, or not visible to this endpoint |
+| `NOT_REVIEW_OWNER` | 403 | no | The review belongs to another caller |
+| `EDIT_QUOTA_EXHAUSTED` | 409 | no | `edit_count` is already 1 |
+| `REVIEW_NOT_EDITABLE` | 409 | no | The review is hidden or removed |
+| `MEDIA_NOT_VERIFIED` | 409 | no | A caller-owned asset that is not usable: object absent, metadata mismatch, expired, already attached or queued for cleanup |
+| `INVALID_MEDIA_REFERENCE` | 409 | no | `asset_id` does not resolve to an asset of the caller (unknown and foreign are the same answer) |
+| `MEDIA_QUOTA_EXCEEDED` | 429 | yes | The unattached-asset or unattached-byte quota is exhausted; it frees as assets are attached or expire, so `Retry-After` is advisory |
+| `ALREADY_REPORTED` | 409 | no | The caller already has an active report on the review |
+| `REVIEW_REPORT_FORBIDDEN` | 403 | no | The caller is the author |
+| `REVIEW_NOT_REPORTABLE` | 409 | no | Reserved; not produced in v1 (a non-`APPROVED` review answers `REVIEW_NOT_FOUND`) |
+| `REVIEW_NOT_REPLYABLE` | 409 | no | The review is not `APPROVED` |
+| `TAKEDOWN_ALREADY_EXISTS` | 409 | no | The review already has a legal takedown |
+| `EXPORT_SESSION_NOT_FOUND` | 404 | no | No such export session |
+| `EXPORT_SESSION_EXPIRED` | 410 | no | The session expired; Search starts a new run |
+| `EXPORT_SESSION_UNAVAILABLE` | 503 | yes | Kafka end offsets could not be captured, or the session could not be stored |
+| `REVIEW_STORE_UNAVAILABLE` | 503 | yes | PostgreSQL unreachable, a query timeout or a lock that could not be taken; never answered as an empty page or a zero aggregate |
+| `MEDIA_STORAGE_UNAVAILABLE` | 503 | yes | The storage signer or metadata read failed; nothing unchecked is ever attached |
+| `INTERNAL_ERROR` | 500 | no | A failure that is the service's own |
+
+An `Accept` header that excludes both `application/json` and `application/problem+json` is
+answered `406` with no body. `NOT_FOUND`, `METHOD_NOT_ALLOWED` and `UNSUPPORTED_MEDIA_TYPE`
+apply to every path, so the OpenAPI documents do not repeat them per operation.

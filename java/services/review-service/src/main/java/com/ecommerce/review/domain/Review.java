@@ -27,5 +27,6 @@ public record Review(
         Instant firstReportedAt,
         Instant hiddenAt,
         Instant createdAt,
-        Instant updatedAt) {
+        Instant updatedAt,
+        Instant contentEditedAt) {
 }

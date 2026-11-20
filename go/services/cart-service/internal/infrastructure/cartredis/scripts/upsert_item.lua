@@ -21,6 +21,7 @@
 -- ARGV[10] active_ttl_seconds
 -- ARGV[11] abandoned_after_ms
 -- ARGV[12] request_fingerprint
+-- ARGV[13] idempotency_ttl_seconds (CART_CART_IDEMPOTENCY_TTL)
 
 local items_key = KEYS[1]
 local meta_key = KEYS[2]
@@ -39,6 +40,7 @@ local user_token = ARGV[9]
 local active_ttl = tonumber(ARGV[10])
 local abandoned_after = tonumber(ARGV[11])
 local fingerprint = ARGV[12]
+local idemp_ttl = tonumber(ARGV[13])
 
 local existing_idemp = redis.call('GET', idemp_key)
 if existing_idemp then
@@ -124,6 +126,6 @@ redis.call('HSET', meta_key,
 redis.call('ZADD', index_key, now_ms + abandoned_after, user_token)
 redis.call('EXPIRE', items_key, active_ttl)
 redis.call('EXPIRE', meta_key, active_ttl)
-redis.call('SET', idemp_key, cjson.encode({ fingerprint = fingerprint, response = result }), 'EX', 86400)
+redis.call('SET', idemp_key, cjson.encode({ fingerprint = fingerprint, response = result }), 'EX', idemp_ttl)
 
 return result

@@ -1,6 +1,6 @@
 # Idempotency và "exactly-once effect"
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Vì sao exactly-once là bất khả thi
 
@@ -140,9 +140,9 @@ COMMIT;
 4. Decide: template `otp` không có dedup_key → 1 delivery. **Lớp B: cho qua, đúng.**
 5. Deliver worker claim, gọi provider thành công, **chết trước `mark_sent`**. 60 s sau reaper trả về `RETRY`, `attempt = 2`.
 6. Worker khác nhặt: lane critical, `last_error_code = lease_expired` → **không gửi lại**, đánh `FAILED (lease_expired)`. **Lớp C3.**
-7. Webhook `Delivery` cho email đã gửi ở bước 5 đến hai lần (SNS retry). Unique `provider_event_id` chặn bản 2. Track worker thấy row `FAILED (lease_expired)` nhưng có `Delivery` từ provider → chuyển `DELIVERED` (hạng cao hơn), ghi chú `recovered by webhook`. **Lớp D + state ranking.**
+7. Webhook `Delivery` cho email đã gửi ở bước 5 đến hai lần (SNS retry). Unique `provider_event_id` chặn bản 2. Bản còn lại **không correlate được**: Track chỉ khớp theo `provider_message_id`, mà worker chết trước `mark_sent` nên row không có message id. Event ở `UNMATCHED`, thử lại giãn dần rồi `IGNORED` sau 24 h; delivery giữ `FAILED (lease_expired)`. **Dedup webhook của `provider_event`.**
 
-Kết quả: user nhận **đúng 1 email**, trạng thái cuối cùng đúng, không event downstream nào bị nhân đôi — dù 5 điểm hỏng xảy ra liên tiếp. Thiếu bất kỳ lớp nào, con số là 2, 3 hoặc 4.
+Kết quả: user nhận **đúng 1 email** và không event downstream nào bị nhân đôi — dù 5 điểm hỏng xảy ra liên tiếp. Thiếu bất kỳ lớp nào, con số là 2, 3 hoặc 4. Cái giá chấp nhận: delivery của OTP đó ghi `FAILED (lease_expired)` dù email đã tới. Đó là trạng thái bảo thủ; Notification không có cách khớp event của SES với row đó (quyết định D-22).
 
 ## 5. Cửa sổ dedup phải dài bao nhiêu
 

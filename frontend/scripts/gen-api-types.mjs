@@ -8,7 +8,7 @@
  * Contract nội bộ (mTLS/workload identity) không được sinh vì trình duyệt không
  * gọi được chúng.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -17,6 +17,7 @@ import openapiTS, { astToString } from "openapi-typescript";
 const FRONTEND_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACTS_HTTP = join(FRONTEND_ROOT, "..", "contracts", "http");
 const OUT_DIR = join(FRONTEND_ROOT, "src", "lib", "api", "generated");
+const checkOnly = process.argv.includes("--check");
 
 /**
  * `optional`: contract đang có lỗi đã biết; sinh thất bại thì giữ nguyên file cũ
@@ -48,7 +49,7 @@ function header(spec) {
   ].join("\n");
 }
 
-await mkdir(OUT_DIR, { recursive: true });
+if (!checkOnly) await mkdir(OUT_DIR, { recursive: true });
 
 const failures = [];
 for (const { name, spec, optional } of CONTRACTS) {
@@ -60,11 +61,22 @@ for (const { name, spec, optional } of CONTRACTS) {
       // Enum xuất thành union string để so sánh trực tiếp.
       alphabetize: false,
     });
-    await writeFile(target, header(spec) + astToString(ast));
-    console.log(`✓ ${name.padEnd(20)} → ${relative(FRONTEND_ROOT, target)}`);
+    const generated = header(spec) + astToString(ast);
+    const existing = await readFile(target, "utf8").catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const current = existing !== null && existing.replace(/\r\n/g, "\n") === generated.replace(/\r\n/g, "\n");
+    if (checkOnly && !current) {
+      throw new Error("Generated types are stale; run npm run gen:api and commit the result");
+    }
+    if (!checkOnly && !current) {
+      await writeFile(target, generated);
+    }
+    console.log(`✓ ${name.padEnd(20)} ${checkOnly ? "current" : "→"} ${relative(FRONTEND_ROOT, target)}`);
   } catch (error) {
     const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
-    if (optional) {
+    if (optional && !checkOnly) {
       console.warn(`! ${name.padEnd(20)} bỏ qua (giữ file cũ nếu có): ${reason}`);
     } else {
       console.error(`✗ ${name.padEnd(20)} ${reason}`);

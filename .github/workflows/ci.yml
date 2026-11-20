@@ -1,0 +1,236 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      base: ${{ steps.plan.outputs.base }}
+      services: ${{ steps.plan.outputs.services }}
+      services_any: ${{ steps.plan.outputs.services_any }}
+      images: ${{ steps.plan.outputs.images }}
+      images_any: ${{ steps.plan.outputs.images_any }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+      contracts: ${{ steps.plan.outputs.contracts }}
+      mesh: ${{ steps.plan.outputs.mesh }}
+      kubernetes: ${{ steps.plan.outputs.kubernetes }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+          CD_ENABLED: ${{ vars.CD_ENABLED }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) python scripts/ci/plan.py --base "$PR_BASE" --github-output ;;
+            push)
+              args=()
+              if [ "$CD_ENABLED" = 'true' ]; then args+=(--all); fi
+              python scripts/ci/plan.py --base "$PUSH_BASE" --direct --github-output "${args[@]}"
+              ;;
+            merge_group) python scripts/ci/plan.py --base "$MERGE_BASE" --direct --github-output ;;
+            workflow_dispatch) python scripts/ci/plan.py --base ALL --github-output ;;
+            *) exit 1 ;;
+          esac
+
+  tooling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s scripts/ci/tests -p 'test_*.py' -v
+      - run: python -m pip install -r deploy/checks/requirements.txt
+      - run: python -m unittest discover -s scripts/cd/tests -p 'test_*.py' -v
+      - run: python -m unittest discover -s scripts/ops/tests -p 'test_*.py' -v
+      - name: Exercise the real performance runner and isolated recovery path
+        run: |
+          python scripts/ops/tests/verify_runtime.py --output ci-artifacts/operations/performance-fixtures.json
+          python scripts/ops/recovery.py --policy deploy/operations/policy.example.json --output ci-artifacts/operations/recovery-fixture.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: operations-fixtures
+          overwrite: true
+          path: ci-artifacts/operations/
+          retention-days: 14
+      - name: Validate production renderer against Kubernetes and controller schemas
+        run: |
+          python scripts/cd/tests/render_fixture.py "$RUNNER_TEMP/cd-preview"
+          kubectl kustomize "$RUNNER_TEMP/cd-preview/candidates/synthetic-test-only/staging" > "$RUNNER_TEMP/cd-staging.yaml"
+          kubectl kustomize "$RUNNER_TEMP/cd-preview/candidates/synthetic-test-only/production" > "$RUNNER_TEMP/cd-production.yaml"
+          docker run --rm -v "$RUNNER_TEMP:/manifests:ro" ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /manifests/cd-staging.yaml /manifests/cd-production.yaml /manifests/cd-preview/bootstrap/staging /manifests/cd-preview/bootstrap/production
+      - name: Validate canary, SLO schemas and real PromQL alert behavior
+        run: |
+          python scripts/cd/tests/render_fixture.py "$RUNNER_TEMP/cd-operations" --operations
+          docker run --rm -v "$RUNNER_TEMP/cd-operations:/repo:ro" ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c -strict -summary \
+            -ignore-filename-pattern '(state|profile|metadata|kustomization)\.(json|yaml)$' \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /repo/candidates /repo/environments /repo/bootstrap/staging /repo/bootstrap/production
+          docker run --rm -v "$RUNNER_TEMP/cd-operations:/rules:ro" --entrypoint /bin/promtool prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e test rules /rules/alerts.test.yaml
+      - run: bash scripts/ci/tests/test_changed_services.sh
+      - name: Validate workflow syntax and shell steps
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 -color
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 deploy/gitops/templates/validate.yml deploy/gitops/templates/production-health.yml
+          docker run --rm --entrypoint shellcheck -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9 scripts/ci/scan.sh scripts/ci/changed-services.sh deploy/migrations/run.sh
+
+  services:
+    needs: plan
+    if: needs.plan.outputs.services_any == 'true'
+    uses: ./.github/workflows/services.yml
+    with:
+      matrix: ${{ needs.plan.outputs.services }}
+
+  frontend:
+    needs: plan
+    if: needs.plan.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Verify generated API types
+        run: npm run gen:api:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --reporter=default --reporter=junit --outputFile=../ci-artifacts/frontend-junit.xml
+      - run: npm run build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: frontend-tests
+          overwrite: true
+          path: ci-artifacts/frontend-junit.xml
+          retention-days: 14
+
+  contracts:
+    needs: plan
+    if: needs.plan.outputs.contracts == 'true'
+    uses: ./.github/workflows/contracts.yml
+    with:
+      base: ${{ needs.plan.outputs.base }}
+
+  mesh:
+    needs: plan
+    if: needs.plan.outputs.mesh == 'true'
+    uses: ./.github/workflows/mesh.yml
+
+  kubernetes:
+    needs: plan
+    if: needs.plan.outputs.kubernetes == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install pyyaml==6.0.2
+      - run: python deploy/k8s/generate.py --check
+      - name: Render all local Kustomize layers
+        run: |
+          for layer in infra services observability; do
+            kubectl kustomize --load-restrictor LoadRestrictionsNone "deploy/k8s/$layer" > "$RUNNER_TEMP/$layer.yaml"
+          done
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Scan dependencies and secrets (HIGH/CRITICAL)
+        run: bash scripts/ci/scan.sh source
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: source-security
+          overwrite: true
+          path: ci-artifacts/source-*.json
+          retention-days: 14
+
+  images:
+    needs: plan
+    if: needs.plan.outputs.images_any == 'true'
+    uses: ./.github/workflows/images.yml
+    with:
+      matrix: ${{ needs.plan.outputs.images }}
+
+  ci-required:
+    name: ci-required
+    if: always()
+    needs: [plan, tooling, services, frontend, contracts, mesh, kubernetes, security, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Fail closed on missing plan or unsuccessful required jobs
+        env:
+          CI_PLAN: ${{ needs.plan.outputs.plan }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python scripts/ci/required_gate.py
+
+  publish:
+    needs: [plan, ci-required]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.plan.outputs.images_any == 'true'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish.yml
+    with:
+      matrix: ${{ needs.plan.outputs.images }}

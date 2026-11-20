@@ -1,7 +1,10 @@
 spring:
+  http:
+    codecs:
+      preferred-json-mapper: jackson2
   application:
     name: product-detail-bff
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     # Contract đánh dấu nhiều field nullable là bắt buộc (description, summary,
     # availability_observed_at...), nên null phải được serialize.
@@ -21,10 +24,18 @@ server:
 # Số mặc định là giá trị khởi điểm của ADR-004/ADR-007; load test có thể hiệu chỉnh nhưng
 # giá trị production phải qua ADR và giữ timeout BFF < mesh, deadline < gateway - 1 giây.
 pdp:
+  client-warmup:
+    timeout: ${PDP_CLIENT_WARMUP_TIMEOUT:30s}
+    rounds: ${PDP_CLIENT_WARMUP_ROUNDS:3}
   deadline: ${PDP_DEADLINE_MS:1000}ms
   phase-min-remaining: 100ms
   compose-reserve: 50ms
   full-response-cache-control: ${PDP_FULL_RESPONSE_CACHE_CONTROL:no-store}
+  # ADR-011: chỉ catalog Product (không stock, không review); TTL là độ trễ tối đa của giá/tên/ảnh trên PDP.
+  catalog-cache:
+    enabled: ${PDP_CATALOG_CACHE_ENABLED:true}
+    ttl: ${PDP_CATALOG_CACHE_TTL:10s}
+    max-weight: ${PDP_CATALOG_CACHE_MAX_WEIGHT:64MB}
   product:
     enabled: true
     base-url: ${PDP_PRODUCT_BASE_URL:}
@@ -41,7 +52,6 @@ pdp:
   review:
     enabled: ${PDP_REVIEW_ENABLED:true}
     base-url: ${PDP_REVIEW_BASE_URL:}
-    service-token: ${PDP_REVIEW_SERVICE_TOKEN:}
     preview-limit: ${PDP_REVIEW_PREVIEW_LIMIT:3}
     timeout: 300ms
     bulkhead: 80
@@ -60,6 +70,19 @@ pdp:
     require-https: ${PDP_MEDIA_REQUIRE_HTTPS:true}
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -69,14 +92,11 @@ management:
       probes:
         enabled: true
       show-details: when_authorized
-      group:
-        # Inventory/Review có degradation riêng và circuit mở không được làm mất
-        # readiness (operations.md §Health và degradation); cấu hình sai thì ứng dụng
-        # đã không khởi động được.
-        liveness:
-          include: ping
-        readiness:
-          include: ping
+      # Không khai báo group.liveness/readiness: mặc định của Spring Boot chỉ gồm
+      # livenessState/readinessState, nên Inventory/Review/circuit mở không làm mất
+      # readiness (operations.md §Health và degradation) còn graceful shutdown vẫn đưa
+      # readiness về OUT_OF_SERVICE. Ghi đè include sẽ bỏ readinessState; cấu hình sai thì
+      # ứng dụng đã không khởi động được.
   metrics:
     distribution:
       percentiles-histogram:

@@ -1,0 +1,221 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] --------------------< com.ecommerce:order-service >---------------------
+[INFO] Building order-service 1.0.0-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ order-service ---
+[INFO] Copying 1 resource from src\main\resources to target\classes
+[INFO] Copying 5 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ order-service ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ order-service ---
+[INFO] Copying 0 resource from src\test\resources to target\test-classes
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ order-service ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- surefire:3.2.5:test (default-test) @ order-service ---
+[INFO] Using auto detected provider org.apache.maven.surefire.junitplatform.JUnitPlatformProvider
+[INFO] 
+[INFO] -------------------------------------------------------
+[INFO]  T E S T S
+[INFO] -------------------------------------------------------
+[INFO] Running com.ecommerce.order.benchmark.WorkflowDispatcherBenchmarkTest
+[WARNING] Tests run: 1, Failures: 0, Errors: 0, Skipped: 1, Time elapsed: 0.007 s -- in com.ecommerce.order.benchmark.WorkflowDispatcherBenchmarkTest
+[INFO] Running com.ecommerce.order.client.HttpRemoteFaultInjectionTest
+16:09:04.826 [main] WARN com.ecommerce.order.client.HttpRemote -- POST /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on POST request for "http://127.0.0.1:55887/x": Connection reset
+16:09:04.995 [pool-2-thread-4] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-5] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-7] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-3] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-6] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-8] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.996 [pool-2-thread-10] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:04.995 [pool-2-thread-9] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x not sent: the bulkhead of inventory is full
+16:09:05.408 [pool-2-thread-2] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55889/x": Read timed out
+16:09:05.408 [pool-2-thread-1] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55889/x": Read timed out
+16:09:05.468 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: java.lang.IllegalArgumentException: Status code '-1' should be a three-digit positive integer
+16:09:05.478 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x answered 503 with Retry-After 7
+16:09:05.482 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x answered 429 with Retry-After 7
+16:09:05.900 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55899/x": Read timed out
+16:09:05.913 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55901/x": Connection reset
+16:09:05.932 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory POST /x answered 200 with a body that could not be read: com.fasterxml.jackson.core.JsonParseException: Unexpected end-of-input within/between Object entries
+ at [Source: REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled); line: 1, column: 17]
+16:09:05.940 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55908/x": Connection refused: getsockopt
+16:09:06.382 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x answered 200 with a body that could not be read: java.net.SocketTimeoutException: Read timed out
+16:09:06.393 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x answered 200 with a body that could not be read: com.fasterxml.jackson.core.JsonParseException: Unexpected character ('<' (code 60)): expected a valid value (JSON String, Number, Array, Object or token 'null', 'true' or 'false')
+ at [Source: REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled); line: 1, column: 1]
+16:09:06.403 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55916/x": Connection reset
+16:09:06.405 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: java.lang.IllegalArgumentException: Status code '-1' should be a three-digit positive integer
+16:09:06.408 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /x answered 200 with a body that could not be read: com.fasterxml.jackson.core.JsonParseException: Unexpected end-of-input within/between Object entries
+ at [Source: REDACTED (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled); line: 1, column: 17]
+16:09:06.813 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55916/x": Read timed out
+16:09:06.817 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://127.0.0.1:55916/x": Connection reset
+16:09:06.819 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /x transport failure: java.lang.IllegalArgumentException: Status code '-1' should be a three-digit positive integer
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.797 s -- in com.ecommerce.order.client.HttpRemoteFaultInjectionTest
+[INFO] Running com.ecommerce.order.client.HttpRemotePropagationTest
+16:09:07.050 [main] WARN com.ecommerce.order.client.HttpRemote -- GET /internal/x not sent: the caller's deadline leaves -100 ms
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.250 s -- in com.ecommerce.order.client.HttpRemotePropagationTest
+[INFO] Running com.ecommerce.order.client.HttpRemoteResilienceTest
+16:09:07.120 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory POST /x answered 503 with Retry-After 7
+16:09:07.160 [main] WARN com.ecommerce.order.client.HttpRemote -- inventory GET /slow not sent: the bulkhead of inventory is full
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.081 s -- in com.ecommerce.order.client.HttpRemoteResilienceTest
+[INFO] Running com.ecommerce.order.client.HttpRemoteTest
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.017 s -- in com.ecommerce.order.client.HttpRemoteTest
+[INFO] Running com.ecommerce.order.common.RequestCorrelationTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.019 s -- in com.ecommerce.order.common.RequestCorrelationTest
+[INFO] Running com.ecommerce.order.domain.CheckoutRulesTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.034 s -- in com.ecommerce.order.domain.CheckoutRulesTest
+[INFO] Running com.ecommerce.order.domain.DomainRulesTest
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.122 s -- in com.ecommerce.order.domain.DomainRulesTest
+[INFO] Running com.ecommerce.order.domain.VariantSnapshotTest
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.007 s -- in com.ecommerce.order.domain.VariantSnapshotTest
+[INFO] Running com.ecommerce.order.integration.CheckoutFlowIT
+16:09:07.579 [main] INFO org.springframework.test.context.support.AnnotationConfigContextLoaderUtils -- Could not detect default configuration classes for test class [com.ecommerce.order.integration.CheckoutFlowIT]: CheckoutFlowIT does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+16:09:08.043 [main] INFO org.springframework.boot.test.context.SpringBootTestContextBootstrapper -- Found @SpringBootConfiguration com.ecommerce.order.OrderServiceApplication for test class com.ecommerce.order.integration.CheckoutFlowIT
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+
+ :: Spring Boot ::                (v3.3.0)
+
+2026-10-16T16:09:09.190+07:00  INFO [,] 25116 --- [order-service] [           main] c.e.order.integration.CheckoutFlowIT     : Starting CheckoutFlowIT using Java 21.0.12.1 with PID 25116 (started by ASUS in C:\Users\ASUS\MyProjects\e-commerce-microservices\java\services\order-service)
+2026-10-16T16:09:09.191+07:00  INFO [,] 25116 --- [order-service] [           main] c.e.order.integration.CheckoutFlowIT     : No active profile set, falling back to 1 default profile: "default"
+2026-10-16T16:09:11.162+07:00  INFO [,] 25116 --- [order-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Multiple Spring Data modules found, entering strict repository configuration mode
+2026-10-16T16:09:11.172+07:00  INFO [,] 25116 --- [order-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-10-16T16:09:11.280+07:00  INFO [,] 25116 --- [order-service] [           main] .s.d.r.c.RepositoryConfigurationDelegate : Finished Spring Data repository scanning in 67 ms. Found 0 Redis repository interfaces.
+2026-10-16T16:09:12.978+07:00  INFO [,] 25116 --- [order-service] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Starting...
+2026-10-16T16:09:13.250+07:00  INFO [,] 25116 --- [order-service] [           main] com.zaxxer.hikari.pool.HikariPool        : HikariPool-1 - Added connection org.postgresql.jdbc.PgConnection@24258b54
+2026-10-16T16:09:13.253+07:00  INFO [,] 25116 --- [order-service] [           main] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Start completed.
+2026-10-16T16:09:13.303+07:00  INFO [,] 25116 --- [order-service] [           main] org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:25433/order_service (PostgreSQL 16.15)
+2026-10-16T16:09:13.401+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Schema history table "public"."flyway_schema_history" does not exist yet
+2026-10-16T16:09:13.410+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 3 migrations (execution time 00:00.054s)
+2026-10-16T16:09:13.448+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Creating Schema History table "public"."flyway_schema_history" ...
+2026-10-16T16:09:13.554+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Current version of schema "public": << Empty Schema >>
+2026-10-16T16:09:13.626+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "public" to version "1 - order baseline"
+2026-10-16T16:09:14.299+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "public" to version "2 - admin delivery confirmation"
+2026-10-16T16:09:14.381+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "public" to version "3 - submission checkpoint notification"
+2026-10-16T16:09:14.414+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Successfully applied 3 migrations to schema "public", now at version v3 (execution time 00:00.696s)
+2026-10-16T16:09:15.629+07:00  INFO [,] 25116 --- [order-service] [           main] i.t.s.WorkflowServiceStubsImpl           : Created WorkflowServiceStubs for channel: ManagedChannelOrphanWrapper{delegate=ManagedChannelImpl{logId=2, target=directaddress:///42222d19-75dc-4457-ac6e-9eb83d23856f}}
+2026-10-16T16:09:15.636+07:00  INFO [,] 25116 --- [order-service] [           main] i.t.serviceclient.TestServiceStubsImpl   : Created TestServiceStubs for channel: ManagedChannelOrphanWrapper{delegate=ManagedChannelImpl{logId=2, target=directaddress:///42222d19-75dc-4457-ac6e-9eb83d23856f}}
+2026-10-16T16:09:15.645+07:00  INFO [,] 25116 --- [order-service] [           main] i.t.s.OperatorServiceStubsImpl           : Created OperatorServiceStubs for channel: ManagedChannelOrphanWrapper{delegate=ManagedChannelImpl{logId=2, target=directaddress:///42222d19-75dc-4457-ac6e-9eb83d23856f}}
+2026-10-16T16:09:16.328+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Workflow Poller taskQueue="order-financial-reconciliation-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:16.340+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Activity Poller taskQueue="order-financial-reconciliation-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:16.342+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Workflow Poller taskQueue="order-checkout-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:16.345+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Activity Poller taskQueue="order-checkout-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:16.346+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Workflow Poller taskQueue="order-refund-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:16.350+07:00  INFO [,] 25116 --- [order-service] [           main] io.temporal.internal.worker.Poller       : start: Poller{name=Activity Poller taskQueue="order-refund-queue", namespace="default", identity=25116@DESKTOP-BKSL6N5}
+2026-10-16T16:09:18.724+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.b.t.m.w.SpringBootMockServletContext : Initializing Spring TestDispatcherServlet ''
+2026-10-16T16:09:18.724+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Initializing Servlet ''
+2026-10-16T16:09:18.738+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.b.a.e.web.EndpointLinksResolver      : Exposing 2 endpoints beneath base path '/actuator'
+2026-10-16T16:09:18.756+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Completed initialization in 32 ms
+2026-10-16T16:09:18.891+07:00  INFO [,] 25116 --- [order-service] [           main] c.e.order.integration.CheckoutFlowIT     : Started CheckoutFlowIT in 10.496 seconds (process running for 16.142)
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+WARNING: A Java agent has been loaded dynamically (C:\Users\ASUS\.m2\repository\net\bytebuddy\byte-buddy-agent\1.14.16\byte-buddy-agent-1.14.16.jar)
+WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading to hide this warning
+WARNING: If a serviceability tool is not in use, please run with -Djdk.instrument.traceUsage for more information
+WARNING: Dynamic loading of agents will be disallowed by default in a future release
+2026-10-16T16:09:22.362+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword openapi - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.367+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword info - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.367+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword x-adoption-status - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.368+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword servers - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.368+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword tags - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.368+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword security - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.368+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword paths - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.368+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword components - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.597+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword x-data-classification - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:22.609+07:00  WARN [,] 25116 --- [order-service] [           main] c.n.schema.UnknownKeywordFactory         : Unknown keyword x-pii - you should define your own Meta Schema. If the keyword is irrelevant for validation, just use a NonValidationKeyword or if it should generate annotations AnnotationKeyword
+2026-10-16T16:09:23.910+07:00  WARN [,] 25116 --- [order-service] [ce="default": 2] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100006 type=POST_CAPTURE_INVENTORY_REPAIR resource=inventory-commit detail=RESERVATION_NOT_RESERVED
+2026-10-16T16:09:25.003+07:00  WARN [,] 25116 --- [order-service] [           main] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100008 type=CAPTURE_AFTER_TERMINAL_NON_CAPTURE resource=TXN_00000000000000000000000007 detail=CAPTURE_AFTER_CANCELLED
+[INFO] Tests run: 13, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.87 s -- in com.ecommerce.order.integration.CheckoutFlowIT
+[INFO] Running com.ecommerce.order.integration.DeliveryMigrationIT
+2026-10-16T16:09:27.354+07:00  INFO [,] 25116 --- [order-service] [           main] org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:25433/order_service (PostgreSQL 16.15)
+2026-10-16T16:09:27.378+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Schema history table "delivery_migration_9367303a24f144698b784a43c11f0b5a"."flyway_schema_history" does not exist yet
+2026-10-16T16:09:27.380+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 3 migrations (execution time 00:00.012s)
+2026-10-16T16:09:27.398+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Creating Schema History table "delivery_migration_9367303a24f144698b784a43c11f0b5a"."flyway_schema_history" ...
+2026-10-16T16:09:27.462+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Current version of schema "delivery_migration_9367303a24f144698b784a43c11f0b5a": << Empty Schema >>
+2026-10-16T16:09:27.490+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "delivery_migration_9367303a24f144698b784a43c11f0b5a" to version "1 - order baseline"
+2026-10-16T16:09:27.495+07:00  WARN [,] 25116 --- [order-service] [           main] o.f.c.i.s.DefaultSqlScriptExecutor       : DB: extension "pg_trgm" already exists, skipping (SQL State: 42710 - Error Code: 0)
+2026-10-16T16:09:28.154+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Successfully applied 1 migration to schema "delivery_migration_9367303a24f144698b784a43c11f0b5a", now at version v1 (execution time 00:00.637s)
+2026-10-16T16:09:28.405+07:00  INFO [,] 25116 --- [order-service] [           main] org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:25433/order_service (PostgreSQL 16.15)
+2026-10-16T16:09:28.443+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 3 migrations (execution time 00:00.021s)
+2026-10-16T16:09:28.497+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Current version of schema "delivery_migration_9367303a24f144698b784a43c11f0b5a": 1
+2026-10-16T16:09:28.507+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "delivery_migration_9367303a24f144698b784a43c11f0b5a" to version "2 - admin delivery confirmation"
+2026-10-16T16:09:28.605+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "delivery_migration_9367303a24f144698b784a43c11f0b5a" to version "3 - submission checkpoint notification"
+2026-10-16T16:09:28.630+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Successfully applied 2 migrations to schema "delivery_migration_9367303a24f144698b784a43c11f0b5a", now at version v3 (execution time 00:00.082s)
+2026-10-16T16:09:28.698+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 3 migrations (execution time 00:00.018s)
+[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.203 s -- in com.ecommerce.order.integration.DeliveryMigrationIT
+[INFO] Running com.ecommerce.order.integration.QueryIT
+2026-10-16T16:09:29.479+07:00  INFO [,] 25116 --- [order-service] [           main] t.c.s.AnnotationConfigContextLoaderUtils : Could not detect default configuration classes for test class [com.ecommerce.order.integration.QueryIT]: QueryIT does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+2026-10-16T16:09:29.486+07:00  INFO [,] 25116 --- [order-service] [           main] .b.t.c.SpringBootTestContextBootstrapper : Found @SpringBootConfiguration com.ecommerce.order.OrderServiceApplication for test class com.ecommerce.order.integration.QueryIT
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.730 s -- in com.ecommerce.order.integration.QueryIT
+[INFO] Running com.ecommerce.order.integration.RefundFlowIT
+2026-10-16T16:09:30.208+07:00  INFO [,] 25116 --- [order-service] [           main] t.c.s.AnnotationConfigContextLoaderUtils : Could not detect default configuration classes for test class [com.ecommerce.order.integration.RefundFlowIT]: RefundFlowIT does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+2026-10-16T16:09:30.214+07:00  INFO [,] 25116 --- [order-service] [           main] .b.t.c.SpringBootTestContextBootstrapper : Found @SpringBootConfiguration com.ecommerce.order.OrderServiceApplication for test class com.ecommerce.order.integration.RefundFlowIT
+2026-10-16T16:09:31.082+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100019 type=RETURN_MANUAL_VERIFICATION resource=rfr_01a143f9-3f95-717a-900c-121a6480453b detail=INSPECTION_TIMEOUT
+2026-10-16T16:09:32.034+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100020 type=REFUND_REVERSAL resource=RFD_00000000000000000000000020 detail=REFUND_REVERSED_BY_PROVIDER
+2026-10-16T16:09:33.444+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.RemoteCommands         : Remote command CLOSE order-100022-refund-scope-close-g1 outcome unknown (TRANSPORT); same command will be replayed
+2026-10-16T16:09:33.460+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.RemoteCommands         : Remote command CLOSE order-100022-refund-scope-close-g1 outcome unknown (TRANSPORT); same command will be replayed
+2026-10-16T16:09:33.483+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.RemoteCommands         : Remote command CLOSE order-100022-refund-scope-close-g1 outcome unknown (TRANSPORT); same command will be replayed
+2026-10-16T16:09:33.501+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100022 type=REFUND_SCOPE_FINALIZATION resource=order-100022-refund-scope-close-g1 detail=RECOVERY_REQUIRED
+2026-10-16T16:09:33.762+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.RemoteCommands         : Remote command CLOSE order-100022-refund-scope-close-g1 outcome unknown (TRANSPORT); same command will be replayed
+2026-10-16T16:09:34.636+07:00  WARN [,] 25116 --- [order-service] [ce="default": 1] c.e.order.service.ReconciliationLedger   : Reconciliation obligation opened order=100023 type=CUSTOMER_PAYOUT_REMEDIATION resource=RFD_00000000000000000000000026 detail=REFUND_FAILED:INSUFFICIENT_BALANCE
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.658 s -- in com.ecommerce.order.integration.RefundFlowIT
+[INFO] Running com.ecommerce.order.integration.SubmissionNotificationIT
+2026-10-16T16:09:35.866+07:00  INFO [,] 25116 --- [order-service] [           main] t.c.s.AnnotationConfigContextLoaderUtils : Could not detect default configuration classes for test class [com.ecommerce.order.integration.SubmissionNotificationIT]: SubmissionNotificationIT does not declare any static, non-private, non-final, nested classes annotated with @Configuration.
+2026-10-16T16:09:35.876+07:00  INFO [,] 25116 --- [order-service] [           main] .b.t.c.SpringBootTestContextBootstrapper : Found @SpringBootConfiguration com.ecommerce.order.OrderServiceApplication for test class com.ecommerce.order.integration.SubmissionNotificationIT
+2026-10-16T16:09:36.883+07:00  WARN [,] 25116 --- [order-service] [ission-listener] c.e.o.s.SubmissionNotificationListener   : Submission listener disconnected; batch recovery remains active (SQLState=57P01)
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.580 s -- in com.ecommerce.order.integration.SubmissionNotificationIT
+[INFO] Running com.ecommerce.order.integration.WorkflowDispatchStoreIT
+2026-10-16T16:09:37.533+07:00  INFO [,] 25116 --- [order-service] [           main] org.flywaydb.core.FlywayExecutor         : Database: jdbc:postgresql://localhost:25433/order_service (PostgreSQL 16.15)
+2026-10-16T16:09:37.555+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Schema history table "dispatch_test_490b0b9460d247be851cee9c5a6d427c"."flyway_schema_history" does not exist yet
+2026-10-16T16:09:37.558+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbValidate     : Successfully validated 3 migrations (execution time 00:00.011s)
+2026-10-16T16:09:37.579+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.c.i.s.JdbcTableSchemaHistory         : Creating Schema History table "dispatch_test_490b0b9460d247be851cee9c5a6d427c"."flyway_schema_history" ...
+2026-10-16T16:09:37.644+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Current version of schema "dispatch_test_490b0b9460d247be851cee9c5a6d427c": << Empty Schema >>
+2026-10-16T16:09:37.662+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "dispatch_test_490b0b9460d247be851cee9c5a6d427c" to version "1 - order baseline"
+2026-10-16T16:09:37.666+07:00  WARN [,] 25116 --- [order-service] [           main] o.f.c.i.s.DefaultSqlScriptExecutor       : DB: extension "pg_trgm" already exists, skipping (SQL State: 42710 - Error Code: 0)
+2026-10-16T16:09:38.302+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "dispatch_test_490b0b9460d247be851cee9c5a6d427c" to version "2 - admin delivery confirmation"
+2026-10-16T16:09:38.375+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Migrating schema "dispatch_test_490b0b9460d247be851cee9c5a6d427c" to version "3 - submission checkpoint notification"
+2026-10-16T16:09:38.403+07:00  INFO [,] 25116 --- [order-service] [           main] o.f.core.internal.command.DbMigrate      : Successfully applied 3 migrations to schema "dispatch_test_490b0b9460d247be851cee9c5a6d427c", now at version v3 (execution time 00:00.678s)
+[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.923 s -- in com.ecommerce.order.integration.WorkflowDispatchStoreIT
+[INFO] Running com.ecommerce.order.service.SubmissionWaitersTest
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.104 s -- in com.ecommerce.order.service.SubmissionWaitersTest
+[INFO] Running com.ecommerce.order.web.IdentityFilterPathTest
+2026-10-16T16:09:43.554+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.mock.web.MockServletContext          : Initializing Spring TestDispatcherServlet ''
+2026-10-16T16:09:43.554+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Initializing Servlet ''
+2026-10-16T16:09:43.555+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Completed initialization in 1 ms
+2026-10-16T16:09:43.601+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.mock.web.MockServletContext          : Initializing Spring TestDispatcherServlet ''
+2026-10-16T16:09:43.604+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Initializing Servlet ''
+2026-10-16T16:09:43.604+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Completed initialization in 0 ms
+2026-10-16T16:09:43.642+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.mock.web.MockServletContext          : Initializing Spring TestDispatcherServlet ''
+2026-10-16T16:09:43.643+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Initializing Servlet ''
+2026-10-16T16:09:43.644+07:00  INFO [,] 25116 --- [order-service] [           main] o.s.t.web.servlet.TestDispatcherServlet  : Completed initialization in 1 ms
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.193 s -- in com.ecommerce.order.web.IdentityFilterPathTest
+[INFO] Running com.ecommerce.order.web.ProblemsRetryAfterTest
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.010 s -- in com.ecommerce.order.web.ProblemsRetryAfterTest
+[INFO] Running com.ecommerce.order.web.RequestCorrelationFilterTest
+2026-10-16T16:09:43.753+07:00  WARN [f37b3f75-de91-44b8-8eb1-ec1bfd000704,] 25116 --- [order-service] [           main] c.e.order.web.RequestCorrelationFilter   : request outlived the caller deadline route=UNMATCHED elapsed_ms=48 budget_ms=5
+2026-10-16T16:09:43.827+07:00  WARN [efb2b3c6-9eb8-437a-9265-8e46c5e0c9da,] 25116 --- [order-service] [           main] c.e.order.web.RequestCorrelationFilter   : request outlived the caller deadline route=/internal/v1/x/{id} elapsed_ms=45 budget_ms=5
+2026-10-16T16:09:43.880+07:00  WARN [3078751c-88cc-4c17-937a-b51dbb6b45b0,] 25116 --- [order-service] [           main] c.e.order.web.RequestCorrelationFilter   : request outlived the caller deadline route=UNMATCHED elapsed_ms=47 budget_ms=5
+[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.187 s -- in com.ecommerce.order.web.RequestCorrelationFilterTest
+[INFO] Running com.ecommerce.order.worker.WorkflowDispatcherTest
+2026-10-16T16:09:44.530+07:00  WARN [,] 25116 --- [order-service] [orkflow-start-1] c.e.order.worker.WorkflowDispatcher      : Dispatch 3decabeb-5e40-44d0-ba6a-75b677e91a1b failed: java.lang.IllegalStateException: transport failed
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.113 s -- in com.ecommerce.order.worker.WorkflowDispatcherTest
+[INFO] 
+[INFO] Results:
+[INFO] 
+[WARNING] Tests run: 109, Failures: 0, Errors: 0, Skipped: 1
+[INFO] 
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  47.146 s
+[INFO] Finished at: 2026-10-16T16:09:45+07:00
+[INFO] ------------------------------------------------------------------------

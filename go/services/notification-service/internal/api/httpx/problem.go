@@ -103,11 +103,7 @@ func WriteProblem(c *gin.Context, err error) {
 		detail = titleOf(appErr.Code)
 	}
 
-	if appErr.RetryAfter > 0 {
-		seconds := int(appErr.RetryAfter.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
+	if seconds := retryAfterSeconds(status, appErr.Retryable, appErr.RetryAfter); seconds > 0 {
 		c.Header(constants.HeaderRetryAfter, strconv.Itoa(seconds))
 	}
 

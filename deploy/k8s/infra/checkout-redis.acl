@@ -1,0 +1,4 @@
+user default off resetpass -@all
+user checkout on #@CHECKOUT@ ~checkout:* -@all +ping +hello +client|setinfo +client|setname +get +set +hget +hmget +hset +hdel +pexpire +eval +evalsha +script|load +script|exists
+user exporter on #@EXPORTER@ -@all +ping +info +client|setname +slowlog|len +latency|latest +latency|histogram +memory|stats
+user probe on #@PROBE@ -@all +ping

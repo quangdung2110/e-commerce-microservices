@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.ecommerce.local/events/notification/v1/templates/ORDER_COMPLETED.schema.json",
   "title": "ORDER_COMPLETED template_data",
-  "description": "Mọi line đã có delivery proof; dẫn user tới review.",
+  "description": "Mọi line đã được Admin xác nhận đã giao; dẫn user tới review.",
   "type": "object",
   "additionalProperties": false,
   "required": [

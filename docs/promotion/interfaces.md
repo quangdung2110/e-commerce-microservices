@@ -1,7 +1,7 @@
 ---
 doc_id: promotion-interfaces
 service: promotion
-scope: target
+scope: current
 status: implemented
 owners:
   - Promotion Service team
@@ -29,11 +29,12 @@ verified_against_commit: null
 
 | Interaction | Direction | Protocol | Provider | Consumer | Status |
 |---|---|---|---|---|---|
-| Admin campaign/voucher/markdown | Inbound | HTTP | Promotion | Admin/Gateway | contract target exists |
-| Calculate/discovery/save/claim | Inbound | HTTP | Promotion | Checkout/Gateway | contract target exists |
-| Allocation lifecycle | Inbound | HTTP | Promotion | Order/Temporal | contract target exists |
-| Markdown current-state snapshot | Outbound | Kafka/CDC | Promotion | Product | contract target exists |
-| Product tombstone | Inbound | Kafka | Product | Promotion | contract target exists |
+| Admin campaign/voucher/markdown | Inbound | HTTP | Promotion | Admin/Gateway | `implemented` (provider test; consumer là frontend admin, type sinh từ OpenAPI) |
+| Calculate/voucher options/discovery/save/claim | Inbound | HTTP | Promotion | Checkout/Gateway | `implemented` (provider test; Checkout validate fixture theo OpenAPI, chưa có consumer test với Promotion thật) |
+| Allocation lifecycle (reserve/confirm/cancel) | Inbound | HTTP | Promotion | Order/Temporal | `implemented` (provider test; Order gọi qua `HttpGateways`, chưa có consumer test với Promotion thật) |
+| Technical cancellation (deprecated) | Inbound | HTTP | Promotion | `promotion-legacy-migrator` | provider `implemented` (guard + test); consumer chưa tồn tại nên interaction vẫn `proposed` |
+| Markdown current-state snapshot | Outbound | Kafka/CDC | Promotion | Product | `implemented` (JSON Schema contract test + `OutboxCdcIntegrationTest` với Debezium/Kafka thật; chưa chạy cùng Product consumer) |
+| Product tombstone | Inbound | Kafka | Product | Promotion | `implemented` (consumer + test service-level; chưa test qua Kafka thật) |
 
 Đây là toàn bộ bề mặt tích hợp v1. Không có inbound `ORDER_REFUNDED`, Auth welcome-voucher
 consumer, Promotion refund API, coupon/wallet event, budget event hay reservation event.
@@ -55,6 +56,12 @@ chưa có mesh nên header này chỉ an toàn ở mức dev. API dùng JSON sna
 `{ amount_minor, currency }` (`currency=VND`). BIGINT/`*_vnd` trong data model chỉ là
 storage representation, không phải wire shape.
 
+Request không khớp operation nào là lỗi client: route lạ trả `404`, sai HTTP method trả `405` (kèm `Allow`)
+và Content-Type operation không chấp nhận (vd `PATCH` không phải `application/merge-patch+json`) trả `400`,
+mọi trường hợp là problem+json code `INVALID_REQUEST` (không có `415`; cùng quy ước Checkout). Identity được
+kiểm trước routing, nên route `/internal/v1/**` lạ vẫn là `401`/`403` cho caller chưa được allowlist.
+Danh mục mã lỗi đầy đủ (code, HTTP, `retryable`) ở [domain.md §10](./domain.md#10-domain-errors).
+
 ### 2.1 Admin endpoints
 
 | Method và path | Mục đích | Concurrency/idempotency |
@@ -75,12 +82,13 @@ storage representation, không phải wire shape.
 
 | Method và path | Dùng khi nào | Side effect |
 |---|---|---|
+| `GET /api/v1/me/promotion-vouchers` | Ví độc lập của authenticated user; mọi distribution mode, SAVED/USED/EXPIRED, status hiệu lực và keyset giảm dần wallet ID. Không cần cart/address/context | Pure DB read, không lazy-write expiry/evaluate/reserve; `Cache-Control: no-store`; [ADR-023](./decisions/ADR-023-independent-buyer-wallet-read.md) |
 | `POST /api/v1/me/promotion-voucher-suggestions` | Client tự có checkout context; chỉ xếp hạng voucher `SAVED` trong wallet. Trang checkout không dùng | Safe query ngoài lazy expiry; `Cache-Control: no-store` |
 | `POST /api/v1/promotion-discovery` | Client tự có checkout context, tìm cả wallet và public `ACTIVE` chưa lưu. Trang checkout không dùng | Safe query, không auto-save/reserve; `Cache-Control: no-store` |
-| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |
+| `PUT /api/v1/me/promotion-vouchers/{promotion_id}` | User lưu public voucher; body là tùy chọn (không body và `{}` đều hợp lệ), trang checkout gửi body rỗng, evaluate chỉ khi có `context` (`context` tùy chọn, ADR-018) | Tạo mới `201`; replay wallet `SAVED` trả `200`, không kéo dài expiry; không context thì `evaluation: null` |
 | `POST /api/v1/me/promotion-voucher-claims` | User claim voucher `LIMITED_CLAIM` | `201` sau DB commit; có thể `202 CLAIM_PENDING` để retry |
-| `POST /internal/v1/promotion-discount-calculations` | Checkout server tính lại 0/1 voucher từ trusted context | Pure/replay-safe; không save và không reserve |
-| `POST /internal/v1/promotion-voucher-options` | ADR-018: Checkout dựng khay voucher của trang checkout từ trusted snapshot; chỉ `checkout-service`; `checkout_channel` phải là `CHECKOUT` | Safe query như discovery; trả `evaluation` + `display` (`code`, `name`, `description`, `discount`, `min_order_amount`, `valid_until`) |
+| `POST /internal/v1/promotion-discount-calculations` | Checkout server tính lại 0/1 voucher từ trusted context; `checkout_channel` phải là `CHECKOUT` | Pure/replay-safe; không save và không reserve |
+| `POST /internal/v1/promotion-voucher-options` | ADR-018: Checkout dựng khay voucher của trang checkout từ trusted snapshot; chỉ `checkout-service`; `checkout_channel` phải là `CHECKOUT` | Safe query như discovery, `Cache-Control: no-store`; trả `evaluation` + `display` (`code`, `name`, `description`, `discount`, `min_order_amount`, `valid_until`) |
 
 Khay voucher của trang checkout đi qua Checkout
 `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`
@@ -96,10 +104,10 @@ theo Checkout Phase 18. Gateway áp profile `promotion-discovery` 20 request/ph�
 
 | Method và path | Pha saga | Kết quả chính |
 |---|---|---|
-| `POST /internal/v1/promotion-allocation/reservations` | TRY sau Submit, trước payment | Giữ quota/amount 15 phút; `200` replay hoặc `201` tạo mới |
+| `POST /internal/v1/promotion-allocation/reservations` | TRY sau Submit, trước payment; `checkout_channel` phải là `CHECKOUT`; promotion không tồn tại → `404` | Giữ quota/amount 15 phút; `200` replay hoặc `201` tạo mới |
 | `POST /internal/v1/promotion-allocation/confirmations` | CONFIRM sau payment success | Commit wallet `USED`, durable budget và receipt; Redis finalize sau commit |
 | `POST /internal/v1/promotion-allocation/cancellations` | CANCEL khi payment chưa confirm/thất bại | Chỉ nhả reservation `RESERVED`; wallet vẫn `SAVED` |
-| `POST /internal/v1/promotion-allocation/technical-cancellations` | **Deprecated, legacy migration only** | Dedicated `promotion-legacy-migrator` workload + immutable `X-Legacy-Migration-Proof`; `order-service` is denied |
+| `POST /internal/v1/promotion-allocation/technical-cancellations` | **Deprecated, legacy migration only** | Dedicated `promotion-legacy-migrator` workload + immutable `X-Legacy-Migration-Proof` (UUID bằng `migration_record_id` của body); `order-service` và mọi caller khác `403`; thiếu/sai proof `403`; body `LegacyTechnicalCancellationRequest` (`migration_record_id`, `pre_financial_watermark_evidence_sha256`, không field lạ) sai schema `400` |
 
 Không có promotion refund endpoint. Customer refund không gọi Promotion. Với active
 checkout, `CONFIRM` sau `PAYMENT_SUCCESS` là financial watermark: mọi lỗi phía sau
@@ -123,7 +131,16 @@ Gateway và Checkout hiện không có authority cho `user.tier`, nên rule ch�
 `user_tier` bị omit/null. Ở v1 Checkout/Order luôn omit/null; hỗ trợ tier sau này cần
 contract version đồng bộ với một trusted service snapshot. `context.facts` không được ghi đè `user.*`. Checkout gửi
 `checkout_channel=CHECKOUT` cố định và lấy `category_ids` từ Product gRPC, không
-nhận hai fact này từ browser.
+nhận hai fact này từ browser; Order cũng gửi `CHECKOUT` khi Reserve. Vì vậy calculate, voucher options và
+reserve (`TrustedCheckoutContext`) từ chối channel khác `CHECKOUT` bằng `400 INVALID_REQUEST`
+(`errors[].field = context.checkout_channel`) trước mọi bước đọc/ghi; context của suggestion, discovery và save
+là của client nên channel đó chỉ là một fact do client khai.
+
+Public discovery và voucher options duyệt hết public candidate `ACTIVE` bằng keyset nội bộ (`id > afterId`),
+loại mọi ownership (`SAVED`/`USED`/`EXPIRED`) trong DB trước khi lấy batch. Wallet `SAVED` được đánh giá
+riêng theo batch. Heap giữ top `limit` trên cả wallet/public theo ranking ở trên; không dừng khi vừa đủ
+`limit` item. `promotion.discovery.batch-size` mặc định 200 là kích thước batch, không phải trần candidate.
+API không thêm cursor và `limit` vẫn là số item trả về (1–50), theo [ADR-020](./decisions/ADR-020-complete-discovery-with-batched-top-k.md).
 
 `campaign_revision` là optimistic concurrency/cache/schedule fence, không phải version ID
 của published definition. Sau publish, field ảnh hưởng business là immutable; thay đổi
@@ -139,7 +156,9 @@ Confirm dùng `REDEEM_FINAL:{order_id}:{promotion_id}`; deprecated legacy cleanu
 `CANCEL_FINAL:{order_id}:{promotion_id}` và chỉ được gọi bởi
 `promotion-legacy-migrator` với migration proof bất biến; nó bị cấm cho mọi active
 post-capture Order flow. Promotion canonicalize operation, order,
-promotion và expected amount thành SHA-256 `request_hash`:
+promotion và expected amount thành SHA-256 `request_hash` (legacy cancel thêm `migration_record_id` và
+digest bằng chứng đã chuẩn hoá chữ thường, nên replay với proof khác là `IDEMPOTENCY_PAYLOAD_MISMATCH`;
+cả hai được lưu trên receipt):
 
 - cùng key + cùng hash → trả stored response từ `promotion_command_receipts`;
 - cùng key + khác hash → `IDEMPOTENCY_PAYLOAD_MISMATCH`;
@@ -158,6 +177,8 @@ preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup rece
 đóng race với request khác vừa commit/finalize; chỉ khi vẫn không có receipt mới trả
 `RESERVATION_NOT_FOUND`. State `CONFIRMING` cùng payload là replay hợp lệ của Prepare.
 `Idempotency-Key` phải khớp đúng `order_id`/`promotion_id` trong body, nếu không trả `400`.
+Hai request cùng key đến đồng thời: request thua cuộc kiểm lại receipt sau khi giành khoá wallet và trả đúng
+stored response của request thắng (không `FINAL_COMMAND_STATE_INCONSISTENT`; PROMO-BR-027).
 
 ## 3. Allocation semantics
 
@@ -168,14 +189,18 @@ preflight miss nhưng Confirm-Prepare báo missing, Promotion phải lookup rece
   `409 IDEMPOTENCY_PAYLOAD_MISMATCH`.
 - `POST .../cancellations` trả `RELEASED` (đã nhả `RESERVED`), `NO_RESERVATION` (không còn
   payload hoặc đã có durable `CONFIRM` receipt) hoặc `REPAIR_REQUIRED` (payload đang
-  `CONFIRMING` chưa có receipt, hoặc index còn member nhưng payload mất — Promotion đã
-  enqueue reconciliation); caller không được coi `REPAIR_REQUIRED` là đã release.
+  `CONFIRMING` chưa có receipt — sweeper nhả sau grace nếu vẫn không có receipt; hoặc index còn
+  member nhưng payload mất — Promotion đã xoá member và chạy reconciliation DB→Redis); caller
+  không được coi `REPAIR_REQUIRED` là đã release. Counter reserved lệch (`DRIFT`) cũng được
+  reconcile và trả `RELEASED`.
 - Voucher đã lưu có thể reserve sau natural campaign end nếu `expired_at` còn hạn;
   mode `CAMPAIGN_END` đương nhiên hết hạn đúng boundary. Campaign status không phải
   revocation check; emergency revocation chưa thuộc contract này.
 - Confirm-Prepare chỉ fence `RESERVED→CONFIRMING` và gia hạn grace, chưa move counter.
   PostgreSQL commit ghi receipt, `used_order_id`, `discount_amount_vnd`, `used_at` và
-  budget; Redis finalizer chạy sau commit rồi set `redis_finalized_at`.
+  budget; Redis finalizer chạy sau commit rồi set `redis_finalized_at`. Wallet `SAVED` và wallet đã bị
+  lazy-normalize thành `EXPIRED` sau Reserve đều chuyển sang `USED` (reservation là authority, PROMO-BR-026);
+  wallet ở trạng thái khác là `FINAL_COMMAND_STATE_INCONSISTENT`.
 - Cancel pre-payment chỉ nhả Redis reservation đang `RESERVED`; không release mù state
   `CONFIRMING` khi chưa đọc durable confirm outcome.
 - `cancel-confirmed` là deprecated legacy migration cleanup; mesh/application chỉ nhận
@@ -270,7 +295,7 @@ known gap cần ADR retention/anonymization riêng. Promotion không subscribe
 
 - Unknown optional JSON field phải được chấp nhận; unsupported major version không xử
   lý như v1.
-- Markdown contract v1 đang proposed và dùng state-discriminated shape. Nếu v1 đã được
+- Markdown contract v1 đã `implemented` và dùng state-discriminated shape. Nếu v1 đã được
   deploy trước thay đổi này, phải tạo v2/dual-read thay vì đổi breaking in-place.
 - Ordering key của markdown luôn là `product_id`; duplicate/replay là bình thường.
 - Product tombstone consumer chỉ nhận `product-deleted`, persist watermark dù chưa có rule,
@@ -279,5 +304,5 @@ known gap cần ADR retention/anonymization riêng. Promotion không subscribe
 - Không công bố internal claim-persistence task, confirm finalizer hay projection repair
   thành integration event; chúng chạy từ Redis pending evidence và command receipt.
 - Thêm message type mới vào AsyncAPI v1 là additive; đổi payload/key/ordering của markdown
-  snapshot là breaking. Trước implementation phải có contract tests cho cả OpenAPI v1 và
-  AsyncAPI v1.
+  snapshot là breaking. Contract tests đã có: `HttpContractIntegrationTest` (OpenAPI v1) và
+  `MarkdownSnapshotContractTest` (AsyncAPI/JSON Schema v1); còn thiếu consumer test chạy với Promotion thật.

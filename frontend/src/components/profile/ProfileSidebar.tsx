@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { MapPin, ShieldCheck, SlidersHorizontal, User } from "lucide-react";
+import { MapPin, ShieldCheck, SlidersHorizontal, User, Ticket } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { title: "Hồ sơ cá nhân", href: "/profile", icon: User },
   { title: "Sổ địa chỉ", href: "/profile/addresses", icon: MapPin },
+  { title: "Ví voucher", href: "/vouchers", icon: Ticket },
   { title: "Tuỳ chọn thông báo", href: "/profile/preferences", icon: SlidersHorizontal },
   { title: "Bảo mật", href: "/profile/security", icon: ShieldCheck },
 ];

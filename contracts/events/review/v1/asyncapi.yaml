@@ -3,10 +3,13 @@ info:
   title: Review Service Events
   version: 1.0.0
   description: >-
-    Target contract for Review domain facts, rating snapshots and user notification
-    requests. Review publishes every outbound message through PostgreSQL outbox and
-    Debezium CDC. The service also self-consumes aggregate-affecting lifecycle facts.
-x-adoption-status: proposed
+    Contract for Review domain facts, rating snapshots and user notification requests,
+    implemented by `java/services/review-service`. Review publishes every outbound message
+    through PostgreSQL outbox and Debezium CDC. The service also self-consumes
+    aggregate-affecting lifecycle facts. `ReviewEventFactoryTest` validates every stored
+    envelope against the schema of its own type, and `OutboxCdcIT` proves the connector
+    delivers each one to the topic unchanged.
+x-adoption-status: implemented
 defaultContentType: application/cloudevents+json
 servers:
   local:
@@ -39,6 +42,9 @@ channels:
     x-retry-policy:
       strategy: consumer-managed-retry-with-dlq
       dead-letter-topic: t.review.events.dlq
+      # Review's own aggregator: a failing record is retried with exponential backoff for up
+      # to 60 seconds and then dead-lettered; a record that violates its contract is
+      # dead-lettered at once. Other consumers of this topic choose their own policy.
     x-data-classification: INTERNAL
     messages:
       reviewCreated: { $ref: '#/components/messages/reviewCreated' }

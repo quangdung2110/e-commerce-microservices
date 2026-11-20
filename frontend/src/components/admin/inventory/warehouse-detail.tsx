@@ -4,12 +4,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FormSection } from "@/components/admin/form-section";
-import { DetailSkeleton, FieldBlock, SubmitButton } from "@/components/admin/inventory/inventory-shared";
+import { CommandRecovery, DetailSkeleton, FieldBlock, SubmitButton } from "@/components/admin/inventory/inventory-shared";
 import { AddressFields } from "@/components/admin/inventory/warehouse-create-form";
 import { IdChip } from "@/components/admin/id-chip";
 import { PageHeader } from "@/components/admin/page-header";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,12 +18,14 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { useCommand } from "@/hooks/use-command";
+import { useInventoryCommand } from "@/hooks/use-inventory-command";
 import { useSubmitError } from "@/hooks/use-submit-error";
 import { inventoryAdminApi, type UpdateWarehouseRequest, type Warehouse } from "@/lib/api/inventory-admin";
 import { inventoryErrorMessage, OPERATIONAL_STATE_LABELS } from "@/lib/inventory";
+import { problemCode } from "@/lib/api/problem";
 
 export function WarehouseDetail({ warehouseId }: { warehouseId: string }) {
+  const [formVersion, setFormVersion] = useState(0);
   const query = useQuery({
     queryKey: ["inventory", "warehouse", warehouseId],
     queryFn: ({ signal }) => inventoryAdminApi.getWarehouse(warehouseId, signal),
@@ -30,10 +33,13 @@ export function WarehouseDetail({ warehouseId }: { warehouseId: string }) {
 
   if (query.isPending) return <DetailSkeleton />;
   if (query.isError) return <ErrorState error={query.error} message={inventoryErrorMessage(query.error)} onRetry={() => void query.refetch()} />;
-  return <WarehouseEditForm warehouse={query.data} />;
+  return <WarehouseEditForm key={`${warehouseId}:${formVersion}`} warehouse={query.data} reloading={query.isFetching} onReload={async () => {
+    const fresh = await query.refetch();
+    if (!fresh.isError) setFormVersion((version) => version + 1);
+  }} />;
 }
 
-function WarehouseEditForm({ warehouse }: { warehouse: Warehouse }) {
+function WarehouseEditForm({ warehouse, onReload, reloading }: { warehouse: Warehouse; onReload: () => Promise<void>; reloading: boolean }) {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const submitError = useSubmitError();
@@ -51,7 +57,7 @@ function WarehouseEditForm({ warehouse }: { warehouse: Warehouse }) {
   const [reason, setReason] = useState("");
   const [evidence, setEvidence] = useState("");
 
-  const update = useCommand({
+  const update = useInventoryCommand({
     mutationFn: (input: UpdateWarehouseRequest, context) =>
       inventoryAdminApi.updateWarehouse(warehouse.warehouse_id, input, context.commandId),
     onSuccess: (response) => {
@@ -61,15 +67,17 @@ function WarehouseEditForm({ warehouse }: { warehouse: Warehouse }) {
       addToast({ type: "success", title: response.replayed ? "Đã khôi phục kết quả cập nhật kho" : "Đã cập nhật kho" });
     },
   });
+  const revisionConflict = update.isError && problemCode(update.error) === "WAREHOUSE_CONFLICT";
 
   function edited() {
-    if (update.isError) update.startNewIntent();
+    if (revisionConflict || !update.startNewIntent()) return;
     submitError.reset();
     setValidation(null);
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (update.isPending || update.isRetryDelayed || revisionConflict || reloading) return;
     submitError.reset();
     setValidation(null);
     const fulfillmentPriority = Number(priority);
@@ -119,7 +127,14 @@ function WarehouseEditForm({ warehouse }: { warehouse: Warehouse }) {
       </div>
       {validation ? <Alert variant="danger">{validation}</Alert> : null}
       {submitError.message ? <ErrorState error={update.error} message={inventoryErrorMessage(update.error) ?? submitError.message} /> : null}
+      {update.isUnresolved ? <CommandRecovery commandId={update.commandId} /> : null}
+      {revisionConflict ? (
+        <Button type="button" variant="outline" disabled={reloading} onClick={() => void onReload()}>
+          {reloading ? "Đang tải bản mới" : "Tải bản kho mới nhất"}
+        </Button>
+      ) : null}
 
+      <fieldset disabled={update.inputsLocked || revisionConflict || reloading} className="space-y-8">
       <FormSection title="Thông tin kho">
         <FieldBlock id="warehouse-name" label="Tên kho *">
           <Input id="warehouse-name" required maxLength={120} value={name} onChange={(event) => setName(event.target.value)} />
@@ -141,7 +156,8 @@ function WarehouseEditForm({ warehouse }: { warehouse: Warehouse }) {
         <FieldBlock id="warehouse-reason" label="Lý do thay đổi *"><Textarea id="warehouse-reason" required maxLength={160} value={reason} onChange={(event) => setReason(event.target.value)} /></FieldBlock>
         <FieldBlock id="warehouse-evidence" label="Tham chiếu bằng chứng *"><Input id="warehouse-evidence" required maxLength={512} value={evidence} onChange={(event) => setEvidence(event.target.value)} /></FieldBlock>
       </FormSection>
-      <div className="flex justify-end"><SubmitButton pending={update.isPending} retry={update.isError} retryAfterSeconds={update.retryDelaySeconds}>Lưu thay đổi</SubmitButton></div>
+      </fieldset>
+      <div className="flex justify-end"><SubmitButton pending={update.isPending} retry={update.isUnresolved} disabled={revisionConflict || reloading} retryAfterSeconds={update.retryDelaySeconds}>Lưu thay đổi</SubmitButton></div>
     </form>
   );
 }

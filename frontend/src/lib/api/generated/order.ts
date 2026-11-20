@@ -75,7 +75,7 @@ export interface paths {
         put?: never;
         /**
          * Submit the one lifetime Buyer return request
-         * @description Every order line must already be DELIVERED by verified Delivery proof and the order must be COMPLETED. Release 1 has no return time window after completion. The selected set may be a proper subset of the order, but each selected line must use its complete ordered quantity. A new idempotency key never bypasses the permanent Buyer-return guard or lifetime refund-case uniqueness.
+         * @description Every order line must already be DELIVERED (Admin delivery confirmation, Order ADR-021) and the order must be COMPLETED. Release 1 has no return time window after completion. The selected set may be a proper subset of the order, but each selected line must use its complete ordered quantity. A new idempotency key never bypasses the permanent Buyer-return guard or lifetime refund-case uniqueness.
          */
         post: operations["requestMyOrderReturn"];
         delete?: never;
@@ -229,6 +229,26 @@ export interface paths {
          * @description The accepted operation creates a durable Admin attempt, not a lifetime refund case. Only Inventory's atomic all-line release success may create that case and initiate Payment refund. An Inventory rejection changes the operation to REJECTED without consuming the Buyer return guard.
          */
         post: operations["requestPreDispatchRefundAsAdmin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/orders/{order_id}/delivery-confirmations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm that dispatched lines reached the customer
+         * @description The only way a line becomes DELIVERED (Order ADR-021). Inventory physical dispatch only moves a line to DISPATCHED. Each requested line must be DISPATCHED; the request is all-or-nothing and runs synchronously under the order lock. The confirmation that delivers the last line completes the order and emits order.completed.v1 in the same transaction. The command is idempotent by line state: repeating a line with the same delivery_reference and delivered_at is a 200 no-op, a different reference or time is 409 DELIVERY_ALREADY_CONFIRMED. delivered_at must not precede the line's physical dispatch nor lie in the future beyond the configured clock tolerance. The Admin's user ID is stored with the confirmation. No Idempotency-Key is used.
+         */
+        post: operations["confirmDeliveryAsAdmin"];
         delete?: never;
         options?: never;
         head?: never;
@@ -450,6 +470,34 @@ export interface components {
             reason_code: string;
             reason_details?: string | null;
         };
+        DeliveryLineConfirmation: {
+            order_line_id: components["schemas"]["EntityId"];
+            /**
+             * Format: date-time
+             * @description When the goods reached the customer; not before the line's physical dispatch.
+             */
+            delivered_at: string;
+            /** @description Carrier receipt or tracking reference; several lines of one shipment may share it. */
+            delivery_reference: string;
+        };
+        DeliveryConfirmationRequest: {
+            /** @description order_line_id values must be unique; enforced by the provider. */
+            lines: components["schemas"]["DeliveryLineConfirmation"][];
+        };
+        DeliveryConfirmationResult: {
+            order_id: components["schemas"]["OrderId"];
+            order_status: components["schemas"]["OrderStatus"];
+            /** @description True when the order is COMPLETED after this call. */
+            order_completed: boolean;
+            lines: {
+                order_line_id: components["schemas"]["EntityId"];
+                /** @constant */
+                fulfillment_status: "DELIVERED";
+                /** Format: date-time */
+                delivered_at: string;
+                delivery_reference: string;
+            }[];
+        };
         AdminPreDispatchRefundRequest: {
             reason_code: string;
             reason_details?: string | null;
@@ -499,6 +547,7 @@ export interface components {
             created_at: string;
             refund_request_id: components["schemas"]["OpaqueId"];
         };
+        /** @description Public projection of an asynchronous command. MANUAL_REVIEW_REQUIRED means the outcome is waiting for a person (for example Finance after a failed refund), not that the client should retry; its failure problem code is REFUND_MANUAL_REVIEW_REQUIRED for refund and return commands, and the client must not send a new command for the same intent. */
         OrderOperation: {
             /** Format: uuid */
             operation_id: string;
@@ -1080,6 +1129,42 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    confirmDeliveryAsAdmin: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                order_id: components["parameters"]["OrderId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryConfirmationRequest"];
+            };
+        };
+        responses: {
+            /** @description Every requested line is DELIVERED (newly or already, with the same record). */
+            200: {
+                headers: {
+                    "Cache-Control": components["headers"]["PrivateNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryConfirmationResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
             503: components["responses"]["Unavailable"];
         };
     };

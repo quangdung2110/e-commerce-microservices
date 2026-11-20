@@ -16,6 +16,7 @@ import (
 	"github.com/ecommerce/auth-service/internal/domain/entity"
 	"github.com/ecommerce/auth-service/internal/domain/event"
 	"github.com/ecommerce/auth-service/internal/domain/port"
+	"github.com/ecommerce/auth-service/internal/domain/vo"
 )
 
 // ---------------------------------------------------------------- accounts --
@@ -24,16 +25,34 @@ type fakeAccountRepo struct {
 	mu       sync.Mutex
 	accounts map[uuid.UUID]*entity.Account
 	failWith error
+
+	// afterRead runs right after a read returned its copy, still before the
+	// caller can save. A test uses it to commit a competing change at the exact
+	// moment a slow login would be between its read and its write.
+	afterRead func(stored *entity.Account)
+	reads     int
+	conflicts int
 }
 
 func newAccountRepo() *fakeAccountRepo {
 	return &fakeAccountRepo{accounts: map[uuid.UUID]*entity.Account{}}
 }
 
+// cloneAccount copies the row the way a database round trip does: every Get
+// returns an independent copy carrying the version it was loaded at, so a stale
+// copy can lose the compare-and-set exactly as it does against PostgreSQL.
+func cloneAccount(a *entity.Account) *entity.Account {
+	c := *a
+	c.Roles = append([]vo.Role(nil), a.Roles...)
+	return &c
+}
+
 func (r *fakeAccountRepo) put(account *entity.Account) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.accounts[account.ID] = account
+	stored := cloneAccount(account)
+	stored.Revision = account.UpdatedAt
+	r.accounts[account.ID] = stored
 }
 
 func (r *fakeAccountRepo) Create(_ context.Context, account *entity.Account) error {
@@ -47,7 +66,10 @@ func (r *fakeAccountRepo) Create(_ context.Context, account *entity.Account) err
 			return apperr.ErrEmailAlreadyRegistered
 		}
 	}
-	r.accounts[account.ID] = account
+	stored := cloneAccount(account)
+	stored.Revision = account.UpdatedAt
+	r.accounts[account.ID] = stored
+	account.Revision = stored.Revision
 	return nil
 }
 
@@ -58,7 +80,12 @@ func (r *fakeAccountRepo) GetByID(_ context.Context, id uuid.UUID) (*entity.Acco
 	if !ok {
 		return nil, apperr.ErrAccountNotFound
 	}
-	return account, nil
+	r.reads++
+	loaded := cloneAccount(account)
+	if r.afterRead != nil {
+		r.afterRead(account)
+	}
+	return loaded, nil
 }
 
 func (r *fakeAccountRepo) GetByNormalizedEmail(_ context.Context, normalized string) (*entity.Account, error) {
@@ -66,7 +93,12 @@ func (r *fakeAccountRepo) GetByNormalizedEmail(_ context.Context, normalized str
 	defer r.mu.Unlock()
 	for _, account := range r.accounts {
 		if !account.Email.IsZero() && account.Email.Normalized() == normalized {
-			return account, nil
+			r.reads++
+			loaded := cloneAccount(account)
+			if r.afterRead != nil {
+				r.afterRead(account)
+			}
+			return loaded, nil
 		}
 	}
 	return nil, apperr.ErrAccountNotFound
@@ -79,13 +111,26 @@ func (r *fakeAccountRepo) ExistsByNormalizedEmail(ctx context.Context, normalize
 	return true, nil
 }
 
+// Update is a compare-and-set on Revision, like the PostgreSQL adapter: a copy
+// that was loaded before another writer saved gets ErrConcurrentUpdate and
+// nothing is written.
 func (r *fakeAccountRepo) Update(_ context.Context, account *entity.Account) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.accounts[account.ID]; !ok {
+	stored, ok := r.accounts[account.ID]
+	if !ok {
 		return apperr.ErrAccountNotFound
 	}
-	r.accounts[account.ID] = account
+	if !stored.Revision.Equal(account.Revision) {
+		r.conflicts++
+		return apperr.ErrConcurrentUpdate
+	}
+	next := cloneAccount(account)
+	next.Revision = stored.Revision.Add(time.Microsecond)
+	next.UpdatedAt = next.Revision
+	r.accounts[account.ID] = next
+	account.Revision = next.Revision
+	account.UpdatedAt = next.Revision
 	return nil
 }
 
@@ -96,7 +141,10 @@ func (r *fakeAccountRepo) ListExpiredLocks(_ context.Context, now time.Time, lim
 	var locked []*entity.Account
 	for _, account := range r.accounts {
 		if account.LockedUntil != nil && !account.LockedUntil.After(now) && len(locked) < limit {
-			locked = append(locked, account)
+			locked = append(locked, cloneAccount(account))
+			if r.afterRead != nil {
+				r.afterRead(account)
+			}
 		}
 	}
 	return locked, nil

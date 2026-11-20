@@ -1,0 +1,1879 @@
+[ {
+  "scenario" : "saturated-starts-1",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 986796900,
+  "window_end_ns" : 15986796900,
+  "drained_ns" : 20363970600,
+  "window_start_utc" : "2026-10-20T08:07:25.098793500Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 3900,
+  "completed_in_window" : 2881,
+  "starts_in_window" : 2881,
+  "committed_in_window" : 2900,
+  "committed_per_s" : 193.33333333333334,
+  "messages_in_window" : 0,
+  "throughput_s" : 192.06666666666666,
+  "starts_per_s" : 192.06666666666666,
+  "messages_per_s" : 0.0,
+  "backlog_at_window_end" : 1019,
+  "drain_after_window_s" : 4.3771737,
+  "completed_after_drain" : 3900,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 0,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 19.1875,
+  "window" : {
+    "count" : 2881,
+    "queue_to_rpc_ms" : {
+      "n" : 2881,
+      "mean" : 4241.967292086081,
+      "p50" : 4774.0243,
+      "p95" : 5809.7058,
+      "p99" : 5909.8691,
+      "max" : 5968.3166
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2881,
+      "mean" : 85.25243741756334,
+      "p50" : 78.4681,
+      "p95" : 201.4087,
+      "p99" : 263.3882,
+      "max" : 365.8804
+    },
+    "gateway_ms" : {
+      "n" : 2881,
+      "mean" : 34.42073009371746,
+      "p50" : 29.3722,
+      "p95" : 73.3973,
+      "p99" : 101.2701,
+      "max" : 129.2927
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2881,
+      "mean" : 4297.791127802846,
+      "p50" : 4826.2598,
+      "p95" : 5859.5191,
+      "p99" : 5966.8207,
+      "max" : 6034.62
+    }
+  },
+  "window_starts" : {
+    "count" : 2881,
+    "queue_to_rpc_ms" : {
+      "n" : 2881,
+      "mean" : 4241.967292086081,
+      "p50" : 4774.0243,
+      "p95" : 5809.7058,
+      "p99" : 5909.8691,
+      "max" : 5968.3166
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2881,
+      "mean" : 85.25243741756334,
+      "p50" : 78.4681,
+      "p95" : 201.4087,
+      "p99" : 263.3882,
+      "max" : 365.8804
+    },
+    "gateway_ms" : {
+      "n" : 2881,
+      "mean" : 34.42073009371746,
+      "p50" : 29.3722,
+      "p95" : 73.3973,
+      "p99" : 101.2701,
+      "max" : 129.2927
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2881,
+      "mean" : 4297.791127802846,
+      "p50" : 4826.2598,
+      "p95" : 5859.5191,
+      "p99" : 5966.8207,
+      "max" : 6034.62
+    }
+  },
+  "window_messages" : {
+    "count" : 0,
+    "queue_to_rpc_ms" : {
+      "n" : 0
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 0
+    },
+    "gateway_ms" : {
+      "n" : 0
+    },
+    "commit_to_ack_ms" : {
+      "n" : 0
+    }
+  },
+  "all_including_drain" : {
+    "count" : 3900,
+    "queue_to_rpc_ms" : {
+      "n" : 3900,
+      "mean" : 4414.389270820513,
+      "p50" : 4826.8756,
+      "p95" : 5774.5102,
+      "p99" : 5895.0585,
+      "max" : 5968.3166
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 3900,
+      "mean" : 82.4018156923077,
+      "p50" : 75.8561,
+      "p95" : 193.5782,
+      "p99" : 247.6963,
+      "max" : 365.8804
+    },
+    "gateway_ms" : {
+      "n" : 3900,
+      "mean" : 33.02596025641026,
+      "p50" : 28.4547,
+      "p95" : 69.6217,
+      "p99" : 93.9692,
+      "max" : 129.2927
+    },
+    "commit_to_ack_ms" : {
+      "n" : 3900,
+      "mean" : 4468.270714102564,
+      "p50" : 4884.4514,
+      "p95" : 5817.4243,
+      "p99" : 5954.1763,
+      "max" : 6034.62
+    }
+  },
+  "transaction_ms" : {
+    "ack_start" : {
+      "n" : 455,
+      "mean" : 7.193204175824176,
+      "p50" : 6.3427,
+      "p95" : 13.1445,
+      "p99" : 20.8207,
+      "max" : 30.9087
+    },
+    "claim_message" : {
+      "n" : 57,
+      "mean" : 2.9961508771929823,
+      "p50" : 2.467,
+      "p95" : 7.1705,
+      "p99" : 9.2704,
+      "max" : 9.2704
+    },
+    "claim_start" : {
+      "n" : 58,
+      "mean" : 8.058718965517242,
+      "p50" : 7.0949,
+      "p95" : 13.4907,
+      "p99" : 34.2787,
+      "max" : 34.2787
+    }
+  },
+  "ack_start_transactions_total" : 597,
+  "ack_start_rows_total" : 3900,
+  "ack_start_batch_mean" : 6.532663316582915,
+  "ack_message_transactions_total" : 0,
+  "ack_message_rows_total" : 0,
+  "ack_message_batch_mean" : 0.0,
+  "ack_transactions_total" : 597,
+  "ack_transactions_per_operation" : 0.15307692307692308,
+  "dispatcher_transactions_total" : 755,
+  "dispatcher_transactions_per_operation" : 0.1935897435897436
+}, {
+  "scenario" : "saturated-mixed-50-50-1",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 1038105200,
+  "window_end_ns" : 16038105200,
+  "drained_ns" : 27153765600,
+  "window_start_utc" : "2026-10-20T08:07:45.780982300Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 2500,
+  "completed_in_window" : 1484,
+  "starts_in_window" : 750,
+  "committed_in_window" : 1500,
+  "committed_per_s" : 100.0,
+  "messages_in_window" : 734,
+  "throughput_s" : 98.93333333333334,
+  "starts_per_s" : 50.0,
+  "messages_per_s" : 48.93333333333333,
+  "backlog_at_window_end" : 1016,
+  "drain_after_window_s" : 11.1156604,
+  "completed_after_drain" : 2500,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 7.3125,
+  "window" : {
+    "count" : 1484,
+    "queue_to_rpc_ms" : {
+      "n" : 1484,
+      "mean" : 6661.428585242588,
+      "p50" : 7321.4259,
+      "p95" : 10612.501,
+      "p99" : 10849.8257,
+      "max" : 11000.1804
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1484,
+      "mean" : 229.92532459568733,
+      "p50" : 147.5664,
+      "p95" : 678.1134,
+      "p99" : 796.9464,
+      "max" : 920.0116
+    },
+    "gateway_ms" : {
+      "n" : 1484,
+      "mean" : 22.574020485175204,
+      "p50" : 15.224,
+      "p95" : 58.2273,
+      "p99" : 83.1373,
+      "max" : 106.81
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1484,
+      "mean" : 6696.1427497304585,
+      "p50" : 7373.7484,
+      "p95" : 10628.4524,
+      "p99" : 10863.1183,
+      "max" : 11015.4422
+    }
+  },
+  "window_starts" : {
+    "count" : 750,
+    "queue_to_rpc_ms" : {
+      "n" : 750,
+      "mean" : 6435.361806666668,
+      "p50" : 7244.7192,
+      "p95" : 10043.6676,
+      "p99" : 10081.2758,
+      "max" : 10100.5402
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 750,
+      "mean" : 86.08650666666666,
+      "p50" : 83.3335,
+      "p95" : 195.3185,
+      "p99" : 224.6468,
+      "max" : 238.7769
+    },
+    "gateway_ms" : {
+      "n" : 750,
+      "mean" : 33.273283733333336,
+      "p50" : 29.1745,
+      "p95" : 70.1778,
+      "p99" : 87.5612,
+      "max" : 106.81
+    },
+    "commit_to_ack_ms" : {
+      "n" : 750,
+      "mean" : 6489.130213866667,
+      "p50" : 7314.8549,
+      "p95" : 10099.8434,
+      "p99" : 10129.4444,
+      "max" : 10152.2957
+    }
+  },
+  "window_messages" : {
+    "count" : 734,
+    "queue_to_rpc_ms" : {
+      "n" : 734,
+      "mean" : 6892.42325,
+      "p50" : 7631.4946,
+      "p95" : 10736.6522,
+      "p99" : 10903.2593,
+      "max" : 11000.1804
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 734,
+      "mean" : 376.89959359673026,
+      "p50" : 370.5903,
+      "p95" : 725.9048,
+      "p99" : 852.0408,
+      "max" : 920.0116
+    },
+    "gateway_ms" : {
+      "n" : 734,
+      "mean" : 11.641530790190735,
+      "p50" : 11.1152,
+      "p95" : 16.5131,
+      "p99" : 22.1689,
+      "max" : 34.8578
+    },
+    "commit_to_ack_ms" : {
+      "n" : 734,
+      "mean" : 6907.667820435968,
+      "p50" : 7646.4676,
+      "p95" : 10751.1558,
+      "p99" : 10917.3761,
+      "max" : 11015.4422
+    }
+  },
+  "all_including_drain" : {
+    "count" : 2500,
+    "queue_to_rpc_ms" : {
+      "n" : 2500,
+      "mean" : 8208.179214560001,
+      "p50" : 9946.0495,
+      "p95" : 11040.8182,
+      "p99" : 11474.769,
+      "max" : 11692.0356
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2500,
+      "mean" : 240.40943056,
+      "p50" : 154.5337,
+      "p95" : 695.2337,
+      "p99" : 831.0835,
+      "max" : 996.2828
+    },
+    "gateway_ms" : {
+      "n" : 2500,
+      "mean" : 23.41164992,
+      "p50" : 14.7886,
+      "p95" : 61.5019,
+      "p99" : 85.0147,
+      "max" : 107.1834
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2500,
+      "mean" : 8243.96355812,
+      "p50" : 10000.9372,
+      "p95" : 11058.5215,
+      "p99" : 11491.4438,
+      "max" : 11709.9031
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 734,
+      "mean" : 3.593329019073569,
+      "p50" : 3.4058,
+      "p95" : 5.0666,
+      "p99" : 6.8742,
+      "max" : 11.38
+    },
+    "ack_start" : {
+      "n" : 117,
+      "mean" : 6.283269230769231,
+      "p50" : 5.7661,
+      "p95" : 10.3062,
+      "p99" : 18.6331,
+      "max" : 19.0339
+    },
+    "claim_message" : {
+      "n" : 15,
+      "mean" : 6.353219999999999,
+      "p50" : 6.0721,
+      "p95" : 8.1156,
+      "p99" : 8.1156,
+      "max" : 8.1156
+    },
+    "claim_start" : {
+      "n" : 15,
+      "mean" : 5.600206666666667,
+      "p50" : 5.3625,
+      "p95" : 8.9078,
+      "p99" : 8.9078,
+      "max" : 8.9078
+    }
+  },
+  "ack_start_transactions_total" : 201,
+  "ack_start_rows_total" : 1250,
+  "ack_start_batch_mean" : 6.218905472636816,
+  "ack_message_transactions_total" : 1250,
+  "ack_message_rows_total" : 1250,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 1451,
+  "ack_transactions_per_operation" : 0.5804,
+  "dispatcher_transactions_total" : 1503,
+  "dispatcher_transactions_per_operation" : 0.6012
+}, {
+  "scenario" : "saturated-starts-2",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 803232500,
+  "window_end_ns" : 15803232500,
+  "drained_ns" : 22985362600,
+  "window_start_utc" : "2026-10-20T08:08:12.836284Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 4000,
+  "completed_in_window" : 2910,
+  "starts_in_window" : 2910,
+  "committed_in_window" : 2900,
+  "committed_per_s" : 193.33333333333334,
+  "messages_in_window" : 0,
+  "throughput_s" : 194.0,
+  "starts_per_s" : 194.0,
+  "messages_per_s" : 0.0,
+  "backlog_at_window_end" : 990,
+  "drain_after_window_s" : 7.1821301,
+  "completed_after_drain" : 4000,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 0,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 7.34375,
+  "window" : {
+    "count" : 2910,
+    "queue_to_rpc_ms" : {
+      "n" : 2910,
+      "mean" : 3929.957315841925,
+      "p50" : 4294.433,
+      "p95" : 6267.9879,
+      "p99" : 6613.6434,
+      "max" : 6905.0178
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2910,
+      "mean" : 84.94638250859107,
+      "p50" : 70.5481,
+      "p95" : 237.7352,
+      "p99" : 275.4815,
+      "max" : 376.0151
+    },
+    "gateway_ms" : {
+      "n" : 2910,
+      "mean" : 34.82652254295533,
+      "p50" : 26.0103,
+      "p95" : 125.549,
+      "p99" : 155.5234,
+      "max" : 186.0788
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2910,
+      "mean" : 3987.647395120275,
+      "p50" : 4343.9393,
+      "p95" : 6342.9779,
+      "p99" : 6778.4714,
+      "max" : 6959.0688
+    }
+  },
+  "window_starts" : {
+    "count" : 2910,
+    "queue_to_rpc_ms" : {
+      "n" : 2910,
+      "mean" : 3929.957315841925,
+      "p50" : 4294.433,
+      "p95" : 6267.9879,
+      "p99" : 6613.6434,
+      "max" : 6905.0178
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2910,
+      "mean" : 84.94638250859107,
+      "p50" : 70.5481,
+      "p95" : 237.7352,
+      "p99" : 275.4815,
+      "max" : 376.0151
+    },
+    "gateway_ms" : {
+      "n" : 2910,
+      "mean" : 34.82652254295533,
+      "p50" : 26.0103,
+      "p95" : 125.549,
+      "p99" : 155.5234,
+      "max" : 186.0788
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2910,
+      "mean" : 3987.647395120275,
+      "p50" : 4343.9393,
+      "p95" : 6342.9779,
+      "p99" : 6778.4714,
+      "max" : 6959.0688
+    }
+  },
+  "window_messages" : {
+    "count" : 0,
+    "queue_to_rpc_ms" : {
+      "n" : 0
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 0
+    },
+    "gateway_ms" : {
+      "n" : 0
+    },
+    "commit_to_ack_ms" : {
+      "n" : 0
+    }
+  },
+  "all_including_drain" : {
+    "count" : 4000,
+    "queue_to_rpc_ms" : {
+      "n" : 4000,
+      "mean" : 4735.920289625,
+      "p50" : 4572.4106,
+      "p95" : 7096.6812,
+      "p99" : 7324.8419,
+      "max" : 7455.9314
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 4000,
+      "mean" : 90.98832212500001,
+      "p50" : 72.1811,
+      "p95" : 241.6545,
+      "p99" : 282.3044,
+      "max" : 631.0618
+    },
+    "gateway_ms" : {
+      "n" : 4000,
+      "mean" : 37.21251805,
+      "p50" : 25.8251,
+      "p95" : 129.7422,
+      "p99" : 156.8612,
+      "max" : 528.5713
+    },
+    "commit_to_ack_ms" : {
+      "n" : 4000,
+      "mean" : 4798.075717975,
+      "p50" : 4616.6282,
+      "p95" : 7178.1212,
+      "p99" : 7385.1691,
+      "max" : 7508.3614
+    }
+  },
+  "transaction_ms" : {
+    "ack_start" : {
+      "n" : 422,
+      "mean" : 9.992395734597157,
+      "p50" : 5.1742,
+      "p95" : 18.4168,
+      "p99" : 101.1329,
+      "max" : 105.5657
+    },
+    "claim_message" : {
+      "n" : 58,
+      "mean" : 2.0752293103448274,
+      "p50" : 1.9514,
+      "p95" : 3.2564,
+      "p99" : 3.9135,
+      "max" : 3.9135
+    },
+    "claim_start" : {
+      "n" : 59,
+      "mean" : 9.04602372881356,
+      "p50" : 6.6938,
+      "p95" : 12.4773,
+      "p99" : 119.229,
+      "max" : 119.229
+    }
+  },
+  "ack_start_transactions_total" : 586,
+  "ack_start_rows_total" : 4000,
+  "ack_start_batch_mean" : 6.825938566552901,
+  "ack_message_transactions_total" : 0,
+  "ack_message_rows_total" : 0,
+  "ack_message_batch_mean" : 0.0,
+  "ack_transactions_total" : 586,
+  "ack_transactions_per_operation" : 0.1465,
+  "dispatcher_transactions_total" : 748,
+  "dispatcher_transactions_per_operation" : 0.187
+}, {
+  "scenario" : "saturated-mixed-50-50-2",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 800810400,
+  "window_end_ns" : 15800810400,
+  "drained_ns" : 26003164500,
+  "window_start_utc" : "2026-10-20T08:08:35.947406300Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 1700,
+  "completed_in_window" : 605,
+  "starts_in_window" : 305,
+  "committed_in_window" : 600,
+  "committed_per_s" : 40.0,
+  "messages_in_window" : 300,
+  "throughput_s" : 40.333333333333336,
+  "starts_per_s" : 20.333333333333332,
+  "messages_per_s" : 20.0,
+  "backlog_at_window_end" : 995,
+  "drain_after_window_s" : 10.2023541,
+  "completed_after_drain" : 1700,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 1.046875,
+  "window" : {
+    "count" : 605,
+    "queue_to_rpc_ms" : {
+      "n" : 605,
+      "mean" : 7410.047624793388,
+      "p50" : 9125.6082,
+      "p95" : 14507.0892,
+      "p99" : 14888.7661,
+      "max" : 14929.8916
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 605,
+      "mean" : 463.6559421487603,
+      "p50" : 256.3136,
+      "p95" : 1467.9517,
+      "p99" : 5484.8361,
+      "max" : 5789.3225
+    },
+    "gateway_ms" : {
+      "n" : 605,
+      "mean" : 56.68612198347107,
+      "p50" : 17.1189,
+      "p95" : 174.5425,
+      "p99" : 853.8831,
+      "max" : 1119.1174
+    },
+    "commit_to_ack_ms" : {
+      "n" : 605,
+      "mean" : 7495.658334380165,
+      "p50" : 9283.0234,
+      "p95" : 14523.0488,
+      "p99" : 14906.0742,
+      "max" : 14973.888
+    }
+  },
+  "window_starts" : {
+    "count" : 305,
+    "queue_to_rpc_ms" : {
+      "n" : 305,
+      "mean" : 6901.489529180329,
+      "p50" : 9125.6082,
+      "p95" : 13976.424,
+      "p99" : 14929.7827,
+      "max" : 14929.8916
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 305,
+      "mean" : 203.7085193442623,
+      "p50" : 154.8315,
+      "p95" : 476.3917,
+      "p99" : 1352.8569,
+      "max" : 1569.2526
+    },
+    "gateway_ms" : {
+      "n" : 305,
+      "mean" : 85.86988327868852,
+      "p50" : 39.3672,
+      "p95" : 248.5413,
+      "p99" : 856.501,
+      "max" : 979.5976
+    },
+    "commit_to_ack_ms" : {
+      "n" : 305,
+      "mean" : 7035.133450163935,
+      "p50" : 9283.0234,
+      "p95" : 14019.0187,
+      "p99" : 14973.888,
+      "max" : 14973.888
+    }
+  },
+  "window_messages" : {
+    "count" : 300,
+    "queue_to_rpc_ms" : {
+      "n" : 300,
+      "mean" : 7927.081688666666,
+      "p50" : 9100.6071,
+      "p95" : 14666.065,
+      "p99" : 14855.1515,
+      "max" : 14906.1475
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 300,
+      "mean" : 727.935822,
+      "p50" : 539.4822,
+      "p95" : 1637.3426,
+      "p99" : 5639.5953,
+      "max" : 5789.3225
+    },
+    "gateway_ms" : {
+      "n" : 300,
+      "mean" : 27.015964666666665,
+      "p50" : 12.7531,
+      "p95" : 110.5608,
+      "p99" : 184.7973,
+      "max" : 1119.1174
+    },
+    "commit_to_ack_ms" : {
+      "n" : 300,
+      "mean" : 7963.858633333333,
+      "p50" : 9119.2829,
+      "p95" : 14681.5848,
+      "p99" : 14871.7766,
+      "max" : 14922.9063
+    }
+  },
+  "all_including_drain" : {
+    "count" : 1700,
+    "queue_to_rpc_ms" : {
+      "n" : 1700,
+      "mean" : 12179.824813588235,
+      "p50" : 12900.1634,
+      "p95" : 18555.1687,
+      "p99" : 19012.449,
+      "max" : 19249.4212
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1700,
+      "mean" : 304.50052535294117,
+      "p50" : 175.3441,
+      "p95" : 826.8792,
+      "p99" : 1604.8039,
+      "max" : 5789.3225
+    },
+    "gateway_ms" : {
+      "n" : 1700,
+      "mean" : 34.19192294117647,
+      "p50" : 14.9666,
+      "p95" : 111.5019,
+      "p99" : 250.6698,
+      "max" : 1119.1174
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1700,
+      "mean" : 12232.06464982353,
+      "p50" : 12912.1331,
+      "p95" : 18583.951,
+      "p99" : 19024.2692,
+      "max" : 19262.813
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 300,
+      "mean" : 9.77027,
+      "p50" : 3.9062,
+      "p95" : 6.3251,
+      "p99" : 107.837,
+      "max" : 721.5656
+    },
+    "ack_start" : {
+      "n" : 59,
+      "mean" : 40.03003898305085,
+      "p50" : 6.7012,
+      "p95" : 191.2392,
+      "p99" : 697.1,
+      "max" : 697.1
+    },
+    "claim_message" : {
+      "n" : 6,
+      "mean" : 6.3979333333333335,
+      "p50" : 6.0564,
+      "p95" : 7.4667,
+      "p99" : 7.4667,
+      "max" : 7.4667
+    },
+    "claim_start" : {
+      "n" : 7,
+      "mean" : 6.2948571428571425,
+      "p50" : 6.0869,
+      "p95" : 7.4835,
+      "p99" : 7.4835,
+      "max" : 7.4835
+    }
+  },
+  "ack_start_transactions_total" : 142,
+  "ack_start_rows_total" : 850,
+  "ack_start_batch_mean" : 5.985915492957746,
+  "ack_message_transactions_total" : 850,
+  "ack_message_rows_total" : 850,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 992,
+  "ack_transactions_per_operation" : 0.5835294117647059,
+  "dispatcher_transactions_total" : 1028,
+  "dispatcher_transactions_per_operation" : 0.6047058823529412
+}, {
+  "scenario" : "saturated-starts-3",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 732769200,
+  "window_end_ns" : 15732769200,
+  "drained_ns" : 24171047200,
+  "window_start_utc" : "2026-10-20T08:09:01.963665400Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 4100,
+  "completed_in_window" : 3100,
+  "starts_in_window" : 3100,
+  "committed_in_window" : 3100,
+  "committed_per_s" : 206.66666666666666,
+  "messages_in_window" : 0,
+  "throughput_s" : 206.66666666666666,
+  "starts_per_s" : 206.66666666666666,
+  "messages_per_s" : 0.0,
+  "backlog_at_window_end" : 1000,
+  "drain_after_window_s" : 8.438278,
+  "completed_after_drain" : 4100,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 0,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 3.171875,
+  "window" : {
+    "count" : 3100,
+    "queue_to_rpc_ms" : {
+      "n" : 3100,
+      "mean" : 3886.81896383871,
+      "p50" : 4587.5708,
+      "p95" : 5205.6727,
+      "p99" : 5517.0978,
+      "max" : 5660.5406
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 3100,
+      "mean" : 78.70263803225806,
+      "p50" : 72.3176,
+      "p95" : 186.7443,
+      "p99" : 229.7328,
+      "max" : 297.7448
+    },
+    "gateway_ms" : {
+      "n" : 3100,
+      "mean" : 31.710719451612903,
+      "p50" : 27.006,
+      "p95" : 66.5028,
+      "p99" : 91.6036,
+      "max" : 137.003
+    },
+    "commit_to_ack_ms" : {
+      "n" : 3100,
+      "mean" : 3938.3728793548385,
+      "p50" : 4635.3038,
+      "p95" : 5265.5301,
+      "p99" : 5566.3366,
+      "max" : 5697.623
+    }
+  },
+  "window_starts" : {
+    "count" : 3100,
+    "queue_to_rpc_ms" : {
+      "n" : 3100,
+      "mean" : 3886.81896383871,
+      "p50" : 4587.5708,
+      "p95" : 5205.6727,
+      "p99" : 5517.0978,
+      "max" : 5660.5406
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 3100,
+      "mean" : 78.70263803225806,
+      "p50" : 72.3176,
+      "p95" : 186.7443,
+      "p99" : 229.7328,
+      "max" : 297.7448
+    },
+    "gateway_ms" : {
+      "n" : 3100,
+      "mean" : 31.710719451612903,
+      "p50" : 27.006,
+      "p95" : 66.5028,
+      "p99" : 91.6036,
+      "max" : 137.003
+    },
+    "commit_to_ack_ms" : {
+      "n" : 3100,
+      "mean" : 3938.3728793548385,
+      "p50" : 4635.3038,
+      "p95" : 5265.5301,
+      "p99" : 5566.3366,
+      "max" : 5697.623
+    }
+  },
+  "window_messages" : {
+    "count" : 0,
+    "queue_to_rpc_ms" : {
+      "n" : 0
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 0
+    },
+    "gateway_ms" : {
+      "n" : 0
+    },
+    "commit_to_ack_ms" : {
+      "n" : 0
+    }
+  },
+  "all_including_drain" : {
+    "count" : 4100,
+    "queue_to_rpc_ms" : {
+      "n" : 4100,
+      "mean" : 4623.060044609756,
+      "p50" : 4732.0755,
+      "p95" : 7760.1518,
+      "p99" : 8228.5914,
+      "max" : 8594.3871
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 4100,
+      "mean" : 92.05371534146342,
+      "p50" : 77.2259,
+      "p95" : 252.8032,
+      "p99" : 327.6081,
+      "max" : 444.2748
+    },
+    "gateway_ms" : {
+      "n" : 4100,
+      "mean" : 37.62147507317073,
+      "p50" : 28.6991,
+      "p95" : 100.2565,
+      "p99" : 165.8481,
+      "max" : 208.5308
+    },
+    "commit_to_ack_ms" : {
+      "n" : 4100,
+      "mean" : 4683.913413121951,
+      "p50" : 4781.5964,
+      "p95" : 7900.1045,
+      "p99" : 8368.7717,
+      "max" : 8740.0509
+    }
+  },
+  "transaction_ms" : {
+    "ack_start" : {
+      "n" : 479,
+      "mean" : 6.30699394572025,
+      "p50" : 5.7358,
+      "p95" : 10.4805,
+      "p99" : 17.6317,
+      "max" : 37.3833
+    },
+    "claim_message" : {
+      "n" : 62,
+      "mean" : 2.4113774193548387,
+      "p50" : 2.2111,
+      "p95" : 3.7943,
+      "p99" : 4.9322,
+      "max" : 4.9322
+    },
+    "claim_start" : {
+      "n" : 63,
+      "mean" : 8.104474603174603,
+      "p50" : 7.5253,
+      "p95" : 11.9312,
+      "p99" : 19.3976,
+      "max" : 19.3976
+    }
+  },
+  "ack_start_transactions_total" : 658,
+  "ack_start_rows_total" : 4100,
+  "ack_start_batch_mean" : 6.231003039513678,
+  "ack_message_transactions_total" : 0,
+  "ack_message_rows_total" : 0,
+  "ack_message_batch_mean" : 0.0,
+  "ack_transactions_total" : 658,
+  "ack_transactions_per_operation" : 0.16048780487804878,
+  "dispatcher_transactions_total" : 824,
+  "dispatcher_transactions_per_operation" : 0.20097560975609757
+}, {
+  "scenario" : "saturated-mixed-50-50-3",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 1257747800,
+  "window_end_ns" : 16257747800,
+  "drained_ns" : 34254612100,
+  "window_start_utc" : "2026-10-20T08:09:26.799551700Z",
+  "arrival_rate_s" : 0,
+  "enqueued_total" : 2100,
+  "completed_in_window" : 1100,
+  "starts_in_window" : 550,
+  "committed_in_window" : 1100,
+  "committed_per_s" : 73.33333333333333,
+  "messages_in_window" : 550,
+  "throughput_s" : 73.33333333333333,
+  "starts_per_s" : 36.666666666666664,
+  "messages_per_s" : 36.666666666666664,
+  "backlog_at_window_end" : 1000,
+  "drain_after_window_s" : 17.9968643,
+  "completed_after_drain" : 2100,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 3.03125,
+  "window" : {
+    "count" : 1100,
+    "queue_to_rpc_ms" : {
+      "n" : 1100,
+      "mean" : 7698.068735636364,
+      "p50" : 7700.7176,
+      "p95" : 13845.4929,
+      "p99" : 14636.4752,
+      "max" : 14774.3002
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1100,
+      "mean" : 318.1752947272727,
+      "p50" : 225.2401,
+      "p95" : 946.8143,
+      "p99" : 1259.0169,
+      "max" : 1363.3637
+    },
+    "gateway_ms" : {
+      "n" : 1100,
+      "mean" : 31.204069363636364,
+      "p50" : 14.732,
+      "p95" : 129.6479,
+      "p99" : 167.0109,
+      "max" : 344.7175
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1100,
+      "mean" : 7747.083223636364,
+      "p50" : 7747.4195,
+      "p95" : 13987.5421,
+      "p99" : 14648.242,
+      "max" : 14787.8403
+    }
+  },
+  "window_starts" : {
+    "count" : 550,
+    "queue_to_rpc_ms" : {
+      "n" : 550,
+      "mean" : 7325.830052909091,
+      "p50" : 7483.6447,
+      "p95" : 13745.7808,
+      "p99" : 13845.4929,
+      "max" : 13867.8633
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 550,
+      "mean" : 123.08618927272727,
+      "p50" : 104.4964,
+      "p95" : 274.871,
+      "p99" : 303.374,
+      "max" : 320.1241
+    },
+    "gateway_ms" : {
+      "n" : 550,
+      "mean" : 47.03343781818182,
+      "p50" : 28.6362,
+      "p95" : 150.5087,
+      "p99" : 171.5923,
+      "max" : 186.8263
+    },
+    "commit_to_ack_ms" : {
+      "n" : 550,
+      "mean" : 7403.949784909091,
+      "p50" : 7633.3289,
+      "p95" : 13819.663,
+      "p99" : 13987.5421,
+      "max" : 13987.5421
+    }
+  },
+  "window_messages" : {
+    "count" : 550,
+    "queue_to_rpc_ms" : {
+      "n" : 550,
+      "mean" : 8070.307418363636,
+      "p50" : 8247.4231,
+      "p95" : 14318.4433,
+      "p99" : 14711.0447,
+      "max" : 14774.3002
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 550,
+      "mean" : 513.2644001818181,
+      "p50" : 492.3941,
+      "p95" : 1069.7976,
+      "p99" : 1314.974,
+      "max" : 1363.3637
+    },
+    "gateway_ms" : {
+      "n" : 550,
+      "mean" : 15.374700909090908,
+      "p50" : 12.042,
+      "p95" : 18.1275,
+      "p99" : 118.7064,
+      "max" : 344.7175
+    },
+    "commit_to_ack_ms" : {
+      "n" : 550,
+      "mean" : 8090.216662363637,
+      "p50" : 8262.6729,
+      "p95" : 14331.8505,
+      "p99" : 14723.3515,
+      "max" : 14787.8403
+    }
+  },
+  "all_including_drain" : {
+    "count" : 2100,
+    "queue_to_rpc_ms" : {
+      "n" : 2100,
+      "mean" : 12968.76873209524,
+      "p50" : 13423.6753,
+      "p95" : 20574.3701,
+      "p99" : 21165.58,
+      "max" : 21680.5933
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2100,
+      "mean" : 366.3386773333333,
+      "p50" : 200.9263,
+      "p95" : 933.3831,
+      "p99" : 4538.8427,
+      "max" : 7204.563
+    },
+    "gateway_ms" : {
+      "n" : 2100,
+      "mean" : 54.21747990476191,
+      "p50" : 14.8042,
+      "p95" : 127.2271,
+      "p99" : 247.5332,
+      "max" : 6145.008
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2100,
+      "mean" : 13042.933133047618,
+      "p50" : 13506.0645,
+      "p95" : 20595.768,
+      "p99" : 21185.215,
+      "max" : 21699.8872
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 550,
+      "mean" : 4.5328941818181825,
+      "p50" : 3.5534,
+      "p95" : 5.6705,
+      "p99" : 12.6419,
+      "max" : 111.3655
+    },
+    "ack_start" : {
+      "n" : 86,
+      "mean" : 18.766687209302326,
+      "p50" : 6.4521,
+      "p95" : 96.1493,
+      "p99" : 103.6431,
+      "max" : 103.6431
+    },
+    "claim_message" : {
+      "n" : 11,
+      "mean" : 16.21589090909091,
+      "p50" : 6.6683,
+      "p95" : 111.2091,
+      "p99" : 111.2091,
+      "max" : 111.2091
+    },
+    "claim_start" : {
+      "n" : 12,
+      "mean" : 6.585625,
+      "p50" : 6.1637,
+      "p95" : 11.879,
+      "p99" : 11.879,
+      "max" : 11.879
+    }
+  },
+  "ack_start_transactions_total" : 176,
+  "ack_start_rows_total" : 1050,
+  "ack_start_batch_mean" : 5.965909090909091,
+  "ack_message_transactions_total" : 1050,
+  "ack_message_rows_total" : 1050,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 1226,
+  "ack_transactions_per_operation" : 0.5838095238095238,
+  "dispatcher_transactions_total" : 1270,
+  "dispatcher_transactions_per_operation" : 0.6047619047619047
+}, {
+  "scenario" : "arrival-mixed-80",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 1078100,
+  "window_end_ns" : 15001078100,
+  "drained_ns" : 19352889900,
+  "window_start_utc" : "2026-10-20T08:09:59.898757900Z",
+  "arrival_rate_s" : 80,
+  "enqueued_total" : 1200,
+  "completed_in_window" : 873,
+  "starts_in_window" : 452,
+  "committed_in_window" : 1200,
+  "committed_per_s" : 80.0,
+  "messages_in_window" : 421,
+  "throughput_s" : 58.2,
+  "starts_per_s" : 30.133333333333333,
+  "messages_per_s" : 28.066666666666666,
+  "backlog_at_window_end" : 327,
+  "drain_after_window_s" : 4.3518118,
+  "completed_after_drain" : 1200,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 2.375,
+  "window" : {
+    "count" : 873,
+    "queue_to_rpc_ms" : {
+      "n" : 873,
+      "mean" : 2673.2857751431843,
+      "p50" : 3130.9003,
+      "p95" : 4960.0668,
+      "p99" : 5448.2341,
+      "max" : 5864.5911
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 873,
+      "mean" : 319.6859822451317,
+      "p50" : 154.6347,
+      "p95" : 1084.2823,
+      "p99" : 1671.6243,
+      "max" : 1863.591
+    },
+    "gateway_ms" : {
+      "n" : 873,
+      "mean" : 40.99325624284078,
+      "p50" : 23.4579,
+      "p95" : 114.9062,
+      "p99" : 439.1452,
+      "max" : 471.7714
+    },
+    "commit_to_ack_ms" : {
+      "n" : 873,
+      "mean" : 2731.0230974799542,
+      "p50" : 3331.1024,
+      "p95" : 4993.8634,
+      "p99" : 5467.7177,
+      "max" : 5893.6356
+    }
+  },
+  "window_starts" : {
+    "count" : 452,
+    "queue_to_rpc_ms" : {
+      "n" : 452,
+      "mean" : 2545.866242035398,
+      "p50" : 3119.2093,
+      "p95" : 4736.217,
+      "p99" : 4928.2398,
+      "max" : 4985.8701
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 452,
+      "mean" : 152.60376305309734,
+      "p50" : 77.9406,
+      "p95" : 659.7849,
+      "p99" : 819.7157,
+      "max" : 888.0315
+    },
+    "gateway_ms" : {
+      "n" : 452,
+      "mean" : 61.88825553097345,
+      "p50" : 38.6375,
+      "p95" : 206.8347,
+      "p99" : 463.3642,
+      "max" : 471.7714
+    },
+    "commit_to_ack_ms" : {
+      "n" : 452,
+      "mean" : 2634.371256415929,
+      "p50" : 3331.1024,
+      "p95" : 4787.3445,
+      "p99" : 4971.5019,
+      "max" : 5048.2623
+    }
+  },
+  "window_messages" : {
+    "count" : 421,
+    "queue_to_rpc_ms" : {
+      "n" : 421,
+      "mean" : 2810.0877441805223,
+      "p50" : 3215.8995,
+      "p95" : 5250.1001,
+      "p99" : 5512.5171,
+      "max" : 5864.5911
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 421,
+      "mean" : 499.071167695962,
+      "p50" : 425.2573,
+      "p95" : 1408.7973,
+      "p99" : 1756.8979,
+      "max" : 1863.591
+    },
+    "gateway_ms" : {
+      "n" : 421,
+      "mean" : 18.559670308788597,
+      "p50" : 16.4426,
+      "p95" : 32.4027,
+      "p99" : 43.6684,
+      "max" : 65.7257
+    },
+    "commit_to_ack_ms" : {
+      "n" : 421,
+      "mean" : 2834.7918199524943,
+      "p50" : 3259.436,
+      "p95" : 5269.4523,
+      "p99" : 5541.8653,
+      "max" : 5893.6356
+    }
+  },
+  "all_including_drain" : {
+    "count" : 1200,
+    "queue_to_rpc_ms" : {
+      "n" : 1200,
+      "mean" : 3129.0024058333333,
+      "p50" : 3905.8832,
+      "p95" : 5060.8323,
+      "p99" : 5372.916,
+      "max" : 5864.5911
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1200,
+      "mean" : 314.19476050000003,
+      "p50" : 170.9329,
+      "p95" : 955.9394,
+      "p99" : 1584.4714,
+      "max" : 1863.591
+    },
+    "gateway_ms" : {
+      "n" : 1200,
+      "mean" : 38.37172841666666,
+      "p50" : 21.9046,
+      "p95" : 106.4151,
+      "p99" : 319.9679,
+      "max" : 471.7714
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1200,
+      "mean" : 3183.9544213333334,
+      "p50" : 3951.5603,
+      "p95" : 5074.1943,
+      "p99" : 5386.834,
+      "max" : 5893.6356
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 421,
+      "mean" : 6.134166508313539,
+      "p50" : 5.0913,
+      "p95" : 12.922,
+      "p99" : 20.7034,
+      "max" : 77.2149
+    },
+    "ack_start" : {
+      "n" : 100,
+      "mean" : 11.178780999999999,
+      "p50" : 8.1284,
+      "p95" : 27.2245,
+      "p99" : 35.0562,
+      "max" : 39.5626
+    },
+    "claim_message" : {
+      "n" : 23,
+      "mean" : 6.296886956521739,
+      "p50" : 5.6233,
+      "p95" : 12.9755,
+      "p99" : 17.3652,
+      "max" : 17.3652
+    },
+    "claim_start" : {
+      "n" : 23,
+      "mean" : 6.548965217391304,
+      "p50" : 4.9756,
+      "p95" : 11.9398,
+      "p99" : 20.1004,
+      "max" : 20.1004
+    }
+  },
+  "ack_start_transactions_total" : 127,
+  "ack_start_rows_total" : 600,
+  "ack_start_batch_mean" : 4.724409448818897,
+  "ack_message_transactions_total" : 600,
+  "ack_message_rows_total" : 600,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 727,
+  "ack_transactions_per_operation" : 0.6058333333333333,
+  "dispatcher_transactions_total" : 783,
+  "dispatcher_transactions_per_operation" : 0.6525,
+  "producer_elapsed_s" : 15.0046629,
+  "configured_arrival_rate_s" : 80,
+  "enqueue_lateness_ms" : {
+    "n" : 1200,
+    "mean" : 61.26607966666666,
+    "p50" : 14.7744,
+    "p95" : 330.4812,
+    "p99" : 397.3558,
+    "max" : 415.874
+  },
+  "intended_arrival_to_ack_ms" : {
+    "n" : 1200,
+    "mean" : 3245.220501,
+    "p50" : 4058.6994,
+    "p95" : 5127.8879,
+    "p99" : 5446.5473,
+    "max" : 5906.8817
+  }
+}, {
+  "scenario" : "arrival-mixed-120",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 993900,
+  "window_end_ns" : 15000993900,
+  "drained_ns" : 25375100000,
+  "window_start_utc" : "2026-10-20T08:10:19.326103100Z",
+  "arrival_rate_s" : 120,
+  "enqueued_total" : 1800,
+  "completed_in_window" : 1049,
+  "starts_in_window" : 530,
+  "committed_in_window" : 1793,
+  "committed_per_s" : 119.53333333333333,
+  "messages_in_window" : 519,
+  "throughput_s" : 69.93333333333334,
+  "starts_per_s" : 35.333333333333336,
+  "messages_per_s" : 34.6,
+  "backlog_at_window_end" : 744,
+  "drain_after_window_s" : 10.3741061,
+  "completed_after_drain" : 1800,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 2.21875,
+  "window" : {
+    "count" : 1049,
+    "queue_to_rpc_ms" : {
+      "n" : 1049,
+      "mean" : 2665.930618303146,
+      "p50" : 2290.6801,
+      "p95" : 5974.6848,
+      "p99" : 6084.4529,
+      "max" : 6292.2219
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1049,
+      "mean" : 289.20786644423265,
+      "p50" : 185.141,
+      "p95" : 935.0097,
+      "p99" : 1160.5637,
+      "max" : 1410.1566
+    },
+    "gateway_ms" : {
+      "n" : 1049,
+      "mean" : 31.755868922783602,
+      "p50" : 16.3188,
+      "p95" : 131.2193,
+      "p99" : 166.6006,
+      "max" : 176.4218
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1049,
+      "mean" : 2715.5904262154436,
+      "p50" : 2310.3031,
+      "p95" : 5999.3882,
+      "p99" : 6226.3471,
+      "max" : 6398.9771
+    }
+  },
+  "window_starts" : {
+    "count" : 530,
+    "queue_to_rpc_ms" : {
+      "n" : 530,
+      "mean" : 2524.7845907547166,
+      "p50" : 2065.6124,
+      "p95" : 5756.0031,
+      "p99" : 6143.4121,
+      "max" : 6292.2219
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 530,
+      "mean" : 110.33725264150944,
+      "p50" : 74.0724,
+      "p95" : 290.4549,
+      "p99" : 317.8568,
+      "max" : 344.3656
+    },
+    "gateway_ms" : {
+      "n" : 530,
+      "mean" : 47.49456547169811,
+      "p50" : 31.689,
+      "p95" : 155.4416,
+      "p99" : 169.8614,
+      "max" : 176.4218
+    },
+    "commit_to_ack_ms" : {
+      "n" : 530,
+      "mean" : 2602.497858490566,
+      "p50" : 2216.5399,
+      "p95" : 5796.5938,
+      "p99" : 6266.5451,
+      "max" : 6398.9771
+    }
+  },
+  "window_messages" : {
+    "count" : 519,
+    "queue_to_rpc_ms" : {
+      "n" : 519,
+      "mean" : 2810.0681801541427,
+      "p50" : 2321.5926,
+      "p95" : 5990.4613,
+      "p99" : 6071.544,
+      "max" : 6075.3107
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 519,
+      "mean" : 471.86957225433525,
+      "p50" : 450.1562,
+      "p95" : 1051.3565,
+      "p99" : 1232.742,
+      "max" : 1410.1566
+    },
+    "gateway_ms" : {
+      "n" : 519,
+      "mean" : 15.683596917148362,
+      "p50" : 13.1273,
+      "p95" : 19.6953,
+      "p99" : 112.7482,
+      "max" : 124.888
+    },
+    "commit_to_ack_ms" : {
+      "n" : 519,
+      "mean" : 2831.0799462427744,
+      "p50" : 2344.4154,
+      "p95" : 6012.8064,
+      "p99" : 6088.0924,
+      "max" : 6092.5921
+    }
+  },
+  "all_including_drain" : {
+    "count" : 1800,
+    "queue_to_rpc_ms" : {
+      "n" : 1800,
+      "mean" : 4975.226118111111,
+      "p50" : 5292.9027,
+      "p95" : 9895.7469,
+      "p99" : 10282.7036,
+      "max" : 10371.1724
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 1800,
+      "mean" : 299.68227711111115,
+      "p50" : 204.1741,
+      "p95" : 925.124,
+      "p99" : 1117.8873,
+      "max" : 1410.1566
+    },
+    "gateway_ms" : {
+      "n" : 1800,
+      "mean" : 32.249502722222225,
+      "p50" : 16.5213,
+      "p95" : 128.2566,
+      "p99" : 166.6006,
+      "max" : 180.0637
+    },
+    "commit_to_ack_ms" : {
+      "n" : 1800,
+      "mean" : 5024.373117111111,
+      "p50" : 5315.48,
+      "p95" : 9930.0532,
+      "p99" : 10299.0141,
+      "max" : 10390.4015
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 519,
+      "mean" : 5.318404431599229,
+      "p50" : 3.5815,
+      "p95" : 6.1392,
+      "p99" : 96.2231,
+      "max" : 115.339
+    },
+    "ack_start" : {
+      "n" : 93,
+      "mean" : 16.617818279569892,
+      "p50" : 6.2354,
+      "p95" : 100.5807,
+      "p99" : 118.8736,
+      "max" : 118.8736
+    },
+    "claim_message" : {
+      "n" : 17,
+      "mean" : 5.670705882352941,
+      "p50" : 5.5809,
+      "p95" : 12.2063,
+      "p99" : 12.2063,
+      "max" : 12.2063
+    },
+    "claim_start" : {
+      "n" : 18,
+      "mean" : 5.363372222222222,
+      "p50" : 4.9995,
+      "p95" : 7.8882,
+      "p99" : 7.8882,
+      "max" : 7.8882
+    }
+  },
+  "ack_start_transactions_total" : 161,
+  "ack_start_rows_total" : 900,
+  "ack_start_batch_mean" : 5.590062111801243,
+  "ack_message_transactions_total" : 900,
+  "ack_message_rows_total" : 900,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 1061,
+  "ack_transactions_per_operation" : 0.5894444444444444,
+  "dispatcher_transactions_total" : 1115,
+  "dispatcher_transactions_per_operation" : 0.6194444444444445,
+  "producer_elapsed_s" : 15.0365269,
+  "configured_arrival_rate_s" : 120,
+  "enqueue_lateness_ms" : {
+    "n" : 1800,
+    "mean" : 34.31481222222222,
+    "p50" : 14.4148,
+    "p95" : 105.508534,
+    "p99" : 120.3377,
+    "max" : 170.938567
+  },
+  "intended_arrival_to_ack_ms" : {
+    "n" : 1800,
+    "mean" : 5058.687929333333,
+    "p50" : 5361.904334,
+    "p95" : 9955.194167,
+    "p99" : 10308.324134,
+    "max" : 10395.2107
+  }
+}, {
+  "scenario" : "arrival-mixed-160",
+  "window_s" : 15.0,
+  "variant" : "adr028",
+  "dispatcher_threads" : 8,
+  "window_begin_ns" : 1393900,
+  "window_end_ns" : 15001393900,
+  "drained_ns" : 33729568300,
+  "window_start_utc" : "2026-10-20T08:10:44.801603100Z",
+  "arrival_rate_s" : 160,
+  "enqueued_total" : 2400,
+  "completed_in_window" : 697,
+  "starts_in_window" : 363,
+  "committed_in_window" : 1629,
+  "committed_per_s" : 108.6,
+  "messages_in_window" : 334,
+  "throughput_s" : 46.46666666666667,
+  "starts_per_s" : 24.2,
+  "messages_per_s" : 22.266666666666666,
+  "backlog_at_window_end" : 932,
+  "drain_after_window_s" : 18.7281744,
+  "completed_after_drain" : 2400,
+  "nonterminal_or_retried" : 0,
+  "max_concurrent_gateway_calls" : 8,
+  "gateway_threads" : [ "order-workflow-dispatcher", "order-workflow-start-1", "order-workflow-start-2", "order-workflow-start-3", "order-workflow-start-4", "order-workflow-start-5", "order-workflow-start-6", "order-workflow-start-7", "order-workflow-start-8" ],
+  "max_concurrent_messages_per_target" : 1,
+  "message_targets" : 100,
+  "jvm_cpu_seconds_in_window" : 2.078125,
+  "window" : {
+    "count" : 697,
+    "queue_to_rpc_ms" : {
+      "n" : 697,
+      "mean" : 3357.4661979913917,
+      "p50" : 2584.6084,
+      "p95" : 9695.7075,
+      "p99" : 9984.5284,
+      "max" : 10488.8363
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 697,
+      "mean" : 413.78016355810615,
+      "p50" : 226.7441,
+      "p95" : 1457.0059,
+      "p99" : 2923.7948,
+      "max" : 3319.581
+    },
+    "gateway_ms" : {
+      "n" : 697,
+      "mean" : 50.77501076040173,
+      "p50" : 18.652,
+      "p95" : 182.6027,
+      "p99" : 364.4891,
+      "max" : 387.4813
+    },
+    "commit_to_ack_ms" : {
+      "n" : 697,
+      "mean" : 3438.065168436155,
+      "p50" : 2647.9234,
+      "p95" : 9967.7357,
+      "p99" : 10322.5412,
+      "max" : 10509.7116
+    }
+  },
+  "window_starts" : {
+    "count" : 363,
+    "queue_to_rpc_ms" : {
+      "n" : 363,
+      "mean" : 3523.2678655647383,
+      "p50" : 2669.5944,
+      "p95" : 9790.3302,
+      "p99" : 10044.3193,
+      "max" : 10059.5079
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 363,
+      "mean" : 169.81576308539945,
+      "p50" : 96.9807,
+      "p95" : 682.2725,
+      "p99" : 900.7708,
+      "max" : 918.7552
+    },
+    "gateway_ms" : {
+      "n" : 363,
+      "mean" : 75.88017548209366,
+      "p50" : 36.6805,
+      "p95" : 265.2042,
+      "p99" : 377.8847,
+      "max" : 387.4813
+    },
+    "commit_to_ack_ms" : {
+      "n" : 363,
+      "mean" : 3649.459375757576,
+      "p50" : 2740.8831,
+      "p95" : 10090.2716,
+      "p99" : 10361.8005,
+      "max" : 10453.3152
+    }
+  },
+  "window_messages" : {
+    "count" : 334,
+    "queue_to_rpc_ms" : {
+      "n" : 334,
+      "mean" : 3177.268577245509,
+      "p50" : 2520.6216,
+      "p95" : 8614.2137,
+      "p99" : 9642.4805,
+      "max" : 10488.8363
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 334,
+      "mean" : 678.9271017964072,
+      "p50" : 526.9423,
+      "p95" : 2149.2199,
+      "p99" : 3167.015,
+      "max" : 3319.581
+    },
+    "gateway_ms" : {
+      "n" : 334,
+      "mean" : 23.490056287425148,
+      "p50" : 12.7103,
+      "p95" : 114.8587,
+      "p99" : 141.8592,
+      "max" : 216.5588
+    },
+    "commit_to_ack_ms" : {
+      "n" : 334,
+      "mean" : 3208.316374251497,
+      "p50" : 2537.6699,
+      "p95" : 8699.4884,
+      "p99" : 9674.0227,
+      "max" : 10509.7116
+    }
+  },
+  "all_including_drain" : {
+    "count" : 2400,
+    "queue_to_rpc_ms" : {
+      "n" : 2400,
+      "mean" : 10024.776856,
+      "p50" : 11645.0327,
+      "p95" : 14852.8958,
+      "p99" : 15273.897,
+      "max" : 15685.1483
+    },
+    "claim_to_rpc_ms" : {
+      "n" : 2400,
+      "mean" : 307.5536550416666,
+      "p50" : 154.9147,
+      "p95" : 910.7779,
+      "p99" : 2773.1727,
+      "max" : 3319.581
+    },
+    "gateway_ms" : {
+      "n" : 2400,
+      "mean" : 30.644522958333333,
+      "p50" : 14.9448,
+      "p95" : 116.6421,
+      "p99" : 256.9716,
+      "max" : 787.7189
+    },
+    "commit_to_ack_ms" : {
+      "n" : 2400,
+      "mean" : 10072.28874725,
+      "p50" : 11672.5523,
+      "p95" : 14891.3618,
+      "p99" : 15288.7127,
+      "max" : 15698.6381
+    }
+  },
+  "transaction_ms" : {
+    "ack_message" : {
+      "n" : 334,
+      "mean" : 7.549796107784431,
+      "p50" : 3.3994,
+      "p95" : 8.5325,
+      "p99" : 104.1779,
+      "max" : 109.4621
+    },
+    "ack_start" : {
+      "n" : 69,
+      "mean" : 36.1208463768116,
+      "p50" : 7.5674,
+      "p95" : 108.5742,
+      "p99" : 207.3791,
+      "max" : 207.3791
+    },
+    "claim_message" : {
+      "n" : 11,
+      "mean" : 14.964854545454546,
+      "p50" : 6.9238,
+      "p95" : 98.1916,
+      "p99" : 98.1916,
+      "max" : 98.1916
+    },
+    "claim_start" : {
+      "n" : 11,
+      "mean" : 14.518527272727273,
+      "p50" : 4.8065,
+      "p95" : 105.2785,
+      "p99" : 105.2785,
+      "max" : 105.2785
+    }
+  },
+  "ack_start_transactions_total" : 194,
+  "ack_start_rows_total" : 1200,
+  "ack_start_batch_mean" : 6.185567010309279,
+  "ack_message_transactions_total" : 1200,
+  "ack_message_rows_total" : 1200,
+  "ack_message_batch_mean" : 1.0,
+  "ack_transactions_total" : 1394,
+  "ack_transactions_per_operation" : 0.5808333333333333,
+  "dispatcher_transactions_total" : 1454,
+  "dispatcher_transactions_per_operation" : 0.6058333333333333,
+  "producer_elapsed_s" : 20.2737324,
+  "configured_arrival_rate_s" : 160,
+  "enqueue_lateness_ms" : {
+    "n" : 2400,
+    "mean" : 2337.8501473333336,
+    "p50" : 167.3606,
+    "p95" : 6496.5576,
+    "p99" : 6649.0532,
+    "max" : 6704.095
+  },
+  "intended_arrival_to_ack_ms" : {
+    "n" : 2400,
+    "mean" : 12410.138894583333,
+    "p50" : 15135.8133,
+    "p95" : 18149.8408,
+    "p99" : 18723.6526,
+    "max" : 18982.7793
+  }
+} ]

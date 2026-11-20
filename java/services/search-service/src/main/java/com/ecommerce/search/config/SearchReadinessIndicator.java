@@ -1,10 +1,11 @@
 package com.ecommerce.search.config;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.stereotype.Component;
+import com.ecommerce.search.service.ProductCardReadiness;
 
 /**
  * Readiness, per {@code docs/search/operations.md §2}.
@@ -22,10 +23,13 @@ public class SearchReadinessIndicator implements HealthIndicator {
 
     private final ElasticsearchClient client;
     private final KafkaListenerEndpointRegistry listenerRegistry;
+    private final ProductCardReadiness productCards;
 
-    public SearchReadinessIndicator(ElasticsearchClient client, KafkaListenerEndpointRegistry listenerRegistry) {
+    public SearchReadinessIndicator(ElasticsearchClient client, KafkaListenerEndpointRegistry listenerRegistry,
+                                    ProductCardReadiness productCards) {
         this.client = client;
         this.listenerRegistry = listenerRegistry;
+        this.productCards = productCards;
     }
 
     @Override
@@ -37,6 +41,7 @@ public class SearchReadinessIndicator implements HealthIndicator {
             if (!listenersRunning) {
                 return Health.down().withDetail("kafka", "listeners have not subscribed yet").build();
             }
+            if (!productCards.ready()) return Health.down().withDetail("product_cards", "not ready").build();
             return Health.up()
                     .withDetail("cluster_status", response.status().jsonValue())
                     .withDetail("kafka_listeners", listenerRegistry.getListenerContainers().size())

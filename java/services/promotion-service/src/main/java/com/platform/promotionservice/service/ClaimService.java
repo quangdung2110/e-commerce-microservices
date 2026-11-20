@@ -82,6 +82,12 @@ public class ClaimService {
                 if (acquired.pending() != null) {
                     yield persistOrPending(promotionId, acquired.pending());
                 }
+                // Pending bị ack chỉ sau khi PostgreSQL commit: request đồng thời của cùng user có thể đã commit và
+                // dọn pending giữa preflight wallet ở trên và Lua acquire, nên đọc lại wallet trước khi từ chối.
+                Optional<UserCouponWalletEntity> committed = wallets.findByUserIdAndPromotionId(userId, promotionId);
+                if (committed.isPresent()) {
+                    yield replay(committed.get());
+                }
                 throw new DomainException(ErrorCode.ALREADY_CLAIMED, "User already claimed this promotion");
             }
             case OUT_OF_STOCK -> throw new DomainException(ErrorCode.OUT_OF_STOCK, "Claim pool is exhausted");

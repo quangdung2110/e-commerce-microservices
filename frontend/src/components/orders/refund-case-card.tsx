@@ -6,6 +6,8 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefundStatus } from "@/components/orders/order-status";
 import { useRefundCase } from "@/hooks/use-orders";
+import type { OrderLine } from "@/lib/api/order";
+import { StorefrontImage } from "@/components/catalog/storefront-image";
 import { formatDateTime, formatVND } from "@/lib/format";
 
 const FINALIZATION: Record<string, string> = {
@@ -17,7 +19,7 @@ const FINALIZATION: Record<string, string> = {
   COMPLETED: "Kho đã hoàn tất",
 };
 
-export function RefundCaseCard({ orderId }: { orderId: string }) {
+export function RefundCaseCard({ orderId, orderLines = [] }: { orderId: string; orderLines?: OrderLine[] }) {
   const refund = useRefundCase(orderId, true);
 
   return (
@@ -47,6 +49,27 @@ export function RefundCaseCard({ orderId }: { orderId: string }) {
               <div><dt className="text-caption text-muted-foreground">Sản phẩm trả</dt><dd>{refund.data.lines.length} dòng sản phẩm</dd></div>
               <div><dt className="text-caption text-muted-foreground">Xử lý tại kho</dt><dd>{FINALIZATION[refund.data.scope_finalization?.status ?? ""] ?? "Đang cập nhật"}</dd></div>
             </dl>
+            <section className="space-y-3" aria-label="Chi tiết sản phẩm trả và tiền hoàn">
+              <h3 className="font-medium">Sản phẩm trong yêu cầu trả hàng</h3>
+              <ul className="divide-y divide-border rounded-xl border border-border px-4">{refund.data.lines.map(line => {
+                const snapshot = orderLines.find(item => item.order_line_id === line.order_line_id);
+                return <li key={line.order_line_id} className="space-y-3 py-4">
+                  <div className="flex gap-3">
+                  {snapshot?.snapshot_image_url && <div className="size-16 shrink-0 overflow-hidden rounded-lg bg-surface-2"><StorefrontImage src={snapshot.snapshot_image_url} alt={snapshot.snapshot_name} className="size-full object-cover" /></div>}
+                  <div className="min-w-0 space-y-1"><p className="break-words font-medium">{snapshot?.snapshot_name ?? `Dòng sản phẩm #${line.order_line_id}`}</p>
+                    {snapshot && Object.keys(snapshot.snapshot_attributes).length > 0 && <p className="text-caption text-muted-foreground">{Object.values(snapshot.snapshot_attributes).join(" · ")}</p>}
+                    <p className="text-caption text-muted-foreground">Số lượng trả: {line.expected_quantity}</p>
+                  </div>
+                  </div>
+                  <dl className="space-y-2 text-[14px]">
+                    <div className="flex flex-wrap justify-between gap-2"><dt>Giá sản phẩm ({line.expected_quantity} × {formatVND(line.unit_price_snapshot.amount_minor)})</dt><dd className="tabular-nums">{formatVND(line.expected_quantity * line.unit_price_snapshot.amount_minor)}</dd></div>
+                    <div className="flex flex-wrap justify-between gap-2"><dt>Giảm giá được phân bổ</dt><dd className="tabular-nums">−{formatVND(line.discount_share_snapshot.amount_minor)}</dd></div>
+                    <div className="flex flex-wrap justify-between gap-2 font-medium"><dt>Số tiền hoàn của sản phẩm</dt><dd className="tabular-nums">{formatVND(line.net_amount_snapshot.amount_minor)}</dd></div>
+                  </dl>
+                </li>;
+              })}</ul>
+              <p className="text-caption text-muted-foreground">Tiền hoàn được tính sau phần giảm giá đã phân bổ cho từng sản phẩm.</p>
+            </section>
             {refund.data.status === "MANUAL_VERIFICATION_REQUIRED" || refund.data.scope_finalization?.status === "RECOVERY_REQUIRED" || refund.data.scope_finalization?.status === "CONFLICT" ? (
               <Alert variant="warning" title="Hồ sơ đang được kiểm tra">
                 Bạn chưa cần gửi lại yêu cầu. Bộ phận vận hành sẽ tiếp tục từ hồ sơ hiện có.

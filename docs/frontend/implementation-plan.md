@@ -1,7 +1,7 @@
 # Frontend Implementation Plan
 
 Kế hoạch xây dựng giao diện người mua và giao diện quản trị trong `frontend/`. Tài liệu
-gồm lộ trình tổng thể và các bước 0–10. Bước 3 đã hoàn thành code, kiểm thử offline và
+gồm lộ trình tổng thể và các bước 0–12. Bước 3 đã hoàn thành code, kiểm thử offline và
 kiểm chứng live local với Inventory Service qua gateway; MFA vẫn là gate production.
 
 Route và API của từng màn hình nằm ở [sitemap.md](./sitemap.md). Quy tắc giao diện nằm
@@ -12,7 +12,7 @@ trong skill Terra (`.claude/skills/terra-ui/`).
 Làm theo lát cắt dọc cho tới khi mua được một đơn hàng thật từ đầu đến cuối. Màn admin
 nào tạo ra dữ liệu thì làm ngay trước màn người mua cần dữ liệu đó.
 
-Trạng thái cập nhật ngày **07/10/2026**:
+Trạng thái cập nhật ngày **10/10/2026**:
 
 | Bước | Nội dung | Contract chính | Trạng thái |
 |---|---|---|---|
@@ -22,13 +22,13 @@ Trạng thái cập nhật ngày **07/10/2026**:
 | 3 | Admin Kho bản tối thiểu: tạo kho, nhập hàng, điều chỉnh, tra tồn | `inventory/admin/v1` | Hoàn thành |
 | 4 | Duyệt sản phẩm: chuyển sang Search v2, trang danh mục, tìm kiếm, PDP qua BFF, review công khai | `search/v2`, `product-detail-bff/v1`, `review/v1` | Hoàn thành |
 | 5 | Giỏ hàng khớp contract | `cart/v1` | Hoàn thành |
-| 6 | Checkout và thanh toán Stripe (chưa có voucher) | `checkout/v1`, `order/v1` | Hoàn thành code/offline; live bị chặn (User build, cổng Cart/Promotion, Stripe keys) |
-| 7 | Đơn hàng của tôi: tab, chi tiết, huỷ, thanh toán lại, trả hàng, hoàn tiền | `order/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
-| 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Hoàn thành code/offline; chờ kiểm chứng live |
+| 6 | Checkout và thanh toán Stripe (chưa có voucher) | `checkout/v1`, `order/v1` | Live Checkout/Stripe Sandbox đã qua 11/10; visual còn mở |
+| 7 | Đơn hàng của tôi: tab, chi tiết, huỷ, thanh toán lại, trả hàng, hoàn tiền | `order/v1` | Live success/3DS/decline/retry/cancel đã qua; return và visual còn mở |
+| 8 | Admin Đơn hàng và ghi nhận xuất kho | `order/v1` (admin), `inventory/admin/v1` | Live cancel/refund trên workflow thật đã qua; UI polling/visual còn mở |
 | 9 | Sau mua: đánh giá kèm media, hộp thông báo | `review/v1`, `notification/v1` | Hoàn thành code/offline và live local (Review, Notification); chờ đơn hàng thật từ bước 6 |
 | 10 | Admin Khuyến mãi: campaign, voucher, Rule AST, markdown, cấp voucher | `promotion/v1` (admin) | Hoàn thành code/offline và live local (Auth, gateway, Product, Promotion) |
-| 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Chưa hoàn thành |
-| 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Chưa hoàn thành |
+| 11 | Voucher trong checkout: khay voucher qua Checkout, lưu/nhận voucher qua Promotion | `checkout/v1` (voucher options), `promotion/v1` (me: save, claim) | Live đầy đủ Preview/options/save/claim/Submit đã qua 11/10; visual/a11y còn mở |
+| 12 | Admin kiểm duyệt đánh giá, kho đầy đủ (hàng trả, kiểm định, cách ly), hệ thống | `review/v1` (admin), `inventory/admin/v1`, `search/v2`, `auth/v1` | Hoàn thành code; xem [step-12-verification](./step-12-verification.md) cho kiểm chứng và giới hạn |
 | 13 | Hoàn thiện: trang chủ, SEO/ISR, trạng thái rỗng/lỗi, responsive, a11y, E2E | — | Chưa hoàn thành |
 
 Mỗi bước đi theo cùng một vòng: phác giao diện → code theo Terra → chạy thử với backend
@@ -125,8 +125,10 @@ những việc đó.
 
 - **Idempotency**: `newCommandId()` sinh UUID; `useCommand()` bọc `useMutation`, sinh key
   **một lần cho mỗi ý định của người dùng** (mỗi lần mở dialog/submit form) và dùng lại
-  đúng key đó khi retry. Contract dùng: cart, checkout preview, lệnh order của buyer và
-  admin, Inventory admin.
+  đúng key đó khi retry. Lệnh bất đồng bộ đã được server nhận nhưng chưa có kết quả cuối
+  (poll hết hạn, operation `MANUAL_REVIEW_REQUIRED`) cũng giữ key: hook nhận
+  `isOutcomeUnresolved(data)` và UI khoá lệnh cho tới khi tải lại. Contract dùng: cart,
+  checkout preview, lệnh order của buyer và admin, Inventory admin.
 - **Inventory admin** cần thêm `X-Correlation-ID` và `X-Causation-ID`; với lệnh khởi đầu
   từ admin thì cả hai bằng command ID. `useCommand` nhận tuỳ chọn bật hai header này.
 - **ETag / `If-Match`**: hàm đọc lưu ETag cùng dữ liệu trong cache React Query; lệnh sửa
@@ -551,9 +553,9 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 
 ## Bước 6 — Checkout và thanh toán Stripe
 
-> **07/10/2026: hoàn thành code, chờ kiểm chứng live toàn luồng.** Không voucher
-> (bước 11). User build, cổng host Cart/Promotion và Stripe test configuration là
-> các blocker đã ghi ở [step-6-verification.md](./step-6-verification.md).
+> **11/10/2026: live Preview/Submit → Stripe → webhook → Order PAID → Inventory
+> commit → Cart cleanup đã qua.** User/Cart/Promotion và cấu hình Stripe local đã
+> hoạt động. Bằng chứng và giới hạn ở [live-local-2026-10-11.md](./live-local-2026-10-11.md).
 
 - Chọn địa chỉ User; Preview tự tải lần đầu và thay quote khi đổi địa chỉ.
 - Quote chỉ dùng giá/tổng của backend; hết hạn hoặc conflict yêu cầu xem báo giá mới.
@@ -569,7 +571,7 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 
 > **Trạng thái (05/10/2026): hoàn thành code và kiểm chứng offline.** Typecheck,
 > 110 test, lint không có lỗi và production build qua. Kiểm chứng live với Stripe
-> test mode còn chờ stack local và Stripe CLI.
+> test mode đã chạy ngày 11/10/2026; return, visual/a11y vẫn còn gate mở.
 
 - `/orders` đọc cursor từ `GET /api/v1/orders`, có tab Buyer, tìm theo tên snapshot,
   tải thêm và đồng bộ bộ lọc với URL.
@@ -577,7 +579,9 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
   tiền, trạng thái payment/refund và `available_actions` do backend quyết định.
 - Huỷ, trả hàng một lần và tạo payment attempt mới đều dùng `useCommand`, giữ
   `Idempotency-Key` qua lỗi retryable và poll `OrderOperation`; hết thời gian poll
-  được diễn đạt là “vẫn đang xử lý”, không mời gửi lệnh mới.
+  được diễn đạt là “vẫn đang xử lý”, không mời gửi lệnh mới. Cả Buyer lẫn Admin khoá nút
+  tạo lệnh khi kết quả chưa rõ (poll hết hạn hoặc `MANUAL_REVIEW_REQUIRED`), và gửi lại
+  trong lúc đó dùng đúng key cũ (`isUnresolvedOrderResult`).
 - `/orders/[orderId]/return` gửi đúng full quantity của mỗi dòng đã chọn; UI cảnh báo
   guard một lần và không tự suy diễn thời hạn trả hàng.
 - Payment cho “Thanh toán lại” và đơn từ bước 6 nằm ở `/orders/[orderId]/payment`: đọc
@@ -594,16 +598,19 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Stripe Payment Element không đưa dữ liệu thẻ qua backend frontend application;
   UI không coi callback client là bằng chứng thanh toán cuối cùng.
 - [x] Typecheck, 110 test, lint 0 lỗi và production build qua.
-- [ ] Live gateway/Order/Payment/Stripe test-mode và responsive visual QA — môi trường
-  hiện tại không có Docker CLI nên chưa chạy được.
+- [x] Live gateway/Order/Payment/Stripe Sandbox: success, 3DS, decline, payment retry,
+  Buyer cancel; webhook → PAID, Inventory commit và Cart cleanup (11/10/2026).
+- [ ] Buyer return từ đơn mới COMPLETED; responsive visual/a11y đầy đủ. Delivery
+  runtime chưa có; Stripe dark appearance và một số UI pending cần kiểm tra tiếp.
 
 ## 10. Bước 8 — Admin Đơn hàng và ghi nhận xuất kho
 
 > **Trạng thái (06/10/2026): hoàn thành code, kiểm chứng offline và live các luồng
 > chính.** Typecheck, 114 test, lint không có lỗi và production build qua. Stack local
 > đã xác minh Auth/RBAC, danh sách/chi tiết Order, operation polling và physical
-> dispatch có idempotent replay. Cancel hoàn tất và pre-dispatch refund vẫn cần fixture
-> Order tạo qua workflow thật; đơn seed thủ công không có workflow để saga kết thúc.
+> dispatch có idempotent replay. Cancel và pre-dispatch refund trên fixture
+> Order tạo qua workflow thật đã được kiểm chứng 11/10/2026; operation SUCCEEDED,
+> refund Stripe và Inventory release. UI polling/visual vẫn cần kiểm tra tiếp.
 
 - `/admin/orders` gọi namespace admin của Order, có tìm kiếm và bộ lọc theo người mua,
   Buyer tab, trạng thái đơn/thanh toán, khoảng thời gian, khoảng tiền; bộ lọc đồng bộ
@@ -632,8 +639,10 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Live gateway/Auth/Order/Inventory: ADMIN đọc danh sách/chi tiết, non-ADMIN bị
   `403`, dispatch `COMMITTED` thành công, replay không trừ tồn lần hai và lệnh mới trên
   line đã dispatch bị `409 DISPATCH_NOT_ALLOWED`.
-- [ ] Hoàn tất live cancel/refund bằng fixture tạo qua checkout workflow thật và visual
-  QA đủ ma trận 375/768/1280 px, light/dark, bàn phím, screen reader.
+- [x] Live Admin cancel/refund bằng đơn `770004`–`770008` tạo qua checkout workflow
+  thật; operation SUCCEEDED, Stripe refund và Inventory release (11/10/2026).
+- [ ] UI polling sau mutation và visual QA đầy đủ 375/768/1280 px, light/dark,
+  bàn phím, screen reader.
 
 ## 11. Bước 9 — Đánh giá sau mua và hộp thông báo
 
@@ -663,7 +672,10 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Hộp thư: đọc/chưa đọc, ẩn, đọc tất cả, điều hướng deep link chỉ trong cùng origin; chuông poll 45 giây.
 - [x] Backend và tài liệu đồng bộ theo ADR-012; type sinh lại từ OpenAPI.
 - [x] Typecheck, 180 test, lint 0 lỗi, production build; live Review/Notification qua gateway.
-- [ ] Bấm thử nút đánh giá trên đơn hàng thật (cần checkout, bước 6) và Debezium cho Review outbox; visual QA đủ ma trận 375/768/1280 px, light/dark, screen reader.
+- [x] Review outbox Debezium → Notification tự nhiên: official reply đầu của review QA
+  mới tạo inbox/deep link; takedown tự tạo removal notification (11/10/2026).
+- [ ] Nút đánh giá trên đơn workflow mới COMPLETED (thiếu Delivery runtime);
+  visual QA mọi trạng thái 375/768/1280 px, light/dark và screen reader.
 
 ## 12. Bước 10 — Admin Khuyến mãi
 
@@ -706,17 +718,81 @@ Phạm vi, quy tắc dữ liệu, sửa backend tương ứng và bằng chứng
 - [x] Live qua gateway; responsive 375px (light) và 800px (dark) không tràn ngang.
 - [ ] Visual QA đủ ma trận 375/768/1280 px × light/dark, bàn phím và screen reader.
 
-## 13. Phụ thuộc backend
+## 13. Bước 11 — Voucher trong checkout
+
+> **10/10/2026: hoàn thành code và kiểm thử offline.** Không thêm endpoint hay sửa
+> nghiệp vụ backend; Checkout ADR-017 và Promotion ADR-018 đã có trong source. Phạm vi,
+> bằng chứng và giới hạn live ở [step-11-verification.md](./step-11-verification.md).
+
+- Khay voucher đọc `GET /api/v1/checkout/previews/{checkout_token}/voucher-options`,
+  cache theo account và token; hiển thị voucher trong ví/công khai, điều kiện, hạn dùng,
+  mức giảm dự kiến và lý do không đủ điều kiện bằng tiếng Việt. Không gọi discovery
+  trực tiếp từ trình duyệt, không dựng giá/category facts ở client.
+- `NONE` áp dụng trực tiếp; `SAVE` gọi `PUT /api/v1/me/promotion-vouchers/{id}` với `{}`;
+  `CLAIM` gọi `POST /api/v1/me/promotion-voucher-claims` với đúng
+  `expected_campaign_revision` từ khay. Chỉ tạo Preview có voucher sau khi sở hữu được
+  xác nhận thành công; tổng tiền luôn lấy từ Preview, không dùng ước tính của khay.
+- Chọn/bỏ voucher gửi `previous_checkout_token` hiện tại; bỏ gửi `promotion_id: null`.
+  Đổi địa chỉ và tải báo giá mới giữ voucher đã chọn. `CHANGE_VOUCHER` cho phép bỏ
+  voucher trong một Preview mới và yêu cầu xác nhận lại, không tự đặt hàng.
+- `202 CLAIM_PENDING` không có GET status endpoint: replay cùng POST và revision,
+  tôn trọng `Retry-After`, dừng chờ tự động sau 30 giây hoặc khi unmount. Timeout/mất
+  phản hồi giữ nguyên ý định và có nút tiếp tục kiểm tra; không coi là nhận thất bại.
+- Khoá thao tác đặt hàng/đổi báo giá khi Preview hoặc save/claim chưa rõ kết quả.
+  Retry Preview giữ payload và idempotency key. Báo giá khớp địa chỉ và voucher mới
+  được đặt hàng. Lỗi khay `503`/`429` không vô hiệu hoá một báo giá hợp lệ; token hết
+  hạn/superseded yêu cầu báo giá mới, token đã submit chuyển sang phục hồi submission.
+- `/vouchers` ngoài phạm vi bước 11 ban đầu; đã bổ sung sau đó cùng API đọc wallet độc lập (20/10/2026), xem [báo cáo B01](./voucher-wallet-2026-10-20.md).
+
+### 13.1. Tiêu chí và kiểm chứng
+
+- [x] Khay qua Checkout; áp dụng/bỏ voucher bằng Preview mới.
+- [x] Save không context; claim đúng revision; replay/polling, Retry-After và huỷ khi unmount.
+- [x] Không cập nhật tiền lạc quan; không tự submit sau khi báo giá đổi.
+- [x] Năm trạng thái dữ liệu, lỗi tiếng Việt, partial khi khay lỗi; semantic token Terra.
+- [x] Typecheck và test frontend qua; lint riêng file bước 11 sạch.
+- [x] Production build qua trong `node:20-alpine`.
+- [x] Save/claim và replay qua gateway thật (Promotion runtime build từ source hiện tại).
+- [x] Live đầy đủ Preview → options → save/claim → Preview → Submit có voucher;
+  buyer mới, đơn `770004`, giảm 10.000 VND và Stripe success (11/10/2026).
+- [ ] Visual QA 375/768/1280 px × light/dark, bàn phím và screen reader.
+
+## 14. Bước 12 — Kiểm duyệt, kho đầy đủ và hệ thống
+
+Đã triển khai các surface public admin hiện có, không cần bổ sung endpoint backend.
+Chi tiết route, quy tắc lệnh và bằng chứng ở [step-12-verification.md](./step-12-verification.md).
+
+- Review: queue theo trạng thái, panel signed media, dismissal, reply, legal takedown
+  có xác nhận gõ lại ID.
+- Inventory: danh sách kho/tồn/movement và ba queue, tìm Refund Scope theo đơn,
+  nhận hàng trả, PASS/FAIL, disposition và reversal.
+- Hệ thống: Reindex list/detail/create/cancel/rollback và polling trạng thái cuối;
+  xoá account bằng UUID, xác nhận chính xác, chặn retry khi kết quả chưa rõ.
+- Sidebar và đơn admin đã nối các màn mới. MFA và kiểm chứng mutation live vẫn là
+  gate riêng, không được coi đã qua.
+
+Kiểm chứng bổ sung 11/10/2026 ở [live-local-2026-10-11.md](./live-local-2026-10-11.md):
+
+- [x] Review report/reply/dismissal/takedown API live, dismissal UI và CDC.
+- [x] Xoá tài khoản QA qua UI; token bị thu hồi, User/Notification xử lý deletion.
+- [x] Inventory operational read và Search create/cancel qua API.
+- [ ] Search cutover/rollback: index cũ dư 4 SKU, count drift vượt guard 2%.
+- [ ] Receive return → PASS/FAIL → disposition/reversal từ Refund Scope thật;
+  chưa có Delivery runtime để hoàn thành đơn workflow mới.
+- [ ] Visual/a11y đủ mọi form/trạng thái, screen reader; các UI pending còn mở.
+
+## 15. Phụ thuộc backend
 
 | Phụ thuộc | Cần cho | Ảnh hưởng nếu thiếu |
 |---|---|---|
 | Router customer Promotion (`promotion-me`, `promotion-discovery`) chuyển từ `dev-auth` sang `authenticated@file` | Đã làm 07/10/2026 (cùng Checkout) | Trước đó voucher của người mua dùng identity cố định. `promotion-admin` đã chuyển ở bước 10; Cart, Review, Auth, User, Notification, Product cũng dùng gateway-auth |
 | API tìm người dùng và API liệt kê voucher đã cấp | Cấp voucher (bước 10) | Admin phải dán UUID người dùng; UI chỉ hiển thị kết quả lần cấp vừa rồi, không có danh sách người đã nhận |
-| `user-service` build được | Hồ sơ, địa chỉ, checkout | `go build` thiếu entry `go.sum` cho `golang.org/x/crypto/*` (sha3, md4, pbkdf2) |
-| Cart và Promotion không chiếm cùng cổng host | Live bước 6 | Compose cùng publish 8085, đã tái hiện lỗi bind; cần cổng host riêng hoặc bỏ publish Cart |
-| Stripe test keys, webhook và Order/Payment/CDC chạy | Live mua hàng thật bước 6 | Compose đang có khóa mẫu; Payment Gate 3 chưa chạy Stripe Sandbox E2E. README module Payment còn ghi sai là chưa có runtime |
+| `user-service` build được | Hồ sơ, địa chỉ, checkout | Runtime đã healthy; bootstrap/address/checkout live qua 11/10/2026 |
+| Cart và Promotion không chiếm cùng cổng host | Live bước 6 | Stack local đã chạy đồng thời, Cart/Promotion qua gateway thành công 11/10/2026 |
+| Stripe test keys, webhook và Order/Payment/CDC chạy | Live mua hàng thật bước 6 | Đã cấu hình local và chạy Sandbox E2E 11/10/2026; success/3DS/retry/refund qua |
 | Product Service và gateway chạy được trong docker-compose | 4.6 | Đạt: `GET /api/v1/products` qua gateway trả 401/403/200 đúng theo token; dữ liệu mẫu tạo bằng `frontend/scripts/seed-dev-catalog.sh` |
-| Debezium cho Review outbox; Notification chạy với profile `notification` (+ `notifctl migrate up`) | Bước 9 trên local | Không có CDC thì `REVIEW_REPLIED` không tự tới hộp thư (đã chuyển tay khi kiểm chứng); thiếu Notification thì chuông và `/notifications` báo lỗi/ẩn số |
+| Debezium cho Review outbox; Notification chạy với profile `notification` (+ `notifctl migrate up`) | Bước 9 trên local | Đã đăng ký connector từ repo; reply/removal tự tới Notification ngày 11/10/2026 |
+| Delivery runtime phát fact giao hàng hợp lệ | Buyer return và nút review từ đơn mới COMPLETED | Repo/compose chưa có runtime; PAID/dispatch không đủ để chứng nhận giao hàng |
 | MFA assertion cho `ADMIN` | Triển khai Inventory admin lên production | Frontend và live local bước 3 đã hoàn thành; Auth/gateway production vẫn phải phát hành và xác thực MFA assertion |
 | API tải media cho Product | Bước 2 (tab media) | Admin phải nhập `storage_key` tay |
 | API tra cứu product chính xác theo slug hoặc idempotency key cho tạo product | Bước 2 (khôi phục sau timeout) | Không thể tự động xác minh `POST` đã thành công; UI không tự retry và yêu cầu kiểm tra danh sách |

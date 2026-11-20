@@ -13,6 +13,7 @@ import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -124,6 +125,49 @@ public class IndexAdmin {
     }
 
     /**
+     * Moves every alias of several indices in one {@code _aliases} request, so there is no
+     * instant at which the product and category aliases point at different generations, nor
+     * two indices holding the same write alias.
+     *
+     * @param targets physical index to the aliases it must hold afterwards
+     */
+    public void swapAliasesAtomically(Map<String, List<String>> targets) throws IOException {
+        List<Action> actions = new ArrayList<>();
+        targets.values().forEach(aliases -> aliases.forEach(alias ->
+                actions.add(Action.of(a -> a.remove(r -> r.index("*").alias(alias).mustExist(false))))));
+        targets.forEach((index, aliases) -> aliases.forEach(alias ->
+                actions.add(Action.of(a -> a.add(add -> add.index(index).alias(alias))))));
+        client.indices().updateAliases(builder -> builder.actions(actions));
+        log.info("atomic alias cutover: {}", targets);
+    }
+
+    /** Every physical index of a template, {@code <template>_v<n>}, in no particular order. */
+    public List<String> versionedIndices(String template) throws IOException {
+        var indices = client.indices().get(builder -> builder
+                .index(template + "_v*")
+                .ignoreUnavailable(true)
+                .allowNoIndices(true));
+        return indices.result().keySet().stream()
+                .filter(name -> VERSIONED.matcher(name).matches())
+                .filter(name -> name.substring(0, name.lastIndexOf("_v")).equals(template))
+                .toList();
+    }
+
+    /** Store size of the primary shards of an index or alias; 0 when it does not exist. */
+    public long primaryStoreBytes(String indexOrAlias) throws IOException {
+        try {
+            var stats = client.indices().stats(builder -> builder.index(indexOrAlias).metric("store"));
+            var primaries = stats.all().primaries();
+            return primaries == null || primaries.store() == null ? 0L : primaries.store().sizeInBytes();
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
+            if (e.status() == 404) {
+                return 0L;
+            }
+            throw e;
+        }
+    }
+
+    /**
      * Reads one document from an explicit physical index. Used by the reindex build, which
      * must enrich from the index it just created rather than from the live alias.
      */
@@ -143,5 +187,22 @@ public class IndexAdmin {
 
     public long countDocuments(String indexOrAlias) throws IOException {
         return client.count(builder -> builder.index(indexOrAlias)).count();
+    }
+
+    /** A retired cards generation must outlive PITs that buyers are still renewing. */
+    public boolean hasOpenSearchContexts(String index) throws IOException {
+        var stats = client.indices().stats(b -> b.index(index).metric("search"));
+        if (stats.shards().failed().intValue() > 0) throw new IOException("incomplete search-context stats for " + index);
+        var total = stats.all().total();
+        return total == null || total.search() == null || total.search().openContexts() == null
+                || total.search().openContexts() > 0;
+    }
+
+    /** Compare catalog coverage independently of retained/purged deletion guards. */
+    public long countNonDeletedDocuments(String index) throws IOException {
+        var response = client.count(b -> b.index(index)
+                .query(q -> q.term(t -> t.field("is_deleted").value(false))));
+        if (response.shards().failed().intValue() != 0) throw new IOException("incomplete catalog count on " + index);
+        return response.count();
     }
 }

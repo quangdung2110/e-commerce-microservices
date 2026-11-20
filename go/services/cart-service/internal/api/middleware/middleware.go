@@ -3,16 +3,19 @@
 package middleware
 
 import (
+	"context"
+	obs "github.com/ecommerce/observability"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"cart-service/internal/api/dto/response"
 	"cart-service/internal/domain"
+	"cart-service/internal/reqctx"
 )
 
 // Header and context keys.
@@ -31,13 +34,21 @@ const (
 	maxIdempotencyKeyLength = 128
 )
 
-// RequestID propagates or mints a correlation id for every request.
+// RequestID normalizes the request id and publishes it, with the inbound W3C trace context, on the
+// request's context.Context so the Product client can pass them on (contracts ADR-002). A missing
+// or malformed X-Request-Id is replaced, never rejected; Cart has no tracer, so it never invents a
+// traceparent.
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader(HeaderRequestID)
-		if len(requestID) < 8 || len(requestID) > 128 {
-			requestID = uuid.NewString()
-		}
+		c.Request = obs.EnsureContext(c.Request)
+		traceparent := obs.Traceparent(c.Request.Context())
+		tracestate := reqctx.ValidTracestate(c.GetHeader(reqctx.HeaderTracestate), traceparent)
+		requestID := reqctx.NormalizeRequestID(c.GetHeader(HeaderRequestID), traceparent)
+
+		ctx := reqctx.WithRequestID(c.Request.Context(), requestID)
+		ctx = reqctx.WithTrace(ctx, traceparent, tracestate)
+		c.Request = c.Request.WithContext(ctx)
+
 		c.Set(ctxRequestID, requestID)
 		c.Header(HeaderRequestID, requestID)
 		c.Next()
@@ -122,6 +133,9 @@ func Logging(logger *zap.Logger) gin.HandlerFunc {
 			zap.Duration("latency", time.Since(start)),
 			zap.String("request_id", GetRequestID(c)),
 		}
+		if traceID := reqctx.TraceID(reqctx.Traceparent(c.Request.Context())); traceID != "" {
+			fields = append(fields, zap.String("trace_id", traceID))
+		}
 		if identity := GetIdentity(c); identity.CartID != "" {
 			fields = append(fields, zap.String("cart_id", identity.CartID), zap.Int("bucket", identity.Bucket))
 		}
@@ -158,13 +172,37 @@ func Recovery(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-// AbortWithProblem writes a problem document and stops the chain.
+// defaultRetryAfterSeconds is the wait advertised on a retryable 503 when Cart has no better estimate
+// (contracts ADR-005). A 429 sets its own value from the rate limiter's window.
+const defaultRetryAfterSeconds = 2
+
+// AbortWithProblem writes a problem document and stops the chain. Every retryable 503 carries
+// Retry-After (contracts ADR-005); a 503 that is not retryable does not.
 func AbortWithProblem(c *gin.Context, problem response.Problem) {
 	c.Header("Content-Type", response.ProblemContentType)
+	if problem.Status == http.StatusServiceUnavailable && problem.Retryable && c.Writer.Header().Get("Retry-After") == "" {
+		c.Header("Retry-After", strconv.Itoa(defaultRetryAfterSeconds))
+	}
 	c.AbortWithStatusJSON(problem.Status, problem)
 }
 
 // AbortWithDomainError writes the problem document for a domain error.
 func AbortWithDomainError(c *gin.Context, err *domain.Error) {
 	AbortWithProblem(c, response.FromDomainError(err, c.Request.URL.Path, GetRequestID(c)))
+}
+
+// CallerDeadline bounds a read-only internal request by the time its caller announced in
+// X-Request-Timeout-Ms (contracts ADR-003): once the caller has stopped waiting, Redis and Product
+// calls made for the request are cancelled instead of finishing for nobody. A missing or malformed
+// header means no deadline. Attach it only to routes that write nothing; an abandoned write could be
+// left half done.
+func CallerDeadline() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if timeout, ok := reqctx.TimeoutFromHeader(c.GetHeader(reqctx.HeaderTimeoutMs)); ok {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+		}
+		c.Next()
+	}
 }

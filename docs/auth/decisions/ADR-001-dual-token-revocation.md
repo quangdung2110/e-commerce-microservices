@@ -6,7 +6,11 @@ date: 2026-08-27
 decision_owners:
   - Auth Service team
 supersedes: null
-evidence: []
+evidence:
+  - go/services/auth-service/internal/domain/service/revoker.go
+  - go/services/auth-service/internal/infrastructure/redis/revocation_store.go
+  - go/services/gateway-auth/internal/infrastructure/redis/revocation_store.go
+  - go/services/auth-service/test/integration/http_flow_test.go
 ---
 
 # ADR-001 — Dual token and access-token revocation
@@ -39,5 +43,18 @@ trở thành security/availability trade-off cần runbook.
 
 ## Migration impact and verification
 
-Cần contract claim/JWKS, cache policy, integration test revoke và observability.
-Chưa có implementation evidence trong phạm vi refactor này.
+Đã implement: `Revoker` ghi `denylist:{jti}` và `revoked_before` (Unix seconds), `gateway-auth`
+đọc cả hai trong một pipeline và fail closed khi Redis lỗi. Hai chi tiết đã chốt khi
+implement:
+
+- TTL của cả hai key là access TTL + clock skew (15m30s), không phải "thời gian còn lại đến
+  `exp`": Gateway chỉ chuyển `jti` chứ không chuyển `exp`, nên Auth dùng cận trên. Entry có thể
+  sống lâu hơn token vài phút, không bao giờ ngắn hơn.
+- `revoked_before` có độ phân giải 1 giây và Gateway từ chối `iat <= revoked_before`. Token cấp
+  trong cùng giây với lần thu hồi bị từ chối: đây là chủ ý, vì `iat` cũng chỉ có độ phân giải
+  giây nên không thể phân biệt token cấp ngay trước hay ngay sau lúc thu hồi, và bên an toàn
+  là từ chối cả hai. Logout-all, đổi mật khẩu, đổi email và xóa account đều buộc đăng nhập lại,
+  nên chỉ client đăng nhập lại trong vòng một giây mới gặp một lần `401` rồi refresh.
+
+Test: integration `http_flow_test.go` (denylist `jti`, revoke marker, fail closed); lỗi Redis
+sau commit xem [ADR-006](./ADR-006-publish-before-revocation-marker.md).

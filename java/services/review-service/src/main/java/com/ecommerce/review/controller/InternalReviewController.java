@@ -20,8 +20,8 @@ import java.util.UUID;
 
 /**
  * The internal surface: the PDP summary for Product Detail BFF and the rating export for
- * Search. Neither route is exposed through the API Gateway, and each has its own bearer
- * token list.
+ * Search. Neither route is exposed through the API Gateway, and each has its own caller
+ * allowlist (X-Service-Identity, contracts ADR-004).
  */
 @RestController
 @RequestMapping("/internal/v1/reviews")

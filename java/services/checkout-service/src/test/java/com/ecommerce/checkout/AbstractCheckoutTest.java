@@ -5,6 +5,7 @@ import com.ecommerce.checkout.resilience.DependencyGuard;
 import com.ecommerce.checkout.support.FakeProduct;
 import com.ecommerce.checkout.support.Fixtures;
 import com.ecommerce.checkout.support.MutableClock;
+import com.ecommerce.checkout.support.RecordedSpans;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
@@ -16,8 +17,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
+import org.springframework.boot.micrometer.metrics.test.autoconfigure.AutoConfigureMetrics;
+import org.springframework.boot.micrometer.tracing.test.autoconfigure.AutoConfigureTracing;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -52,7 +55,11 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  * its own user, so tests share Redis without sharing an active pointer.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureObservability
+@AutoConfigureWebTestClient
+@AutoConfigureMetrics
+@AutoConfigureTracing
+@org.springframework.boot.autoconfigure.ImportAutoConfiguration(exclude =
+        org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.otlp.OtlpTracingAutoConfiguration.class)
 @Import(AbstractCheckoutTest.TestClockConfig.class)
 @TestPropertySource(properties = {
         "checkout.keys.token-hmac-keys=" + AbstractCheckoutTest.HMAC_KEYS,
@@ -92,12 +99,20 @@ public abstract class AbstractCheckoutTest {
 
     @DynamicPropertySource
     static void environment(DynamicPropertyRegistry registry) {
+        // A new context runs application warm-up before JUnit resets the fixtures.
+        UPSTREAMS.resetAll();
+        PRODUCT.reset();
+        stubPromotionReadiness();
+        // Cart's real contract returns an empty snapshot for an absent user. Exercise the
+        // response/templating path of this fake during startup too, rather than its default 404.
+        UPSTREAMS.stubFor(get(urlEqualTo("/internal/v1/carts/00000000-0000-0000-0000-000000000000/checkout-snapshot"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/json").withBody("{\"items\":[]}")));
         String http = "http://localhost:" + UPSTREAMS.port();
         registry.add("checkout.redis-url", () -> "redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379));
         registry.add("checkout.endpoints.cart-base-url", () -> http);
         registry.add("checkout.endpoints.user-base-url", () -> http);
         registry.add("checkout.endpoints.inventory-base-url", () -> http);
-        registry.add("checkout.endpoints.promotion-base-url", () -> http);
+        registry.add("checkout.endpoints.promotion-base-url", () -> System.getProperty("p1.live-promotion-url", http));
         registry.add("checkout.endpoints.order-base-url", () -> http);
         registry.add("checkout.endpoints.product-grpc-target", () -> "localhost:" + PRODUCT.port());
     }
@@ -108,6 +123,12 @@ public abstract class AbstractCheckoutTest {
         @Primary
         MutableClock testClock() {
             return new MutableClock();
+        }
+
+        /** Boot adds every SpanProcessor bean to the tracer provider; this one keeps the spans for assertions. */
+        @Bean
+        RecordedSpans recordedSpans() {
+            return new RecordedSpans();
         }
     }
 
@@ -121,6 +142,8 @@ public abstract class AbstractCheckoutTest {
     protected MutableClock clock;
     @Autowired
     protected ReactiveStringRedisTemplate redis;
+    @Autowired
+    protected RecordedSpans spans;
 
     /** Ports of the contexts already warmed up; contexts are cached across test classes. */
     private static final java.util.Set<Integer> WARMED = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -131,6 +154,7 @@ public abstract class AbstractCheckoutTest {
     @BeforeEach
     void resetWorld() {
         UPSTREAMS.resetAll();
+        stubPromotionReadiness();
         PRODUCT.reset();
         clock.reset();
         for (Dependency dependency : Dependency.values()) {
@@ -150,6 +174,12 @@ public abstract class AbstractCheckoutTest {
     }
 
     // ------------------------------------------------------------------ stubs
+
+    protected static void stubPromotionReadiness() {
+        UPSTREAMS.stubFor(get(urlEqualTo("/actuator/health/readiness"))
+                .willReturn(aResponse().withStatus(200).withBody("{\"status\":\"UP\"}")));
+        UPSTREAMS.stubFor(post(urlEqualTo(PROMOTION_OPTIONS_PATH)).willReturn(json(200, Fixtures.voucherOptions(List.of()))));
+    }
 
     /** Every provider healthy, the default cart and a PAYMENT_READY Order. */
     protected void stubHealthy() {

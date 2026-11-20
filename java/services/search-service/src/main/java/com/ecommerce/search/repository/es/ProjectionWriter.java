@@ -19,13 +19,16 @@ import java.util.Map;
  * <p>Every write goes through a canonical painless script so the revision guard runs
  * inside Elasticsearch with no read-modify-write gap ({@code SEARCH-INV-004}), and every
  * write goes through a write alias ({@code SEARCH-INV-007}) — except the catch-up phase of
- * a reindex, which is why the target index is a parameter rather than a constant.
+ * a reindex and its snapshot/tombstone build, which is why the target index is a parameter rather than a constant.
  *
  * <p>Availability and review writes never use {@code scripted_upsert}: a source that does
  * not own the catalog must not be able to create a document ({@code SEARCH-INV-005}).
  */
 @Component
 public class ProjectionWriter {
+
+    /** Refresh-and-repeat rounds for an update-by-query that hit version conflicts. */
+    static final int MAX_CONFLICT_RETRIES = 3;
 
     private final ElasticsearchClient client;
     private final PainlessScripts scripts;
@@ -54,7 +57,15 @@ public class ProjectionWriter {
                         .upsert(Map.of()))));
     }
 
-    /** Tombstones one SKU. Never upserts: a delete must not resurrect a purged document. */
+    /** Full-reindex-only copy of an established SKU/category tombstone into a new generation. */
+    public BulkOperation preserveTombstone(String index, String id, Map<String, Object> fields, String revisionField) {
+        Script script = script(PainlessScripts.REINDEX_TOMBSTONE_COPY, Map.of(
+                "fields", JsonData.of(fields), "revision_field", JsonData.of(revisionField)));
+        return BulkOperation.of(op -> op.update(u -> u.index(index).id(id)
+                .action(a -> a.script(script).scriptedUpsert(true).upsert(Map.of()))));
+    }
+
+    /** Tombstones one SKU from an event. A missing target remains a no-op, never an upsert. */
     public BulkOperation catalogTombstone(String index, String skuId, long catalogRevision,
                                           String deletedAt, String indexedAt, String eventId) {
         Script script = script(PainlessScripts.CATALOG_TOMBSTONE, Map.of(
@@ -148,14 +159,28 @@ public class ProjectionWriter {
                 "product_rating_count", JsonData.of(ratingCount),
                 "indexed_at", JsonData.of(indexedAt),
                 "event_id", JsonData.of(eventId == null ? "" : eventId)));
-        return client.updateByQuery(builder -> builder
-                .index(index)
-                .query(query -> query.term(term -> term.field("product_id").value(productId)))
-                .script(script)
-                .conflicts(Conflicts.Proceed)
-                .requestsPerSecond(properties.bulk().taskRequestsPerSecond())
-                .refresh(false)
-                .timeout(timeout -> timeout.time(properties.query().updateByQueryTimeout().toMillis() + "ms")));
+        UpdateByQueryResponse response = null;
+        for (int attempt = 0; attempt <= MAX_CONFLICT_RETRIES; attempt++) {
+            response = client.updateByQuery(builder -> builder
+                    .index(index)
+                    .query(query -> query.term(term -> term.field("product_id").value(productId)))
+                    .script(script)
+                    .conflicts(Conflicts.Proceed)
+                    .requestsPerSecond(properties.bulk().taskRequestsPerSecond())
+                    .refresh(false)
+                    .timeout(timeout -> timeout.time(properties.query().updateByQueryTimeout().toMillis() + "ms")));
+            if (response.versionConflicts() == null || response.versionConflicts() == 0) {
+                return response;
+            }
+            // An update-by-query works on the last refreshed view of the index. A SKU written
+            // since (a catalog or availability update inside the refresh interval) is seen at
+            // its old version, so its update conflicts and, with conflicts=proceed, is silently
+            // dropped. The guard makes repeating safe; refreshing first makes the repeat see the
+            // current version.
+            client.indices().refresh(refresh -> refresh.index(index));
+        }
+        throw new IOException("rating update for product " + productId + " still had version conflicts after "
+                + MAX_CONFLICT_RETRIES + " refreshes: " + response.versionConflicts());
     }
 
     private Script script(String name, Map<String, JsonData> params) {

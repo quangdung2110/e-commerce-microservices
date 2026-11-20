@@ -97,12 +97,12 @@ func (p *fakeProcessor) Process(ctx context.Context, d entity.Delivery, workerID
 	return nil
 }
 
-type fakeBreaker struct{ state int }
+type fakeBreaker struct{ state atomic.Int32 }
 
 func (f *fakeBreaker) Allow() bool { return true }
 func (f *fakeBreaker) Success()    {}
 func (f *fakeBreaker) Failure()    {}
-func (f *fakeBreaker) State() int  { return f.state }
+func (f *fakeBreaker) State() int  { return int(f.state.Load()) }
 
 func rows(lane entity.Lane, ch entity.Channel, n int) []entity.Delivery {
 	out := make([]entity.Delivery, n)
@@ -188,7 +188,8 @@ func TestPoolFinishesInFlightRowsOnStop(t *testing.T) {
 func TestCriticalEmailSkipsClaimWhileHalfOpen(t *testing.T) {
 	deliv := &fakeDeliveries{queue: rows(entity.LaneCritical, entity.ChannelEmail, 1)}
 	proc := &fakeProcessor{}
-	br := &fakeBreaker{state: breaker.StateHalfOpen}
+	br := &fakeBreaker{}
+	br.state.Store(breaker.StateHalfOpen)
 	cfg := testConfig()
 	cfg.Lane.EmailWorkers, cfg.Lane.InAppWorkers = 1, 0
 	cfg.OtherLanesInProcess = true
@@ -203,7 +204,7 @@ func TestCriticalEmailSkipsClaimWhileHalfOpen(t *testing.T) {
 	deliv.mu.Unlock()
 
 	// Breaker closes → claiming resumes.
-	br.state = breaker.StateClosed
+	br.state.Store(breaker.StateClosed)
 	require.Eventually(t, func() bool {
 		proc.mu.Lock()
 		defer proc.mu.Unlock()
@@ -219,7 +220,9 @@ func TestCriticalProbesWhenAlone(t *testing.T) {
 	cfg := testConfig()
 	cfg.Lane.EmailWorkers, cfg.Lane.InAppWorkers = 1, 0
 	cfg.OtherLanesInProcess = false
-	pool := NewPool(entity.LaneCritical, cfg, Deps{Store: &fakeStore{deliv: deliv}, Processor: proc, Breaker: &fakeBreaker{state: breaker.StateHalfOpen}})
+	br := &fakeBreaker{}
+	br.state.Store(breaker.StateHalfOpen)
+	pool := NewPool(entity.LaneCritical, cfg, Deps{Store: &fakeStore{deliv: deliv}, Processor: proc, Breaker: br})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { pool.Run(ctx); close(done) }()

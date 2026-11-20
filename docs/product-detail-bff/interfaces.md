@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-interfaces
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -38,8 +38,10 @@ quotation, reserve hoặc số lượng còn bán chính xác ở checkout.
 
 `404` khi Product không tồn tại, không catalog-active hoặc slug không khớp pattern của
 contract (khi đó BFF không gọi Product; pattern và độ dài tối đa 180 trùng với
-PRODUCT-BR-013 của Product). Product không sẵn sàng, hoặc deadline còn dưới 100 ms trước
-khi gọi Product, là `503`;
+PRODUCT-BR-013 của Product). Gateway chuyển cả prefix `/api/v1/storefront/products/` tới BFF,
+nên đường dẫn không phải một slug (rỗng, có `/` cuối, nhiều segment) cũng là slug sai pattern
+và nhận cùng `404` problem `no-store`, không phải lỗi mặc định của framework. Product không
+sẵn sàng, hoặc deadline còn dưới 100 ms trước khi gọi Product, là `503`;
 availability query unavailable không biến request thành `503`, mà trả
 `UNKNOWN` cho SKU bị ảnh hưởng. Review timeout/lỗi cũng không biến request thành `503`:
 BFF trả `review_section.status = UNAVAILABLE` và không trả aggregate giả bằng 0. Review
@@ -48,9 +50,10 @@ trả thành công nhưng chưa có dữ liệu là `AVAILABLE` với aggregate 
 `404` và `503` dùng `application/problem+json` theo
 [HTTP convention](../../contracts/conventions/http.md#error): `404` có
 `code = PRODUCT_DETAIL_NOT_FOUND`, `retryable = false`; `503` có
-`code = PRODUCT_DETAIL_UNAVAILABLE`, `retryable = true` và `trace_id`. `503` kèm
-`Retry-After` khi circuit breaker của Product đang mở (thời gian mở còn lại, làm tròn lên
-giây). `200` có ít nhất một SKU `UNKNOWN` hoặc `review_section.status = UNAVAILABLE`, mọi
+`code = PRODUCT_DETAIL_UNAVAILABLE`, `retryable = true` và `trace_id`. `503` luôn kèm
+`Retry-After`: thời gian mở còn lại (làm tròn lên giây) khi circuit breaker của Product đang mở, ngược lại `2` giây
+khi nguyên nhân là timeout, lỗi kết nối, bulkhead đầy hoặc hết budget
+([contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md), [ADR-010](decisions/ADR-010-retry-after-on-every-503.md)). `200` có ít nhất một SKU `UNKNOWN` hoặc `review_section.status = UNAVAILABLE`, mọi
 `404` và mọi `503` mang `Cache-Control: no-store`; `200` đầy đủ theo cache policy của
 storefront, mặc định `no-store` ([data.md](./data.md#cache-boundary)).
 
@@ -63,7 +66,7 @@ media, report và admin moderation dùng API Review trực tiếp qua Gateway.
 |---|---|---|---|
 | Buyer catalog read | Product | `GET /internal/v1/product-details/{slug}` | mTLS; `BuyerProductDetail` đã resolve category path, thuộc tính, trục biến thể, media 20/10; không có stock field, không ETag |
 | Batch availability read | Inventory | `POST /internal/inventory/v1/sku-availabilities:batch-get` | mTLS, Product Detail BFF only; one item mỗi SKU, advisory state only |
-| PDP Review read | Review | `GET /internal/v1/reviews/products/{product_id}/pdp-summary?preview_limit=3` | mTLS + `Authorization: Bearer`; aggregate + preview `APPROVED`; optional enrichment |
+| PDP Review read | Review | `GET /internal/v1/reviews/products/{product_id}/pdp-summary?preview_limit=3` | mTLS + `X-Service-Identity`; aggregate + preview `APPROVED`; optional enrichment |
 
 Canonical Inventory contract nằm tại
 [`contracts/http/inventory/read/v1/openapi.yaml`](../../contracts/http/inventory/read/v1/openapi.yaml).
@@ -75,11 +78,16 @@ catalog.
 
 | Header | Product | Inventory | Review |
 |---|---|---|---|
-| `X-Service-Identity: product-detail-bff` | Có (Product trả `401` nếu thiếu) | Có | Có |
-| `Authorization: Bearer <PDP_REVIEW_SERVICE_TOKEN>` | — | — | Có; Review trả `401` nếu thiếu, `403` nếu token không thuộc `REVIEW_INTERNAL_PDP_TOKENS` |
+| `X-Service-Identity: product-detail-bff` | Có (Product trả `401` nếu thiếu) | Có | Có (Review trả `401` nếu thiếu, `403` nếu không thuộc `REVIEW_INTERNAL_PDP_CALLERS`) |
 | `traceparent`/`tracestate` | Có | Có | Có |
-| `X-Request-Id` (request ID đã chuẩn hóa) | Có | — | Có |
+| `X-Request-Id` (request ID đã chuẩn hóa) | Có | Có | Có |
 | `X-Correlation-ID` (cùng giá trị request ID) | — | Có (bắt buộc) | — |
+| `X-Request-Timeout-Ms` (= timeout hiệu dụng của lời gọi, [contracts ADR-003](../../contracts/decisions/ADR-003-deadline-propagation.md)) | Có | Có | Có |
+
+Khi catalog cache bật ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)), một lời
+gọi Product phục vụ mọi request cùng slug tới trong lúc nó chạy; nó mang `X-Request-Id` và
+`traceparent` của request khởi tạo, nên request gộp vào không xuất hiện riêng trong log
+Product. Request được phục vụ từ cache không gọi Product.
 
 **Request ID đã chuẩn hóa.** BFF chỉ dùng `X-Request-Id` từ gateway/client khi giá trị
 khớp `^[A-Za-z0-9._:-]{8,128}$`; nếu thiếu hoặc không khớp, BFF dùng trace ID (32 ký tự
@@ -88,10 +96,9 @@ vậy client không thể khiến Inventory hay Review trả `400` (hai contract
 8–128), tức không thể cố ý làm PDP degrade hay bắn alert cấu hình
 ([ADR-007](./decisions/ADR-007-hot-path-clarifications.md)).
 
-**Review token.** Mesh `AuthorizationPolicy` theo principal là lớp kiểm soát chính; Review
-còn giữ static bearer allowlist làm defense-in-depth, nên BFF phải gửi token lấy từ secret
-manager qua `PDP_REVIEW_SERVICE_TOKEN`. Xoay vòng: thêm token mới vào
-`REVIEW_INTERNAL_PDP_TOKENS`, roll BFF sang token mới, rồi gỡ token cũ khỏi Review.
+**Review identity.** Mesh `AuthorizationPolicy` theo principal là lớp kiểm soát chính; Review
+còn kiểm `X-Service-Identity` với allowlist của nhóm route PDP làm defense-in-depth (không còn bearer
+token và không còn secret để xoay vòng; [ADR-009](./decisions/ADR-009-service-identity-replaces-review-bearer-token.md)).
 `preview_limit` lấy từ `PDP_REVIEW_PREVIEW_LIMIT` (mặc định 3, tối đa 5 theo public
 contract).
 
@@ -102,7 +109,7 @@ Item thiếu hoặc item `UNKNOWN` chỉ degrade SKU tương ứng thành `UNKNO
 không cho kết quả hợp lệ (timeout, `5xx`, `4xx`, sai contract, circuit open, bulkhead đầy,
 hết budget) degrade mọi SKU thành `UNKNOWN`. Item thiếu hoặc item cho SKU không được yêu
 cầu vi phạm cam kết "exactly one item per SKU" của Inventory: BFF không bỏ cả batch nhưng
-ghi `contract_violation` ở mức item để lỗi này không bị che
+ghi vi phạm mức item (counter và dòng log kèm request ID) để lỗi này không bị che
 ([operations.md](./operations.md#health-và-degradation)). Khi Inventory hoặc Review bị tắt
 bằng cờ cấu hình, BFF không gọi dependency đó (outcome `disabled`, xem
 [operations.md](./operations.md#cấu-hình)).

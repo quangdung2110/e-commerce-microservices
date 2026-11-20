@@ -16,15 +16,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * scheme trong contracts/http/product/v1/openapi.yaml: {@code searchServiceMtls}
  * cho reindex và {@code productDetailBffMtls} cho buyer-read (ADR-015).
  *
- * <p>Hai case chéo là lý do tồn tại của test này: Product Detail BFF không được
- * đọc export chứa cả Product chưa công bố, và Search không được đi vòng qua
- * buyer-read.
+ * <p>Các case chéo là lý do tồn tại của test này: Product Detail BFF không được
+ * đọc export chứa cả Product chưa công bố, Search không được đi vòng qua
+ * buyer-read, và Promotion (chỉ validate một Product trước khi lưu markdown rule)
+ * không được đọc export toàn catalog.
  */
 class TrustedIdentityFilterTest {
 
     private static final String IDENTITY_HEADER = "X-Service-Identity";
     private static final String SEARCH = "search-service";
     private static final String BFF = "product-detail-bff";
+    private static final String PROMOTION = "promotion-service";
 
     private static final String PRODUCT_EXPORT = "/internal/v1/products/export";
     private static final String CATEGORY_EXPORT = "/internal/v1/categories/export";
@@ -65,6 +67,24 @@ class TrustedIdentityFilterTest {
     @DisplayName("Search không đi vòng qua buyer-read")
     void searchCannotReachBuyerRead() {
         assertThat(statusOf(BUYER_READ, SEARCH)).isEqualTo(HttpStatus.FORBIDDEN.value());
+    }
+
+    @Test
+    @DisplayName("Promotion chỉ đọc được snapshot một Product, không đọc được export")
+    void promotionReachesSnapshotOnly() {
+        assertThat(statusOf(SNAPSHOT, PROMOTION)).isEqualTo(HttpStatus.OK.value());
+        assertThat(statusOf(PRODUCT_EXPORT, PROMOTION)).isEqualTo(HttpStatus.FORBIDDEN.value());
+        assertThat(statusOf(CATEGORY_EXPORT, PROMOTION)).isEqualTo(HttpStatus.FORBIDDEN.value());
+        assertThat(statusOf(BUYER_READ, PROMOTION)).isEqualTo(HttpStatus.FORBIDDEN.value());
+    }
+
+    @Test
+    @DisplayName("Đường dẫn giống snapshot nhưng không đúng dạng không mở quyền snapshot")
+    void snapshotGroupMatchesExactShapeOnly() {
+        assertThat(statusOf("/internal/v1/products/export/snapshot/extra", PROMOTION))
+                .isEqualTo(HttpStatus.FORBIDDEN.value());
+        assertThat(statusOf("/internal/v1/categories/0192f0c0-0000-7000-8000-000000000000/snapshot", PROMOTION))
+                .isEqualTo(HttpStatus.FORBIDDEN.value());
     }
 
     @Test

@@ -157,7 +157,10 @@ func TestRequestVerificationSucceedsForAnUnknownAddress(t *testing.T) {
 	require.Empty(t, h.publisher.types())
 }
 
-func TestRequestVerificationStopsAfterTheResendLimit(t *testing.T) {
+// Past the per-account resend budget the endpoint still answers 202 and simply
+// sends nothing: a 429 would exist only for an address with a pending account,
+// which is exactly what the endpoint must not disclose.
+func TestRequestVerificationStaysSilentAfterTheResendLimit(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -166,11 +169,16 @@ func TestRequestVerificationStopsAfterTheResendLimit(t *testing.T) {
 		Password:        testPassword,
 		ConfirmPassword: testPassword,
 	}))
+	sentAtRegistration := len(h.publisher.types())
 
 	// The policy allows three resends inside the window.
 	for i := 0; i < 3; i++ {
 		require.NoError(t, h.registration.RequestVerification(ctx, testEmail))
 	}
-	err := h.registration.RequestVerification(ctx, testEmail)
-	require.ErrorIs(t, err, apperr.ErrRateLimited)
+	sentWithinBudget := len(h.publisher.types())
+	require.Equal(t, sentAtRegistration+3, sentWithinBudget)
+
+	require.NoError(t, h.registration.RequestVerification(ctx, testEmail),
+		"the answer must not differ from an unknown address")
+	require.Equal(t, sentWithinBudget, len(h.publisher.types()), "nothing is sent past the budget")
 }

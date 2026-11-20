@@ -60,7 +60,14 @@ public final class CategoryDtos {
     public record CategoryPathSegment(UUID categoryId, String name, String slug) {
     }
 
-    /** Item của internal category export: path và is_leaf dẫn xuất tại thời điểm đọc. */
+    /** Descriptor facet của một attribute được map vào category (ADR-019). */
+    public record FacetDefinitionResponse(String code, String label, AttributeValueType type) {
+    }
+
+    /**
+     * Item của internal category export: path, is_leaf và facet_definitions dẫn xuất tại
+     * thời điểm đọc, cùng giá trị với {@code category-upserted}.
+     */
     public record CategoryExportResponse(UUID categoryId,
                                          UUID parentId,
                                          String name,
@@ -68,6 +75,7 @@ public final class CategoryDtos {
                                          long categoryRevision,
                                          List<CategoryPathSegment> path,
                                          boolean isLeaf,
+                                         List<FacetDefinitionResponse> facetDefinitions,
                                          Instant updatedAt) {
     }
 

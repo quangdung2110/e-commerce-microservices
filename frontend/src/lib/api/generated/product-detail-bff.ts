@@ -187,7 +187,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Cùng quy tắc slug của Product (PRODUCT-BR-013). Slug không khớp pattern hoặc dài hơn 180 trả 404 mà BFF không gọi Product. */
+                /** @description Cùng quy tắc slug của Product (PRODUCT-BR-013). Slug không khớp pattern hoặc dài hơn 180 trả 404 mà BFF không gọi Product. Gateway chuyển cả prefix /api/v1/storefront/products/ tới BFF, nên đường dẫn không phải một slug (rỗng, có / cuối, nhiều segment) cũng là slug sai pattern và nhận cùng 404. */
                 slug: string;
             };
             cookie?: never;
@@ -204,7 +204,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProductDetailResponse"];
                 };
             };
-            /** @description PRODUCT_DETAIL_NOT_FOUND; Product không tồn tại, không catalog-active hoặc slug không khớp pattern. retryable=false. Luôn no-store để CDN không giữ 404 sau khi Product được activate (404 có thể bị cache heuristic theo RFC 9111). */
+            /** @description PRODUCT_DETAIL_NOT_FOUND; Product không tồn tại, không catalog-active hoặc slug không khớp pattern (gồm đường dẫn dưới prefix PDP không phải một slug). retryable=false. Luôn no-store để CDN không giữ 404 sau khi Product được activate (404 có thể bị cache heuristic theo RFC 9111). */
             404: {
                 headers: {
                     "Cache-Control"?: "no-store";

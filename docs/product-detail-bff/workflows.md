@@ -1,8 +1,8 @@
 ---
 doc_id: product-detail-bff-workflows
 service: product-detail-bff
-scope: target
-status: proposed
+scope: current
+status: implemented
 owners:
   - Storefront team
 ---
@@ -13,22 +13,25 @@ owners:
 
 1. Gateway định tuyến request public (anonymous, rate profile `public-read`) tới BFF.
    BFF đặt deadline PDP 1 000 ms tính từ lúc nhận request và chuẩn hóa request ID
-   (`X-Request-Id` hợp lệ, nếu không thì trace ID). Slug không khớp pattern hoặc dài hơn
-   180 thì trả `404` ngay.
-2. Nếu deadline còn dưới 100 ms thì trả `503` mà không gọi Product. Ngược lại BFF gọi
-   Product internal buyer-read theo slug với timeout `min(400 ms, deadline còn lại − 50 ms)`.
+   (`X-Request-Id` hợp lệ, nếu không thì trace ID). Slug không khớp pattern hoặc dài hơn 180 thì trả `404` ngay (kể cả đường dẫn dưới prefix PDP mà không phải một slug: rỗng, có `/` cuối, nhiều segment).
+2. Nếu catalog cache ([ADR-011](./decisions/ADR-011-in-process-catalog-cache.md)) đang giữ
+   slug thì dùng payload đó và sang bước 4 mà không gọi Product. Nếu không, khi deadline còn
+   dưới 100 ms thì trả `503` mà không gọi Product. Ngược lại BFF gọi Product internal
+   buyer-read theo slug với timeout `min(400 ms, deadline còn lại − 50 ms)`; khi cache bật,
+   lời gọi này dùng chung cho mọi request cùng slug tới trong lúc nó chạy, budget 400 ms tính
+   từ lúc bắt đầu tải, và mỗi request chờ theo deadline còn lại của chính nó. Chỉ `200` hợp
+   lệ được giữ, tối đa một TTL.
 3. Product trả `404` thì BFF trả `404` (`no-store`) ngay, không gọi Inventory hoặc Review. Product
    timeout/lỗi/circuit open/bulkhead đầy, hoặc response vi phạm schema hay ràng buộc tham
-   chiếu (media trỏ SKU không có, variant value không có option, trùng `sku_id`/`media_id`)
-   thì BFF trả `503`.
+   chiếu (media trỏ SKU không có, variant value không có option, trùng `sku_id`/`media_id`, storage key có segment `.`/`..`/rỗng), hoặc status ngoài contract (`4xx` khác `400`/`401`/`403`/`404`, `3xx`) thì BFF trả `503`.
 4. Với Product catalog-active, BFF lấy các `sku_id` active. Nếu deadline còn lại từ
    100 ms trở lên, BFF đồng thời gọi một Inventory batch availability read và Review
-   internal PDP read (`preview_limit` theo cấu hình, kèm Bearer token), mỗi call với
+   internal PDP read (`preview_limit` theo cấu hình), mỗi call với
    timeout `min(300 ms, deadline còn lại − 50 ms)`; dependency bị tắt bằng cờ, có circuit
    mở hoặc bulkhead đầy thì không được gọi. Nếu còn dưới 100 ms, BFF bỏ cả hai call.
 5. Với mỗi SKU active, BFF map kết quả Inventory `IN_STOCK`/`OUT_OF_STOCK`; item
    `UNKNOWN` giữ `UNKNOWN`; item thiếu thành `UNKNOWN` và item cho SKU không yêu cầu bị bỏ,
-   cả hai ghi `contract_violation` mức item. Call Inventory không cho kết quả hợp lệ hoặc
+   cả hai ghi vi phạm mức item (counter và dòng log kèm request ID). Call Inventory không cho kết quả hợp lệ hoặc
    không được gọi thì mọi SKU là `UNKNOWN`.
 6. Review trả thành công thì map `AVAILABLE`; aggregate 0/preview rỗng là hợp lệ.
    Review không cho kết quả hợp lệ hoặc không được gọi thì map `UNAVAILABLE` và không
@@ -42,7 +45,9 @@ owners:
 Inventory batch read là advisory UI query: BFF không retry ở ứng dụng; mesh cũng không
 retry route này. Order Reserve vẫn là quyết định cuối cùng chống oversell. Nếu client
 hoặc gateway hủy request ở bất kỳ bước nào, BFF hủy các call đang chạy. Bảng phân loại
-kết quả đầy đủ nằm ở [operations.md](./operations.md#health-và-degradation).
+kết quả đầy đủ nằm ở [operations.md](./operations.md#health-và-degradation). Khi catalog cache
+bật, client hủy request không hủy lời gọi Product dùng chung (nó còn phục vụ các request
+khác cùng slug), chỉ hủy việc chờ của request đó.
 
 ## WF-PDP-002 — Degrade và recovery boundary
 
@@ -50,8 +55,7 @@ kết quả đầy đủ nằm ở [operations.md](./operations.md#health-và-de
    nâng thành `IN_STOCK` hoặc `OUT_OF_STOCK`.
 2. Nếu Inventory trả `5xx`, timeout hoặc response sai contract, BFF ghi metric theo
    dependency outcome, tính lỗi vào circuit breaker và trả catalog cùng `UNKNOWN`;
-   không có Kafka offset, replay hoặc rebuild trong BFF. `400`/`401`/`403` cũng trả
-   `UNKNOWN` nhưng không tính vào circuit breaker và phát alert cấu hình.
+   không có Kafka offset, replay hoặc rebuild trong BFF. `400`/`401`/`403` cũng trả `UNKNOWN` nhưng không tính vào circuit breaker và phát alert cấu hình; status ngoài contract (`429`, `3xx`, `404`...) được xử lý như response sai contract nên tính vào circuit breaker.
 3. Khi tỷ lệ lỗi hoặc call chậm vượt ngưỡng, circuit Inventory mở 10 giây: BFF không gọi
    Inventory và mọi SKU là `UNKNOWN`. Sau đó half-open cho 5 call thử; thành công thì
    đóng circuit.

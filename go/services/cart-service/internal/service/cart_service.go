@@ -71,6 +71,10 @@ func (s *CartService) GetCart(ctx context.Context, identity domain.Identity) (do
 		line := domain.ViewItem{Item: item, Available: item.IsAvailable}
 		if snapshot, ok := snapshots[item.SkuID]; ok {
 			line.Available = snapshot.IsAvailable
+			if snapshot.IsAvailable {
+				// Refresh display text in the response only; never mutate the Redis snapshot on GET.
+				line.VariantName = snapshot.VariantName
+			}
 			if snapshot.IsAvailable || snapshot.Price.Currency != "" {
 				price := snapshot.Price
 				line.CurrentPrice = &price
@@ -175,6 +179,15 @@ func (s *CartService) RemovePurchased(
 		SkuIDs:        skuIDs,
 		TouchActivity: false,
 	})
+}
+
+// PurgeUser deletes the whole cart of a deleted account (WF-CART-008).
+//
+// The script is idempotent, so a redelivered USER_DELETED simply reports that
+// nothing was left to purge. No Kafka event is emitted and no idempotency
+// record is needed.
+func (s *CartService) PurgeUser(ctx context.Context, identity domain.Identity) (port.PurgeResult, error) {
+	return s.store.PurgeCart(ctx, identity)
 }
 
 // degradedView renders a cart from stored snapshots alone.

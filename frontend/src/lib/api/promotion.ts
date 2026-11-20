@@ -8,6 +8,7 @@ import {
   type Versioned,
 } from "@/lib/api/etag";
 import type { components, operations } from "@/lib/api/generated/promotion";
+import { toPollRead } from "@/lib/api/operation";
 
 type Schemas = components["schemas"];
 
@@ -36,6 +37,14 @@ export type MarkdownRulePage = Schemas["MarkdownRulePage"];
 export type MarkdownRuleCreate = Schemas["CreateMarkdownRuleRequest"];
 export type MarkdownRuleUpdate = Schemas["UpdateMarkdownRuleRequest"];
 export type WalletVoucher = Schemas["WalletVoucher"];
+export type WalletEntry = Schemas["WalletEntry"];
+export type WalletPage = Schemas["WalletPage"];
+export type WalletFilter = WalletEntry["effective_status"];
+export type SaveVoucherResponse = Schemas["SaveAndEvaluateResponse"];
+export type ClaimVoucherRequest = Schemas["ClaimVoucherRequest"];
+export type ClaimVoucherResponse = Schemas["ClaimVoucherResponse"];
+export type ClaimPendingResponse = Schemas["ClaimPendingResponse"];
+export type ClaimResult = ClaimVoucherResponse | ClaimPendingResponse;
 export type GrantVoucherRequest = Schemas["GrantVoucherRequest"];
 export type CampaignListParams = NonNullable<
   operations["listPromotionCampaigns"]["parameters"]["query"]
@@ -58,6 +67,21 @@ function versioned(etag: string, extra: Record<string, string> = {}): AxiosReque
 }
 
 export const promotionApi = {
+  listMyWallet: async (params: { status?: WalletFilter; cursor?: string; limit?: number }, signal?: AbortSignal): Promise<WalletPage> =>
+    (await api.get<WalletPage>("/api/v1/me/promotion-vouchers", { params, signal })).data,
+
+  // Natural key (authenticated user, promotion): no browser-owned checkout context.
+  saveVoucher: async (promotionId: string, signal?: AbortSignal): Promise<SaveVoucherResponse> =>
+    (await api.put<SaveVoucherResponse>(
+      `/api/v1/me/promotion-vouchers/${encodeURIComponent(promotionId)}`, {}, { signal, timeout: 8_000 }
+    )).data,
+
+  // 202 has no GET status endpoint. Replay the identical POST and expected revision.
+  claimVoucher: async (input: ClaimVoucherRequest, signal?: AbortSignal) =>
+    toPollRead(await api.post<ClaimResult>("/api/v1/me/promotion-voucher-claims", input, {
+      signal, timeout: 8_000,
+    })),
+
   listCampaigns: async (params: CampaignListParams, signal?: AbortSignal): Promise<CampaignPage> =>
     (await api.get<CampaignPage>(CAMPAIGNS, { params, signal })).data,
 

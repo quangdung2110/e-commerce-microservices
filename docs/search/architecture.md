@@ -2,11 +2,13 @@
 doc_id: search-architecture
 service: search
 scope: current
-status: proposed
+status: implemented
 owners:
   - Search Service team
-evidence: []
-verified_against_commit: null
+evidence:
+  - java/services/search-service/src/main/java/com/ecommerce/search/worker
+  - java/services/search-service/src/main/java/com/ecommerce/search/service
+  - java/services/search-service/src/main/java/com/ecommerce/search/repository
 ---
 
 # Search Service — Architecture
@@ -45,6 +47,10 @@ flowchart LR
   SR[Suggestions rebuilder] --> ES
   CC[Category count recompute] --> ES
   TP[Tombstone purger] --> ES
+  IC[Index cleanup] --> ES
+  CCE --> AS[Reindex auto starter]
+  AS --> RJ
+  WD[Reindex watchdog] -.resume.-> RJ
   RJ -.export.-> P[Product internal API]
   RJ -.availability export.-> INV[Inventory internal API]
   RJ -.rating export.-> REV[Review internal API]
@@ -56,18 +62,25 @@ flowchart LR
 |---|---|---|---|---|
 | HTTP query adapter | Validate và chuẩn hóa tham số, map lỗi, encode/decode cursor | Chứa logic ranking hoặc gọi Kafka | Query layer | `controller/api` |
 | Admin reindex adapter | Nhận trigger reindex qua Gateway, kiểm tra ADMIN, trả trạng thái run | Chạy reindex đồng bộ trong request thread | Reindex job | `controller/api` |
-| Query layer | Build SKU filters, PIT composite grouping, chọn cheapest eligible SKU, sort/page Product, ký cursor | Ghi catalog/index hoặc suy luận stock | Elasticsearch read alias | `service`, `repository` |
-| Indexing worker | Consume snapshot catalog/category/availability/review, transform event thành lệnh ghi, apply guard; đăng ký readiness sau catalog create | Bỏ qua guard hoặc upsert document từ Availability | Kafka, write alias, Inventory readiness API | `worker` |
-| Reindex job | Build index mới, import catalog/per-SKU availability/rating snapshot, catch-up, cutover alias | Tạo index availability riêng hoặc tự chụp catalog watermark | Elasticsearch, Kafka, Product/Inventory/Review export API | `worker` |
+| Query layer | Build SKU filters, cheapest eligible SKU, sort/page và ký cursor: request mới bắt buộc đọc `product_cards`; chưa sẵn sàng trả 503. Grouping chỉ cho cursor v2 đã phát (ADR-029) | Ghi catalog/index, suy luận stock hoặc tự fallback grouping cho request mới | Elasticsearch read alias | `service`, `repository` |
+| Product card projector | Giữ `product_cards`: bootstrap/repair khi source mismatch, bình thường đọc change feed theo `indexed_at`; dựng generation riêng từ SKU đích cho reindex/rollback trước paired swap (ADR-029); ghi `external_gte` | Ghi index SKU, đọc Kafka, ghi khi không giữ lease; background poll chỉ chạy khi `search.product-index.enabled` | Elasticsearch, lease `product-cards-projector` | `worker/productcards` |
+| Indexing worker | Consume snapshot catalog/category/availability/review, transform event thành lệnh ghi, apply guard; đăng ký readiness sau catalog create; lưu bền control event; `nack` batch không áp dụng được | Bỏ qua guard hoặc upsert document từ Availability; coi "không ACK" là đủ để retry | Kafka, write alias, Inventory readiness API, `search_jobs` | `worker` |
+| Reindex job | Build index mới, import snapshot, catch-up, verify, dựng cards từ SKU đích rồi chuyển năm alias trong một lệnh; tail replay (ADR-029) | Tạo index availability riêng hoặc tự chụp catalog watermark; ghi state khi đã mất lease | Elasticsearch, Kafka, Product/Inventory/Review export API, lease `full-reindex` và `product-cards-projector` | `worker/job` |
+| Reindex verifier | Kiểm tra index mới trước cutover: số document, sample diff, smoke query | Sửa bất kỳ index nào | Elasticsearch | `worker/job` |
+| Reindex watchdog | Tìm run chưa kết thúc mà lease đã hết hạn; resume hoặc đánh dấu `RUN_ABANDONED` | Chạy song song với owner còn sống | `search_jobs`, Reindex job | `worker/job` |
+| Reindex auto starter | Biến request `catalog-reindex-requested` đã gộp thành một run sau debounce | Chạy khi đã có run đang chạy | `search_jobs`, Reindex job | `worker` |
+| Index cleanup | Xóa index versioned không còn alias phục vụ sau thời gian giữ | Xóa index đang phục vụ, của run chưa kết thúc, hoặc rollback version của suggestion | Elasticsearch, `search_jobs` | `worker/job` |
 | Suggestions rebuilder | Build lại index suggestion và swap alias | Cập nhật incremental theo event | Elasticsearch | `worker` |
-| Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree | Elasticsearch | `worker` |
+| Category count recompute | Tính lại `product_count` bằng aggregation | Cộng trừ số đếm theo từng event hoặc tự dựng lại category tree; ghi số từ câu trả lời `timed_out` | Elasticsearch | `worker` |
 | Tombstone purger | Xóa document đã tombstone quá cửa sổ bảo vệ | Xóa document còn trong cửa sổ bảo vệ | Elasticsearch | `worker` |
 
 ## 3. Processing model
 
-Đường đọc synchronous: request → validate → PIT → composite scan Product + top_hits cheapest eligible SKU → sort/page → response. [ADR-020](./decisions/ADR-020-product-cards-with-cheapest-eligible-sku.md). Không ghi projection; chỉ mở/gia hạn/đóng PIT. Không có cache tầng ứng dụng; Search
+Đường đọc synchronous: request → validate → kiểm readiness → PIT → **một** truy vấn `nested` cỡ trang trên `product_cards` → response (sort `mode: min/max` có `nested.filter`, `inner_hits`, `search_after`, `track_total_hits`). Request mới không bao giờ gom toàn bộ SKU về JVM; chưa sẵn sàng trả `503 ELASTICSEARCH_UNAVAILABLE` + `Retry-After: 2`. Cursor v2 đã phát tiếp tục grouping và cursor v3 tiếp tục PIT cards của nó ([ADR-029](./decisions/ADR-029-required-product-card-read-model.md)). Full reindex dựng cards đích trước rồi chuyển cả năm alias nguyên tử; live projector và cutover serialize qua cùng lease. Đường đọc không ghi projection; chỉ mở/gia hạn/đóng PIT. Không có cache tầng ứng dụng; Search
 dựa vào filter cache và request cache của Elasticsearch
-([ADR-001](./decisions/ADR-001-elasticsearch-only-store.md)).
+([ADR-001](./decisions/ADR-001-elasticsearch-only-store.md)). Một câu trả lời của Elasticsearch
+có `timed_out` hoặc shard lỗi không bao giờ được trả cho buyer hay ghi vào `product_count`: nó là
+`SEARCH_TIMEOUT` (job giữ số cũ).
 
 Đường ghi là asynchronous và chỉ do event dẫn dắt. Không có transaction phân tán
 và không có outbox vì Search không phát event. Một lệnh ghi có thể là:
@@ -83,7 +96,13 @@ và không có outbox vì Search không phát event. Một lệnh ghi có thể 
   không dùng `requests_per_second` như thể đó là tham số của Bulk API.
 
 Offset chỉ được commit sau khi toàn bộ record trong batch đã apply xong hoặc đã
-được phân loại là lỗi không tự hồi phục.
+được phân loại là lỗi không tự hồi phục. Một batch không áp dụng được (lỗi tạm thời của
+Elasticsearch, `429`/`503`, readiness lỗi, `document_missing` của availability) được trả lại
+cho Kafka bằng `Acknowledgment.nack(index, pause)`: offset trước `index` được commit, consumer
+seek về record đầu tiên chưa xử lý và nhận lại sau `search.consumer.retry-backoff` (5s). Chỉ
+"không ACK" là chưa đủ — với manual ack container vẫn poll các record tiếp theo và batch sau
+thành công sẽ commit vượt qua batch lỗi ([ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md)).
+Mọi ghi có guard revision nên áp dụng lại là no-op.
 
 ## 4. Consistency model
 
@@ -104,7 +123,9 @@ lag và job recompute. Phục hồi bằng full reindex.
 
 ## 5. Concurrency model
 
-Search không có lock nghiệp vụ. Tính đúng đắn dựa trên bốn cơ chế:
+Search không có lock nghiệp vụ. Các job singleton dùng lease trong `search_jobs` (tạo atomic, fencing
+token đơn điệu, gia hạn bằng heartbeat): `full-reindex`, `suggestion-rebuild`, `category-product-count`,
+`tombstone-purge`, `index-cleanup`. Tính đúng đắn của dữ liệu dựa trên bốn cơ chế:
 
 - **Guard theo từng nguồn.** Mỗi nguồn dữ liệu có một field revision riêng trên
   document: `catalog_revision`, `category_revision`, `availability_revision` và
@@ -135,9 +156,9 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
 
 - API stateless, scale ngang theo RPS và latency.
 - Consumer scale tối đa tới tổng số partition của năm topic.
-- Reindex job, suggestions rebuilder, category count recompute và tombstone purger
-  phải chạy singleton; cần distributed lock hoặc leader election khi có nhiều
-  replica.
+- Reindex job, suggestions rebuilder, category count recompute, tombstone purger và index cleanup
+  chạy singleton qua lease Elasticsearch nên an toàn khi có nhiều replica. Watchdog và auto starter
+  của reindex chạy trên mọi replica; lease quyết định replica nào hành động.
 - Runtime dependency: Elasticsearch cluster và Kafka. Không có database hay cache
   nào khác; state của job singleton nằm trong index nội bộ `search_jobs` của chính
   Search, không phải một store thứ hai.
@@ -163,4 +184,5 @@ instance. Mặc định deploy chung process, tách khi cần scale độc lập
 Các đánh đổi lớn được ghi ở [Decision index](./decisions/README.md): dùng
 Elasticsearch làm store duy nhất, chiến lược SKU-first, guard theo từng nguồn,
 không DLQ, reindex ba pha, cursor pagination, cách duy trì `product_count`, nguồn
-của tồn kho, cây danh mục dẫn xuất và cửa sổ tombstone.
+của tồn kho, cây danh mục dẫn xuất, cửa sổ tombstone và vòng đời reindex
+([ADR-022](./decisions/ADR-022-post-implementation-audit-corrections.md)).

@@ -115,7 +115,7 @@ func TestProcessWithRetry(t *testing.T) {
 		if err := h.processWithRetry(context.Background(), msg); err != nil {
 			t.Fatal(err)
 		}
-		if dlq.calls != 1 || dlq.topic != "t.src.dlq" || dlq.reason != ReasonMaxAttempts || dlq.headers["ce_id"] != "x" || dlq.headers[HeaderDLQTopic] != "t.src" {
+		if dlq.calls != 1 || dlq.topic != "t.src.dlq" || dlq.reason != ReasonMaxAttempts || dlq.headers["ce_id"] != "x" || dlq.headers[HeaderDLQTopic] != "t.src" || dlq.headers[HeaderDLQGroup] != srcCfg().Group {
 			t.Fatalf("dlq %+v", dlq)
 		}
 	})

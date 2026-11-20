@@ -82,6 +82,12 @@ class QueryIT extends AbstractIntegrationTest {
         assertThat(buyerGet("/api/v1/orders?q=khong-ton-tai", user).body().path("total_orders").asLong()).isZero();
         assertThat(buyerGet("/api/v1/orders?tab=COMPLETED", user).body().path("total_orders").asLong()).isZero();
         assertThat(buyerGet("/api/v1/orders?cursor=not-a-cursor", user).status()).isEqualTo(400);
+        // A wrong enum value is a plain 400 whose detail never names Java classes or parameter types.
+        Response badTab = buyerGet("/api/v1/orders?tab=BOGUS", user);
+        assertThat(badTab.status()).isEqualTo(400);
+        assertThat(badTab.body().path("code").asText()).isEqualTo("INVALID_REQUEST");
+        assertThat(badTab.body().path("detail").asText()).isEqualTo("Invalid value for parameter tab")
+                .doesNotContain("com.ecommerce").doesNotContain("java.lang");
 
         Response admin = call(admin(MockMvcRequestBuilders.get("/api/v1/admin/orders?buyer_id=" + user)));
         assertThat(admin.body().path("total_orders").asLong()).isEqualTo(3);

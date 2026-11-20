@@ -2,9 +2,13 @@
 doc_id: cart-workflows
 service: cart
 scope: current
-status: proposed
+status: implemented
 owners:
   - Cart Service team
+evidence:
+  - go/services/cart-service/internal/service/cart_service.go
+  - go/services/cart-service/internal/workers
+  - docs/cart/scripts
 verified_against_commit: null
 ---
 
@@ -14,17 +18,18 @@ verified_against_commit: null
 
 | ID | Workflow | Trigger | Actor |
 |---|---|---|---|
-| `WF-CART-001` | Thêm hoặc đặt quantity item | HTTP | User |
+| `WF-CART-001` | Thêm SKU hoặc điều chỉnh quantity theo delta | HTTP | User |
 | `WF-CART-002` | Đọc cart | HTTP | User |
 | `WF-CART-003` | Xóa item theo lô | HTTP | User |
 | `WF-CART-004` | Dọn SKU sau thanh toán | Kafka `com.ecommerce.order.paid.v1` | Order consumer |
 | `WF-CART-005` | Đánh dấu cart abandoned | Schedule | Marker loop |
 | `WF-CART-006` | Relay abandoned event | Continuous | Relay loop |
 | `WF-CART-007` | Trim stream an toàn | Schedule | Trimmer loop |
+| `WF-CART-008` | Xóa giỏ của account đã xóa | Kafka `com.ecommerce.auth.user-deleted.v1` | User-deleted consumer |
 
 Không có workflow rehydrate hoặc Postgres Sync.
 
-## WF-CART-001 — Thêm hoặc đặt quantity item
+## WF-CART-001 — Thêm SKU hoặc điều chỉnh quantity theo delta
 
 1. Gateway inject `user_id`; Cart dựng `user_token`, `cart_id`, bucket và các key cùng `{bNN}`.
 2. SKU mới luôn gọi `GetSku`; SKU có validation hết hạn cũng refresh Product. LRU + `singleflight` gộp refresh đồng thời. Chỉ validate catalog status và giá, không gọi Inventory.
@@ -38,7 +43,7 @@ Không có Kafka event cho add/update. Product hoặc Redis lỗi thì cart khô
 
 1. `HGETALL items`; hash không tồn tại trả cart rỗng, không fallback store khác.
 2. Nếu có item, gọi `GetBatchSkus` với deadline 200ms.
-3. Response giữ `unit_price_at_add`, phủ `current_price` và catalog saleability hiện tại; không có quantity/stock availability.
+3. Response giữ `unit_price_at_add`, phủ `current_price`, `variant_name` và catalog saleability hiện tại; không có stock availability. `variant_name` lấy nhãn hiện tại từ Product khi SKU còn bán; DEGRADED/SKU unavailable dùng display snapshot gần nhất. GET không persist nhãn mới. Cart legacy thiếu tên vẫn đọc được; frontend chỉ fallback value, không in code attribute.
 4. Product lỗi/breaker mở trả `200` với `catalog_freshness = DEGRADED` và `current_price` có thể null.
 
 GET không gia hạn TTL, không chạm ZSET, không cập nhật snapshot Redis và không phát
@@ -73,7 +78,7 @@ Race user write/marker được Redis tuần tự hóa: write trước làm dead
 
 ## WF-CART-006 — Relay `CART_ABANDONED` sang Kafka
 
-Một relay loop xử lý 64 stream theo round-robin. Với từng stream, nó `XAUTOCLAIM` pending entry cũ nhất trước, sau đó `XREADGROUP ... >` entry mới. Mỗi entry được produce Kafka với key `cart_id` và CloudEvent ID xác định từ `outbox_key + stream_id`. Chỉ `XACK` sau Kafka acknowledgement.
+Một relay loop xử lý 64 stream theo round-robin. Với từng stream, nó `XAUTOCLAIM` pending entry cũ nhất trước, rồi kiểm `XPENDING`: chỉ khi bucket không còn entry pending (đã đọc nhưng chưa ack) mới `XREADGROUP ... >` entry mới. `XAUTOCLAIM` chỉ trả entry idle quá `claim_min_idle`, nên nếu không có bước kiểm này thì entry vừa lỗi sẽ bị entry mới hơn vượt mặt khi Kafka hồi phục sớm. Mỗi entry được produce Kafka với key `cart_id` và CloudEvent ID xác định từ `outbox_key + stream_id`. Chỉ `XACK` sau Kafka acknowledgement.
 
 Không dùng một `XREADGROUP` multi-stream vì streams thuộc Cluster slot khác nhau. Khi scale, bucket ownership được chia giữa deployment; mỗi stream chỉ có một active reader. Notification dedupe CloudEvent ID vì Kafka delivery at-least-once.
 
@@ -81,6 +86,18 @@ Không dùng một `XREADGROUP` multi-stream vì streams thuộc Cluster slot kh
 
 Trimmer loop round-robin 64 stream. Nó bỏ qua stream không có consumer group hoặc có pending entry chưa an toàn. Khi có mốc an toàn, gọi `XTRIM MINID` chỉ trên stream đó. `XACK` không giải phóng RAM; trimmer phải giữ lại pending entry cũ nhất.
 
+## WF-CART-008 — Xóa giỏ khi account bị xóa
+
+1. Consumer group `cart-auth-consumer` đọc `t.auth.events`; event không phải `com.ecommerce.auth.user-deleted.v1` được
+   bỏ qua và commit.
+2. Consumer validate envelope (`specversion`, `source=/services/auth`, `id`, `data.user_id` UUID, `data.deleted_at`)
+   và dựng bucket từ `user_id`; không nhận `cart_id` từ event.
+3. Gọi `purge_cart.lua`: `DEL items`, `DEL meta`, `ZREM` member khỏi `abandonment-index` trong một invocation.
+4. Commit Kafka offset sau khi script thành công. Redelivery hoặc user chưa từng có giỏ chỉ trả `purged = false`.
+
+Entry `CART_ABANDONED` đã nằm trong outbox không bị xóa và vẫn được relay (Notification bỏ qua account đã xóa). Lỗi Redis
+trả error để Kafka giao lại. Không phát event ([ADR-014](./decisions/ADR-014-purge-cart-on-user-deleted.md)).
+
 ## Yêu cầu test chung
 
-Test script atomicity, cross-slot key builder, duplicate idempotency key, Product refresh coalescing, cart expiry, marker deadline stale, marker/write race, crash trước `XACK`, `XAUTOCLAIM`, Kafka duplicate và Notification dedupe.
+Test script atomicity, cross-slot key builder, duplicate idempotency key, Product refresh coalescing, cart expiry, marker deadline stale, marker/write race, crash trước `XACK`, `XAUTOCLAIM`, Kafka duplicate, Notification dedupe, và purge `USER_DELETED` (idempotent, không đụng cart user khác, giữ outbox đang chờ).

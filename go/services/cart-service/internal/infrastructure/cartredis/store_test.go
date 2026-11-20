@@ -103,6 +103,7 @@ func (h *harness) snapshot(_ ...int64) *domain.StoredItem {
 		ProductID:         "PRODUCT-TSHIRT",
 		ProductName:       "Ao thun do",
 		VariantAttributes: map[string]string{"color": "red", "size": "M"},
+		VariantName:       "Màu sắc: Đỏ · Kích thước: M",
 		ImageKey:          "products/tshirt/red.png",
 		Price:             domain.Money{AmountMinor: 125000, Currency: "VND"},
 		IsAvailable:       true,
@@ -803,6 +804,9 @@ func TestLoadItemsSurvivesTheLuaJSONRoundTrip(t *testing.T) {
 	if item.VariantAttributes["color"] != "red" || item.VariantAttributes["size"] != "M" {
 		t.Fatalf("variant_attributes = %+v", item.VariantAttributes)
 	}
+	if item.VariantName != "Màu sắc: Đỏ · Kích thước: M" {
+		t.Fatalf("variant_name lost across Lua round trip: %q", item.VariantName)
+	}
 }
 
 // An item with no variant attributes is the case where cjson would otherwise
@@ -825,6 +829,167 @@ func TestLoadItemsHandlesAnItemWithoutVariantAttributes(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Quantity != 2 {
 		t.Fatalf("items = %+v", items)
+	}
+}
+
+// ── purge_cart.lua (USER_DELETED) ────────────────────────────────────────
+
+func TestPurgeCartRemovesTheWholeCartAndItsSchedule(t *testing.T) {
+	h := newHarness(t)
+	identity := h.identity()
+	ctx := context.Background()
+
+	if _, err := h.upsert("SKU-A", 2, h.snapshot(), "idempotency-key-a00001"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := h.upsert("SKU-B", 1, h.snapshot(), "idempotency-key-b00001"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	result, err := h.store.PurgeCart(ctx, identity)
+	if err != nil {
+		t.Fatalf("PurgeCart: %v", err)
+	}
+	if !result.Purged {
+		t.Fatal("a purge that deleted a cart reported nothing purged")
+	}
+
+	if h.client.Exists(ctx, h.keys.Items(identity)).Val() != 0 {
+		t.Fatal("the items hash survived the purge")
+	}
+	if h.client.Exists(ctx, h.keys.Meta(identity)).Val() != 0 {
+		t.Fatal("the meta hash survived the purge")
+	}
+	if h.client.ZCard(ctx, h.keys.Index(identity.Bucket)).Val() != 0 {
+		t.Fatal("the abandonment schedule survived the purge")
+	}
+	if items, err := h.store.LoadItems(ctx, identity); err != nil || len(items) != 0 {
+		t.Fatalf("a purged cart still reads %d items (err %v)", len(items), err)
+	}
+}
+
+// The purge is the only script that deletes a whole cart, so it must touch
+// exactly one user's keys.
+func TestPurgeCartLeavesOtherCartsAlone(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	other, err := domain.NewIdentity("0198e098-94f4-7f8f-9e16-ae42dfbd93c2")
+	if err != nil {
+		t.Fatalf("NewIdentity: %v", err)
+	}
+	if _, err := h.upsert("SKU-A", 1, h.snapshot(), "idempotency-key-a00001"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := h.store.Upsert(ctx, port.UpsertCommand{
+		Identity:       other,
+		SkuID:          "SKU-A",
+		Delta:          3,
+		Snapshot:       h.snapshot(),
+		Fingerprint:    "fingerprint-other",
+		IdempotencyKey: "idempotency-key-o00001",
+	}); err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	if _, err := h.store.PurgeCart(ctx, h.identity()); err != nil {
+		t.Fatalf("PurgeCart: %v", err)
+	}
+
+	items, err := h.store.LoadItems(ctx, other)
+	if err != nil || len(items) != 1 || items[0].Quantity != 3 {
+		t.Fatalf("the other user's cart was damaged: %+v (err %v)", items, err)
+	}
+	if h.client.ZScore(ctx, h.keys.Index(other.Bucket), other.UserToken).Err() != nil {
+		t.Fatal("the other user's abandonment schedule was removed")
+	}
+}
+
+// Kafka redelivers USER_DELETED and a user may never have had a cart: both
+// must succeed and report that nothing was left to purge.
+func TestPurgeCartIsIdempotent(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	missing, err := h.store.PurgeCart(ctx, h.identity())
+	if err != nil || missing.Purged {
+		t.Fatalf("purging a user without a cart = %+v (err %v), want a quiet no-op", missing, err)
+	}
+
+	if _, err := h.upsert("SKU-A", 1, h.snapshot(), "idempotency-key-a00001"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if first, err := h.store.PurgeCart(ctx, h.identity()); err != nil || !first.Purged {
+		t.Fatalf("first purge = %+v (err %v)", first, err)
+	}
+	if again, err := h.store.PurgeCart(ctx, h.identity()); err != nil || again.Purged {
+		t.Fatalf("redelivered purge = %+v (err %v), want a quiet no-op", again, err)
+	}
+}
+
+// An ABANDONED cart is still a cart: its pending CART_ABANDONED entry is
+// already durable, belongs to the relay, and must survive the purge.
+func TestPurgeCartRemovesAnAbandonedCartButKeepsItsPendingOutboxEntry(t *testing.T) {
+	h := newHarness(t)
+	identity := h.identity()
+	ctx := context.Background()
+
+	if _, err := h.upsert("SKU-A", 1, h.snapshot(), "idempotency-key-a00001"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	deadline := int64(h.client.ZScore(ctx, h.keys.Index(identity.Bucket), identity.UserToken).Val())
+	h.advance(31 * 24 * time.Hour)
+	if marked, err := h.store.MarkAbandoned(ctx, port.MarkAbandonedCommand{Identity: identity, ExpectedDeadline: deadline}); err != nil || !marked.Marked {
+		t.Fatalf("mark abandoned = %+v (err %v)", marked, err)
+	}
+
+	if purged, err := h.store.PurgeCart(ctx, identity); err != nil || !purged.Purged {
+		t.Fatalf("purge = %+v (err %v)", purged, err)
+	}
+
+	if h.client.Exists(ctx, h.keys.Items(identity), h.keys.Meta(identity)).Val() != 0 {
+		t.Fatal("an abandoned cart survived the purge")
+	}
+	if got := h.client.XLen(ctx, h.keys.Outbox(identity.Bucket)).Val(); got != 1 {
+		t.Fatalf("outbox holds %d entries, want the 1 pending CART_ABANDONED", got)
+	}
+}
+
+// ── idempotency retention ────────────────────────────────────────────────
+
+// CART_CART_IDEMPOTENCY_TTL is one knob for both HTTP writes; neither script
+// may hard-code the retention.
+func TestIdempotencyRecordsFollowTheConfiguredTTL(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	identity := h.identity()
+
+	h.store = NewStore(h.client, Options{
+		AbandonedAfter: 30 * 24 * time.Hour,
+		ActiveTTL:      37 * 24 * time.Hour,
+		AbandonedTTL:   7 * 24 * time.Hour,
+		IdempotencyTTL: 2 * time.Hour,
+	})
+	h.store.now = func() time.Time { return h.now }
+
+	if _, err := h.upsert("SKU-A", 1, h.snapshot(), testIdempotencyKey); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := h.store.Remove(ctx, port.RemoveCommand{
+		Identity:       identity,
+		SkuIDs:         []string{"SKU-NOT-IN-CART"},
+		TouchActivity:  true,
+		Fingerprint:    "fingerprint-delete",
+		IdempotencyKey: testIdempotencyKey,
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	for operation := range map[string]struct{}{"adjust": {}, "delete": {}} {
+		ttl := h.client.TTL(ctx, h.keys.Idempotency(identity, operation, testIdempotencyKey)).Val()
+		if ttl <= 0 || ttl > 2*time.Hour {
+			t.Fatalf("%s record ttl = %s, want within (0, 2h]", operation, ttl)
+		}
 	}
 }
 

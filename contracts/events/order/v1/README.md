@@ -46,8 +46,12 @@ owned by other providers:
   facts only open/update Order financial reconciliation; they never imply a refund,
   payment-status rewrite or fulfillment transition;
 - Inventory physical-dispatch and completed-inspection facts from
-  `t.inventory.order.events.v1`;
-- verified Delivery facts from `t.delivery.order.events.v1`.
+  `t.inventory.order.events.v1`.
+
+There is no Delivery event. Physical dispatch only moves a line to `DISPATCHED`; an Admin
+confirms delivery through `POST /api/v1/admin/orders/{order_id}/delivery-confirmations`
+(Order HTTP v1), and the confirmation of the last line is what emits `order.completed.v1`
+([Order ADR-021](../../../../docs/order/decisions/ADR-021-admin-delivery-confirmation.md)).
 
 Order does not consume Payment initiation facts or Inventory reserve/commit/release
 acknowledgments. Inventory publishes no reservation-result events; its reservation

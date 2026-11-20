@@ -28,8 +28,11 @@ Outbox là append-only CDC source, không phải queue có state theo row. Khôn
 Kafka Connect, source LSN/replication slot, retained WAL và end-to-end event age.
 
 Outbox partition theo tháng UTC. Initial schema tạo động tháng hiện tại và tháng sau;
-scheduler duy trì rolling window. Cleanup chỉ `DROP PARTITION` khi connector/slot đã
-đi qua partition và retention hết hạn.
+scheduler duy trì rolling window. Review **không tự drop partition**: dropping là thao tác
+của operator theo runbook ([operations.md mục 5](../operations.md#5-outbox-operational-rule)),
+và chỉ được làm khi connector/slot đã đi qua partition và thời gian giữ lại mà operator
+chọn đã hết. Review không có cấu hình retention cho outbox vì nó không thực thi retention đó;
+một knob không code nào đọc chỉ gợi ý một cleanup không tồn tại.
 
 ## Envelope và routing
 

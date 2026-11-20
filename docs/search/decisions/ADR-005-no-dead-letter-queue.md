@@ -7,6 +7,7 @@ decision_owners:
   - Search Service team
 supersedes: null
 partially_superseded_by: ADR-019-inventory-owned-sku-availability
+clarified_by: ADR-022-post-implementation-audit-corrections
 evidence: []
 ---
 

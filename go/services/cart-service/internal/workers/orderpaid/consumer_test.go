@@ -40,6 +40,10 @@ func (s *recordingStore) MarkAbandoned(context.Context, port.MarkAbandonedComman
 	return port.MarkAbandonedResult{}, nil
 }
 
+func (s *recordingStore) PurgeCart(context.Context, domain.Identity) (port.PurgeResult, error) {
+	return port.PurgeResult{}, nil
+}
+
 func (s *recordingStore) DueCarts(context.Context, int, time.Time, int) ([]port.DueCart, error) {
 	return nil, nil
 }

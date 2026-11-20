@@ -1,6 +1,6 @@
 # Interfaces
 
-**Trạng thái:** `proposed` — mọi contract dưới đây có `x-adoption-status: proposed`; chưa có provider/consumer test.
+**Trạng thái:** `implemented` (phase 1) — provider đã chạy theo các contract dưới đây; contract vẫn `x-adoption-status: proposed` (ADOPTION.md ghi khoảng cách: chưa có consumer contract test).
 
 ## 1. Bản đồ
 
@@ -13,12 +13,12 @@
 | Preference replication | Vào | [AsyncAPI User v1](../../contracts/events/user/v1/asyncapi.yaml) | User | Kafka (`t.user.events`) |
 | Account deleted | Vào | AsyncAPI Auth v1 `USER_DELETED` | Auth | Kafka (`t.auth.events`) |
 | Outcomes | Ra | AsyncAPI Notification v1 `notificationOutcomes` | Analytics, User | Kafka (`t.notification.outcomes.v1`) |
-| Resolve content (Auth request) | Ra | [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) `POST .../notification-deliveries/{id}/content` | Notification → Auth | mTLS |
-| Resolve email (mọi nguồn khác) | Ra | Auth internal OpenAPI `GET .../users/{user_id}/notification-contact` | Notification → Auth | mTLS |
+| Resolve content (Auth request) | Ra | [Auth internal OpenAPI](../../contracts/http/auth/internal/v1/openapi.yaml) `POST .../notification-deliveries/{id}/content` | Notification → Auth | HTTP trong mesh (mTLS do mesh), `X-Service-Identity` |
+| Resolve email (mọi nguồn khác) | Ra | Auth internal OpenAPI `GET .../users/{user_id}/notification-contact` | Notification → Auth | HTTP trong mesh (mTLS do mesh), `X-Service-Identity` |
 | SES send / events | Ra / Vào | AWS SES API; SNS → SQS | Notification ↔ AWS | IAM |
 | Inbox in-app | Vào | [Notification OpenAPI v1](../../contracts/http/notification/v1/openapi.yaml) | Frontend qua Gateway | HTTPS, `gatewayIdentity` |
-| Status lookup | Vào | [Notification internal OpenAPI](../../contracts/http/notification/internal/v1/openapi.yaml) `Status` | Order admin UI, finance-ops | mTLS |
-| Ops | Vào | Notification internal OpenAPI `Ops` | `notification-ops` (SRE) | mTLS, không qua Gateway |
+| Status lookup | Vào | [Notification internal OpenAPI](../../contracts/http/notification/internal/v1/openapi.yaml) `Status` | Order admin UI, finance-ops | mesh + allowlist `X-Service-Identity` |
+| Ops | Vào | Notification internal OpenAPI `Ops` | `notification-ops` (SRE) | mesh + allowlist `X-Service-Identity`, không qua Gateway |
 
 Catalog template: [templates/catalog.yaml](../../contracts/events/notification/v1/templates/catalog.yaml). Interaction đăng ký trong [interactions.yaml](../../contracts/catalog/interactions.yaml); ma trận mesh ở `docs/mesh/runtime-contract.md` §5.2; route Gateway ở `docs/gateway/runtime-contract.md`.
 
@@ -74,7 +74,7 @@ Không có event cho `SENT` hay `SKIPPED`: `SENT` là trạng thái trung gian, 
 | `POST /internal/v1/auth/notification-deliveries/{delivery_id}/content` (đã có) | Request từ Auth | **Không** (chứa secret) | `404`/`410` → `FAILED (no_recipient)` / `EXPIRED` |
 | `GET /internal/v1/auth/users/{user_id}/notification-contact` (**mới**) | Mọi kênh email không phải Auth | Redis/memory 15 phút theo `user_id`; không ghi DB | `404` → `FAILED (no_recipient)`, không retry |
 
-Cả hai: mTLS, `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). Cả hai nằm trên **listener internal 8081** của Auth (public 8080 không serve `/internal/**`). `email_verified = false` → vẫn gửi transactional, không gửi bulk (delivery `SKIPPED (email_unverified)`). Với `content`: `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`.
+Cả hai: mTLS do mesh thực thi (Auth không tự kết thúc TLS và chỉ kiểm allowlist `X-Service-Identity: notification-service`, [Auth ADR-007](../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md); Notification luôn gửi header này), `no-store`, timeout 2 s, breaker và bulkhead riêng theo lane ([06-backpressure.md](./06-backpressure.md) §3). Cả hai nằm trên **listener internal 8081** của Auth (public 8080 không serve `/internal/**`). `email_verified = false` → vẫn gửi transactional, không gửi bulk (delivery `SKIPPED (email_unverified)`). Với `content`: `template` trả về phải khớp template đã gán ở Ingest, lệch → `FAILED (template_mismatch)`.
 
 ## 5. HTTP vào: inbox (public qua Gateway)
 
@@ -92,7 +92,7 @@ Listener public `8080` (host dev `8091`), chỉ có nhóm này. Identity từ Ga
 
 ## 6. HTTP vào: internal
 
-Listener internal `8081` (host dev `8092`), không qua Gateway; cũng serve `/metrics`, `/livez`, `/readyz`. Principal xác thực bằng mTLS (CN chứng chỉ client); ở `app.env = development` chấp nhận header `X-Service-Identity` không xác thực. Allowlist: status → `order-service`, `finance-ops`; ops → `notification-ops`.
+Listener internal `8081` (host dev `8092`), không qua Gateway; cũng serve `/metrics`, `/livez`, `/readyz`. Ai được chạm các path này do **service mesh** quyết định (mTLS + AuthorizationPolicy theo principal, [mesh runtime contract](../mesh/runtime-contract.md) §5.2): Notification **không** tự kết thúc TLS và không nhìn thấy chứng chỉ của caller. Ứng dụng chỉ kiểm header `X-Service-Identity` với allowlist của từng nhóm như lớp phòng thủ thứ hai, **ở mọi môi trường**: thiếu header → `401`, ngoài allowlist → `403`. Allowlist (`internal.status_principals`, `internal.ops_principals`): status → `order-service`, `finance-ops`; ops → `notification-ops`; rỗng là lỗi cấu hình lúc khởi động. Docker Compose không có mesh nên header không được xác thực ở đó ([decisions.md](./decisions.md) D-21, cùng mô hình [Auth ADR-007](../auth/decisions/ADR-007-internal-caller-auth-delegated-to-mesh.md) và [User ADR-008](../user/decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md)).
 
 ### Status (support / admin tool)
 
@@ -107,7 +107,8 @@ Không trả `template_data`, không trả email. Caller phase 1: `order-service
 
 | Method | Path | Tác dụng | Ràng buộc |
 |---|---|---|---|
-| `PUT` | `/internal/v1/notifications/ops/lanes/{lane}` | Pause/resume lane hoặc `lane × channel` | `Idempotency-Key` |
+| `GET` | `/internal/v1/notifications/ops/lanes/{lane}` | Đọc trạng thái pause hiện tại (lane chưa đổi trả `active`/`active`) | Có audit, không cần `Idempotency-Key`; lane ngoài enum → `404` |
+| `PUT` | `/internal/v1/notifications/ops/lanes/{lane}` | Pause/resume lane hoặc `lane × channel` | `Idempotency-Key`. Watchdog breaker cũng ghi trạng thái này (`updated_by = system:breaker-watchdog`, [06-backpressure.md](./06-backpressure.md) §5) |
 | `POST` | `/internal/v1/notifications/ops/deliveries/{id}/redrive` | `FAILED`/`EXPIRED` → `PENDING` | Trạng thái khác → `409`; không tự kéo dài `expires_at` |
 | `POST` | `/internal/v1/notifications/ops/dlq/redrive` | Re-drive theo lô, `202` + `operation_id` | Lọc theo `reason_code`/thời gian; không bao gồm lỗi contract của producer |
 | `POST` / `DELETE` | `/internal/v1/notifications/ops/suppressions[/{id}]` | Thêm `MANUAL` / gỡ | Không gỡ được `HARD_BOUNCE`/`COMPLAINT` (`409`) |
@@ -121,9 +122,46 @@ Mọi ops call ghi audit (principal, thời điểm, tham số) vào bảng `ops
 |---|---|
 | `contracts/http/auth/internal/v1/openapi.yaml` | Thêm `GET /internal/v1/auth/users/{user_id}/notification-contact`, schema `NotificationContact`, response `UserNotFound` |
 | `contracts/events/order/v1/asyncapi.yaml` | Channel `notificationRequests` tham chiếu message của Notification và operation `publishNotificationRequests` với 5 template/mốc phát; deterministic item-name source đã khóa từ Checkout/Order snapshot |
-| `contracts/catalog/services.yaml` | `notification-service.contract_adoption: pilot` |
+| `contracts/catalog/services.yaml` | `notification-service.contract_adoption: pilot`; từ 2026-10-10 `runtime: go`, `status: implemented` |
 | `contracts/catalog/interactions.yaml` | 7 interaction mới (`order-requests-notifications`, `notification-resolves-auth-contact`, `notification-consumes-cart-abandoned`, `notification-publishes-outcomes`, `gateway-routes-notification-inbox`, `support-queries-notification-status`, `notification-ops-operates-notification`) |
 | `docs/mesh/runtime-contract.md` | 4 dòng AuthorizationPolicy §5.2; 3 dòng retry/timeout; sửa ghi chú "Notification chỉ nhận Kafka" |
 | `docs/gateway/runtime-contract.md` | Route `/api/v1/notifications/inbox/**` |
 
-Còn lại cho owner tương ứng: Order xác nhận snapshot có `name` (README §7 mục 3); User Service đăng ký consume `notification.complaint-received.v1`; Analytics đăng ký consume `t.notification.outcomes.v1`.
+Còn lại cho owner tương ứng: Order xác nhận snapshot có `name` (README §7 mục 3); ~~User Service đăng ký consume `notification.complaint-received.v1`~~ (đã xong: User consume trên `t.notification.outcomes.v1`, group `user-service`, DLQ `t.notification.outcomes.v1.dlq`, xem [User ADR-009](../user/decisions/ADR-009-marketing-opt-in-and-complaint-opt-out.md)); Analytics đăng ký consume `t.notification.outcomes.v1`.
+
+## 8. Mã lỗi HTTP (listener public và internal)
+
+Mọi lỗi là `application/problem+json` theo [`problem.schema.json`](../../contracts/shared/json-schema/v1/problem.schema.json) với `code` ổn định, `Cache-Control: no-store`; nội dung lỗi nội bộ (driver DB, panic) không bao giờ vào `detail`. Route lạ trả `404` và method sai trả `405` cùng định dạng.
+
+| `code` | HTTP | `retryable` | Khi nào |
+|---|---|---|---|
+| `VALIDATION_FAILED` | 400 | không | Tham số/body sai (`limit` ngoài 1–50, `cursor` hỏng, field lạ, `Content-Type` không phải JSON, body > 64 KB); thiếu hoặc ngắn/dài sai `Idempotency-Key` (8–128 ký tự) ở ops mutation; `subject` thiếu ở `deliveries`; redrive delivery đã quá `expires_at` mà không gửi `expires_at` mới; lane/state/channel ngoài enum ở `PUT lanes`; redrive `reason_code` thuộc lỗi contract của producer |
+| `UNAUTHORIZED` | 401 | không | Inbox thiếu/sai `X-User-Id`; internal thiếu `X-Service-Identity` |
+| `FORBIDDEN` | 403 | không | `X-Service-Identity` ngoài allowlist của nhóm (status gọi ops, v.v.) |
+| `NOT_FOUND` | 404 | không | Item inbox không tồn tại hoặc không thuộc user (không bao giờ `403`); id trên path không phải UUID; request/delivery/suppression không tồn tại; lane lạ ở `GET lanes`; user không có contact khi thêm suppression thủ công |
+| `METHOD_NOT_ALLOWED` | 405 | không | Method không có trên route |
+| `STATE_CONFLICT` | 409 | không | Redrive delivery không ở `FAILED`/`EXPIRED`; gỡ suppression `HARD_BOUNCE`/`COMPLAINT` |
+| `IDEMPOTENCY_CONFLICT` | 409 | không | Cùng `Idempotency-Key` nhưng method/path/body khác |
+| `IDEMPOTENCY_IN_PROGRESS` | 409 | không | Call đầu tiên với key đó chưa xong; gọi lại sau |
+| `DEPENDENCY_UNAVAILABLE` | 503 | có | Kho idempotency lỗi; Auth lỗi khi resolve contact cho suppression thủ công |
+| `INTERNAL_ERROR` | 500 | không | Lỗi không lường trước (kể cả panic đã được `recovery` bắt) |
+
+`DEPENDENCY_UNAVAILABLE` (503, `retryable=true`) kèm `Retry-After: 2` (giây) theo [contracts ADR-005](../../contracts/decisions/ADR-005-retry-after-on-throttling-and-unavailable.md); caller `notification-ops` vẫn gọi lại bằng cùng `Idempotency-Key`.
+
+`RATE_LIMITED` (429) có trong từ vựng lỗi nhưng Notification không phát ra: nó không có rate limit trên hai listener HTTP.
+
+## 9. DLQ của consumer: topic dùng chung và cách phân biệt
+
+Mỗi nguồn Kafka có DLQ theo cấu hình `kafka.sources.<nguồn>.dlq` (tên topic nguồn + `.dlq`). Message vào đó là **bản gốc nguyên văn** kèm header của nó cộng ba header của Notification: `x-dlq-reason` (`invalid_envelope`, `invalid_payload`, `max_attempts_exceeded`), `x-dlq-source-topic` và `x-dlq-consumer-group` (group của Notification đã đẩy message, D-22). Lỗi contract của producer không đi Kafka DLQ mà nằm ở bảng `notification_request` ([02-pipeline.md](./02-pipeline.md) §4).
+
+Phần lớn các DLQ này là **topic dùng chung** với service khác:
+
+| DLQ | Ai khác ghi vào | Cách phân biệt message của Notification |
+|---|---|---|
+| `t.auth.events.dlq` | User, Review (cùng consume `USER_DELETED`) | Header `x-dlq-consumer-group = notification-user-lifecycle` |
+| `t.review.events.dlq` | Aggregator của Review; consumer khác của topic tự chọn policy ([AsyncAPI Review](../../contracts/events/review/v1/asyncapi.yaml)) | `x-dlq-consumer-group = notification-review-transactional` |
+| `t.user.events.dlq` | Chat khi có runtime | `x-dlq-consumer-group = notification-preferences` |
+| `t.cart.events.dlq` | **Cart relay** — DLQ phía *producer*, payload là JSON `{reason, outbox_key, ...}` chứ không phải CloudEvent ([AsyncAPI Cart](../../contracts/events/cart/v1/asyncapi.yaml)) | `x-dlq-consumer-group = notification-cart-bulk`; message của Notification là CloudEvent gốc, của Cart thì không |
+| `t.auth.notification.events.dlq`, `t.notification.{critical,transactional,bulk}.v1.dlq` | Không ai | — |
+
+Hệ quả cho vận hành: **không redrive cả topic**; lọc theo `x-dlq-consumer-group` trước, vì một tool redrive của Cart/User/Review có thể nhặt nhầm message của Notification và ngược lại. Message ghi trước khi có header `x-dlq-consumer-group` không mang group; nhận diện bằng `x-dlq-source-topic` và định dạng CloudEvent.

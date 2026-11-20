@@ -31,6 +31,13 @@ không thay thế hai ADR đó. Chưa có implementation evidence.
 > conflict không còn cache đề xuất tính lại voucher; Checkout relay problem của Order
 > ([ADR-015](./ADR-015-problem-catalog-view-model-and-order-outcomes.md)).
 
+> **Ghi chú 2026-10-09:** câu "Chưa có implementation evidence" ở trên đã cũ. Quyết định được
+> hiện thực trong `java/services/checkout-service` (`SubmissionService.readyBody`,
+> `OrderClient.payment`): `client_secret`/`publishable_key` chỉ đi từ response Order tới response
+> Checkout trong cùng request, `usable=false` luôn mang `null`. Test: `SubmitApiTest` và
+> `RecoveryApiTest` (secret tươi từ Order GET ở replay/status, `usable=false`) và
+> `PreviewApiTest.redisHoldsNoPlaintext` (không có `_secret_` hay địa chỉ plaintext trong Redis).
+
 ## Bối cảnh
 
 Từ 2026-09-19 Payment là **nơi lưu duy nhất** của Stripe `client_secret` (mã hóa,

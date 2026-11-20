@@ -31,8 +31,8 @@ public final class JdbcRetentionAdapter implements RetentionPort {
             if (!leader) return new Result(0, 0, 0, 0, 0, 0, 0, false);
             jdbc.sql("SET LOCAL payment.retention_mode = 'on'").update();
             int secrets = shredClientSecrets(now, batchSize);
-            int raw = shredWebhookPayloads(now.minus(policy.webhookRawDays(), ChronoUnit.DAYS), batchSize);
-            int metadata = deleteWebhookMetadata(monthsBefore(now, policy.webhookMetadataMonths()), batchSize);
+            int raw = shredWebhookPayloads(now.minus(policy.webhookRawDays(), ChronoUnit.DAYS), now, batchSize);
+            int metadata = deleteWebhookMetadata(monthsBefore(now, policy.webhookMetadataMonths()), now, batchSize);
             int idempotency = deleteExpiredIdempotency(now, batchSize);
             int reconciliation = deleteReconciliationRuns(
                     monthsBefore(now, policy.reconciliationRunMonths()), batchSize);
@@ -62,7 +62,7 @@ public final class JdbcRetentionAdapter implements RetentionPort {
                 """).param("now", timestamp(now)).param("limit", limit).update();
     }
 
-    private int shredWebhookPayloads(Instant cutoff, int limit) {
+    private int shredWebhookPayloads(Instant cutoff, Instant now, int limit) {
         return jdbc.sql("""
                 WITH candidates AS (
                     SELECT w.id FROM webhook_logs w
@@ -70,24 +70,24 @@ public final class JdbcRetentionAdapter implements RetentionPort {
                      WHERE w.raw_body_ciphertext IS NOT NULL
                        AND w.status IN ('PROCESSED','IGNORED','DEAD')
                        AND w.received_at<:cutoff
-                       AND (p.id IS NULL OR p.legal_hold_until IS NULL OR p.legal_hold_until<=now())
+                       AND (p.id IS NULL OR p.legal_hold_until IS NULL OR p.legal_hold_until<=:now)
                      ORDER BY w.received_at LIMIT :limit FOR UPDATE OF w SKIP LOCKED
                 )
                 UPDATE webhook_logs w
                    SET raw_body_ciphertext=NULL,raw_body_key_id=NULL,
                        stripe_signature_ciphertext=NULL
                   FROM candidates c WHERE w.id=c.id
-                """).param("cutoff", timestamp(cutoff)).param("limit", limit).update();
+                """).param("cutoff", timestamp(cutoff)).param("limit", limit).param("now", timestamp(now)).update();
     }
 
-    private int deleteWebhookMetadata(Instant cutoff, int limit) {
+    private int deleteWebhookMetadata(Instant cutoff, Instant now, int limit) {
         return jdbc.sql("""
                 WITH candidates AS (
                     SELECT w.id FROM webhook_logs w
                     LEFT JOIN payment_transactions p ON p.id=w.payment_transaction_id
                      WHERE w.status IN ('PROCESSED','IGNORED','DEAD')
                        AND w.received_at<:cutoff
-                       AND (p.id IS NULL OR p.legal_hold_until IS NULL OR p.legal_hold_until<=now())
+                       AND (p.id IS NULL OR p.legal_hold_until IS NULL OR p.legal_hold_until<=:now)
                        AND NOT EXISTS (
                            SELECT 1 FROM payment_review_cases c
                             WHERE c.payment_transaction_id=w.payment_transaction_id
@@ -95,14 +95,18 @@ public final class JdbcRetentionAdapter implements RetentionPort {
                      ORDER BY w.received_at LIMIT :limit FOR UPDATE OF w SKIP LOCKED
                 )
                 DELETE FROM webhook_logs w USING candidates c WHERE w.id=c.id
-                """).param("cutoff", timestamp(cutoff)).param("limit", limit).update();
+                """).param("cutoff", timestamp(cutoff)).param("limit", limit).param("now", timestamp(now)).update();
     }
 
     private int deleteExpiredIdempotency(Instant now, int limit) {
         return jdbc.sql("""
                 WITH candidates AS (
                     SELECT idempotency_key,action FROM payment_idempotency
-                     WHERE expires_at<:now ORDER BY expires_at LIMIT :limit
+                     WHERE expires_at<:now
+                       AND NOT EXISTS (SELECT 1 FROM provider_operations o
+                                        WHERE o.command_idempotency_key=payment_idempotency.idempotency_key
+                                          AND o.status IN ('REQUESTED','DISPATCHED','UNKNOWN'))
+                     ORDER BY expires_at LIMIT :limit
                      FOR UPDATE SKIP LOCKED
                 )
                 DELETE FROM payment_idempotency i USING candidates c
@@ -115,6 +119,12 @@ public final class JdbcRetentionAdapter implements RetentionPort {
                 WITH candidates AS (
                     SELECT id FROM reconciliation_runs
                      WHERE status IN ('COMPLETED','FAILED') AND finished_at<:cutoff
+                       AND NOT (lane='CONTROL' AND id=(SELECT id FROM reconciliation_runs
+                                  WHERE lane='CONTROL' AND status='COMPLETED'
+                                  ORDER BY finished_at DESC,id DESC LIMIT 1))
+                       AND NOT (lane='BALANCE_LEDGER' AND status='COMPLETED' AND id=(SELECT id FROM reconciliation_runs
+                                  WHERE lane='BALANCE_LEDGER' AND status='COMPLETED'
+                                  ORDER BY finished_at DESC,id DESC LIMIT 1))
                      ORDER BY finished_at LIMIT :limit FOR UPDATE SKIP LOCKED
                 )
                 DELETE FROM reconciliation_runs r USING candidates c WHERE r.id=c.id

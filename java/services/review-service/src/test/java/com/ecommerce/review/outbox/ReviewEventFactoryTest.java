@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -145,6 +147,55 @@ class ReviewEventFactoryTest {
                 REVIEW, PRODUCT, SKU, 5, true, true), NOW);
         assertThat(row.payload().getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
                 .isLessThan(16384);
+    }
+
+    /**
+     * The catalogued examples are what a consumer author copies, so each must satisfy its
+     * schema and have exactly the shape the factory produces: the same envelope attributes
+     * and the same {@code data} fields, no more and no fewer.
+     */
+    @Test
+    void theCataloguedExamplesAreValidAndHaveTheShapeTheFactoryProduces() throws Exception {
+        RequestContext.setCorrelationId("req-0001-abcdef");
+        Map<ReviewEventType, OutboxRow> produced = new EnumMap<>(ReviewEventType.class);
+        produced.put(ReviewEventType.REVIEW_CREATED, factory.lifecycle(ReviewEventType.REVIEW_CREATED, lifecycle(), NOW));
+        produced.put(ReviewEventType.REVIEW_HIDDEN, factory.lifecycle(ReviewEventType.REVIEW_HIDDEN, lifecycle(), NOW));
+        produced.put(ReviewEventType.REVIEW_APPROVED,
+                factory.lifecycle(ReviewEventType.REVIEW_APPROVED, lifecycle(), NOW));
+        produced.put(ReviewEventType.REVIEW_UPDATED, factory.updated(
+                new ReviewEventData.Updated(REVIEW, PRODUCT, SKU, 4, 5, false, true, true), NOW));
+        produced.put(ReviewEventType.REVIEW_REMOVED, factory.removed(
+                new ReviewEventData.Removed(REVIEW, PRODUCT, SKU, 5, true, true), NOW));
+        produced.put(ReviewEventType.REVIEW_METRICS_UPDATED, factory.metrics(
+                new ReviewEventData.Metrics(PRODUCT, new BigDecimal("4.50"), 2L, 1L, 7L, NOW), NOW));
+        produced.put(ReviewEventType.REVIEW_REPLY_NOTIFICATION_REQUESTED, factory.notification(
+                ReviewEventType.REVIEW_REPLY_NOTIFICATION_REQUESTED,
+                new ReviewEventData.Notification(REVIEW, PRODUCT, RECIPIENT), NOW));
+        produced.put(ReviewEventType.REVIEW_REMOVAL_NOTIFICATION_REQUESTED, factory.notification(
+                ReviewEventType.REVIEW_REMOVAL_NOTIFICATION_REQUESTED,
+                new ReviewEventData.Notification(REVIEW, PRODUCT, RECIPIENT), NOW));
+        assertThat(produced.keySet()).containsExactlyInAnyOrder(ReviewEventType.values());
+
+        for (Map.Entry<ReviewEventType, OutboxRow> entry : produced.entrySet()) {
+            ReviewEventType type = entry.getKey();
+            String file = type.schemaFileName().replace(".schema.json", "");
+            JsonNode example = mapper.readTree(ContractSchemas.contractsDirectory()
+                    .resolve("examples/events/" + file + ".v1.json").toFile());
+            JsonNode actual = payload(entry.getValue());
+
+            assertThat(ContractSchemas.validate(type.schemaFileName(), example))
+                    .as("example of %s must satisfy its schema", type).isEmpty();
+            assertThat(example.path("type").asText()).isEqualTo(type.type());
+            assertThat(example.path("dataschema").asText()).isEqualTo(type.dataschema());
+            assertThat(names(example)).as("envelope attributes of %s", type).isEqualTo(names(actual));
+            assertThat(names(example.path("data"))).as("data fields of %s", type).isEqualTo(names(actual.path("data")));
+        }
+    }
+
+    private static java.util.Set<String> names(JsonNode node) {
+        java.util.Set<String> names = new java.util.TreeSet<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 
     private static ReviewEventData.Lifecycle lifecycle() {

@@ -73,7 +73,8 @@ public abstract class AbstractReviewIT {
             .withNetworkAliases(KAFKA_ALIAS);
 
     static final MinIOContainer MINIO = new MinIOContainer(
-            DockerImageName.parse("minio/minio:RELEASE.2024-01-16T16-07-38Z"))
+            DockerImageName.parse("ecommerce-minio:RELEASE.2025-10-15T17-29-55Z")
+                    .asCompatibleSubstituteFor("minio/minio"))
             .withUserName("minioadmin")
             .withPassword("minioadmin");
 

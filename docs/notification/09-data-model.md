@@ -1,6 +1,6 @@
 # Data model
 
-**Trạng thái:** `proposed` — DDL dưới đây là bản thiết kế, chưa phải migration; tên cột và kiểu có thể chỉnh khi implement, nhưng **ranh giới giữa các bảng, chiến lược partition và retention** là quyết định (D-12).
+**Trạng thái:** `implemented` (phase 1) — DDL dưới đây khớp migration `001`…`004` trong `go/services/notification-service/migrations` (cột và index có thể khác chi tiết; migration là nguồn sự thật). **Ranh giới giữa các bảng, chiến lược partition và retention** là quyết định (D-12).
 
 ## 1. Một ràng buộc Postgres định hình toàn bộ schema
 
@@ -241,10 +241,10 @@ Cột mới (`notification_request.source_sequence`, `notification_delivery.sour
 
 Câu claim ở [02-pipeline.md](./02-pipeline.md) §5.2 không đổi. Với bảng partition, planner dùng `idx_delivery_ready` của từng partition và gộp — row `PENDING`/`RETRY` gần như chỉ nằm ở partition tháng hiện tại nên chi phí không đổi.
 
-Autovacuum cho bảng này chỉnh mạnh hơn mặc định:
+Autovacuum cho bảng này chỉnh mạnh hơn mặc định. Postgres **không cho đặt** `autovacuum_*` trên bảng cha partition (reloption không kế thừa xuống partition), nên hàm `notification_ensure_partition` (migration `002`) đặt trên **từng partition** ngay khi tạo:
 
 ```sql
-ALTER TABLE notification_delivery SET (
+ALTER TABLE notification_delivery_y2026m10 SET (   -- mỗi partition của notification_delivery
     autovacuum_vacuum_scale_factor = 0.01,
     autovacuum_analyze_scale_factor = 0.005
 );
@@ -447,8 +447,8 @@ preference sau khi `ingest_dedup` hết TTL.
 |---|---|---|
 | `user_preference` | `DELETE` | |
 | `inbox_item` | `DELETE` (theo `idx_inbox_user_list`) | |
-| `notification_request` | `UPDATE SET user_id = NULL, template_data = NULL, subject = NULL` | Giữ `decision`, timestamp để metric và audit không thủng; xoá thứ nhận diện được |
-| `notification_delivery` | `UPDATE SET user_id = NULL, subject = NULL` | Không có PII khác trong bảng này |
+| `notification_request` | `UPDATE SET user_id = NULL, template_data = NULL, subject = NULL, dedup_key = NULL, source_ref = NULL` | Giữ `decision`, timestamp để metric và audit không thủng; xoá thứ nhận diện được. `dedup_key` nhúng order/review/cart id và `source_ref` là `delivery_id` của Auth nên đi cùng `subject` (giống đường tombstone ở trên) |
+| `notification_delivery` | `UPDATE SET user_id = NULL, subject = NULL, dedup_key = NULL, source_ref = NULL` | Cùng lý do; không còn cột nào nối được về người. Sổ `delivery_dedup` tách riêng, không bị ảnh hưởng nên dedup vẫn chặn replay |
 | `notification_subject_sequence` / ordering lease | Không chứa raw subject; giữ HMAC high-watermark. Lease chỉ do row `SENDING` giữ và được chính worker release (hoặc reaper thu hồi); delivery `PENDING`/`RETRY` bị skip không giữ lease | Chống replay/order inversion mà không giữ `order_id` rõ |
 | `deleted_user_tombstone` | `INSERT` HMAC(user_id), không lưu UUID | Chặn replay sau deletion |
 | `suppression` | `UPDATE SET user_id = NULL` | Giữ `email_hash`: địa chỉ chết vẫn là địa chỉ chết; hash không truy ngược được |

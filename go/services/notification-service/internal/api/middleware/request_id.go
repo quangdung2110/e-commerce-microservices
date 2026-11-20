@@ -5,8 +5,8 @@
 package middleware
 
 import (
+	obs "github.com/ecommerce/observability"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/notification-service/internal/common/constants"
@@ -25,11 +25,9 @@ const (
 // a scoped logger, and echoes it back.
 func RequestID(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		requestID := c.GetHeader(constants.HeaderRequestID)
-		if len(requestID) < minRequestIDLength || len(requestID) > maxRequestIDLength {
-			requestID = uuid.NewString()
-		}
-		traceParent := c.GetHeader(headerTraceParent)
+		c.Request = obs.EnsureContext(c.Request)
+		requestID := obs.NormalizeRequestID(c.GetHeader(constants.HeaderRequestID))
+		traceParent := obs.Traceparent(c.Request.Context())
 
 		ctx := reqctx.WithRequestID(c.Request.Context(), requestID)
 		if traceParent != "" {
@@ -41,7 +39,7 @@ func RequestID(logger *zap.Logger) gin.HandlerFunc {
 			zap.String("route", c.FullPath()),
 		)
 		if traceParent != "" {
-			scoped = scoped.With(zap.String("traceparent", traceParent))
+			scoped = scoped.With(zap.String("trace_id", obs.TraceID(c.Request.Context())))
 		}
 
 		c.Request = c.Request.WithContext(logging.WithContext(ctx, scoped))

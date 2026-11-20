@@ -354,3 +354,38 @@ func TestClaimHonoursMinIdle(t *testing.T) {
 		t.Fatalf("claimed %d entries that were not idle long enough", len(claimed))
 	}
 }
+
+// The relay reads new entries only while nothing is pending, so the count has
+// to follow delivery and ack exactly, and a stream without a group has none.
+func TestPendingCountFollowsDeliveryAndAck(t *testing.T) {
+	h := newOutboxHarness(t, "relay-1")
+	ctx := context.Background()
+
+	count, err := h.outbox.PendingCount(ctx, testBucket)
+	if err != nil || count != 0 {
+		t.Fatalf("PendingCount before any stream = %d, %v; want 0, nil", count, err)
+	}
+
+	first := h.append("1780000000000-0")
+	h.append("1780000000001-0")
+	if err := h.outbox.EnsureGroup(ctx, testBucket); err != nil {
+		t.Fatalf("EnsureGroup: %v", err)
+	}
+	if count, _ := h.outbox.PendingCount(ctx, testBucket); count != 0 {
+		t.Fatalf("PendingCount before Read = %d; undelivered entries are not pending", count)
+	}
+
+	if _, err := h.outbox.Read(ctx, testBucket, 10); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if count, _ := h.outbox.PendingCount(ctx, testBucket); count != 2 {
+		t.Fatalf("PendingCount after Read = %d, want 2", count)
+	}
+
+	if err := h.outbox.Ack(ctx, testBucket, first); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	if count, _ := h.outbox.PendingCount(ctx, testBucket); count != 1 {
+		t.Fatalf("PendingCount after one Ack = %d, want 1", count)
+	}
+}

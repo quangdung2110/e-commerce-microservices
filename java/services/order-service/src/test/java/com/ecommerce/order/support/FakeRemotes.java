@@ -268,6 +268,14 @@ public class FakeRemotes {
             public RemoteResult initiate(String key, String correlationId, JsonNode body) {
                 String order = body.path("order_id").asText();
                 calls.add("payment.initiate:" + order + ":" + body.path("payment_attempt_number").asInt());
+                if ("NO_CREATE".equals(behaviour.get("initiate:" + body.path("user_id").asText()))) {
+                    return replayOr(key, () -> RemoteResult.rejected(422, "PROVIDER_CREATE_NOT_ACCEPTED",
+                            mapper.createObjectNode().put("code", "PROVIDER_CREATE_NOT_ACCEPTED")
+                                    .put("retryable", false).put("no_payment_created", true)
+                                    .put("order_id", order).put("payment_attempt_number", body.path("payment_attempt_number").asInt())
+                                    .put("transaction_id", txn(sequence.getAndIncrement()))
+                                    .put("provider_operation_id", "POP_00000000000000000000000001")));
+                }
                 if ("REJECT".equals(behaviour.get("initiate:" + body.path("user_id").asText()))) {
                     return RemoteResult.rejected(422, "PROVIDER_REQUEST_REJECTED", problem("PROVIDER_REQUEST_REJECTED"));
                 }

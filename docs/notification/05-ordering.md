@@ -1,6 +1,6 @@
 # Ordering
 
-**Trạng thái:** `proposed`
+**Trạng thái:** `implemented` (phase 1)
 
 ## 1. Thứ tự nào thực sự cần?
 

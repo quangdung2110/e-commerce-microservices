@@ -19,8 +19,8 @@ thể scale độc lập mà vẫn dùng chung một image:
 | Thành phần | Bật bằng | Nhiệm vụ |
 |---|---|---|
 | Public API (`:8082`) | `app.api_enabled` | Profile, address, preferences của chính chủ |
-| Internal API (`:8083`) | `internal.enabled` | `checkout-snapshot` cho Checkout qua mTLS |
-| Auth event consumer | `kafka.consumer_enabled` | `USER_VERIFIED_SUCCESS`, `USER_DELETED` |
+| Internal API (`:8083`) | `internal.enabled` | `checkout-snapshot` cho Checkout; mesh thực thi mTLS, service kiểm allowlist `X-Service-Identity` |
+| Event consumer | `kafka.consumer_enabled` | `USER_VERIFIED_SUCCESS`, `USER_DELETED` (`t.auth.events`) và `complaint-received` (`t.notification.outcomes.v1`) |
 | Workers | `workers.*.enabled` | `user-retention-purge`, `user-projection-reconciliation` |
 
 Ví dụ: một deployment chạy API-only đặt `USER_KAFKA_CONSUMER_ENABLED=false` và
@@ -49,11 +49,16 @@ pgx, sarama hay redis; adapter không chứa business rule.
 |---|---|
 | [ADR-001](../../../docs/user/decisions/ADR-001-profile-bootstrap-from-auth-event.md) profile bootstrap từ event Auth | `LifecycleService.Bootstrap`, insert `ON CONFLICT DO NOTHING`, id lấy từ `user_id` |
 | [ADR-002](../../../docs/user/decisions/ADR-002-address-cache-aside.md) cache-aside chỉ cho address | `redis.AddressCache`, key `user:caches:addresses:{user_id}`, TTL 12h / empty 15m, đọc lỗi → fallback DB |
-| [ADR-003](../../../docs/user/decisions/ADR-003-default-address-and-hard-delete.md) một default + hard delete | advisory lock theo user, partial unique index, `EnsureDeletable` trả 409 |
+| [ADR-003](../../../docs/user/decisions/ADR-003-default-address-and-hard-delete.md) một default + hard delete | advisory lock theo user, partial unique index, `EnsureDeletable(count)` trả 409 khi còn address khác |
 | [ADR-004](../../../docs/user/decisions/ADR-004-direct-event-publication.md) direct publish sau commit | `kafka.Publisher` retry 3 lần cùng CloudEvent id; `EventEmitter` không làm fail request |
 | [ADR-005](../../../docs/user/decisions/ADR-005-gdpr-two-stage-deletion.md) anonymize + purge hai giai đoạn | `LifecycleService.Anonymize` / `PurgeDue`, bảng `user_deletions` |
 | [ADR-006](../../../docs/user/decisions/ADR-006-auth-owns-account-deletion-event.md) Auth sở hữu event xóa | service **không** publish `USER_DELETED`; `t.user.events` chỉ có 2 event |
 | [ADR-007](../../../docs/user/decisions/ADR-007-projection-reconciliation-without-outbox.md) reconciliation không outbox | `ReconciliationService`, cursor chỉ trong bộ nhớ, CloudEvent id mới, `updated_at` giữ nguyên |
+| [ADR-008](../../../docs/user/decisions/ADR-008-internal-caller-auth-delegated-to-mesh.md) cổng internal xác thực qua mesh | `middleware.ServiceIdentity` (allowlist `internal.allowed_callers`), `RateLimitByServiceUser`; không còn TLS ở app |
+| [ADR-009](../../../docs/user/decisions/ADR-009-marketing-opt-in-and-complaint-opt-out.md) marketing opt-in + complaint | `NewDefaultPreferences`, migration `0002`, `PreferencesService.DisableMarketing`, `eventHandler.handleNotification` |
+| [ADR-010](../../../docs/user/decisions/ADR-010-deleted-account-invisible-to-owner.md) account đã xóa vô hình với owner | `ProfileRepository.GetActive`/`GetActiveForUpdate`, `LockUser` trong `Anonymize` |
+| [ADR-011](../../../docs/user/decisions/ADR-011-address-cache-invalidation-epoch.md) epoch chống refill muộn | `AddressCache.Epoch`/`Put`/`Invalidate` (script Lua) |
+| [ADR-012](../../../docs/user/decisions/ADR-012-delete-last-address.md) xóa address duy nhất | `Address.EnsureDeletable(addressesInBook)` |
 
 ## 4. Chạy local
 
@@ -75,7 +80,7 @@ docker compose up -d
 ```
 
 Compose publish PostgreSQL ở `5433`, Redis ở `6380`, Kafka ở `9093` để chạy song
-song với `auth-service`. Migration đầu tiên được nạp tự động khi volume còn rỗng.
+song với `auth-service`. Hai migration (`0001`, `0002`) được nạp tự động, theo thứ tự, khi volume còn rỗng.
 
 Chạy trực tiếp bằng Go (cần PostgreSQL/Redis/Kafka sẵn sàng):
 
@@ -113,7 +118,8 @@ make test
 make test-integration
 ```
 
-`make test` chạy `test/unit` với in-memory double, không cần Docker.
+`make test` chạy `./...` (use case, entity, config, event và handler của consumer Kafka với
+in-memory double), không cần Docker.
 `make test-integration` khởi động PostgreSQL và Redis bằng testcontainers nên cần
 Docker daemon; suite này phủ SQL, check constraint, partial unique index, cache
 serialization và toàn bộ bề mặt HTTP.
@@ -132,8 +138,9 @@ Mọi key trong [`configs/application.yaml`](configs/application.yaml) đều ov
 `USER_KAFKA_BROKERS`, `USER_CACHE_ADDRESS_TTL`. Secret (`DB_PASSWORD`,
 `REDIS_PASSWORD`, đường dẫn TLS) lấy từ environment, không commit.
 
-Config được validate lúc khởi động: TTL cache, topic khi Kafka bật, giờ chạy
-reconciliation, và bắt buộc mTLS cho internal API khi `app.env=production`.
+Config được validate lúc khởi động: TTL cache, topic của cả hai nguồn event khi consumer
+bật, giờ chạy reconciliation, và allowlist `internal.allowed_callers` không rỗng khi
+internal API bật. Service không đòi chứng chỉ TLS: mTLS do service mesh thực thi.
 
 ## 7. Giới hạn đã biết
 
@@ -144,9 +151,16 @@ reconciliation, và bắt buộc mTLS cho internal API khi `app.env=production`.
 - Chưa có contract test tự động chạy OpenAPI/AsyncAPI schema với
   request/response thật; integration test đang kiểm tra thủ công theo contract.
 - Chưa có single-flight/lock chống cache stampede khi nhiều request cùng miss —
-  đúng như phần rủi ro còn để mở trong WF-USER-004.
+  đúng như phần rủi ro còn để mở trong WF-USER-004. Epoch ([ADR-011](../../../docs/user/decisions/ADR-011-address-cache-invalidation-epoch.md))
+  chỉ chặn fill muộn sau invalidation.
 - Validation mã địa giới chỉ kiểm tra format; quan hệ province/district/ward cần
   master-data contract riêng.
-- Service tự đặt trần 50 address cho một profile (`constants.AddressBookLimit`)
-  vì `GET /addresses` không phân trang trong contract v1. Đây là ràng buộc do
-  implementation thêm vào, chưa có trong OpenAPI; nếu chốt khác thì sửa cả hai.
+- Service đặt trần 50 address cho một profile (`constants.AddressBookLimit`) vì
+  `GET /addresses` không phân trang trong contract v1; OpenAPI có `maxItems: 50` và
+  vượt trần là `422 INVALID_ADDRESS`. Đổi trần thì sửa cả hai.
+- Backfill của migration `0002` chỉ tắt marketing của các row owner chưa từng chạm vào;
+  user chỉ đổi cờ email/in-app giữ `marketing_enabled=true` (xem ADR-009).
+- Auth và Notification vẫn xác thực cổng internal bằng mTLS ở tầng ứng dụng; User đã
+  chuyển sang mô hình mesh (ADR-008).
+- Chưa có test race song song trên PostgreSQL cho create-address đồng thời với
+  anonymization (cơ chế là advisory lock, được kiểm bằng unit test theo thứ tự gọi).

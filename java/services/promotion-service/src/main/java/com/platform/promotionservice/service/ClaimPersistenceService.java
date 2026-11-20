@@ -64,7 +64,13 @@ public class ClaimPersistenceService {
                     .orElseThrow(() -> new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
                             "Pending claim references an unknown claim row"));
             if (claim.getStatus() == ClaimStatus.CLAIMED && pending.userId().equals(claim.getOwnerId())) {
-                // Claim đã CLAIMED bởi chính user nhưng wallet chưa có: chỉ xảy ra khi wallet bị xóa thủ công.
+                // Request đồng thời của cùng user đã commit claim + wallet giữa lúc ta đọc wallet và lúc UPDATE bị
+                // chặn khoá dòng chờ nó (READ COMMITTED): đọc lại wallet đó và trả như replay thay vì báo lỗi.
+                Optional<UserCouponWalletEntity> committed = wallets.lockByUserAndPromotion(pending.userId(), promotionId);
+                if (committed.isPresent()) {
+                    return new Persisted(committed.get(), claim, false);
+                }
+                // Claim đã CLAIMED bởi chính user nhưng wallet vẫn không có: chỉ xảy ra khi wallet bị xóa thủ công.
                 throw new DomainException(ErrorCode.FINAL_COMMAND_STATE_INCONSISTENT,
                         "Claim is owned by the user but the wallet row is missing");
             }

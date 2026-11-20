@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	obs "github.com/ecommerce/observability"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/ecommerce/gateway-auth/internal/domain"
@@ -50,10 +50,8 @@ func (h *VerifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.deadline)
 	defer cancel()
 
-	requestID := r.Header.Get(headerRequestID)
-	if requestID == "" {
-		requestID = uuid.NewString()
-	}
+	requestID := obs.NormalizeRequestID(r.Header.Get(headerRequestID))
+	w.Header().Set(headerRequestID, requestID)
 	w.Header().Set("Cache-Control", "no-store")
 
 	identity, err := h.verifier.Verify(ctx, r.Header.Get("Authorization"))
@@ -74,11 +72,15 @@ func (h *VerifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p := classify(err)
 	p.Instance = instancePath(r)
-	p.TraceID = requestID
+	p.TraceID = obs.TraceID(r.Context())
+	if p.TraceID == "" {
+		p.TraceID = requestID
+	}
 
 	// Log the reason, never the token.
 	h.logger.Info("verification rejected",
 		zap.String("request_id", requestID),
+		zap.String("trace_id", obs.TraceID(r.Context())),
 		zap.String("code", p.Code),
 		zap.Int("status", p.Status),
 		zap.String("reason", err.Error()),

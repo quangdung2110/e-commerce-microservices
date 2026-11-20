@@ -20,6 +20,7 @@ is the short-lived workflow state in its own Redis. Design, contracts and runboo
 | `store` | `SessionStore`: every state transition is one Lua script (`src/main/resources/lua`) |
 | `client` | One client per dependency (Cart, User, Product gRPC, Inventory, Promotion, Order), tolerant readers with contract checks |
 | `resilience` | `DependencyGuard`: deadline budget, timeout, circuit breaker and bulkhead per dependency, outcome classification |
+| `observability` | `CheckoutMetrics` (counters of operations.md) and `Spans` (use case, dependency and Redis spans, no metrics) |
 | `crypto` | HMAC lookup refs, envelope encryption, key rings, CSPRNG ids |
 | `domain` | Snapshot, state, RFC 8785 hashes of the Order recipe |
 | `problem` | The `CheckoutProblem` catalog |

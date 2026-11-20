@@ -17,7 +17,9 @@ import org.springframework.stereotype.Service;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * CONFIRM và technical CANCEL_CONFIRMED (WF-PROMO-005/006, ADR-013/016): preflight
@@ -83,13 +85,21 @@ public class FinalCommandService {
         return read(result.receipt(), AllocationDtos.ConfirmationResponse.class);
     }
 
-    public AllocationDtos.TechnicalCancellationResponse cancelConfirmed(String idempotencyKey,
-                                                                        AllocationDtos.FinalAllocationRequest request) {
+    /**
+     * Legacy technical cancellation (deprecated, ADR-013/017/019). Chỉ {@code promotion-legacy-migrator} tới được
+     * route (allowlist ở {@code TrustedIdentityFilter}); ở đây kiểm proof bất biến: header
+     * {@code X-Legacy-Migration-Proof} phải là UUID bằng {@code migration_record_id} trong body, nếu không
+     * {@code 403 FORBIDDEN} trước mọi thao tác đọc/ghi. Record ID và digest nằm trong request hash nên replay với
+     * proof khác là {@code IDEMPOTENCY_PAYLOAD_MISMATCH}, và được lưu trên receipt.
+     */
+    public AllocationDtos.TechnicalCancellationResponse cancelConfirmed(
+            String idempotencyKey, String proofHeader, AllocationDtos.LegacyTechnicalCancellationRequest request) {
+        FinalCommandTransactions.MigrationProof proof = requireProof(proofHeader, request);
         long orderId = Ids.parse(request.orderId(), "order_id");
         long promotionId = Ids.parse(request.promotionId(), "promotion_id");
         long expected = request.expectedDiscount().requireVnd("expected_discount", 0);
         requireKey(idempotencyKey, CANCEL_KEY_PREFIX, orderId, promotionId);
-        String requestHash = requestHash(CommandOperation.CANCEL_CONFIRMED, orderId, promotionId, expected);
+        String requestHash = legacyRequestHash(orderId, promotionId, expected, proof);
 
         Optional<PromotionCommandReceiptEntity> durable = preflight(CommandOperation.CANCEL_CONFIRMED, idempotencyKey,
                 promotionId, orderId, requestHash);
@@ -99,7 +109,7 @@ public class FinalCommandService {
         }
         FinalCommandTransactions.Result result;
         try {
-            result = transactions.cancelConfirmed(idempotencyKey, requestHash, promotionId, orderId);
+            result = transactions.cancelConfirmed(idempotencyKey, requestHash, promotionId, orderId, proof);
         } catch (FinalCommandTransactions.ConcurrentReceiptException e) {
             result = new FinalCommandTransactions.Result(preflight(CommandOperation.CANCEL_CONFIRMED, idempotencyKey,
                     promotionId, orderId, requestHash).orElseThrow(), false);
@@ -170,6 +180,32 @@ public class FinalCommandService {
 
     static String requestHash(CommandOperation operation, long orderId, long promotionId, long expectedAmount) {
         return AllocationService.sha256(operation.name() + "|" + orderId + "|" + promotionId + "|" + expectedAmount);
+    }
+
+    /** Canonical hash của legacy cancel: gồm cả migration record ID và digest bằng chứng (data.md §3.8). */
+    static String legacyRequestHash(long orderId, long promotionId, long expectedAmount,
+                                    FinalCommandTransactions.MigrationProof proof) {
+        return AllocationService.sha256(CommandOperation.CANCEL_CONFIRMED.name() + "|" + orderId + "|" + promotionId
+                + "|" + expectedAmount + "|" + proof.recordId() + "|" + proof.evidenceSha256());
+    }
+
+    /** Header thiếu, không phải UUID hoặc khác {@code migration_record_id} của body → 403 (capability bị từ chối). */
+    private static FinalCommandTransactions.MigrationProof requireProof(
+            String proofHeader, AllocationDtos.LegacyTechnicalCancellationRequest request) {
+        UUID header = null;
+        if (proofHeader != null && !proofHeader.isBlank()) {
+            try {
+                header = UUID.fromString(proofHeader.trim());
+            } catch (IllegalArgumentException e) {
+                header = null;
+            }
+        }
+        if (header == null || !header.equals(request.migrationRecordId())) {
+            throw new DomainException(ErrorCode.FORBIDDEN,
+                    "X-Legacy-Migration-Proof must carry the migration_record_id of the request body");
+        }
+        return new FinalCommandTransactions.MigrationProof(header,
+                request.preFinancialWatermarkEvidenceSha256().toLowerCase(Locale.ROOT));
     }
 
     private static void requireKey(String key, String prefix, long orderId, long promotionId) {

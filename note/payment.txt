@@ -1,0 +1,20 @@
+1. FSM
+1.1 Payment Transaction
+
+1.1.1 Ba trạng thái FAILED, EXPIRED, CANCELED được gọi chung là Terminal Non-Capture
+Không bao giờ được chuyển sang FAILED / EXPIRED / CANCELED nếu PaymentIntent trên Stripe chưa chết
+
+Lý do sống còn: Nếu Payment Service tự tiện set EXPIRED hay CANCELED dựa trên đồng hồ local trong khi intent trên Stripe vẫn mở, khách có thể xác thực 3D-Secure thành công ở giây thứ 16. 
+Stripe sẽ trừ tiền (succeeded), trong khi Order Service tưởng đơn đã hủy nên đã xả kho cho người khác mua mất!
+Cách thực thi: Mọi luồng kết thúc không thu tiền (T3, T4, T5) đều phải gửi lệnh PaymentIntent.cancel lên Stripe qua ProviderOperation CANCEL. 
+Chỉ khi Stripe trả về xác nhận canceled, Payment FSM mới commit sang trạng thái terminal và phát fact ra Kafka. Order Service nhận được fact này là có bằng chứng thép để an tâm kết thúc Saga.
+
+1.1.2 Race Condition giữa cancel/expire và Capture (giống mô tả của 1.1.1)
+Không có bất kỳ payment nào được phép chuyển sang FAILED, EXPIRED, hay CANCELED chừng nào PaymentIntent trên Stripe còn có khả năng capture tiền
+
+Hệ thống không tin vào đồng hồ local của server để tự quyết định hủy. Thay vào đó, Stripe được chọn làm trọng tài duy nhất. Mọi quyết định Expire hay Cancel đều phải thông qua Stripe bằng lệnh PaymentIntent.cancel
+
+
+1.2 Refund Transaction FSM
+
+1.2.1 Reversal

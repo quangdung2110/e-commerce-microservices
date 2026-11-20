@@ -1,7 +1,9 @@
 package com.ecommerce.search.controller.api;
 
+import com.ecommerce.search.common.ErrorCode;
 import com.ecommerce.search.common.SearchException;
 import com.ecommerce.search.config.SearchProperties;
+import com.ecommerce.search.domain.model.AttributeToken;
 import com.ecommerce.search.domain.model.SearchQuery;
 import com.ecommerce.search.domain.model.SortOption;
 import com.ecommerce.search.dto.SearchDtos;
@@ -16,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -35,6 +38,11 @@ import java.util.Optional;
 public class ProductSearchController {
 
     private static final int SUGGEST_MIN_LENGTH = 2;
+    private static final int Q_MAX_LENGTH = 256;
+    private static final int CATEGORY_MAX_LENGTH = 180;
+    private static final int FILTER_MAX_ITEMS = 50;
+    private static final int FILTER_TOKEN_MAX_LENGTH = 256;
+    private static final int CURSOR_MAX_LENGTH = 16384;
 
     private final ProductSearchService searchService;
     private final SuggestionService suggestionService;
@@ -68,6 +76,7 @@ public class ProductSearchController {
             @RequestParam(required = false) Integer size) throws IOException {
 
         validatePriceRange(priceMin, priceMax);
+        validateBounds(q, category, filters, cursor);
 
         SearchQuery request = new SearchQuery(
                 SearchQuery.normalizeQueryText(q),
@@ -92,6 +101,9 @@ public class ProductSearchController {
         String prefix = q == null ? "" : q.trim();
         if (prefix.length() < SUGGEST_MIN_LENGTH) {
             throw SearchException.invalidParameter("q", "must be at least 2 characters");
+        }
+        if (q.length() > Q_MAX_LENGTH) {
+            throw SearchException.invalidParameter("q", "must be at most " + Q_MAX_LENGTH + " characters");
         }
         int resolvedLimit = limit == null ? 8 : limit;
         if (resolvedLimit < 1 || resolvedLimit > 20) {
@@ -119,6 +131,52 @@ public class ProductSearchController {
                     "must be between 1 and " + properties.pagination().maxSize());
         }
         return size;
+    }
+
+    /**
+     * The limits {@code contracts/http/search/v2/openapi.yaml} declares on the free-form
+     * parameters. All violations are reported together. A blank {@code q}, {@code category}
+     * or {@code cursor} is treated as not sent, which is what a browser form submits for an
+     * empty field.
+     */
+    private static void validateBounds(String q, String category, List<String> filters, String cursor) {
+        List<SearchException.FieldError> errors = new ArrayList<>();
+        if (q != null && q.length() > Q_MAX_LENGTH) {
+            errors.add(new SearchException.FieldError("q", "must be at most " + Q_MAX_LENGTH + " characters"));
+        }
+        if (category != null && category.length() > CATEGORY_MAX_LENGTH) {
+            errors.add(new SearchException.FieldError("category",
+                    "must be at most " + CATEGORY_MAX_LENGTH + " characters"));
+        }
+        if (filters != null) {
+            if (filters.size() > FILTER_MAX_ITEMS) {
+                errors.add(new SearchException.FieldError("filter",
+                        "must repeat at most " + FILTER_MAX_ITEMS + " times"));
+            }
+            for (String token : filters) {
+                if (token == null || token.isEmpty() || token.length() > FILTER_TOKEN_MAX_LENGTH) {
+                    errors.add(new SearchException.FieldError("filter",
+                            "each token must be 1 to " + FILTER_TOKEN_MAX_LENGTH + " characters"));
+                    break;
+                }
+                if (AttributeToken.decode(token).isEmpty()) {
+                    errors.add(new SearchException.FieldError("filter",
+                            "'" + abbreviate(token) + "' is not a facet option value; send back FacetOption.value unchanged"));
+                    break;
+                }
+            }
+        }
+        if (!errors.isEmpty()) {
+            throw new SearchException(ErrorCode.INVALID_QUERY_PARAMETER,
+                    "Request has " + errors.size() + " invalid parameter(s)", errors, null);
+        }
+        if (cursor != null && cursor.length() > CURSOR_MAX_LENGTH) {
+            throw SearchException.invalidCursor("cursor is longer than " + CURSOR_MAX_LENGTH + " characters");
+        }
+    }
+
+    private static String abbreviate(String token) {
+        return token.length() <= 40 ? token : token.substring(0, 40) + "...";
     }
 
     private static void validatePriceRange(Long priceMin, Long priceMax) {

@@ -18,6 +18,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** DSL construction rules from {@code WF-SEARCH-001} and ADR-020. */
 class ProductQueryBuilderTest {
+    @Test
+    void excludedQaIdsStayOutsideBothSkuAndNestedProductQueriesEvenWhenStockIsDisabled() {
+        var policy = new com.ecommerce.search.config.StorefrontProperties();
+        policy.setExcludedProductIds(List.of("qa-fixture-id"));
+        policy.setExcludedCategoryIds(List.of("qa-category-id"));
+        var configured = new ProductQueryBuilder(properties(), policy);
+        assertThat(configured.build(query(false, List.of()), Optional.empty()).toString())
+                .contains("must_not", "qa-fixture-id", "qa-category-id", "product_id", "category_ancestor_ids");
+        assertThat(configured.build(query(false, List.of()), Optional.empty(), "skus.").toString())
+                .contains("skus.product_id", "skus.category_ancestor_ids", "qa-fixture-id");
+    }
 
     private final ProductQueryBuilder builder = new ProductQueryBuilder(properties());
 
@@ -112,12 +123,17 @@ class ProductQueryBuilderTest {
                 new SearchProperties.Suggestions("0 0 3 * * *", true, 1L, 0.8,
                         Duration.ofMinutes(5), Duration.ofMinutes(5), Duration.ofMinutes(1),
                         5000, 1000, 1.1, Long.MAX_VALUE, "vi", "GLOBAL", List.of()),
-                new SearchProperties.Tombstone("0 30 2 * * *", true, Duration.ofDays(30),
+                new SearchProperties.Tombstone("0 30 2 * * *", true, Duration.ofDays(45),
                         "0 0 */4 * * *", true),
-                new SearchProperties.Media("https://cdn.test/", "/static/placeholder.png"),
+                new SearchProperties.Media("https://cdn.test", "/static/placeholder.png"),
                 new SearchProperties.Gateway("X-User-Id", "X-User-Roles", "X-Request-Id", "ADMIN"),
                 new SearchProperties.Cors(List.of("*")),
                 new SearchProperties.Export("http://product", "http://inventory", "http://review",
-                        "review-token", true, Duration.ofSeconds(30), 2, 2));
+                        true, Duration.ofSeconds(30), 2, 2),
+                new SearchProperties.Consumer(Duration.ofSeconds(5)),
+                new SearchProperties.Lifecycle(Duration.ofMinutes(2), Duration.ofSeconds(30),
+                        Duration.ofSeconds(30), 3, Duration.ofMinutes(2), true, true, 1.5,
+                        Duration.ofHours(24), "0 15 * * * *", true),
+                new SearchProperties.Verify(true, 100, List.of()));
     }
 }

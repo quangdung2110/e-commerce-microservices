@@ -17,6 +17,10 @@ verified_against_commit: null
 
 # Payment Service — Hướng dẫn phát triển
 
+> **Đối chiếu runtime 2026-10-11:** xem [phạm vi hiện tại và năng lực chưa triển khai](./runtime-status.md)
+> và [ADR-023](./decisions/ADR-023-reconciliation-ownership-and-audit-corrections.md). Các mục tiêu KMS, metric nghiệp vụ,
+> heartbeat, health/DR/export và RBAC bên ngoài không phải bằng chứng đã được runtime hiện thực.
+
 > Checklist để bắt đầu implementation `java/services/payment-service` theo đúng
 > quy ước của các Java service đã có trong repo (`promotion-service`,
 > `review-service`, …) và theo thiết kế trong bộ tài liệu này. Gate 3 đã hiện thực
@@ -33,7 +37,7 @@ verified_against_commit: null
 | Java / build | JDK 21, Maven 3.9, Spring Boot 3.3.x (parent như `promotion-service/pom.xml`) | Máy dev không cần JDK: build bằng container `maven:3.9-eclipse-temurin-21` (§2) |
 | Container runtime | Docker Engine + Compose v2 | `docker-compose.yml` ở gốc repo cung cấp PostgreSQL, Redis, Kafka, Kafka Connect (Debezium 3.0) |
 | Stripe | Tài khoản Stripe test mode, một **Sandbox riêng** cho mỗi dev; Stripe CLI ≥ 1.19 | `stripe login` với sandbox; không dùng chung `whsec_` giữa các máy |
-| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một dev KMS key cố định | Root `.env.local` đã gitignore; Compose cần `--env-file .env.local`; mẫu `.env.checkout.example` |
+| Secret local | `sk_test_…`, `pk_test_…`, `whsec_…` từ Stripe CLI, một local AES-256 key cố định (chưa có KMS adapter) | Root `.env.local` đã gitignore; Compose cần `--env-file .env.local`; mẫu `.env.checkout.example` |
 | Công cụ test | JUnit 5, Testcontainers PostgreSQL và các fake port có trạng thái trong JVM | Chi tiết §6; WireMock/stripe-mock/Toxiproxy chưa được cấu hình trong module |
 | Contract tooling | Node.js ≥ 24.11, npm, Redocly CLI 2.53.3, AsyncAPI CLI 6.1.0 | Pin trong `contracts/tools/package-lock.json`; §7 |
 
@@ -76,6 +80,8 @@ hoặc:
 ```bash
 docker compose --env-file .env.local --profile payment up -d --build payment-service
 ```
+
+**Xác minh artifact sau build/deploy:** lưu image ID và SHA-256 của JAR/class thực sự trong container. F10-06 (14/10/2026) cho thấy source có `FAILED + payment_intent.canceled` nhưng JAR cũ đang chạy thiếu mapping này. Chạy regression `ReconciliationIT`, kiểm bytecode khi điều tra parity và retest provider observation sau deploy; chỉ source/test xanh chưa chứng minh runtime đã cập nhật. Xem [operations §9.10a](./operations.md#910a-drift-giả-payment-failed-nhưng-stripe-canceled) và [báo cáo P2](../frontend/e2e-payment-p2-fix-report-2026-10-14.md). Dừng reconciliation worker cũ trước khi thay bản ADR-023; không rolling chung với bản chưa có fencing.
 
 Compose build từ `java/services/payment-service/Dockerfile`, chạy profile `dev`,
 healthcheck `/actuator/health/liveness`. Các giá trị `*_local_change_me` chỉ giúp
@@ -136,7 +142,7 @@ trace cho observability, không được dùng để dựng lại hoặc hiểu 
 |---|---|---|---|
 | PostgreSQL 16 | `postgres` / 15432 | DB `payment_service`; Flyway tự chạy migration khi start | Không (Testcontainers ở test) |
 | Redis 7 | `redis` / 6379 | Payment Gate 3 chưa có adapter đọc/ghi; Compose vẫn cung cấp cho hệ thống | Không cần mock vì không có Payment code path phụ thuộc Redis |
-| Kafka | `kafka` / 9092 (nội bộ), 29092 (host) | Dev broker auto-create được topic; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
+| Kafka | `kafka` / 9092 (nội bộ), 29092 (host, chỉ 127.0.0.1) | Broker tắt auto-create ([mesh ADR-002](../mesh/decisions/ADR-002-local-runtime-exposure-and-broker-auth.md)); `kafka-init` tạo topic trong `infra/kafka/topics.txt`; SASL/SCRAM + ACL ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)): principal `payment-service` chỉ đọc/ghi `t.payment.webhooks.raw`, còn `t.payment.events.v2` chỉ `debezium-payment` ghi được; staging/prod phải provision `t.payment.webhooks.raw` và `t.payment.events.v2` đúng policy trong `operations.md` | Listener/publisher boundary có unit test; không dùng Kafka Testcontainer hiện tại |
 | Kafka Connect (Debezium) | `kafka-connect` / 8084 | Đăng ký connector §2.5 | Có — bỏ qua khi chỉ test API; outbox vẫn được ghi |
 | Stripe | Internet, test mode | Sandbox riêng + Stripe CLI | Có — narrow `StripeGateway` fake dùng SDK model thật (§6) |
 | Order | Không cần | Gọi Payment bằng `curl`/fixture với `X-Service-Identity: order-service` | — |
@@ -156,14 +162,19 @@ env var (`payment.stripe.secret-key` ↔ `PAYMENT_STRIPE_SECRET_KEY`).
 | `PAYMENT_CRYPTO_LOCAL_KEY` | `payment.crypto.local-key` (chỉ profile `dev`/`test`) | Có | base64 32 byte |
 | `PAYMENT_SESSION_TTL` | `payment.session.ttl` | Không | `PT15M`; test nhanh: `PT2M` |
 | `PAYMENT_STRIPE_DECLINE_MAX_PER_ATTEMPT` | `payment.stripe.decline.max-per-attempt` | Không | `5` |
-| `PAYMENT_SCHEDULER_*` | `payment.scheduler.*` | Không | Interval rút ngắn cho dev (`expiration.interval=PT10S`) |
+| `PAYMENT_SCHEDULER_*` | Chưa có env alias tổng quát | Không | Override bằng Spring property, ví dụ `PAYMENT_SCHEDULER_EXPIRATION_INTERVAL=PT10S` |
 | `PAYMENT_DATABASE_URL` | `spring.datasource.url` | Có | `jdbc:postgresql://localhost:15432/payment_service` |
 | `PAYMENT_KAFKA_BROKERS` | `spring.kafka.bootstrap-servers` | Có | `localhost:29092` |
+| `SPRING_KAFKA_SECURITY_PROTOCOL`, `SPRING_KAFKA_PROPERTIES_SASL_*`, `KAFKA_SASL_USERNAME`/`KAFKA_SASL_PASSWORD` | `spring.kafka.security.protocol`, `spring.kafka.properties.sasl.*` | Có với broker compose | Principal `payment-service`; compose đặt qua `x-kafka-sasl-java` ([mesh ADR-003](../mesh/decisions/ADR-003-kafka-sasl-scram-and-acls.md)) |
 | `PAYMENT_REDIS_HOST` | `spring.data.redis.host` | Không | `localhost` (hạ tầng dự trù) |
 
 Quy tắc: `application.yml` chỉ chứa default không nhạy cảm và placeholder `${…}`;
 module hiện chỉ có `application.yml`; profile `dev` cho phép local AES key nhưng
-không tự nạp secret. Không có giá trị secret commit; `.env.local` gitignored. CI fail nếu grep thấy `sk_live_`,
+không tự nạp secret. `StartupSecretGuard` ([mesh ADR-004](../mesh/decisions/ADR-004-secrets-client-ip-network-split-and-internal-signing.md)):
+ngoài profile `dev`/`local`/`test`, Stripe secret key và từng webhook secret đã cấu hình phải không trống, ≥ 20 ký tự, không là
+placeholder của compose (`*_local_change_me`); ở profile `dev`, webhook secret placeholder chỉ được chấp nhận khi secret key cũng là
+placeholder — đặt `sk_test_` thật mà quên `whsec_` của `stripe listen` thì Payment không khởi động (route webhook công khai qua gateway).
+Không có giá trị secret commit; `.env.local` gitignored. CI fail nếu grep thấy `sk_live_`,
 `pk_live_`, `whsec_` literal trong repo. Profile `test` không bao giờ đọc env Stripe
 thật.
 
@@ -229,7 +240,7 @@ lại khi Stripe đổi).
 | `4000 0000 0000 0002` | `card_declined` (`generic_decline`, retryable) | `payment_intent.payment_failed` | `T3a`: vẫn `PENDING`, `decline_count=1`; thanh toán lại bằng `4242…` → `SUCCESS` |
 | `4000 0000 0000 9995` | `insufficient_funds` (retryable) | `payment_intent.payment_failed` | `T3a`: vẫn `PENDING` |
 | `4000 0000 0000 9979` | `stolen_card` (non-retryable) | `payment_failed` → Payment `PaymentIntent.cancel` → `payment_intent.canceled` | `T3` `FAILED`, `PAYMENT_FAILED error_code=STOLEN_CARD` |
-| `4000 0000 0000 0002` × 6 lần | Quá `max_declines_per_attempt` | như trên | `T3` `FAILED`, `error_code=DECLINE_LIMIT_EXCEEDED` |
+| `4000 0000 0000 0002` × 6 lần | Quá `max_declines_per_attempt` | như trên | `T3` `FAILED`, `error_code=DECLINE_LIMIT` |
 | `4000 0000 0000 0259` | Thành công rồi bị dispute | dispute lifecycle/funds events | Payment giữ `SUCCESS`; dispute FSM + journal + facts |
 | `4000 0000 0000 5126` | Thanh toán thành công, refund thất bại async | `refund.updated`/`refund.failed` | `R3`/`T8` hoặc `R5`/`T9` + review case |
 | Không thanh toán trong `payment_session_ttl` | — | Scanner `PaymentIntent.cancel` → `payment_intent.canceled` | `T4` `EXPIRED` (chỉ sau khi intent canceled) |
@@ -314,6 +325,13 @@ ngắn (`payment.session.ttl=PT2M`, `expiration.interval=PT10S`) thay vì chờ 
   khi freeze; balance lane cursor overlap; trimmer chỉ xóa dưới confirmed slot LSN.
 - Review case: `requires_manual_review` đồng bộ với case; đóng thiếu
   `resolution_type` bị reject; correction `MANUAL` ghi `actor`/`cause_ref`.
+- Certified CREATE non-acceptance ([ADR-024](./decisions/ADR-024-certified-create-non-acceptance.md)):
+  first dispatch `400 amount_too_small` trả `422` proof và replay không gọi provider;
+  assert không có review/history/outbox/financial version. Retry sau UNKNOWN và
+  `idempotency_error` không được certify; proof sai evidence phải rollback. Order
+  validate đầy đủ order/attempt/IDs và bù cả Inventory/Promotion khi proof hợp lệ.
+  CREATE dùng SDK network retries=0 để recovery đếm mọi dispatch; các operation khác
+  giữ cấu hình SDK retry hiện hành.
 
 **Contract/provider/consumer:**
 
@@ -464,7 +482,7 @@ này phải báo `NOT RUN`, tuyệt đối không đổi sang live key hoặc gi
   lease/fencing; stale completion và provider duplicate vẫn bị PostgreSQL chặn.
 - Nhân `amount_minor` với 100 trước khi gửi Stripe: VND là zero-decimal,
   `amount_minor` truyền nguyên (100000 = 100.000 ₫); nhân 100 sẽ sai 100 lần.
-- Dev KMS key khác nhau giữa hai lần chạy → `client-data` trả `usable=false` dù attempt
+- Local AES key khác nhau giữa hai lần chạy → `client-data` trả `usable=false` dù attempt
   còn `PENDING`.
 - Coi `payment_intent.payment_failed` là terminal trong test → sai với ADR-014.
 - Gọi Stripe bên trong `@Transactional` → ArchUnit A3 fail; nếu lọt, pool cạn dưới tải.
@@ -474,8 +492,10 @@ này phải báo `NOT RUN`, tuyệt đối không đổi sang live key hoặc gi
 
 Một thay đổi chỉ hoàn tất khi:
 
-1. `mvn verify` pass (unit + integration + ArchUnit + migration lint + contract
-   codegen không drift + secret scan).
+1. `mvn verify` pass (unit, PostgreSQL integration/Flyway và ArchUnit); chạy
+   riêng contract/docs validators và runtime payload script. Maven hiện không có
+   contract codegen hoặc secret-scan plugin. Secret scan và các gate môi trường
+   là yêu cầu kiểm chứng riêng, không suy ra từ Maven pass.
 2. Mọi transition mới/sửa có test ở tầng unit và, nếu chạm DB/Stripe, tầng integration;
    FSM coverage test vẫn pass.
 3. Transition + history + balanced journal + outbox + inbox terminal/review atomic;
@@ -489,3 +509,10 @@ Một thay đổi chỉ hoàn tất khi:
    `docs/gateway/runtime-contract.md`, `contracts/catalog/interactions.yaml` được rà.
 7. Frontmatter `evidence`/`verified_against_commit` chỉ cập nhật khi có code thật;
    trạng thái chỉ rời `proposed` sau gate ở `README.md §1`.
+
+### Kiểm chứng audit runtime payload
+
+Sau `mvn verify`, chạy `node java/services/payment-service/scripts/validate-payment-runtime-events.cjs`
+từ gốc repo (cần `npm ci` tại `contracts/tools`). Script dùng canonical JSON Schema,
+kiểm 15 example và ba event thực sự phát bởi ManualCorrectionIT, cùng conditional
+request schema FAILED/CANCELED. V3 giữ 12 bảng nhưng cho phép net refund/fee totals âm.

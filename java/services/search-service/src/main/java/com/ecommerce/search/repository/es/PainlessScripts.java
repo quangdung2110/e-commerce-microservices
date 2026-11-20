@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class PainlessScripts {
+    public static final String REINDEX_TOMBSTONE_COPY = "reindex_tombstone_copy";
 
     public static final String CATALOG_UPSERT = "catalog_upsert";
     public static final String CATALOG_TOMBSTONE = "catalog_tombstone";

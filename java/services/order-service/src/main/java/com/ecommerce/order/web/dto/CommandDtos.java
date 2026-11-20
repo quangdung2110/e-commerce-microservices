@@ -34,6 +34,16 @@ public final class CommandDtos {
             @Size(max = 1000) String reasonDetails) {
     }
 
+    public record DeliveryLineConfirmation(
+            @NotNull @Pattern(regexp = "^[1-9][0-9]{0,18}$") String orderLineId,
+            @NotNull java.time.Instant deliveredAt,
+            @NotBlank @Size(max = 128) String deliveryReference) {
+    }
+
+    public record DeliveryConfirmationRequest(
+            @NotNull @Size(min = 1, max = 100) List<@Valid @NotNull DeliveryLineConfirmation> lines) {
+    }
+
     public record AdminPreDispatchRefundRequest(
             @NotBlank @Size(max = 100) String reasonCode,
             @Size(max = 1000) String reasonDetails) {

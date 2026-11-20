@@ -76,16 +76,20 @@ func TestMain(m *testing.M) {
 func startPostgres(ctx context.Context) (testcontainers.Container, error) {
 	// The schema under test is the one the service ships, so a drift between
 	// the migration and the repositories fails the suite.
-	schema, err := filepath.Abs(filepath.Join("..", "..", "migrations", "0001_initial_user_schema.up.sql"))
-	if err != nil {
-		return nil, err
+	var schemas []string
+	for _, name := range []string{"0001_initial_user_schema.up.sql", "0002_marketing_opt_in_default.up.sql"} {
+		schema, err := filepath.Abs(filepath.Join("..", "..", "migrations", name))
+		if err != nil {
+			return nil, err
+		}
+		schemas = append(schemas, schema)
 	}
 
 	container, err := postgresmodule.Run(ctx, postgresImage,
 		postgresmodule.WithDatabase("user_db"),
 		postgresmodule.WithUsername("postgres"),
 		postgresmodule.WithPassword("postgres"),
-		postgresmodule.WithInitScripts(schema),
+		postgresmodule.WithInitScripts(schemas...),
 		testcontainers.WithEnv(map[string]string{"TZ": "UTC"}),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
@@ -108,7 +112,7 @@ func startPostgres(ctx context.Context) (testcontainers.Container, error) {
 
 	testDBConf = config.DatabaseConfig{
 		Host:             host,
-		Port:             mapped.Int(),
+		Port:             int(mapped.Num()),
 		Name:             "user_db",
 		Username:         "postgres",
 		Password:         "postgres",
@@ -144,7 +148,7 @@ func startRedis(ctx context.Context) (testcontainers.Container, error) {
 
 	testRedisConf = config.RedisConfig{
 		Host:         host,
-		Port:         mapped.Int(),
+		Port:         int(mapped.Num()),
 		DB:           0,
 		PoolSize:     8,
 		MinIdleConns: 1,

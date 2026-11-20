@@ -26,7 +26,7 @@ export function InventoryLookup() {
     <div className="space-y-10">
       <PageHeader
         title="Kho hàng"
-        description="Inventory không cung cấp API danh sách. Hãy tra cứu bằng mã chính xác hoặc bắt đầu một lệnh vận hành mới."
+        description="Tra cứu theo mã hoặc mở danh sách kho, tồn kho và các hàng đợi vận hành."
         action={
           <Button nativeButton={false} render={<Link href="/admin/inventory/warehouses/new" />}>
             <Plus aria-hidden />Tạo kho
@@ -42,6 +42,8 @@ export function InventoryLookup() {
         <div className="grid gap-4 sm:grid-cols-2">
           <ActionCard icon={ReceiptText} title="Nhập hàng" description="Nạp tồn ban đầu hoặc ghi nhận phiếu nhận từ nhà cung cấp." href="/admin/inventory/receipts/new" />
           <ActionCard icon={Boxes} title="Điều chỉnh tồn" description="Ghi nhận tăng hoặc giảm tồn bán được với lý do được phê duyệt." href="/admin/inventory/adjustments/new" />
+          <ActionCard icon={Warehouse} title="Vận hành kho" description="Danh sách kho, tồn, biến động và hàng đợi xuất kho, kiểm định, cách ly." href="/admin/inventory/operations" />
+          <ActionCard icon={ReceiptText} title="Hàng trả" description="Tìm yêu cầu theo đơn, nhận hàng vào cách ly rồi kiểm định." href="/admin/inventory/returns" />
         </div>
       </section>
 

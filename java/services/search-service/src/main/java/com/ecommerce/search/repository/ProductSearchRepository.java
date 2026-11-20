@@ -77,8 +77,8 @@ public class ProductSearchRepository {
                         .allowPartialSearchResults(false).timeout(Math.max(1, remaining / 1_000_000) + "ms")
                         .aggregations(aggregations), Void.class);
                 if (response.pitId() != null) pit = response.pitId();
-                if (response.timedOut()) throw new IOException("product grouping timeout: incomplete results");
-                if (response.shards().failed().intValue() > 0) throw new IOException("product grouping returned incomplete shard results");
+                if (response.timedOut()) throw new IncompleteResultsException("product grouping timeout: incomplete results");
+                if (response.shards().failed().intValue() > 0) throw new IncompleteResultsException("product grouping returned incomplete shard results");
                 if (after == null) facets = response.aggregations();
                 var groups = response.aggregations().get("products").composite();
                 for (var bucket : groups.buckets().array()) {
@@ -112,13 +112,23 @@ public class ProductSearchRepository {
         return value == null || !Double.isFinite(value) ? 0 : value;
     }
 
-    /** Facet and category-count jobs retain their aggregation-only SKU query. */
+    /**
+     * Facet and category-count jobs retain their aggregation-only SKU query.
+     *
+     * <p>An Elasticsearch search that reaches its {@code timeout} still answers {@code 200},
+     * with {@code timed_out: true} and whatever it had collected. Counts built from that are
+     * too low and look complete, so a timed-out or shard-failed answer is an error here:
+     * {@code SEARCH_TIMEOUT} for the facet endpoint, and the previous counts kept by the count
+     * job (WF-SEARCH-004, WF-SEARCH-011).
+     */
     public SearchResponse<Void> aggregate(Query query, Map<String, Aggregation> aggregations, String queryType) throws IOException {
         long started = System.nanoTime();
         SearchResponse<Void> response = client.search(b -> b.index(properties.aliases().products()).query(query)
                 .size(0).aggregations(aggregations).trackTotalHits(t -> t.enabled(false))
+                .allowPartialSearchResults(false)
                 .timeout(properties.query().productTimeout().toMillis() + "ms"), Void.class);
         metrics.esQuery(properties.aliases().products(), queryType, Duration.ofNanos(System.nanoTime() - started));
+        SearchCompleteness.require(response, "aggregation " + queryType);
         return response;
     }
 }

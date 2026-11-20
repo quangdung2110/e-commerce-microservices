@@ -25,7 +25,7 @@ import (
 	"github.com/ecommerce/notification-service/internal/infrastructure/kafka/handlers"
 )
 
-const examplesDir = "../../../../../../contracts/examples/events"
+const examplesDir = "../../../../../../../contracts/examples/events"
 
 // Contract test (15-verification.md §1): every consumer accepts the public
 // examples of its source and produces the IngestInput Decide expects. The
@@ -88,7 +88,9 @@ func (f *fixtures) message(path string) *sarama.ConsumerMessage {
 func (f *fixtures) example(name string) *sarama.ConsumerMessage {
 	path := filepath.Join(examplesDir, name)
 	if _, err := os.Stat(path); err != nil {
-		f.t.Skipf("contracts examples not available: %v", err)
+		// The examples ship in this repository; a missing directory means the
+		// relative path rotted, and a silent skip would hide every contract check.
+		f.t.Fatalf("contracts example not found (fix examplesDir): %v", err)
 	}
 	return f.message(path)
 }
@@ -235,9 +237,7 @@ func TestPreferencesAndLifecycle(t *testing.T) {
 // CloudEvent for this service's parser (outcomes are what we publish).
 func TestAllNotificationExamplesParse(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(examplesDir, "notification-*.json"))
-	if len(matches) == 0 {
-		t.Skip("contracts examples not available")
-	}
+	require.NotEmpty(t, matches, "no notification-* examples found; examplesDir is wrong")
 	for _, m := range matches {
 		raw, err := os.ReadFile(m)
 		require.NoError(t, err)

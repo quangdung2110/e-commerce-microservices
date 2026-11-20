@@ -113,6 +113,19 @@ func (o *Outbox) Read(ctx context.Context, bucket, count int) ([]domain.OutboxRe
 	return records, nil
 }
 
+// PendingCount reports how many entries the relay group has delivered but not
+// acked, across all consumers of the group.
+func (o *Outbox) PendingCount(ctx context.Context, bucket int) (int64, error) {
+	summary, err := o.client.XPending(ctx, o.keys.Outbox(bucket), RelayGroup).Result()
+	if err != nil {
+		if err == redis.Nil || isNoGroup(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("count pending outbox entries for bucket %d: %w", bucket, err)
+	}
+	return summary.Count, nil
+}
+
 // Ack marks an entry delivered. The relay only calls it after Kafka has
 // acknowledged the produce.
 func (o *Outbox) Ack(ctx context.Context, bucket int, streamID string) error {

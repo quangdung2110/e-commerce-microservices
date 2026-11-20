@@ -176,3 +176,72 @@ func TestConcurrentUse(t *testing.T) {
 	s := b.State()
 	assert.Contains(t, []int{StateClosed, StateHalfOpen, StateOpen}, s)
 }
+
+// The unhealthy streak starts when the circuit first leaves closed, survives
+// open ↔ half-open flapping and ends only when the circuit closes.
+func TestUnhealthySinceSpansFlappingUntilClosed(t *testing.T) {
+	b, clk, _ := newTestBreaker(t)
+	_, ok := b.UnhealthySince()
+	assert.False(t, ok, "closed circuit has no streak")
+
+	start := clk.Now()
+	for i := 0; i < 4; i++ {
+		b.Failure()
+	}
+	since, ok := b.UnhealthySince()
+	require.True(t, ok)
+	assert.Equal(t, start, since)
+
+	clk.Advance(30 * time.Second)
+	require.True(t, b.Allow())
+	b.Failure() // probe fails → reopen
+	clk.Advance(40 * time.Second)
+	since, ok = b.UnhealthySince()
+	require.True(t, ok, "flapping keeps the streak")
+	assert.Equal(t, start, since, "the streak does not restart on reopen")
+
+	require.Equal(t, StateHalfOpen, b.State())
+	require.True(t, b.Allow())
+	b.Success()
+	require.True(t, b.Allow())
+	b.Success()
+	require.Equal(t, StateClosed, b.State())
+	_, ok = b.UnhealthySince()
+	assert.False(t, ok, "closing ends the streak")
+
+	for i := 0; i < 4; i++ {
+		b.Failure()
+	}
+	later, ok := b.UnhealthySince()
+	require.True(t, ok)
+	assert.True(t, later.After(start), "a new streak starts from the new opening")
+}
+
+// A health probe only fills the gap: it needs a half-open circuit, a free
+// slot and no probe handed out (to anyone) within minIdle.
+func TestAllowIdleProbe(t *testing.T) {
+	b, clk, _ := newTestBreaker(t)
+	assert.False(t, b.AllowIdleProbe(time.Second), "closed")
+	for i := 0; i < 4; i++ {
+		b.Failure()
+	}
+	assert.False(t, b.AllowIdleProbe(time.Second), "open")
+
+	clk.Advance(30 * time.Second)
+	require.Equal(t, StateHalfOpen, b.State())
+	assert.True(t, b.AllowIdleProbe(15*time.Second), "nothing probed yet")
+	assert.False(t, b.AllowIdleProbe(15*time.Second), "a probe was just handed out")
+	b.Success()
+
+	clk.Advance(14 * time.Second)
+	assert.False(t, b.AllowIdleProbe(15*time.Second), "still inside the idle window")
+	clk.Advance(1 * time.Second)
+	assert.True(t, b.AllowIdleProbe(15*time.Second))
+	b.Failure()
+	assert.Equal(t, StateOpen, b.State(), "the health probe reopens the circuit like a real call")
+
+	// A real call counts as a probe too, so the health probe stands down.
+	clk.Advance(30 * time.Second)
+	require.True(t, b.Allow())
+	assert.False(t, b.AllowIdleProbe(15*time.Second), "a real delivery probed a moment ago")
+}

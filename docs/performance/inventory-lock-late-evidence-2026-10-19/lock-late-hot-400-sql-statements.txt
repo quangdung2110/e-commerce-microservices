@@ -1,0 +1,25 @@
+37988 | 2604340.5 | 68.557 | UPDATE stock_position SET on_hand = on_hand + $1, available_to_sell = available_to_sell + $2, reserved = reserved + $3, committed = committed + $4, quaranti
+37988 | 5595.0 | 0.147 | INSERT INTO reservation_line (order_id, order_line_id, line_no, sku_id, quantity, warehouse_id, state, committed_at) VALUES ($1, $
+37988 | 4968.3 | 0.131 | INSERT INTO command_execution (caller_namespace, command_id, operation, fingerprint, correlation_id, recorded_at) VALUES ($1, $2,
+37988 | 3786.9 | 0.100 | UPDATE command_execution SET result = $1, http_status = $2, error_code = $3, outcome = $4, resource_id = $5, response_body = $6::jsonb WHERE caller_namespac
+37988 | 3716.5 | 0.098 | INSERT INTO stock_movement (movement_id, warehouse_id, sku_id, source_operation_type, source_operation_id, reverses_movement_id, reversal_sequence, delta_on
+37988 | 3558.7 | 0.094 | INSERT INTO sku_availability_dirty (sku_id, first_marked_at, mark_seq, last_correlation_id, last_causation_id) VALUES ($1, $
+37988 | 2779.8 | 0.073 | INSERT INTO audit_entry (recorded_at, actor_type, actor_id, actor_role, session_id, caller_namespace, command_id, operation, target_type, target_id, reason,
+37988 | 2634.5 | 0.069 | INSERT INTO order_reservation (order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recove
+37988 | 1967.8 | 0.052 | SELECT count(*) FROM stock_position WHERE warehouse_id = $1 AND sku_id = $2
+37988 | 1407.1 | 0.037 | SELECT order_id, allocation_plan_id, state, accepted_at, expires_at, release_reason, committed_release_reason, payment_reference, recovery_payment_reference, re
+37988 | 1305.7 | 0.034 | SELECT $2 FROM ONLY "public"."order_reservation" x WHERE "order_id"::pg_catalog.text OPERATOR(pg_catalog.=) $1::pg_catalog.text FOR KEY SHARE OF x
+37988 | 1197.6 | 0.032 | SELECT warehouse_id, name, address::text AS address, is_active, operational_state, fulfillment_priority, revision FROM warehouse WHERE warehouse_id = $1 FOR SHA
+37995 | 754.0 | 0.020 | SELECT pg_advisory_xact_lock(hashtextextended('order-reserve:' || $1, 0))
+37988 | 318.3 | 0.008 | SET LOCAL lock_timeout = '2000ms'
+37988 | 304.6 | 0.008 | SELECT 1 FROM ONLY "public"."warehouse" x WHERE "warehouse_id"::pg_catalog.text OPERATOR(pg_catalog.=) $1::pg_catalog.text FOR KEY SHARE OF x
+343 | 70.9 | 0.207 | UPDATE sku_availability_dirty d SET claimed_seq = d.mark_seq, claimed_until = $1, claim_started_at = $2 FROM (SELECT sku_id FROM sku_availability_dirty WH
+1 | 55.6 | 55.618 | SELECT (SELECT count(*) FILTER (WHERE state = $1) FROM reservation_line WHERE sku_id = $2), (SELECT count(*) FILTER (WHERE state = $3) FROM reservation_li
+120 | 51.9 | 0.432 | SELECT extract($1 FROM now())::bigint, count(*) FILTER (WHERE wait_event_type = $2), count(*) FILTER (WHERE state = $3), count(*) FILTER
+37988 | 43.2 | 0.001 | RELEASE SAVEPOINT "SAVEPOINT_1"
+37988 | 39.9 | 0.001 | SAVEPOINT "SAVEPOINT_1"
+37988 | 37.0 | 0.001 | SAVEPOINT reserve_stock
+343 | 13.2 | 0.039 | UPDATE worker_lease SET fencing_token = CASE WHEN holder = $1 THEN fencing_token ELSE fencing_token + 1 END, holder = $2, expires_at = now() + ($3 * interva
+343 | 11.3 | 0.033 | SELECT outbox_id, event_id, topic, message_key, event_type, sku_id, payload::text AS payload FROM outbox_event WHERE sequence IS NULL ORDER BY outbox_id LIMIT $
+343 | 8.5 | 0.025 | SELECT holder = $1 AND fencing_token = $2 AND expires_at > now() FROM worker_lease WHERE lease_name = $3 FOR UPDATE
+7 | 6.7 | 0.958 | DELETE FROM sku_availability_dirty WHERE sku_id = $1 AND mark_seq = $2

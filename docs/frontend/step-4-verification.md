@@ -26,6 +26,9 @@ Dữ liệu đầu tiên render phía server theo ADR-002; client chỉ xử lý
 tải thêm và thao tác cần danh tính. Module `storefront-server.ts` chỉ import type từ
 các API trình duyệt, không import runtime client axios.
 
+> **Đã thay thế:** Search nay trả mỗi hit là một Product (đại diện bởi SKU giá thấp nhất), UI dùng
+> `total_products`; xem [product-card-search.md](./product-card-search.md). Đoạn dưới là lịch sử bước 4.
+
 Search trả mỗi hit là một SKU; UI dùng `total_skus` và ghi rõ “biến thể”, không đếm
 như Product. Card dùng `product_slug` và giữ `sku_id` trong link PDP. Giá/tồn Search
 là projection eventual-consistent; PDP không dựng dữ liệu giao dịch từ Search.

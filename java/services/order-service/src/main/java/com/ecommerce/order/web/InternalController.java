@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.context.request.async.DeferredResult;
 
 /** Workload-identity surface of contracts/http/order/internal/v1. */
 @RestController
@@ -28,7 +29,7 @@ public class InternalController {
     }
 
     @PostMapping("/internal/v1/checkout-order-submissions")
-    public ResponseEntity<Object> submit(@RequestHeader("Idempotency-Key") String key,
+    public DeferredResult<ResponseEntity<Object>> submit(@RequestHeader("Idempotency-Key") String key,
                                          @Valid @RequestBody CheckoutOrderSubmissionRequest request) {
         return submissions.submit(key, request);
     }

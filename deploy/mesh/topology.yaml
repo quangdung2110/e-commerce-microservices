@@ -1,0 +1,83 @@
+# Facts about the cluster layout that the runtime contract does not state as tables (mesh ADR-001).
+# Ports are the container ports used by docker-compose today; the Kubernetes Service of each workload exposes the same numbers.
+version: 1
+
+namespaces:
+  edge:          {dataplane: ambient, waypoint: null}
+  ecommerce:     {dataplane: ambient, waypoint: ecommerce-waypoint}
+  observability: {dataplane: ambient, waypoint: null}
+  data:          {dataplane: null, waypoint: null}     # outside the mesh in the first wave
+
+waypoint:
+  name: ecommerce-waypoint
+  namespace: ecommerce
+  min_replicas: 2
+  max_replicas: 6
+  cpu_target_percent: 70
+
+# Workloads in `edge` and `observability`: L4 policy is attached with a pod selector.
+edge_workloads:
+  frontend:     {selector: {app.kubernetes.io/name: frontend}, ports: {http: 3000}}
+  traefik:      {selector: {app.kubernetes.io/name: traefik}, ports: {web: 80, websecure: 443, metrics: 8090}}
+  gateway-auth: {selector: {app.kubernetes.io/name: gateway-auth}, ports: {http: 8080}}
+
+observability_workloads:
+  otel-collector: {selector: {app.kubernetes.io/name: otel-collector}, ports: {otlp-grpc: 4317, otlp-http: 4318}}
+  prometheus:     {selector: {app.kubernetes.io/name: prometheus}, ports: {http: 9090}}
+  jaeger:         {selector: {app.kubernetes.io/name: jaeger}, ports: {http: 16686}}
+  loki:           {selector: {app.kubernetes.io/name: loki}, ports: {http: 3100}}
+  grafana:        {selector: {app.kubernetes.io/name: grafana}, ports: {http: 3000}}
+
+# Service ports in `ecommerce`. A route that names no port uses `http`. Services with two HTTP listeners name the second one.
+# Workloads without a runtime yet (finance-ops, accounting-ops, notification-ops, promotion-legacy-migrator, chat-service,
+# analytics-service) only call, or are not called over HTTP: they get a ServiceAccount and no Service port.
+services:
+  auth-service:         {ports: {http: 8080, internal: 8081}, metrics_path: /metrics}
+  user-service:         {ports: {http: 8082, internal: 8083}, metrics_path: /metrics}
+  cart-service:         {ports: {http: 8080}, metrics_path: /metrics}
+  product-service:      {ports: {http: 8081, grpc: 9091}, metrics_path: /actuator/prometheus}
+  inventory-service:    {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  search-service:       {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  product-detail-bff:   {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  checkout-service:     {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  order-service:        {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  payment-service:      {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  promotion-service:    {ports: {http: 8085}, metrics_path: /actuator/prometheus}
+  review-service:       {ports: {http: 8080}, metrics_path: /actuator/prometheus}
+  notification-service: {ports: {http: 8080, internal: 8081}, metrics_path: /metrics}
+  chat-service:         {ports: {http: 8080}}
+
+# Local email-provider simulators: mTLS + destination/port authorization, no business HTTP grants.
+# Their Service and Pod explicitly disable waypoint inheritance (deploy/k8s/generate.py).
+local_tcp_providers:
+  mailpit: {port: 1025, caller: ecommerce/notification-service}
+  localstack: {port: 4566, caller: ecommerce/notification-service}
+
+# Existing gateway active health checks and Checkout's read-only startup probe.
+health_checks:
+  checkout-service:
+    - {path: /health/ready, callers: [edge/traefik]}
+  inventory-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+  order-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+  product-detail-bff:
+    - {path: /actuator/health/readiness, callers: [edge/traefik]}
+  product-service:
+    - {path: /actuator/health/readiness, callers: [edge/traefik]}
+  promotion-service:
+    - {path: /actuator/health, callers: [edge/traefik]}
+    - {path: /actuator/health/readiness, callers: [ecommerce/checkout-service]}
+
+# Local external providers (runtime-contract section 8). Notification uses Mailpit and LocalStack here.
+egress_waypoint: ecommerce-egress
+egress:
+  - {name: stripe-api,  host: api.stripe.com,                      port: 443, owner: payment-service}
+
+# Outlier detection and connection pool are starting values, to be confirmed by load test (runtime-contract section 7).
+destination_rule:
+  outlier_detection: {consecutive5xx_errors: 5, interval: 10s, base_ejection_time: 30s, max_ejection_percent: 50}
+  connection_pool:
+    tcp: {max_connections: 1024}
+    http: {http1_max_pending_requests: 1024, http2_max_requests: 1024}
+  load_balancer: LEAST_REQUEST

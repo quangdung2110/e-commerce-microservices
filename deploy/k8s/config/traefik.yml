@@ -1,0 +1,65 @@
+# =============================================================================
+# Traefik v3.x - Static Configuration cho Kubernetes (deploy/k8s)
+# =============================================================================
+# Bản của go/services/api-gateway/config/traefik.yml, khác đúng một điểm: không có docker
+# provider. Route do deploy/k8s/generate.py dịch từ label Traefik trong docker-compose.yml
+# sang /etc/traefik/dynamic/routes.yml; middleware và serversTransport vẫn từ dynamic.yml gốc.
+# =============================================================================
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  insecure: true
+
+entryPoints:
+  web:
+    address: ":80"
+    # Client IP chain (mesh ADR-004): a frontend pod may name the browser in X-Forwarded-For /
+    # X-Real-Ip (it overwrites both with its TCP peer); from any other source Traefik drops them and
+    # sets X-Real-Ip to the peer. Pod IPs are not fixed, so the trust is the pod CIDR of Docker
+    # Desktop kubeadm (10.1.0.0/16). The LoadBalancer Service keeps the client source address
+    # (externalTrafficPolicy: Local, generate.py), so external traffic never arrives from it.
+    forwardedHeaders:
+      trustedIPs:
+        - "10.1.0.0/16"
+
+  metrics:
+    address: ":8090"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+  format: json
+
+accessLog:
+  format: json
+  fields:
+    defaultMode: keep
+    names:
+      RequestPath: drop
+      RequestLine: drop
+      ClientUsername: drop
+    headers:
+      defaultMode: drop
+      names:
+        X-Request-Id: keep
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addRoutersLabels: true
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+
+tracing:
+  serviceName: api-gateway
+  sampleRate: 1.0
+  otlp:
+    http:
+      endpoint: http://otel-collector:4318/v1/traces

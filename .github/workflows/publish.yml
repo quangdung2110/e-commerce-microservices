@@ -1,0 +1,133 @@
+name: Publish verified images
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    # Defense in depth: this reusable workflow never publishes PR/merge-group images.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: image-${{ matrix.name }}
+          path: ci-artifacts
+      - name: Verify archive and SBOM before loading
+        working-directory: ci-artifacts
+        run: |
+          sha256sum --check checksums.sha256
+          docker load --input image.tar.gz
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the scanned image and resolve its registry digest
+        id: image
+        env:
+          COMPONENT: ${{ matrix.name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/$COMPONENT"
+          tag="sha-$GITHUB_SHA-run-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag "ci/$COMPONENT:$GITHUB_SHA" "$image:$tag"
+          docker push "$image:$tag"
+          docker buildx imagetools inspect "$image:$tag" --format '{{json .Manifest}}' > ci-artifacts/registry-manifest.json
+          digest="$(python -c 'import json; print(json.load(open("ci-artifacts/registry-manifest.json"))["digest"])')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          {
+            echo "name=$image"
+            echo "tag=$tag"
+            echo "digest=$digest"
+          } >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance for the exact registry digest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest the scanned image SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: ci-artifacts/sbom.cdx.json
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify provenance and record the publish result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPONENT: ${{ matrix.name }}
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          gh attestation verify "oci://$IMAGE_NAME@$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners
+          gh attestation verify "oci://$IMAGE_NAME@$IMAGE_DIGEST" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" --source-digest "$GITHUB_SHA" --source-ref refs/heads/main --deny-self-hosted-runners --predicate-type https://cyclonedx.org/bom
+          python scripts/ci/release_manifest.py record
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-component-${{ matrix.name }}
+          path: |
+            ci-artifacts/release-*.json
+            ci-artifacts/sbom.cdx.json
+            ci-artifacts/image-scan.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  manifest:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-component-*
+          path: ci-artifacts/releases
+      - name: Require a verified result for every selected image
+        env:
+          IMAGE_MATRIX: ${{ inputs.matrix }}
+        run: python scripts/ci/release_manifest.py aggregate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-manifest
+          path: ci-artifacts/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+      - name: Attach digest manifest to run summary
+        run: |
+          {
+            echo '### Verified release images'
+            echo '```json'
+            cat ci-artifacts/release-manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

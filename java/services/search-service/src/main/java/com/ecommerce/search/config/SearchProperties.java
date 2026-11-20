@@ -26,7 +26,67 @@ public record SearchProperties(
         Media media,
         Gateway gateway,
         Cors cors,
-        Export export) {
+        Export export,
+        @DefaultValue Consumer consumer,
+        @DefaultValue Lifecycle lifecycle,
+        @DefaultValue Verify verify) {
+
+    /**
+     * What the indexing worker does with a batch it cannot acknowledge. The batch is handed
+     * back to Kafka with {@code nack} after this pause and delivered again, so a transient
+     * Elasticsearch failure or an Inventory readiness violation is retried instead of being
+     * skipped by the next batch that does succeed (ADR-005, ADR-019).
+     */
+    public record Consumer(@DefaultValue("5s") Duration retryBackoff) {
+    }
+
+    /**
+     * Life cycle of a full reindex around the three phases: singleton lease, abandoned-run
+     * recovery, control-driven start, preconditions and retention of superseded indices
+     * (ADR-022).
+     *
+     * @param leaseDuration        how long the {@code full-reindex} lease lives without a renewal
+     * @param leaseRenewInterval   heartbeat of the run that owns the lease
+     * @param watchdogInterval     how often replicas look for a run whose lease has expired
+     * @param maxResumeAttempts    resumes of one run before it is failed as {@code RUN_ABANDONED}
+     * @param controlDebounce      quiet time after the last catalog-reindex-requested before a run starts
+     * @param controlAutoStart     whether a coalesced control request starts a run by itself
+     * @param preconditionEnabled  whether trigger checks cluster health and disk first
+     * @param minFreeDiskRatio     free disk required, as a multiple of the current primary store size
+     * @param oldIndexRetention    how long a superseded index survives after it stopped being current
+     * @param cleanupCron          schedule of the superseded-index cleanup job
+     * @param cleanupEnabled       whether that job runs
+     */
+    public record Lifecycle(
+            @DefaultValue("2m") Duration leaseDuration,
+            @DefaultValue("30s") Duration leaseRenewInterval,
+            @DefaultValue("30s") Duration watchdogInterval,
+            @DefaultValue("3") int maxResumeAttempts,
+            @DefaultValue("2m") Duration controlDebounce,
+            @DefaultValue("true") boolean controlAutoStart,
+            @DefaultValue("true") boolean preconditionEnabled,
+            @DefaultValue("1.5") double minFreeDiskRatio,
+            @DefaultValue("24h") Duration oldIndexRetention,
+            @DefaultValue("0 15 * * * *") String cleanupCron,
+            @DefaultValue("true") boolean cleanupEnabled) {
+    }
+
+    /**
+     * Checks that run before a new index may take the aliases.
+     *
+     * @param enabled              master switch, off only for tests
+     * @param sampleSizePerBucket  SKUs sampled per bucket (newest updated and most rated)
+     * @param hotQueries           free-text queries that must still return hits when the current index does
+     */
+    public record Verify(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("100") int sampleSizePerBucket,
+            List<String> hotQueries) {
+
+        public List<String> hotQueriesOrEmpty() {
+            return hotQueries == null ? List.of() : hotQueries;
+        }
+    }
 
     /** The five Kafka topics Search consumes. Search produces to none of them. */
     public record Topics(
@@ -117,7 +177,7 @@ public record SearchProperties(
     public record Tombstone(
             @DefaultValue("0 30 2 * * *") String purgeCron,
             @DefaultValue("true") boolean purgeEnabled,
-            @DefaultValue("30d") Duration protectionWindow,
+            @DefaultValue("45d") Duration protectionWindow,
             @DefaultValue("0 0 */4 * * *") String productCountCron,
             @DefaultValue("true") boolean productCountEnabled) {
     }
@@ -128,8 +188,36 @@ public record SearchProperties(
      * one from {@code media[]}.
      */
     public record Media(
-            @DefaultValue("https://cdn.local/") String cdnBaseUrl,
+            @DefaultValue("https://cdn.local") String cdnBaseUrl,
             @DefaultValue("/static/placeholder-product.png") String placeholderUrl) {
+
+        /**
+         * Fails the startup, like the Product Detail BFF and Checkout, so the three services
+         * cannot drift apart on the one value that has to be identical: an absolute http(s)
+         * URL with no trailing slash, to which {@code /} and the storage key are appended.
+         */
+        public Media {
+            if (!isAbsoluteHttpUrlWithoutTrailingSlash(cdnBaseUrl)) {
+                throw new IllegalArgumentException("CDN_BASE_URL must be an absolute http(s) URL without a "
+                        + "trailing slash, and equal to PDP_MEDIA_CDN_BASE_URL; got '" + cdnBaseUrl + "'");
+            }
+        }
+
+        static boolean isAbsoluteHttpUrlWithoutTrailingSlash(String value) {
+            if (value == null || value.isBlank() || value.endsWith("/")) {
+                return false;
+            }
+            try {
+                java.net.URI uri = java.net.URI.create(value);
+                String scheme = uri.getScheme();
+                return ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                        && uri.getHost() != null
+                        && uri.getQuery() == null
+                        && uri.getFragment() == null;
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
+        }
     }
 
     /** Trusted headers injected by the API Gateway after JWT verification. */
@@ -145,16 +233,9 @@ public record SearchProperties(
 
     /** Internal export endpoints called only during a full reindex. */
     public record Export(
-            @DefaultValue("http://product-service:8080") String productBaseUrl,
+            @DefaultValue("http://product-service:8081") String productBaseUrl,
             @DefaultValue("http://inventory-service:8080") String inventoryBaseUrl,
             @DefaultValue("http://review-service:8080") String reviewBaseUrl,
-            /*
-             * Bearer service identity for Review's /internal/v1/** routes. Review splits
-             * its internal routes into two token groups, and Search is only allowed on the
-             * rating export; an empty value means the calls go out unauthenticated and
-             * Review answers 401.
-             */
-            @DefaultValue("") String reviewToken,
             @DefaultValue("true") boolean reviewEnabled,
             @DefaultValue("30s") Duration timeout,
             /*

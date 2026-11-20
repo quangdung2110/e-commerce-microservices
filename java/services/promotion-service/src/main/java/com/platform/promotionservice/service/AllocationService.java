@@ -45,6 +45,7 @@ public class AllocationService {
     }
 
     public ReserveOutcome reserve(AllocationDtos.ReserveRequest request) {
+        RuleFactsBuilder.requireCheckoutChannel(request.context());
         long orderId = Ids.parse(request.orderId(), "order_id");
         long promotionId = Ids.parse(request.promotionId(), "promotion_id");
         long expected = request.expectedDiscount().requireVnd("expected_discount", 0);

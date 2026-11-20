@@ -70,7 +70,7 @@ public class LifecycleScheduler {
         metrics.exportSessionsActive(exportSessions.countActive());
         metrics.mediaPendingDelete(mediaAssets.countDeletePending());
         metrics.privacyOverdue(privacyService.countOverdue());
-        metrics.outboxPartitionsMissing(outbox.partitionNames().size() >= 2 ? 0 : 1);
+        metrics.outboxPartitionsMissing(outbox.windowState().complete() ? 0 : 1);
 
         if (expiredEligibilities > 0 || sweptAssets > 0 || expiredSessions > 0) {
             log.info("review lifecycle sweep expired {} entitlements, queued {} unattached assets "

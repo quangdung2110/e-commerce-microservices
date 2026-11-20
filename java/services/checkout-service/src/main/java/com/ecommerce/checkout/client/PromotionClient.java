@@ -30,10 +30,27 @@ public class PromotionClient {
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
 
-    public PromotionClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper) {
-        this.webClient = UpstreamHttp.build(builder, "promotion", properties.endpoints().promotionBaseUrl(),
+    public PromotionClient(WebClient.Builder builder, CheckoutProperties properties, ObjectMapper objectMapper,
+                        ClientTransports transports) {
+        this.webClient = UpstreamHttp.build(builder, transports, "promotion", properties.endpoints().promotionBaseUrl(),
                 Math.max(properties.bulkheads().promotionCalculation(), properties.bulkheads().promotionOptions()));
         this.objectMapper = objectMapper;
+        if (properties.voucherOptionsEnabled()) {
+            transports.registerReadProbe(this::warmupOptions);
+        }
+    }
+
+    /** Prime the actual request encoder, outbound pool, response tree and options contract decoder. */
+    private Mono<Void> warmupOptions() {
+        return webClient.get().uri("/actuator/health/readiness")
+                .exchangeToMono(response -> response.statusCode().value() == 200
+                        ? response.releaseBody() : UpstreamHttp.unexpectedStatus(response))
+                .then(Mono.defer(() -> {
+                    String technicalUser = java.util.UUID.randomUUID().toString();
+                    var item = new ContextItem(java.util.UUID.randomUUID().toString(), "startup", 1, 350000, List.of());
+                    var context = new RequestContext(java.util.UUID.randomUUID().toString(), "", null, null, null);
+                    return options(technicalUser, 350000, List.of(item), context).then();
+                }));
     }
 
     /** One line of the trusted context: Product price and categories, Cart quantity. */

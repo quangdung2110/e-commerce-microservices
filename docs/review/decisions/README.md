@@ -2,22 +2,24 @@
 
 Thư mục này lưu các quyết định kiến trúc dài hạn của Review Service. Trạng thái
 `Accepted` nghĩa là owner đã chấp thuận quyết định; nó **không** có nghĩa
-implementation đã được verified — Review Service hiện chưa có implementation.
+implementation đã được verified. Review Service đã được triển khai ở
+[`java/services/review-service`](../../../java/services/review-service); mỗi ADR nêu test
+chứng minh nó ở mục Verification.
 
 ## Quy tắc
 
 - Sao chép [ADR-000-template.md](./ADR-000-template.md) thành
   `ADR-<sequence>-<short-name>.md` khi tạo quyết định mới.
-- Khi service chưa có implementation, ADR `Accepted` vẫn có thể được chỉnh trực tiếp
-  cùng target schema/contract để loại bỏ thiết kế chưa triển khai. Khi đã có evidence
-  production hoặc consumer adoption, tạo ADR mới để thay thế và liên kết hai chiều.
+- Service đã có implementation và schema đã được Flyway áp dụng, nên một ADR `Accepted`
+  không còn được chỉnh để đổi quyết định: tạo ADR mới làm rõ hoặc thay thế và liên kết hai
+  chiều. Sửa lỗi chính tả, link hoặc cập nhật tham chiếu chéo thì vẫn sửa trực tiếp.
 - Decision phải nêu alternative, hệ quả tiêu cực và cách verification.
 - Workflow, architecture và data chỉ liên kết đến ADR; không giấu trade-off trong
   phần mô tả luồng.
 
 ## Decision index
 
-| ADR | Decision | Status | Date | Supersedes |
+| ADR | Decision | Status | Date | Supersedes / bổ sung |
 |---|---|---|---|---|
 | [ADR-000](./ADR-000-template.md) | Template — không phải quyết định thực tế | Template | N/A | N/A |
 | [ADR-001](./ADR-001-eligibility-and-single-edit.md) | Entitlement theo SKU/order và một lần sửa review | Accepted | 2026-09-05 | — |
@@ -32,6 +34,9 @@ implementation đã được verified — Review Service hiện chưa có implem
 | [ADR-010](./ADR-010-single-admin-legal-takedown.md) | Một admin có thẩm quyền thực hiện legal takedown | Accepted | 2026-09-09 | — |
 | [ADR-011](./ADR-011-attachment-time-media-verification.md) | Xác minh media lúc attach và cleanup asset chưa gắn | Accepted | 2026-09-09 | — |
 | [ADR-012](./ADR-012-owner-surface-product-snapshot-and-review-list.md) | Product snapshot trên bề mặt owner và danh sách review của tôi | Accepted | 2026-10-06 | Bổ sung ADR-007 |
+| [ADR-013](./ADR-013-privacy-failure-handling.md) | Purge thất bại được thử lại; `USER_DELETED` lỗi tạm thời không bao giờ vào DLQ | Accepted | 2026-10-09 | Làm rõ ADR-007 |
+| [ADR-014](./ADR-014-request-correlation-and-caller-deadline.md) | Request ID, trace ID và deadline của caller trong log; `correlationid` của outbox không đổi | Accepted | 2026-10-15 | Bổ sung ADR-013 |
+| [ADR-015](./ADR-015-service-identity-header-replaces-bearer-tokens.md) | `X-Service-Identity` allowlists thay bearer token tĩnh cho `/internal/v1/**` | Accepted | 2026-10-15 | Thay cơ chế bearer của filter |
 
 ## Quyết định của service khác ảnh hưởng tới Review
 

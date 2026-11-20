@@ -1,4 +1,7 @@
 spring:
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   application:
     name: inventory-service
 
@@ -21,7 +24,7 @@ spring:
 
   # JSON is snake_case per contracts/http/inventory/**. Every request schema is
   # additionalProperties: false, so an unknown field is a 400 INVALID_REQUEST.
-  jackson:
+  jackson2:
     property-naming-strategy: SNAKE_CASE
     # Nullable required fields (next_cursor, availability_revision) stay as explicit null;
     # optional fields are omitted per DTO with @JsonInclude(NON_NULL).
@@ -84,10 +87,30 @@ inventory:
     backlog-refresh-interval: PT5S
     orphan-scan-interval: PT5M
     bucket-scan-interval: PT1H
+    # Detection-only sweep: each pass compares the next batch of SkuAvailabilityState rows with
+    # the stock positions (operations.md §3, "Continuous").
+    availability-audit-interval: PT1M
+    availability-audit-batch-size: 500
     ledger-replay-cron: "0 30 2 * * *"
     retention-interval: PT1H
 
 management:
+  logging:
+    export:
+      otlp:
+        enabled: false
+  otlp:
+    metrics:
+      export:
+        enabled: false
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
   endpoints:
     web:
       exposure:
@@ -102,10 +125,16 @@ management:
     livenessstate:
       enabled: true
   metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
     tags:
       application: inventory-service
 
 logging:
+  pattern:
+    # request_id/trace_id come from RequestCorrelationFilter (contracts ADR-002); empty off the request path.
+    level: "%5p [%X{request_id:-},%X{trace_id:-}]"
   level:
     root: INFO
     com.ecommerce.inventory: INFO

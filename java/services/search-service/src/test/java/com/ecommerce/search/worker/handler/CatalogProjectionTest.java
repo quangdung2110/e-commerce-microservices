@@ -107,6 +107,44 @@ class CatalogProjectionTest {
         assertThat(fields).containsEntry("ancestor_ids", List.of("cat-0", "cat-1", "cat-2"));
     }
 
+    @Test
+    void materialisesFacetDefinitionsAsDescriptorMaps() {
+        Map<String, Object> fields = CatalogProjection.toCategoryFields(categoryWith(List.of(
+                new CatalogPayloads.FacetDefinition("brand", "Thương hiệu", "TEXT"),
+                new CatalogPayloads.FacetDefinition("color", "Màu sắc", "SELECT"))));
+
+        assertThat(fields).containsEntry("facet_definitions", List.of(
+                Map.of("code", "brand", "label", "Thương hiệu", "type", "TEXT"),
+                Map.of("code", "color", "label", "Màu sắc", "type", "SELECT")));
+    }
+
+    @Test
+    void anEmptyDescriptorListIsWrittenSoItReplacesThePreviousOne() {
+        assertThat(CatalogProjection.toCategoryFields(categoryWith(List.of())))
+                .containsEntry("facet_definitions", List.of());
+    }
+
+    @Test
+    void aSnapshotFromAProducerWithoutDescriptorsLeavesTheFieldUntouched() {
+        assertThat(CatalogProjection.toCategoryFields(categoryWith(null))).doesNotContainKey("facet_definitions");
+    }
+
+    @Test
+    void dropsADescriptorMissingItsCodeOrLabel() {
+        Map<String, Object> fields = CatalogProjection.toCategoryFields(categoryWith(List.of(
+                new CatalogPayloads.FacetDefinition(null, "No code", "TEXT"),
+                new CatalogPayloads.FacetDefinition("brand", null, "TEXT"),
+                new CatalogPayloads.FacetDefinition("size", "Kích cỡ", "SELECT"))));
+
+        assertThat(fields).containsEntry("facet_definitions",
+                List.of(Map.of("code", "size", "label", "Kích cỡ", "type", "SELECT")));
+    }
+
+    private static CatalogPayloads.CategorySnapshot categoryWith(List<CatalogPayloads.FacetDefinition> definitions) {
+        return new CatalogPayloads.CategorySnapshot("cat-2", "cat-1", "Phones", "phones", 3L,
+                List.of(segment("cat-1"), segment("cat-2")), true, definitions, NOW);
+    }
+
     private static CatalogPayloads.ProductSnapshot product() {
         return new CatalogPayloads.ProductSnapshot("prod-1", "cat-2", "iPhone 15", "iphone-15",
                 "A phone", Map.of("brand", "Apple"), "ACTIVE", 42L, NOW);
@@ -118,7 +156,7 @@ class CatalogProjectionTest {
     }
 
     private static CatalogPayloads.CategorySnapshot category(List<CatalogPayloads.CategoryPathSegment> path) {
-        return new CatalogPayloads.CategorySnapshot("cat-2", "cat-1", "Phones", "phones", 3L, path, true, NOW);
+        return new CatalogPayloads.CategorySnapshot("cat-2", "cat-1", "Phones", "phones", 3L, path, true, null, NOW);
     }
 
     private static CatalogPayloads.CategoryPathSegment segment(String id) {
