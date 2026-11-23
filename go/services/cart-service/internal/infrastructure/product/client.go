@@ -17,10 +17,12 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"cart-service/internal/domain"
 	"cart-service/internal/domain/port"
@@ -253,7 +255,12 @@ func (c *Client) GetBatchSkus(ctx context.Context, skuIDs []string) (map[string]
 	response, err := c.rpc.GetBatchSkus(callCtx, &productv1.GetBatchSkusRequest{SkuIds: skuIDs})
 	c.observeCall("GetBatchSkus", err)
 	if err != nil {
-		if ctx.Err() != nil {
+		callerDeadline, hasCallerDeadline := ctx.Deadline()
+		rpcDeadline, _ := callCtx.Deadline()
+		// The peer can report an expired inherited deadline before Go runs the caller's timer.
+		callerDeadlineExpired := hasCallerDeadline && callerDeadline.Equal(rpcDeadline) &&
+			status.Code(err) == codes.DeadlineExceeded && time.Until(callerDeadline) <= 0
+		if ctx.Err() != nil || callerDeadlineExpired {
 			// The caller gave up; Product did not misbehave.
 			c.breaker.release()
 			return nil, unavailable(err)
