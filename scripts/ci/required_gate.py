@@ -19,7 +19,17 @@ def check(plan, needs):
 
 
 if __name__ == "__main__":
-    errors = check(json.loads(os.environ["CI_PLAN"]), json.loads(os.environ["CI_NEEDS"]))
+    plan = json.loads(os.environ["CI_PLAN"])
+    needs = json.loads(os.environ["CI_NEEDS"])
+    errors = check(plan, needs)
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a", encoding="utf-8") as output:
+            print(f"### Required CI checks · {'failed' if errors else 'passed'}", file=output)
+            print("\n| Check | Result |\n| --- | --- |", file=output)
+            for name, job in sorted(needs.items()):
+                print(f"| {name} | {job.get('result', 'missing')} |", file=output)
+            if errors:
+                print("\nOpen the failing job summary for the step, reproduction command and evidence.", file=output)
     if errors:
         raise SystemExit("Required CI checks did not pass:\n" + "\n".join(errors))
     print("All required CI checks passed.")

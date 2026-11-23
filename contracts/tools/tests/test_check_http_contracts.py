@@ -2,6 +2,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import check_http_contracts as checks  # noqa: E402
@@ -45,6 +47,19 @@ class RetryAfterTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[2] / "http"
         problems = [p for s in sorted(root.rglob("openapi.yaml")) for p in checks.check_file(s)]
         self.assertEqual([], problems)
+
+    def test_order_ci_scope_tracks_the_registered_http_dependencies(self):
+        root = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(root / "scripts/ci"))
+        from plan import ORDER_HTTP_COMPONENTS, ORDER_OPENAPI
+
+        with (root / "contracts/catalog/interactions.yaml").open(encoding="utf-8") as source:
+            catalog = yaml.safe_load(source)["interactions"]
+        components = {name for edge in catalog if edge.get("contract") == ORDER_OPENAPI.removeprefix("contracts/")
+                      for name in [edge["provider"], *edge["consumers"]]}
+        self.assertTrue(components, "The scoped Order contract has no registered interaction")
+        # Frontend generates Order types and the deployment checker copies the contract bundle.
+        self.assertEqual(ORDER_HTTP_COMPONENTS, components | {"frontend", "deployment-checks"})
 
 
 if __name__ == "__main__":

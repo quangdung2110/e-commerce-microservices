@@ -45,17 +45,26 @@ jobs:
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
           CD_ENABLED: ${{ vars.CD_ENABLED }}
         run: |
+          common=(--github-output --plan-file ci-artifacts/plan.json)
           case "$EVENT_NAME" in
-            pull_request) python scripts/ci/plan.py --base "$PR_BASE" --github-output ;;
+            pull_request) python scripts/ci/plan.py --base "$PR_BASE" "${common[@]}" ;;
             push)
               args=()
-              if [ "$CD_ENABLED" = 'true' ]; then args+=(--all); fi
-              python scripts/ci/plan.py --base "$PUSH_BASE" --direct --github-output "${args[@]}"
+              if [ "$CD_ENABLED" = 'true' ]; then args+=(--release-snapshot); fi
+              python scripts/ci/plan.py --base "$PUSH_BASE" --direct "${common[@]}" "${args[@]}"
               ;;
-            merge_group) python scripts/ci/plan.py --base "$MERGE_BASE" --direct --github-output ;;
-            workflow_dispatch) python scripts/ci/plan.py --base ALL --github-output ;;
+            merge_group) python scripts/ci/plan.py --base "$MERGE_BASE" --direct "${common[@]}" ;;
+            workflow_dispatch) python scripts/ci/plan.py --base ALL "${common[@]}" ;;
             *) exit 1 ;;
           esac
+      - name: Upload the selected scope
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        continue-on-error: true
+        with:
+          name: ci-plan
+          path: ci-artifacts/plan.json
+          retention-days: 14
+          overwrite: true
 
   tooling:
     runs-on: ubuntu-24.04
@@ -133,13 +142,19 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+      - id: install
+        run: npm ci
       - name: Verify generated API types
+        id: generated
         run: npm run gen:api:check
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test -- --reporter=default --reporter=junit --outputFile=../ci-artifacts/frontend-junit.xml
-      - run: npm run build
+      - id: lint
+        run: npm run lint
+      - id: types
+        run: npm run typecheck
+      - id: tests
+        run: npm test -- --reporter=default --reporter=junit --outputFile=../ci-artifacts/frontend-junit.xml
+      - id: build
+        run: npm run build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -147,6 +162,12 @@ jobs:
           overwrite: true
           path: ci-artifacts/frontend-junit.xml
           retention-days: 14
+      - name: Summarize the failed frontend checks
+        if: failure()
+        working-directory: .
+        env:
+          CI_STEPS: ${{ toJSON(steps) }}
+        run: python scripts/ci/feedback.py frontend --component frontend --directory frontend --artifact frontend-tests
 
   contracts:
     needs: plan
@@ -188,6 +209,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Scan dependencies and secrets (HIGH/CRITICAL)
+        id: scan
         run: bash scripts/ci/scan.sh source
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -196,6 +218,11 @@ jobs:
           overwrite: true
           path: ci-artifacts/source-*.json
           retention-days: 14
+      - name: Summarize the failed source scan
+        if: failure()
+        env:
+          CI_STEPS: ${{ toJSON(steps) }}
+        run: python scripts/ci/feedback.py source --component source-security --artifact source-security
 
   images:
     needs: plan

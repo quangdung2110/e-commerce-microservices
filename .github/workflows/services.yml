@@ -32,12 +32,36 @@ jobs:
           python-version: '3.12'
 
       - name: Require Docker for integration tests
+        id: docker
         if: matrix.kind == 'java' || matrix.name == 'cart-service' || matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service'
         run: docker info > /dev/null
 
-      - name: Build the MinIO image for Review integration tests
+      - name: Reuse the verified MinIO image for Review
+        id: minio
         if: matrix.name == 'review-service'
-        run: docker build --tag ecommerce-minio:RELEASE.2025-10-15T17-29-55Z infra/minio
+        env:
+          # Both values come from the verified main release run 45233154036.
+          MINIO_CONTEXT: 2c1a204eb0133ec93398b17e274eced0f085891f
+          MINIO_IMAGE: ghcr.io/quangdung2110/e-commerce-microservices/minio@sha256:8700a23a3e46ec3eb4d0ad6a508d991125b67d123d6acd9110e96b0219e964a5
+        run: |
+          if [ "$(git rev-parse HEAD:infra/minio)" = "$MINIO_CONTEXT" ] && docker pull "$MINIO_IMAGE"; then
+            docker tag "$MINIO_IMAGE" ecommerce-minio:RELEASE.2025-10-15T17-29-55Z
+            echo 'reused=true' >> "$GITHUB_OUTPUT"
+            echo "### Review MinIO fixture · reused verified image" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Review MinIO fixture · building this checkout" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: matrix.name == 'review-service' && steps.minio.outputs.reused != 'true'
+      - name: Build the changed or unavailable MinIO fixture
+        id: minio_build
+        if: matrix.name == 'review-service' && steps.minio.outputs.reused != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: infra/minio
+          tags: ecommerce-minio:RELEASE.2025-10-15T17-29-55Z
+          load: true
+          cache-from: type=gha,scope=minio
 
       - name: Set up JDK 21
         if: matrix.kind == 'java'
@@ -50,11 +74,13 @@ jobs:
       # verify runs unit tests and the *IT classes; integration tests start PostgreSQL, Kafka and the like with
       # Testcontainers, which the hosted runner's Docker supports.
       - name: Test (Maven)
+        id: maven
         if: matrix.kind == 'java'
         working-directory: ${{ matrix.dir }}
         run: mvn -B -ntp verify
 
       - name: Verify Maven executed tests and report skips
+        id: java_report
         if: matrix.kind == 'java'
         env:
           SERVICE_DIR: ${{ matrix.dir }}
@@ -72,10 +98,12 @@ jobs:
           go-version-file: ${{ matrix.dir }}/go.mod
           cache-dependency-path: ${{ matrix.dir }}/go.sum
       - name: Vet Go sources
+        id: vet
         if: matrix.kind == 'go'
         working-directory: ${{ matrix.dir }}
         run: go vet ./...
       - name: Check Go formatting
+        id: format
         if: matrix.kind == 'go'
         working-directory: ${{ matrix.dir }}
         run: |
@@ -85,28 +113,33 @@ jobs:
             exit 1
           fi
       - name: Test Go with race detection
+        id: unit
         if: matrix.kind == 'go'
         working-directory: ${{ matrix.dir }}
         run: |
           set -o pipefail
           go test -race -count=1 -json ./... | tee unit-tests.jsonl
       - name: Verify Go unit tests executed
+        id: go_report
         if: matrix.kind == 'go'
         env:
           SERVICE_DIR: ${{ matrix.dir }}
         run: python scripts/ci/test_reports.py go "$SERVICE_DIR/unit-tests.jsonl"
       - name: Run tagged Go integration tests
+        id: integration
         if: matrix.kind == 'go' && (matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service')
         working-directory: ${{ matrix.dir }}
         run: |
           set -o pipefail
           go test -race -count=1 -tags=integration -timeout 20m -json ./test/integration/... ./internal/... | tee integration-tests.jsonl
       - name: Verify Go integration tests executed
+        id: integration_report
         if: matrix.kind == 'go' && (matrix.name == 'auth-service' || matrix.name == 'user-service' || matrix.name == 'notification-service')
         env:
           SERVICE_DIR: ${{ matrix.dir }}
         run: python scripts/ci/test_reports.py go "$SERVICE_DIR/integration-tests.jsonl" --integration
       - name: Exercise Cart Lua against real Redis
+        id: redis
         if: matrix.name == 'cart-service'
         working-directory: ${{ matrix.dir }}
         run: |
@@ -128,3 +161,11 @@ jobs:
             ${{ matrix.dir }}/target/failsafe-reports/
             ${{ matrix.dir }}/*-tests.jsonl
           retention-days: 14
+      - name: Summarize the failed service checks
+        if: failure()
+        env:
+          CI_STEPS: ${{ toJSON(steps) }}
+          COMPONENT: ${{ matrix.name }}
+          SERVICE_DIR: ${{ matrix.dir }}
+          KIND: ${{ matrix.kind }}
+        run: python scripts/ci/feedback.py "$KIND" --component "$COMPONENT" --directory "$SERVICE_DIR" --artifact "tests-$COMPONENT"

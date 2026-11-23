@@ -9,8 +9,8 @@ cd "$WORK"
 git init -q .
 git config user.email test@example.com
 git config user.name test
-mkdir -p java/services/alpha go/services/beta contracts scripts/ci
-touch java/services/alpha/pom.xml go/services/beta/go.mod contracts/readme.md docs.md
+mkdir -p java/services/alpha go/services/beta contracts scripts/ci docs
+touch java/services/alpha/pom.xml go/services/beta/go.mod contracts/readme.md docs/notes.md
 git add -A && git commit -q -m base
 BASE="$(git rev-parse HEAD)"
 
@@ -36,8 +36,11 @@ check "a Java service change selects only that service" "alpha"
 change go/services/beta/main.go
 check "a Go service change selects only that service" "beta"
 
-change docs.md
-check "a change outside services and contracts selects nothing" ""
+change docs/notes.md
+check "a known documentation change selects nothing" ""
+
+change new-shared-library/tool
+check "an unmapped dependency selects every service" "alpha,beta"
 
 change contracts/readme.md
 check "a contracts change selects every service" "alpha,beta"
