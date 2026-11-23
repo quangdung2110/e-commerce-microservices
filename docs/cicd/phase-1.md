@@ -65,18 +65,35 @@ Image matrix gồm các service có Dockerfile cùng frontend, API gateway và M
 | `go/observability/**` | Test module chung và tất cả Go consumer; build lại image Go, gồm gateway theo lựa chọn bảo thủ |
 | `go/.dockerignore`, `go/go.work*` | Toàn bộ thành phần Go |
 | `frontend/**` | Frontend CI và image frontend |
-| `contracts/**` | Toàn bộ test/image, frontend generated types, contract và mesh/Kubernetes checks |
+| `contracts/http/order/v1/openapi.yaml` | Order tests, frontend, contract và mesh/Kubernetes checks. Build Order, Gateway, frontend và deployment checks. |
+| Contract dùng chung, contract chưa có phạm vi hoặc đường dẫn chưa được ánh xạ | Toàn bộ test và image để tránh bỏ sót phụ thuộc |
 | `.github/**`, `scripts/ci/**`, root Compose, init DB hoặc quy tắc checkout | Toàn bộ kiểm tra và image |
 | `infra/**` | Toàn bộ service/image và kiểm tra manifest Kubernetes |
 | `deploy/mesh/**`, `docs/mesh/**` | Mesh và manifest Kubernetes |
 | `deploy/k8s/**` | Kiểm tra generator và render ba lớp Kustomize |
-| Tài liệu thông thường | Tooling, source security scan và required gate |
+| Tài liệu tại `docs/`, `note/`, README hoặc LICENSE ở gốc | Tooling, source security scan và required gate. Tài liệu mesh vẫn chạy kiểm tra mesh/Kubernetes. |
 
 PR dùng diff từ merge base; push main so sánh trực tiếp `before..HEAD` để không bỏ sót
 thay đổi khi một push có nhiều commit. Rename được tách thành xóa/thêm để test cả hai bên.
 `workflow_dispatch` chọn toàn bộ; đối chiếu breaking contract với commit cha của HEAD.
 Lần push đầu có SHA `before` toàn số 0 cũng chọn toàn bộ và dùng commit cha làm baseline.
 Repository phải có lịch sử và ít nhất hai commit khi dùng chế độ này.
+
+Khi bật CD, push chỉ sửa tài liệu trong phạm vi trên vẫn chạy gate, đồng thời bỏ qua publish
+và tạo candidate staging. Push có thay đổi runtime tiếp tục tạo snapshot đầy đủ.
+
+Job `plan` ghi phạm vi và lý do chọn job vào Step Summary. Khi test service, frontend,
+contract hoặc scan lỗi, xem Step Summary của job để lấy bước lỗi và lệnh chạy lại.
+Workflow **CI Measurements** dùng API read-only để ghi JSON cho từng lượt chạy, kể cả rerun
+và lần chạy bị hủy. Báo cáo đo từ khi GitHub tạo CI run, bao gồm thời gian tới lỗi đầu tiên,
+thời gian tới gate xanh, queue theo job, runner-phút và số lần rerun.
+
+```bash
+python scripts/ci/metrics.py --repo OWNER/REPO --run-id RUN_ID [RUN_ID ...] --output ci-artifacts/ci-metrics.json
+```
+
+Lệnh trên sử dụng `GH_TOKEN` hoặc `GITHUB_TOKEN` với quyền đọc Actions. Lượt CI cũ hoặc
+không còn artifact `ci-plan` vẫn có số đo, với phạm vi hiển thị là `unavailable`.
 
 Lệnh local:
 

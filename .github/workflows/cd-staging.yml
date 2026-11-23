@@ -18,10 +18,6 @@ permissions:
   packages: read
   attestations: read
 
-concurrency:
-  group: cd-staging
-  cancel-in-progress: false
-
 jobs:
   configuration-required:
     if: github.event_name == 'workflow_dispatch' && (vars.CD_ENABLED != 'true' || github.ref != 'refs/heads/main')
@@ -32,12 +28,43 @@ jobs:
           echo '::error::CD is disabled or this is not main. Complete the bootstrap and readiness requirements before enabling CD_ENABLED.'
           exit 1
 
-  stage:
+  release-candidate:
     if: >-
       vars.CD_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Distinguish a verified release from an intentional publish skip
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jobs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/attempts/$CI_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name == "publish / manifest" or .name == "publish") | "\(.name)=\(.conclusion)"')"
+          case "$jobs" in
+            'publish / manifest=success') echo 'ready=true' >> "$GITHUB_OUTPUT" ;;
+            'publish=skipped') echo 'CI intentionally skipped publication. No staging candidate.' >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo '::error::CI reported success without a recognized publication result.'; exit 1 ;;
+          esac
+
+  stage:
+    needs: release-candidate
+    if: needs.release-candidate.outputs.ready == 'true'
+    concurrency:
+      group: cd-staging
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: staging

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import io
 from pathlib import Path
 import subprocess
 import sys
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 
 CI = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CI))
 
 
 def module(name):
@@ -20,6 +22,8 @@ planner = module("plan")
 gate = module("required_gate")
 reports = module("test_reports")
 release = module("release_manifest")
+metrics = module("metrics")
+feedback = module("feedback")
 
 
 class PipelineTests(unittest.TestCase):
@@ -59,6 +63,73 @@ class PipelineTests(unittest.TestCase):
     def test_docs_only_have_no_builds_but_mesh_docs_have_validation(self):
         self.assertEqual(self.selected(["docs/README.md"])["images"], {"include": []})
         self.assertTrue(self.selected(["docs/mesh/runtime-contract.md"])["mesh"])
+
+    def test_cd_snapshot_skips_docs_but_keeps_a_full_runtime_release(self):
+        docs = planner.plan(self.root, ["docs/mesh/runtime-contract.md"], release_snapshot=True)
+        self.assertEqual(docs["scope"], "docs-only")
+        self.assertFalse(docs["images"]["include"])
+        self.assertTrue(docs["mesh"] and docs["kubernetes"])
+        narrow = planner.plan(self.root, ["docs/README.md", "go/services/cart/main.go"], release_snapshot=True)
+        self.assertEqual(narrow["scope"], "full-matrix")
+        self.assertEqual(len(narrow["images"]["include"]), 6)
+        self.assertFalse(planner.plan(self.root, [], release_snapshot=True)["images"]["include"])
+
+    def test_order_public_contract_is_scoped_and_removal_or_shared_change_falls_back(self):
+        for path in ("java/services/order-service/pom.xml", "java/services/order-service/Dockerfile",
+                     "deploy/checks/Dockerfile", planner.ORDER_OPENAPI):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+        paths = [planner.ORDER_OPENAPI, "contracts/CHANGELOG.md"]
+        focused = self.selected(paths)
+        self.assertEqual(focused["scope"], "focused")
+        self.assertEqual([job["name"] for job in focused["services"]["include"]], ["order-service"])
+        self.assertEqual({job["name"] for job in focused["images"]["include"]}, planner.ORDER_HTTP_COMPONENTS)
+        self.assertTrue(all(focused[key] for key in ("contracts", "frontend", "mesh", "kubernetes")))
+        self.assertEqual(self.selected([*paths, "contracts/shared/json-schema/problem.json"])["scope"], "full-matrix")
+        (self.root / planner.ORDER_OPENAPI).unlink()
+        self.assertEqual(self.selected(paths)["scope"], "full-matrix")
+
+    def test_unknown_path_and_removed_service_select_full_verification(self):
+        self.assertEqual(self.selected(["new-shared-lib/src/a.go"])["scope"], "full-matrix")
+        (self.root / "go/services/cart/go.mod").unlink()
+        self.assertEqual(self.selected(["go/services/cart/go.mod"])["scope"], "full-matrix")
+
+    def test_summaries_escape_changed_paths_and_show_reproduction(self):
+        output = io.StringIO()
+        planner.write_summary(self.selected(["docs/<b>changed</b>.md"]), output)
+        self.assertIn("&lt;b&gt;changed&lt;/b&gt;", output.getvalue())
+        result = feedback.summary("go", "cart", "go/services/cart", "", "tests-cart",
+                                  {"unit": {"outcome": "failure"}, "vet": {"outcome": "success"}})
+        self.assertIn("cd go/services/cart &amp;&amp; go test -race", result)
+        self.assertIn("tests-cart", result)
+        self.assertNotIn("Go vet", result)
+
+    def test_metrics_preserve_first_failure_and_deduplicate_reused_jobs(self):
+        def ts(second):
+            return f"2026-01-01T00:00:{second:02}Z"
+
+        def job(number, name, result, start, end, steps=()):
+            return {"id": number, "name": name, "conclusion": result, "created_at": ts(1),
+                    "started_at": ts(start), "completed_at": ts(end), "steps": list(steps),
+                    "html_url": f"https://github.com/example/jobs/{number}"}
+
+        passing = job(1, "images / image-cart", "success", 3, 8)
+        prior = [passing, job(2, "services / cart", "failure", 3, 10, [
+            {"name": "Race tests", "conclusion": "failure", "completed_at": ts(9)}
+        ]), job(3, "ci-required", "failure", 11, 12)]
+        retry = [passing, job(4, "services / cart", "success", 27, 30), job(5, "ci-required", "success", 31, 33)]
+        run = {"id": 55, "html_url": "https://github.com/example/runs/55", "head_sha": "head",
+               "event": "pull_request", "conclusion": "success", "created_at": ts(0)}
+        attempts = [({"run_attempt": 1, "run_started_at": ts(1), "conclusion": "failure"}, prior),
+                    ({"run_attempt": 2, "run_started_at": ts(25), "conclusion": "success"}, retry)]
+        result = metrics.report(run, attempts, "single-service")
+        self.assertEqual(result["first_failure"]["failed_step"], "Race tests")
+        self.assertEqual(result["first_failure"]["failure_seconds"], 9)
+        self.assertEqual(result["first_passing_gate_seconds"], 33)
+        self.assertEqual(result["attempts"][1]["gate_since_attempt_started_seconds"], 8)
+        self.assertEqual(result["runner_seconds_total"], 18)
+        self.assertEqual(result["reruns"], 1)
 
     def test_workflow_changes_cannot_bypass_gate(self):
         plan = self.selected([".github/workflows/ci.yml"])
