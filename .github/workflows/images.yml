@@ -6,6 +6,9 @@ on:
       matrix:
         type: string
         required: true
+      max_parallel:
+        type: number
+        default: 4
 
 permissions:
   contents: read
@@ -17,7 +20,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: ${{ inputs.max_parallel }}
       matrix: ${{ fromJSON(inputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -40,7 +43,6 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
       - name: Exercise SQL migrations and repeat execution against disposable PostgreSQL
         if: matrix.name == 'database-migrations'
         env:

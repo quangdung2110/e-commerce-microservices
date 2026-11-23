@@ -1,4 +1,5 @@
 name: CI
+run-name: Image matrix A/B · ${{ inputs.image_parallel }} slots
 
 on:
   pull_request:
@@ -6,6 +7,11 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+    inputs:
+      image_parallel:
+        type: choice
+        options: ['4', '6']
+        default: '4'
 
 permissions:
   contents: read
@@ -203,6 +209,7 @@ jobs:
     uses: ./.github/workflows/images.yml
     with:
       matrix: ${{ needs.plan.outputs.images }}
+      max_parallel: ${{ fromJSON(inputs.image_parallel || '4') }}
 
   ci-required:
     name: ci-required
