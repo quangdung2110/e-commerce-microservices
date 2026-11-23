@@ -95,6 +95,23 @@ python scripts/ci/metrics.py --repo OWNER/REPO --run-id RUN_ID [RUN_ID ...] --ou
 Lệnh trên sử dụng `GH_TOKEN` hoặc `GITHUB_TOKEN` với quyền đọc Actions. Lượt CI cũ hoặc
 không còn artifact `ci-plan` vẫn có số đo, với phạm vi hiển thị là `unavailable`.
 
+### Cache build và fixture MinIO
+
+| Image trên `main` | Buildx trước → sau khi cache ấm | Layer cache hit | Đọc cache manifest | Export cache |
+|---|---:|---:|---:|---:|
+| Frontend | 179 s → 11 s | 0 → 17 | 0,2 s → 0,4 s | 43,8 s → 0,4 s |
+| MinIO | 200 s → 10 s | 0 → 5 | 0,2 s → 0,6 s | 4,6 s → 0,2 s |
+
+Số liệu được đọc từ log ở [run 44717725966](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/44717725966)
+và [run 45233154036](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45233154036).
+Thời gian đọc cache manifest không bao gồm toàn bộ thời gian khôi phục layer. Hai run dùng Git tree khác nhau,
+nên bảng dùng để nhận diện cache nóng/lạnh. Giữ `mode=max` vì lần chạy `main` gần nhất đã phục hồi được
+các layer build lớn với chi phí export nhỏ.
+
+Review dùng lại image MinIO đã xác minh của run 45233154036 khi Git tree của `infra/minio` còn trùng.
+Job tự build fixture từ checkout nếu cây nguồn đổi hoặc không pull được digest. Khi cập nhật fixture,
+lấy Git tree và image digest từ cùng lượt phát hành đã qua scan, provenance và SBOM verification.
+
 Lệnh local:
 
 ```bash
