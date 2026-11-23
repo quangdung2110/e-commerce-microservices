@@ -3,9 +3,8 @@
 #
 #   scripts/ci/changed-services.sh [BASE_REF]       BASE_REF defaults to origin/main; "ALL" selects every service
 #
-# A service is selected when a file under its directory changed. A change to contracts/, to the CI definitions or to
-# this script selects every service, because contracts are copied into services (proto drift tests) and consumers
-# validate fixtures against provider contracts. Output is one JSON line: {"include":[{"name","kind","dir"}...]}.
+# The planner selects direct service changes and the registered consumers of scoped contracts.
+# Shared or unmapped changes select every service. Output is one JSON line: {"include":[{"name","kind","dir"}...]}.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -49,7 +49,7 @@ CHECKS = {
         "migration": ("Disposable PostgreSQL migrations", "python scripts/cd/test_migrations.py --image ci/repro"),
         "sbom": ("Generate SBOM", "bash scripts/ci/scan.sh sbom"),
         "scan": ("Image scan", "bash scripts/ci/scan.sh image"),
-        "package": ("Package the scanned archive", "sha256sum ci-artifacts/image.tar"),
+        "package": ("Package the scanned archive", "cd ci-artifacts && gzip -1 image.tar && sha256sum image.tar.gz sbom.cdx.json image-scan.json"),
     },
 }
 
@@ -77,7 +77,7 @@ def evidence(kind, directory):
                     for finding in result.get("Vulnerabilities", []):
                         findings.add(f"{finding['VulnerabilityID']} · {finding['PkgName']} · {finding['Severity']}")
                     if result.get("Secrets"):
-                        findings.add("Embedded secret finding. Check restricted scanner output.")
+                        findings.add("Embedded secret finding. Check the scanner report.")
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
         return sorted(findings)
@@ -88,12 +88,15 @@ def summary(kind, component, directory, dockerfile, artifact, steps):
     text = [f"### Failed checks · {code(component)}", ""]
     failed = [key for key, value in steps.items() if value.get("outcome") == "failure"]
     if kind == "image" and failed:
-        build = shlex.join(["docker", "build", "--platform", "linux/amd64", "-t", "ci/repro", "-f", dockerfile, directory])
+        build = shlex.join(["docker", "build", "--pull", "--platform", "linux/amd64",
+                            "-t", "ci/repro", "-f", dockerfile, directory])
         text.append(f"- Build the image from the checkout · {code(build)}")
         if any(key in failed for key in ("sbom", "scan", "package")):
             text.append(f"- Export the archive · {code('mkdir -p ci-artifacts && docker save ci/repro -o ci-artifacts/image.tar')}")
     for key in failed:
         label, command = CHECKS[kind].get(key, (key, ""))
+        if kind == "contracts" and key in ("breaking", "self_test") and os.environ.get("BASE_REF"):
+            command = command.removesuffix("origin/main") + shlex.quote(os.environ["BASE_REF"])
         if command and directory and kind in ("java", "go", "frontend") and key not in ("docker", "minio", "minio_build"):
             command = f"cd {shlex.quote(directory)} && {command}"
         text.append(f"- {code(label)}" + (f" · {code(command)}" if command else ""))

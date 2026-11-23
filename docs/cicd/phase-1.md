@@ -57,7 +57,8 @@ migration job và rollback runtime sẽ trở thành gate triển khai trong đ�
 
 Inventory tự phát hiện `java/services/*/pom.xml`, `go/services/*/go.mod` và module chung
 `go/*/go.mod`. Hiện có 9 service Java, 5 service Go và module `go/observability`.
-Image matrix gồm các service có Dockerfile cùng frontend, API gateway và MinIO: 17 image.
+Image matrix tại baseline đợt 2 có 19 image, gồm image service, frontend, Gateway, MinIO,
+database migrations và deployment checks.
 
 | Thay đổi | Chạy gì |
 |---|---|
@@ -94,6 +95,41 @@ python scripts/ci/metrics.py --repo OWNER/REPO --run-id RUN_ID [RUN_ID ...] --ou
 
 Lệnh trên sử dụng `GH_TOKEN` hoặc `GITHUB_TOKEN` với quyền đọc Actions. Lượt CI cũ hoặc
 không còn artifact `ci-plan` vẫn có số đo, với phạm vi hiển thị là `unavailable`.
+
+### Cache build và fixture MinIO
+
+| Image trên `main` | Buildx trước → sau khi cache ấm | Layer cache hit | Đọc cache manifest | Export cache |
+|---|---:|---:|---:|---:|
+| Frontend | 179 s → 11 s | 0 → 17 | 0,2 s → 0,4 s | 43,8 s → 0,4 s |
+| MinIO | 200 s → 10 s | 0 → 5 | 0,2 s → 0,6 s | 4,6 s → 0,2 s |
+
+Số liệu được đọc từ log ở [run 44717725966](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/44717725966)
+và [run 45233154036](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45233154036).
+Thời gian đọc cache manifest không bao gồm toàn bộ thời gian khôi phục layer. Hai run dùng Git tree khác nhau,
+nên bảng dùng để nhận diện cache nóng/lạnh. Giữ `mode=max` vì lần chạy `main` gần nhất đã phục hồi được
+các layer build lớn với chi phí export nhỏ.
+
+Review dùng lại image MinIO đã xác minh của run 45233154036 khi Git tree của `infra/minio` còn trùng.
+Job tự build fixture từ checkout nếu cây nguồn đổi hoặc không pull được digest. Khi cập nhật fixture,
+lấy Git tree và image digest từ cùng lượt phát hành đã qua scan, provenance và SBOM verification.
+
+### Thử 4 và 6 slot cho image matrix
+
+Bốn lượt chạy cùng commit `c38fa423`, mỗi lượt build và scan đủ 19 image trên GitHub-hosted
+runner. Hai cấu hình đọc cache sẵn có từ `main` và tắt ghi cache trong lúc đo. Matrix test
+service đều dùng 4 slot.
+
+| Lượt | Slot image | Thời lượng matrix | Chờ trung vị mỗi image | Đến khi `ci-required` kết thúc |
+|---|---:|---:|---:|---:|
+| [Chạy riêng](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45237570422) | 4 | 5:36 | 150 s | 7:01 · đạt |
+| [Chạy riêng](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45238877225) | 6 | 4:09 | 68 s | 7:12 · lỗi tải schema ở tooling |
+| [Chạy đồng thời](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45240213016) | 4 | 5:35 | 134 s | 6:30 · đạt |
+| [Chạy đồng thời](https://github.com/quangdung2110/e-commerce-microservices/actions/runs/45240207329) | 6 | 4:34 | 69 s | 7:05 · đạt |
+
+Chọn 4 slot làm mặc định. Sáu slot giảm thời lượng matrix image trong cả hai cặp, nhưng
+các lượt thử này chưa cho thấy gate kết thúc sớm hơn. Lấy thêm mẫu theo nhóm thay đổi trước
+khi đánh giá p95. Dùng kết quả `CI Measurements` để theo dõi đường chờ sau khi Review bắt đầu
+dùng lại MinIO fixture.
 
 Lệnh local:
 
