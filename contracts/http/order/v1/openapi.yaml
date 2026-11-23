@@ -1186,3 +1186,4 @@ components:
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
+# CI scope verification. This comment leaves the contract unchanged.
