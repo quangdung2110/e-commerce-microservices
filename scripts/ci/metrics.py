@@ -95,7 +95,8 @@ def report(run, attempts, scope):
     for metadata, attempt_jobs in attempts:
         started = metadata["run_started_at"]
         records = [job_metrics(job, run["created_at"]) for job in attempt_jobs]
-        new_records = [job for job in records if job["id"] not in jobs]
+        new_records = [job for job in records if job["id"] not in jobs and
+                       (metadata["run_attempt"] == 1 or elapsed(started, job["start_at"]) is not None)]
         jobs.update({job["id"]: job for job in new_records})
         aggregate = next((job for job in records if job["job"] == "ci-required"), None)
         if aggregate and aggregate["end_at"] and aggregate["result"] == "success" and not first_gate:

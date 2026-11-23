@@ -118,7 +118,8 @@ class PipelineTests(unittest.TestCase):
         prior = [passing, job(2, "services / cart", "failure", 3, 10, [
             {"name": "Race tests", "conclusion": "failure", "completed_at": ts(9)}
         ]), job(3, "ci-required", "failure", 11, 12)]
-        retry = [passing, job(4, "services / cart", "success", 27, 30), job(5, "ci-required", "success", 31, 33)]
+        retry = [{**passing, "id": 99}, job(4, "services / cart", "success", 27, 30),
+                 job(5, "ci-required", "success", 31, 33)]
         run = {"id": 55, "html_url": "https://github.com/example/runs/55", "head_sha": "head",
                "event": "pull_request", "conclusion": "success", "created_at": ts(0)}
         attempts = [({"run_attempt": 1, "run_started_at": ts(1), "conclusion": "failure"}, prior),
