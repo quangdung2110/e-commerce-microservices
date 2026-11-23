@@ -16,21 +16,31 @@ jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      COMPOSE_FILE: docker-compose.yml:.github/provider-verification.compose.yml
+      COMPOSE_PROFILES: payment,notification
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Configure signing for the disposable Auth service
+        run: |
+          key="$(openssl rand -hex 32)"
+          echo "::add-mask::$key"
+          echo "AUTH_INTERNAL_SIGNING_KEY=$key" >> "$GITHUB_ENV"
       - name: Build and start the providers that have probes
         run: |
-          docker compose --profile payment --profile notification up -d --build --wait \
+          docker compose up -d --build --wait --wait-timeout 240 \
             product-service review-service inventory-service promotion-service order-service payment-service \
             cart-service user-service auth-service notification-service product-detail-bff
+      - name: Seed one catalog item for the contract probes
+        run: docker compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U postgres -d product_service < scripts/ci/provider-fixture.sql
       - name: Verify providers against their contracts
-        run: ./scripts/ci/verify-providers.sh
+        run: ./scripts/ci/verify-providers.sh --strict --redact-bodies
       - name: Stack logs on failure
         if: failure()
-        run: docker compose --profile payment --profile notification logs --no-color --tail 200
+        run: docker compose logs --no-color --tail 200
       - name: Clean up the isolated runner stack
         if: always()
-        run: docker compose --profile payment --profile notification down --volumes --remove-orphans
+        run: docker compose down --volumes --remove-orphans

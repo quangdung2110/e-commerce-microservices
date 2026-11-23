@@ -1,0 +1,29 @@
+# Compose adds these one-shot dependencies only on the disposable verification stack.
+x-provider-migration: &provider-migration
+  image: migrate/migrate:v4.18.3@sha256:39b59b389634e43bb3f2d4e94bc1edef0775ec2a9a3540ce6a2cf330e5daae55
+  depends_on:
+    postgres-init:
+      condition: service_completed_successfully
+  networks:
+    - ecommerce-network
+
+services:
+  auth-migrate:
+    <<: *provider-migration
+    command: ["-path", "/migrations", "-database", "postgres://auth_service:${PG_PASSWORD_AUTH_SERVICE:-auth-service-local-dev}@postgres:5432/auth_db?sslmode=disable", "up"]
+    volumes:
+      - ./go/services/auth-service/migrations:/migrations:ro
+  auth-service:
+    depends_on:
+      auth-migrate:
+        condition: service_completed_successfully
+
+  notification-migrate:
+    <<: *provider-migration
+    command: ["-path", "/migrations", "-database", "postgres://notification_service:${PG_PASSWORD_NOTIFICATION_SERVICE:-notification-service-local-dev}@postgres:5432/notification_db?sslmode=disable", "up"]
+    volumes:
+      - ./go/services/notification-service/migrations:/migrations:ro
+  notification-service:
+    depends_on:
+      notification-migrate:
+        condition: service_completed_successfully

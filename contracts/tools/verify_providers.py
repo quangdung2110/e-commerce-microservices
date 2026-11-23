@@ -20,9 +20,12 @@ Exit code 1 when any probe fails. Requires PyYAML and jsonschema >= 4.18.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -221,6 +224,7 @@ def run(probes_path: Path, only: set[str], format_check: bool, timeout: float,
     contracts: dict[str, Contract] = {}
 
     passed = failed = skipped = 0
+    auth_signing_key = os.environ.get("AUTH_INTERNAL_SIGNING_KEY", "").encode()
     for probe in config["probes"]:
         # With --only, probes that capture a value still run (silently) so later probes can use it.
         quiet = bool(only) and probe["id"] not in only
@@ -249,6 +253,11 @@ def run(probes_path: Path, only: set[str], format_check: bool, timeout: float,
             **{k: str(v) for k, v in (request.get("headers") or {}).items()},
         }
         url = targets[provider].rstrip("/") + path
+        if provider == "auth-service" and probe.get("as") and auth_signing_key:
+            timestamp = int(time.time())
+            payload = f"{timestamp}\n{method}\n{urlparse(url).path}\n{probe['as']}".encode()
+            signature = hmac.digest(auth_signing_key, payload, "sha256").hex()
+            headers["X-Service-Signature"] = f"t={timestamp},v1={signature}"
         try:
             status, response_headers, body = _send(method, url, headers, request.get("body"), timeout)
         except Exception as error:  # noqa: BLE001 - any transport failure is a failed probe, not a crash
