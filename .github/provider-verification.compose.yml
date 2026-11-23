@@ -1,6 +1,6 @@
 # Compose adds these one-shot dependencies only on the disposable verification stack.
 x-provider-migration: &provider-migration
-  image: migrate/migrate:v4.18.3
+  image: migrate/migrate:v4.18.3@sha256:39b59b389634e43bb3f2d4e94bc1edef0775ec2a9a3540ce6a2cf330e5daae55
   depends_on:
     postgres-init:
       condition: service_completed_successfully
