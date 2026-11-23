@@ -472,7 +472,9 @@ services:
   #    (docs/product-detail-bff ADR-005). Product has no upload API: put images for a
   #    storage key with `mc cp` (docs/product-detail-bff/development.md).
   minio-init:
-    image: minio/mc:RELEASE.2024-01-18T07-03-39Z
+    build:
+      context: ./infra/minio
+      dockerfile: Dockerfile.mc
     container_name: minio-init
     depends_on:
       minio:
