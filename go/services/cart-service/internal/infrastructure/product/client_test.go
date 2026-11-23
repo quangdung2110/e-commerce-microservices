@@ -28,9 +28,11 @@ type stubServer struct {
 	getSkuCalls    atomic.Int64
 	getSkuDelay    time.Duration
 
-	batchResponse *productv1.GetBatchSkusResponse
-	batchErr      error
-	batchDelay    time.Duration
+	batchResponse     *productv1.GetBatchSkusResponse
+	batchErr          error
+	batchDelay        time.Duration
+	firstBatchStarted chan struct{}
+	batchCalls        atomic.Int64
 }
 
 func (s *stubServer) GetSku(ctx context.Context, req *productv1.GetSkuRequest) (*productv1.GetSkuResponse, error) {
@@ -52,6 +54,11 @@ func (s *stubServer) GetSku(ctx context.Context, req *productv1.GetSkuRequest) (
 }
 
 func (s *stubServer) GetBatchSkus(ctx context.Context, _ *productv1.GetBatchSkusRequest) (*productv1.GetBatchSkusResponse, error) {
+	if s.firstBatchStarted != nil && s.batchCalls.Add(1) == 1 {
+		close(s.firstBatchStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if s.batchDelay > 0 {
 		select {
 		case <-time.After(s.batchDelay):
@@ -316,8 +323,39 @@ func TestGetSkuCancelledCallerReturnsEarly(t *testing.T) {
 	}
 }
 
+func cancelInFlightBatch(t *testing.T, client *Client, started <-chan struct{}) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.GetBatchSkus(ctx, []string{"SKU-A"})
+		result <- err
+	}()
+	select {
+	case <-started:
+		cancel()
+		return <-result
+	case err := <-result:
+		t.Fatalf("RPC completed before the stub started: %v", err)
+		return err
+	}
+}
+
 // A client abandoning a cart read says nothing about Product's health.
 func TestGetBatchSkusCallerCancellationDoesNotCountAgainstTheBreaker(t *testing.T) {
+	started := make(chan struct{})
+	client := startStub(t, &stubServer{firstBatchStarted: started},
+		Config{Breaker: BreakerConfig{FailureThreshold: 1, OpenTimeout: time.Minute}})
+	if err := cancelInFlightBatch(t, client, started); err == nil {
+		t.Fatal("a cancelled read succeeded")
+	}
+	if !client.breaker.allow() {
+		t.Fatal("a cancelled caller opened the breaker")
+	}
+}
+
+func TestGetBatchSkusCallerDeadlineDoesNotCountAgainstTheBreaker(t *testing.T) {
 	client := startStub(t, &stubServer{
 		batchDelay:    500 * time.Millisecond,
 		batchResponse: &productv1.GetBatchSkusResponse{},
@@ -326,11 +364,11 @@ func TestGetBatchSkusCallerCancellationDoesNotCountAgainstTheBreaker(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	if _, err := client.GetBatchSkus(ctx, []string{"SKU-A"}); err == nil {
-		t.Fatal("a cancelled read succeeded")
+		t.Fatal("a read past the caller's deadline succeeded")
 	}
 
 	if !client.breaker.allow() {
-		t.Fatal("a cancelled caller opened the breaker")
+		t.Fatal("the caller's deadline opened the breaker")
 	}
 }
 
@@ -338,9 +376,10 @@ func TestGetBatchSkusCallerCancellationDoesNotCountAgainstTheBreaker(t *testing.
 // neither reopen the breaker nor strand the probe slot: the next request has to
 // be admitted as the new probe and, once it succeeds, close the breaker.
 func TestGetBatchSkusCancelledHalfOpenProbeDoesNotStrandTheBreaker(t *testing.T) {
+	started := make(chan struct{})
 	client := startStub(t, &stubServer{
-		batchDelay:    200 * time.Millisecond,
-		batchResponse: &productv1.GetBatchSkusResponse{},
+		firstBatchStarted: started,
+		batchResponse:     &productv1.GetBatchSkusResponse{},
 	}, Config{Breaker: BreakerConfig{FailureThreshold: 1, HalfOpenMaxCalls: 1, OpenTimeout: 30 * time.Second}})
 
 	now := time.Unix(1780000000, 0)
@@ -355,9 +394,7 @@ func TestGetBatchSkusCancelledHalfOpenProbeDoesNotStrandTheBreaker(t *testing.T)
 	}
 	now = now.Add(31 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := client.GetBatchSkus(ctx, []string{"SKU-A"}); err == nil {
+	if err := cancelInFlightBatch(t, client, started); err == nil {
 		t.Fatal("a cancelled probe succeeded")
 	}
 
@@ -384,7 +421,9 @@ func TestGetBatchSkusOwnDeadlineStillCountsAgainstTheBreaker(t *testing.T) {
 		Breaker:             BreakerConfig{FailureThreshold: 1, OpenTimeout: time.Minute},
 	})
 
-	if _, err := client.GetBatchSkus(context.Background(), []string{"SKU-A"}); err == nil {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, err := client.GetBatchSkus(ctx, []string{"SKU-A"}); err == nil {
 		t.Fatal("a call past its deadline succeeded")
 	}
 	if client.breaker.allow() {
