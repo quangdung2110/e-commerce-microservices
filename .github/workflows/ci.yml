@@ -223,6 +223,7 @@ jobs:
   publish:
     needs: [plan, ci-required]
     if: >-
+      !cancelled() && needs.ci-required.result == 'success' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.plan.outputs.images_any == 'true'
