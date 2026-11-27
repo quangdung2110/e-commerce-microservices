@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -199,6 +200,43 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(sum(r["kind"] == "Job" and r["metadata"].get("labels", {}).get("delivery.ecommerce/role") == "migration" for r in resources), 9)
         self.assertFalse(any(r["kind"] == "Secret" for r in resources))
         self.assertNotIn("/app/e2e.py", (self.root / "environments/production/resources.yaml").read_text(encoding="utf-8"))
+
+    def test_gitops_gateway_shares_user_quotas_over_verified_tls(self):
+        profile = self.config["environments"]["staging"]
+        profile["transport"]["data_ca_pem"] = profile["database_ca_pem"]
+        self.stage()
+        path = self.root / "environments/staging" / "resources.yaml"
+        resources = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+        config = next(r["data"] for r in resources if r["kind"] == "ConfigMap"
+                      and r["metadata"]["name"].startswith("gateway-config-"))
+        placeholders = r'\{\{ env "(GATEWAY_RATE_LIMIT_REDIS_(?:USERNAME|PASSWORD))" \| toJson \}\}'
+        parsed = yaml.safe_load(re.sub(placeholders, r'"\1"', config["dynamic.yml"]))
+        middlewares = parsed["http"]["middlewares"]
+        routes = yaml.safe_load(config["routes.yml"])["http"]["routers"]
+        for router in ("checkout-preview", "checkout-submit", "checkout-voucher-options", "promotion-discovery"):
+            name = "rate-limit-" + router
+            self.assertLess(routes[router]["middlewares"].index("authenticated@file"),
+                            routes[router]["middlewares"].index(name + "@file"))
+            limit = middlewares[name]["rateLimit"]
+            self.assertEqual("X-User-Id", limit["sourceCriterion"]["requestHeaderName"])
+            self.assertEqual(["redis.staging.data.test:6379"], limit["redis"]["endpoints"])
+            self.assertEqual({"ca": "/etc/data-ca/ca.crt", "insecureSkipVerify": False}, limit["redis"]["tls"])
+            self.assertEqual("GATEWAY_RATE_LIMIT_REDIS_USERNAME", limit["redis"]["username"])
+            self.assertEqual("GATEWAY_RATE_LIMIT_REDIS_PASSWORD", limit["redis"]["password"])
+        self.assertNotIn("redis", middlewares["rate-limit-auth"]["rateLimit"])
+        gateway = next(r for r in resources if r["kind"] == "Deployment" and r["metadata"]["name"] == "api-gateway")
+        env = gateway["spec"]["template"]["spec"]["containers"][0]["env"]
+        refs = {entry["name"]: entry["valueFrom"]["secretKeyRef"] for entry in env if "valueFrom" in entry}
+        self.assertEqual({"GATEWAY_RATE_LIMIT_REDIS_USERNAME", "GATEWAY_RATE_LIMIT_REDIS_PASSWORD"}, set(refs))
+        for name, ref in refs.items():
+            self.assertEqual(name, ref["key"])
+            self.assertTrue(ref["name"].startswith("api-gateway-"))
+
+        quota = next(e for e in profile["transport"]["endpoints"] if e["kind"] == "redis")
+        profile["transport"]["endpoints"].append(dict(quota, name="second-redis", host="other.staging.data.test",
+                                                      clients=["api-gateway"]))
+        with self.assertRaisesRegex(ValueError, "one shared writable Redis endpoint"):
+            validate_config(self.config)
 
     def test_proof_expiry_wrong_run_and_changed_production_bundle_block_promotion(self):
         self.stage()

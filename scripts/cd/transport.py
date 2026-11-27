@@ -30,7 +30,7 @@ PROBE_SOURCES = [{"ipBlock": {"cidr": cidr}} for cidr in (
     "169.254.7.127/32", "fd16:9254:7127:1337:ffff:ffff:ffff:ffff/128")]
 PUBLIC_KINDS = {"stripe", "ses", "sqs", "cloud-identity", "object-storage", "media", "storefront", "temporal"}
 DEPENDENCY_CLIENTS = {
-    "redis": {"auth-service", "cart-service", "checkout-service", "gateway-auth", "notification-service",
+    "redis": {"api-gateway", "auth-service", "cart-service", "checkout-service", "gateway-auth", "notification-service",
               "order-service", "promotion-service", "user-service"},
     "kafka": {"auth-service", "cart-service", "notification-service", "order-service", "payment-service",
               "product-service", "promotion-service", "review-service", "search-service", "user-service"},
@@ -59,6 +59,11 @@ def dependency_clients(components, environment):
     else:
         required.pop("storefront")
     return required
+
+
+def gateway_quota_endpoints(endpoints):
+    return [f"{endpoint['host']}:{endpoint['port']}" for endpoint in endpoints
+            if endpoint["kind"] == "redis" and "api-gateway" in endpoint["clients"]]
 
 
 def validate_profile(profile, environment, components):
@@ -134,6 +139,8 @@ def validate_profile(profile, environment, components):
             raise ValueError(f"Missing {kind} endpoint for {', '.join(sorted(clients - observed[kind]))}")
     if sum(endpoint["kind"] == "temporal" for endpoint in endpoints) != 1:
         raise ValueError("Configure one Temporal target per environment")
+    if len(gateway_quota_endpoints(endpoints)) != 1:
+        raise ValueError("Configure one shared writable Redis endpoint for the API gateway")
     required_hosts = {"media": urlsplit(profile["media_origin"]).hostname, "storefront": profile["domain"]}
     for kind, host in required_hosts.items():
         if kind in allowed and not any(endpoint["kind"] == kind and endpoint["host"] == host and endpoint["port"] == 443

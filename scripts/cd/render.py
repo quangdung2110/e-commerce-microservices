@@ -16,6 +16,10 @@ from common import ROOT, REPOSITORY, catalog, sha, write_json
 ENVIRONMENTS = ("staging", "production")
 TOOLS = ("database-migrations", "deployment-checks")
 E2E_PROPERTIES = ("E2E_EMAIL", "E2E_PASSWORD", "E2E_ADMIN_EMAIL", "E2E_ADMIN_PASSWORD", "E2E_ADDRESS_ID", "E2E_SKU_ID", "E2E_STRIPE_SECRET_KEY", "E2E_WEBHOOK_SECRET")
+GATEWAY_USER_RATE_LIMITS = ("rate-limit-checkout-preview", "rate-limit-checkout-submit",
+                            "rate-limit-checkout-voucher-options", "rate-limit-promotion-discovery")
+GATEWAY_REDIS_CREDENTIALS = {"username": "GATEWAY_RATE_LIMIT_REDIS_USERNAME",
+                             "password": "GATEWAY_RATE_LIMIT_REDIS_PASSWORD"}
 
 
 def secret_contract(components, environment, profile):
@@ -164,6 +168,15 @@ def gateway_configuration(profile):
     dynamic["http"].get("serversTransports", {}).pop("insecure-transport", None)
     dynamic["http"].pop("services", None)
     dynamic["http"]["middlewares"]["product-media-path"]["replacePathRegex"]["replacement"] = "/$1"
+    redis_tls = {"insecureSkipVerify": False}
+    if profile["transport"].get("data_ca_pem"):
+        redis_tls["ca"] = "/etc/data-ca/ca.crt"
+    redis = {"endpoints": transport.gateway_quota_endpoints(profile["transport"]["endpoints"]),
+             "tls": redis_tls, "dialTimeout": "500ms", "readTimeout": "500ms", "writeTimeout": "500ms"}
+    for field, env in GATEWAY_REDIS_CREDENTIALS.items():
+        redis[field] = "__" + env + "__"
+    for name in GATEWAY_USER_RATE_LIMITS:
+        dynamic["http"]["middlewares"][name]["rateLimit"]["redis"] = copy.deepcopy(redis)
     for router in routes["http"]["routers"].values():
         if any(m.split("@")[0] in forbidden for m in router.get("middlewares", [])):
             raise ValueError("Development middleware is referenced by a production route")
@@ -184,8 +197,13 @@ def gateway_configuration(profile):
               "accessLog": {"format": "json", "fields": {"defaultMode": "keep", "names": {"RequestPath": "drop", "RequestLine": "drop", "ClientUsername": "drop"}, "headers": {"defaultMode": "drop"}}},
               "metrics": {"prometheus": {"entryPoint": "metrics", "addRoutersLabels": True}},
               "tracing": {"serviceName": "api-gateway", "sampleRate": profile["sampling"], "otlp": {"http": {"endpoint": profile["otlp_endpoint"].rstrip("/") + "/v1/traces"}}}}
-    return {name: yaml.safe_dump(value, sort_keys=False) for name, value in
-            (("traefik.yml", static), ("dynamic.yml", dynamic), ("routes.yml", routes))}
+    files = {name: yaml.safe_dump(value, sort_keys=False) for name, value in
+             (("traefik.yml", static), ("dynamic.yml", dynamic), ("routes.yml", routes))}
+    # Traefik evaluates this file template before parsing YAML. JSON quoting keeps credentials literal.
+    for env in GATEWAY_REDIS_CREDENTIALS.values():
+        files["dynamic.yml"] = files["dynamic.yml"].replace("__" + env + "__",
+                                                            '{{ env "' + env + '" | toJson }}')
+    return files
 
 
 def workload(name, component, image, profile, state_hash):

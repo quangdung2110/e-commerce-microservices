@@ -65,9 +65,9 @@ không đổi chúng thành `true` cho tới khi có bằng chứng tương ứn
 - Cấu hình platform Istio ambient và điền hồ sơ transport của từng môi trường.
   CD Staging đợi ứng dụng Argo quản lý mesh và waypoint sẵn sàng. Promotion yêu cầu
   bằng chứng runtime trên staging được review trong GitOps theo [quy trình transport](#nghiệm-thu-transport).
-- Gateway Traefik CE đang giữ rate limit trong bộ nhớ mỗi replica. Cần quota dùng chung
-  tại gateway/edge cho checkout và promotion discovery đúng runtime contract, kiểm thử trên
-  nhiều replica rồi xác nhận `gateway_shared_rate_limits_verified`; giảm replica không thay thế yêu cầu HA.
+- Bundle GitOps cấu hình Traefik dùng Redis TLS để chia sẻ quota theo user cho checkout và
+  promotion discovery. Nghiệm thu với nhiều replica trước khi xác nhận
+  `gateway_shared_rate_limits_verified`.
 - Hoàn thành bài khôi phục backup dữ liệu, secret/key và Temporal; ghi RPO/RTO, người thực hiện và evidence.
 
 Các HIGH/CRITICAL của gate đợt 1 vẫn chặn phát hành. Hai image công cụ mới cũng đi qua cùng gate;
@@ -141,6 +141,7 @@ database name và cờ runtime cũng được cung cấp rõ ràng ở đây; kh
 | Remote key sau prefix | Nội dung |
 |---|---|
 | `registry` | Property `dockerconfigjson`: cấu hình auth GHCR chỉ có quyền pull |
+| `api-gateway` | `GATEWAY_RATE_LIMIT_REDIS_USERNAME`, `GATEWAY_RATE_LIMIT_REDIS_PASSWORD` cho ACL Redis của gateway |
 | `migration-<java-service>` | `FLYWAY_URL`, `FLYWAY_USER`, `FLYWAY_PASSWORD` |
 | `migration-<go-service>` | `MIGRATE_DATABASE_URL` |
 | `checks-e2e` (staging) | Buyer/admin email/password, address/SKU fixture, Stripe test key và webhook signing secret |
@@ -199,6 +200,8 @@ Không hạ rule production để làm auto-merge staging nhanh hơn.
    Lượt E2E staging còn cần `deployment-checks` gọi Stripe và HTTPS storefront.
    Với PostgreSQL, khai báo cả caller runtime và từng `migration-<service>` có quyền tới database.
    Nếu platform lấy credential qua STS, khai báo đường `cloud-identity`.
+   Cấp một hostname Redis private ghi được và có failover cho `api-gateway`. Mọi replica
+   dùng chung endpoint này. Nếu endpoint dùng CA riêng, khai báo CA trong `data_ca_pem`.
 3. Chọn `transport.temporal.mode` là `tls` cho TLS + API key hoặc `mtls` cho client cert.
    Điền namespace Temporal tường minh. ExternalSecret `temporal-client` lấy `api_key` hoặc
    `client_certificate` và `client_key` theo secret version đã review. Với CA riêng, cấu hình
@@ -213,6 +216,9 @@ Không hạ rule production để làm auto-merge staging nhanh hơn.
    ghi lại TLS đã xác minh, danh tính tại đích và kết quả ca âm phù hợp. Dùng nguồn quan sát
    đã lọc secret để phân biệt policy deny, lỗi xác thực và timeout. Diễn tập xoay credential
    rồi kiểm kết nối mới. Dùng Stripe sandbox cho luồng mua hàng, thanh toán và hoàn tiền.
+   Kiểm quota của cùng user qua ít nhất hai replica gateway cho preview, submit, voucher
+   options và promotion discovery. Ghi trạng thái `429` khi cạn quota, kiểm user khác vẫn
+   có quota riêng và kiểm các route được bảo vệ ngừng phục vụ khi mất Redis.
 5. Dùng công cụ sau để liệt kê các check ID bắt buộc. Truyền thêm `--checks checks.json` để
    tạo báo cáo từ kết quả đã quan sát. File checks là object theo check ID, mỗi dòng có
    `result` và `evidence`. `evidence` là liên kết HTTPS tới bằng chứng đã lọc secret.
