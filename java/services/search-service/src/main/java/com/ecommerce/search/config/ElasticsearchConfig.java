@@ -14,12 +14,20 @@ import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.ssl.SSLContexts;
 import org.elasticsearch.client.RestClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
 import java.net.URI;
+import java.nio.file.Path;
+import java.security.GeneralSecurityException;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.nio.file.Files;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -39,6 +47,9 @@ public class ElasticsearchConfig {
 
     @Value("${spring.elasticsearch.password:}")
     private String password;
+
+    @Value("${search.elasticsearch.ca-file:}")
+    private String caFile;
 
     @Value("${spring.elasticsearch.connection-timeout:5s}")
     private Duration connectionTimeout;
@@ -62,7 +73,7 @@ public class ElasticsearchConfig {
     }
 
     @Bean(destroyMethod = "close")
-    public RestClient elasticsearchRestClient() {
+    public RestClient elasticsearchRestClient(Environment environment) throws GeneralSecurityException, IOException {
         List<HttpHost> hosts = Arrays.stream(uris.split(","))
                 .map(String::trim)
                 .filter(uri -> !uri.isEmpty())
@@ -70,18 +81,40 @@ public class ElasticsearchConfig {
                 .map(uri -> new HttpHost(uri.getHost(), uri.getPort(), uri.getScheme()))
                 .toList();
 
+        if (environment.matchesProfiles("production") &&
+                (hosts.isEmpty() || hosts.stream().anyMatch(host -> !"https".equals(host.getSchemeName()))
+                        || username.isBlank() || password.isBlank())) {
+            throw new IllegalArgumentException("Production Elasticsearch requires HTTPS and credentials");
+        }
+        var builder = SSLContexts.custom();
+        if (!caFile.isBlank()) {
+            var trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+            try (var input = Files.newInputStream(Path.of(caFile))) {
+                int index = 0;
+                for (var certificate : CertificateFactory.getInstance("X.509").generateCertificates(input)) {
+                    trustStore.setCertificateEntry("platform-" + index++, certificate);
+                }
+                if (index == 0) {
+                    throw new IllegalArgumentException("Elasticsearch CA file contains no certificates");
+                }
+            }
+            builder.loadTrustMaterial(trustStore, null);
+        }
+        var sslContext = builder.build();
         return RestClient.builder(hosts.toArray(HttpHost[]::new))
                 .setRequestConfigCallback(config -> config
                         .setConnectTimeout((int) connectionTimeout.toMillis())
                         .setSocketTimeout((int) socketTimeout.toMillis()))
-                .setHttpClientConfigCallback(builder -> {
+                .setHttpClientConfigCallback(client -> {
+                    client.setSSLContext(sslContext);
                     if (!username.isBlank()) {
                         BasicCredentialsProvider credentials = new BasicCredentialsProvider();
                         credentials.setCredentials(AuthScope.ANY,
                                 new UsernamePasswordCredentials(username, password));
-                        builder.setDefaultCredentialsProvider(credentials);
+                        client.setDefaultCredentialsProvider(credentials);
                     }
-                    return builder;
+                    return client;
                 })
                 .build();
     }

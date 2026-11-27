@@ -103,6 +103,10 @@ jobs:
           path: gitops-checkout
           fetch-depth: 0
           persist-credentials: false
+      - name: Verify staging mesh prerequisites
+        env:
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+        run: python scripts/cd/observe.py --config deploy/gitops/environments.json --environment staging --platform-only
       - name: Prepare immutable candidate and staging PR
         env:
           GH_TOKEN: ${{ github.token }}

@@ -81,6 +81,7 @@ func run(configPath string) error {
 	// ── Redis: the cart source of truth ──────────────────────────────────
 	redisClient := cartredis.NewClient(cartredis.ClientConfig{
 		Addrs:        cfg.Redis.Addrs,
+		Username:     cfg.Redis.Username,
 		Password:     cfg.Redis.Password,
 		DB:           cfg.Redis.DB,
 		PoolSize:     cfg.Redis.PoolSize,

@@ -12,6 +12,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
@@ -24,8 +25,9 @@ import (
 // transient outage at boot still lets the process come up (the limiter and the
 // cap have their own fallbacks).
 func NewClient(cfg config.RedisConfig) *redis.Client {
-	return redis.NewClient(&redis.Options{
+	options := &redis.Options{
 		Addr:         cfg.Addr(),
+		Username:     cfg.Username,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,
@@ -33,7 +35,11 @@ func NewClient(cfg config.RedisConfig) *redis.Client {
 		DialTimeout:  cfg.DialTimeout,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
-	})
+	}
+	if cfg.TLSEnabled {
+		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	return redis.NewClient(options)
 }
 
 // Ping verifies connectivity (readiness probe, startup check).

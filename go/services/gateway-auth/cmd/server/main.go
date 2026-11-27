@@ -57,7 +57,10 @@ func run(configPath string) error {
 
 	redisOptions, err := goredis.ParseURL(cfg.Redis.URL)
 	if err != nil {
-		return fmt.Errorf("parse redis url: %w", err)
+		return fmt.Errorf("invalid Redis URL")
+	}
+	if cfg.Redis.RequireTLS && redisOptions.TLSConfig == nil {
+		return fmt.Errorf("Redis requires a rediss URL")
 	}
 	redisOptions.DialTimeout = cfg.Redis.Timeout
 	redisOptions.ReadTimeout = cfg.Redis.Timeout

@@ -35,7 +35,9 @@
         "AUTH_SECURITY_TRUSTED_PROXIES": "{trusted_proxy_cidrs}",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
         "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
-        "AUTH_REFRESH_COOKIE_DOMAIN": "{domain}"
+        "AUTH_REFRESH_COOKIE_DOMAIN": "{domain}",
+        "AUTH_REDIS_TLS_ENABLED": "true",
+        "AUTH_KAFKA_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "AUTH_DATABASE_HOST",
@@ -50,7 +52,8 @@
         "AUTH_REDIS_HOST",
         "AUTH_REDIS_PORT",
         "DB_PASSWORD",
-        "REDIS_PASSWORD"
+        "REDIS_PASSWORD",
+        "AUTH_REDIS_USERNAME"
       ],
       "memory_request": "128Mi",
       "memory_limit": "512Mi",
@@ -73,14 +76,17 @@
         "CART_LOGGING_LEVEL": "info",
         "CART_MEDIA_REQUIRE_HTTPS": "true",
         "CART_MEDIA_CDN_BASE_URL": "https://{domain}/media",
-        "CART_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg"
+        "CART_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg",
+        "CART_REDIS_TLS_ENABLED": "true",
+        "CART_KAFKA_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "CART_KAFKA_BROKERS",
         "CART_KAFKA_SASL_PASSWORD",
         "CART_KAFKA_SASL_USERNAME",
         "CART_REDIS_ADDRS",
-        "CART_REDIS_PASSWORD"
+        "CART_REDIS_PASSWORD",
+        "CART_REDIS_USERNAME"
       ],
       "memory_request": "128Mi",
       "memory_limit": "512Mi"
@@ -113,7 +119,8 @@
         "CHECKOUT_MEDIA_REQUIRE_HTTPS": "true",
         "SERVER_PORT": "8080",
         "CHECKOUT_MEDIA_CDN_BASE_URL": "https://{domain}/media",
-        "CHECKOUT_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg"
+        "CHECKOUT_MEDIA_PLACEHOLDER_URL": "https://{domain}/media/placeholder/product.svg",
+        "SPRING_DATA_REDIS_SSL_ENABLED": "true"
       },
       "runtime_properties": [
         "CHECKOUT_ENCRYPTION_ACTIVE_VERSION",
@@ -159,7 +166,8 @@
         "AUTH_JWT_ALLOWED_ALGORITHMS": "RS256",
         "AUTH_JWKS_URL": "http://auth-service:8080/.well-known/jwks.json",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
-        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
+        "GATEWAY_AUTH_REDIS_REQUIRE_TLS": "true"
       },
       "runtime_properties": [
         "AUTH_REVOCATION_REDIS_URL"
@@ -218,7 +226,9 @@
         "NOTIFICATION_AUTH_BASE_URL": "http://auth-service:8081",
         "NOTIFICATION_FRONTEND_BASE_URL": "https://{domain}",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
-        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
+        "NOTIFICATION_REDIS_TLS_ENABLED": "true",
+        "NOTIFICATION_KAFKA_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "AWS_REGION",
@@ -236,7 +246,8 @@
         "NOTIFICATION_REDIS_HOST",
         "NOTIFICATION_TRACK_AWS_ENDPOINT",
         "NOTIFICATION_TRACK_QUEUE_URL",
-        "REDIS_PASSWORD"
+        "REDIS_PASSWORD",
+        "NOTIFICATION_REDIS_USERNAME"
       ],
       "memory_request": "128Mi",
       "memory_limit": "512Mi",
@@ -267,7 +278,8 @@
         "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
         "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
         "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
-        "SERVER_PORT": "8080"
+        "SERVER_PORT": "8080",
+        "REDIS_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "DB_PASSWORD",
@@ -278,7 +290,7 @@
         "KAFKA_SASL_USERNAME",
         "REDIS_HOST",
         "REDIS_PASSWORD",
-        "TEMPORAL_TARGET"
+        "REDIS_USERNAME"
       ],
       "memory_request": "512Mi",
       "memory_limit": "1536Mi",
@@ -420,7 +432,8 @@
         "SPRING_KAFKA_SECURITY_PROTOCOL": "SASL_SSL",
         "SPRING_KAFKA_PROPERTIES_SASL_MECHANISM": "SCRAM-SHA-512",
         "SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG": "org.apache.kafka.common.security.scram.ScramLoginModule required username=\"$(KAFKA_SASL_USERNAME)\" password=\"$(KAFKA_SASL_PASSWORD)\";",
-        "SERVER_PORT": "8085"
+        "SERVER_PORT": "8085",
+        "REDIS_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "DB_PASSWORD",
@@ -433,7 +446,8 @@
         "PRODUCT_EVENTS_TOPIC",
         "REDIS_HOST",
         "REDIS_PASSWORD",
-        "REDIS_PORT"
+        "REDIS_PORT",
+        "REDIS_USERNAME"
       ],
       "memory_request": "512Mi",
       "memory_limit": "1536Mi",
@@ -534,7 +548,9 @@
         "USER_DATABASE_SSLMODE": "verify-full",
         "USER_KAFKA_CONSUMER_ENABLED": "true",
         "OTEL_EXPORTER_OTLP_ENDPOINT": "{otlp_endpoint}",
-        "OTEL_TRACES_SAMPLER_ARG": "{sampling}"
+        "OTEL_TRACES_SAMPLER_ARG": "{sampling}",
+        "USER_REDIS_TLS_ENABLED": "true",
+        "USER_KAFKA_TLS_ENABLED": "true"
       },
       "runtime_properties": [
         "DB_PASSWORD",
@@ -546,7 +562,8 @@
         "USER_KAFKA_BROKERS",
         "USER_KAFKA_SASL_PASSWORD",
         "USER_KAFKA_SASL_USERNAME",
-        "USER_REDIS_HOST"
+        "USER_REDIS_HOST",
+        "USER_REDIS_USERNAME"
       ],
       "memory_request": "128Mi",
       "memory_limit": "512Mi",
