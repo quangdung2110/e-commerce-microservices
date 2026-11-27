@@ -104,10 +104,10 @@ claim `roles` của access token đã verify, đã chuyển khỏi `dev-admin-au
 user/phút theo `X-User-Id`, priority 35) và `promotion-me` (`/api/v1/me/promotion-vouchers/**`,
 `/api/v1/me/promotion-voucher-suggestions`, `/api/v1/me/promotion-voucher-claims`, priority 30);
 hai router customer này dùng `authenticated@file` từ 07/10/2026 (trước đó là `dev-auth`, identity cố định).
-Cấu hình docker-compose hiện tại dùng rate limit in-memory per replica; trước khi chạy nhiều
-replica production, profile này phải chuyển sang Redis-backed shared state như mục 2 và mục 7
-yêu cầu (Traefik CE hỗ trợ Redis backend cho `RateLimit` từ v3.2). Không thay quota này bằng một
-Redis key do Promotion sở hữu. Toàn bộ Promotion `/internal/v1/**` chỉ đi trong mesh: caller được
+Docker Compose dùng rate limit trong bộ nhớ. Bundle GitOps dùng Redis TLS để chia sẻ quota
+giữa các replica Traefik cho promotion discovery và checkout. Các policy theo user chạy sau
+`authenticated`, dùng `X-User-Id` do gateway-auth xác thực, và trả `429` khi cạn quota.
+Toàn bộ Promotion `/internal/v1/**` chỉ đi trong mesh: caller được
 phép do `AuthorizationPolicy` quyết định theo principal, `X-Service-Identity` do service caller tự
 đặt và chỉ dùng cho attribution ([mesh/runtime-contract.md §5.2](../mesh/runtime-contract.md#52-namespace-ecommerce-l7-waypoint)); không có public router ở Gateway.
 

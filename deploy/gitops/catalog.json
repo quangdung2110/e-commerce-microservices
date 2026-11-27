@@ -13,7 +13,10 @@
       "env": {
         "KUBERNETES_SERVICE_HOST": ""
       },
-      "runtime_properties": [],
+      "runtime_properties": [
+        "GATEWAY_RATE_LIMIT_REDIS_USERNAME",
+        "GATEWAY_RATE_LIMIT_REDIS_PASSWORD"
+      ],
       "memory_request": "128Mi",
       "memory_limit": "512Mi"
     },

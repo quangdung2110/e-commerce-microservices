@@ -12,6 +12,7 @@ REQUIRED_CHECKS = {
     "direct-business-pod-denied", "direct-public-egress-denied", "unauthorized-egress-denied",
     "waypoint-failure-and-recovery", "credential-rotation", "product-grpc-replicas",
     "checkout-payment-refund", "temporal-task-queues", "ingress-mtls", "collector-otlp", "prometheus-scrape",
+    "shared-gateway-quota",
 }
 
 
