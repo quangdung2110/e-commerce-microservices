@@ -40,7 +40,10 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
       password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_TLS_ENABLED:false}
       timeout: 200ms
 
   kafka:
@@ -146,6 +149,12 @@ order:
     checkout-queue: order-checkout-queue
     refund-queue: order-refund-queue
     reconciliation-queue: order-financial-reconciliation-queue
+    transport:
+      mode: ${TEMPORAL_TLS_MODE:plaintext}
+      ca-file: ${TEMPORAL_TLS_CA_FILE:}
+      cert-file: ${TEMPORAL_TLS_CERT_FILE:}
+      key-file: ${TEMPORAL_TLS_KEY_FILE:}
+      api-key-file: ${TEMPORAL_API_KEY_FILE:}
     activity-timeout: 30s
     activity-max-attempts: 3
   clients:

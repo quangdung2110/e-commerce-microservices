@@ -10,6 +10,7 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -54,6 +55,10 @@ func NewPublisher(cfg config.KafkaConfig, logger *zap.Logger) (*Publisher, error
 	saramaCfg.Net.MaxOpenRequests = 1
 	if cfg.PublishTimeout > 0 {
 		saramaCfg.Producer.Timeout = cfg.PublishTimeout
+	}
+	if cfg.TLSEnabled {
+		saramaCfg.Net.TLS.Enable = true
+		saramaCfg.Net.TLS.Config = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 

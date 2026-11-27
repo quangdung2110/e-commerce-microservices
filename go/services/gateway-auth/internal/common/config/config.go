@@ -47,6 +47,7 @@ type JWKSConfig struct {
 }
 
 type RedisConfig struct {
+	RequireTLS            bool          `mapstructure:"require_tls"`
 	URL                   string        `mapstructure:"url"`
 	Timeout               time.Duration `mapstructure:"timeout"`
 	RevocationPrefix      string        `mapstructure:"revocation_prefix"`
@@ -68,6 +69,7 @@ func Load(path string) (*Config, error) {
 	v.SetEnvPrefix("GATEWAY_AUTH")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+	v.SetDefault("redis.require_tls", false)
 
 	// Contract names shared with auth-service.
 	bindings := map[string]string{

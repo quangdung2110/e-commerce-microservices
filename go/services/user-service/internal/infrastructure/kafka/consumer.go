@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
@@ -75,6 +76,10 @@ func NewConsumer(
 	}
 	if cfg.HeartbeatInterval > 0 {
 		saramaCfg.Consumer.Group.Heartbeat.Interval = cfg.HeartbeatInterval
+	}
+	if cfg.TLSEnabled {
+		saramaCfg.Net.TLS.Enable = true
+		saramaCfg.Net.TLS.Config = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 

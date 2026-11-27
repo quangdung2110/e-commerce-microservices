@@ -39,6 +39,7 @@ type App struct {
 // Production Redis must run with AOF, a replica, TLS and
 // maxmemory-policy noeviction. Cart has no recovery path from data loss.
 type Redis struct {
+	Username     string        `mapstructure:"username"`
 	Addrs        []string      `mapstructure:"addrs"`
 	Password     string        `mapstructure:"password"`
 	DB           int           `mapstructure:"db"`
@@ -195,6 +196,7 @@ func Load(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 	// https is the safe default; a bool zero value would silently allow http.
+	v.SetDefault("redis.username", "")
 	v.SetDefault("media.require_https", true)
 	v.SetDefault("media.cdn_base_url", "")
 	v.SetDefault("media.placeholder_url", "")

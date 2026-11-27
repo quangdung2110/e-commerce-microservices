@@ -62,10 +62,9 @@ không đổi chúng thành `true` cho tới khi có bằng chứng tương ứn
 - Payment hiện chỉ có adapter cipher local cho dev/test. Phải triển khai adapter production
   cho `SecretCipherPort`, quản lý key/rotation/khôi phục rồi kiểm thử trên staging.
   Không dùng profile dev hoặc `PAYMENT_CRYPTO_LOCAL_KEY` để cho deployment lên xanh.
-- Kiểm chứng transport và danh tính thực tế: HTTP/gRPC nội bộ, PostgreSQL, Redis, Kafka,
-  Elasticsearch, Temporal, object storage và OTLP. Một số client Redis/Temporal hiện chưa
-  có TLS cấu hình đầy đủ. NetworkPolicy không mã hóa lưu lượng. Bootstrap này chưa cài service mesh;
-  nếu chọn mesh có sidecar, cần mở rộng validator/observer vì hiện chỉ chấp nhận một container mỗi pod.
+- Cấu hình platform Istio ambient và điền hồ sơ transport của từng môi trường.
+  CD Staging đợi ứng dụng Argo quản lý mesh và waypoint sẵn sàng. Promotion yêu cầu
+  bằng chứng runtime trên staging được review trong GitOps theo [quy trình transport](#nghiệm-thu-transport).
 - Gateway Traefik CE đang giữ rate limit trong bộ nhớ mỗi replica. Cần quota dùng chung
   tại gateway/edge cho checkout và promotion discovery đúng runtime contract, kiểm thử trên
   nhiều replica rồi xác nhận `gateway_shared_rate_limits_verified`; giảm replica không thay thế yêu cầu HA.
@@ -113,19 +112,21 @@ Các đầu vào chính:
 | `media_origin` | Origin HTTPS của bucket/CDN; gateway bỏ prefix `/media/` khi proxy |
 | `database_ca_pem` | CA PostgreSQL dạng PEM; mount tại `/etc/platform-ca/ca.crt` |
 | `ingress_*`, `trusted_proxy_cidrs` | Controller/class/namespace/label và đúng CIDR proxy được tin cậy |
-| `external_data_cidrs` | CIDR của data services; không dùng `0.0.0.0/0` |
+| `transport` | Revision platform, danh tính ingress/monitoring, Temporal và ma trận endpoint theo workload |
 | `secret_store`, `secret_prefix`, `secret_versions` | Store, prefix và ID version bất biến của từng JSON secret |
 | `service_account_annotations` | Workload identity cho service cần cloud API, như Notification SES/SQS |
 | `observability_namespace`, `otlp_endpoint`, `sampling` | Collector và tỷ lệ sampling đã chọn |
 
-Output gồm `bootstrap/<environment>/namespace.yaml`, AppProject/Application, hai environment
-rỗng, config, catalog, `secrets-contract.json`, CODEOWNERS, validator và hai workflow GitOps.
+Output gồm `bootstrap/<environment>/namespace.yaml`, AppProject/Application ứng dụng và mesh,
+policy Strict cùng hai waypoint dưới `bootstrap/<environment>/mesh/`, hai environment rỗng,
+config, catalog, `secrets-contract.json`, CODEOWNERS, validator và hai workflow GitOps.
 Không tạo image digest giả. Đưa output vào GitOps repo riêng qua quy trình review của tổ chức.
 Giữ `config.json` bên GitOps bằng đúng `deploy/gitops/environments.json` bên source; CLI chặn khi khác nhau.
 Khi cập nhật catalog/tool/template sau này, review và đồng bộ bản export trước khi release.
 
-Chỉ platform operator áp dụng namespace vào đúng context mỗi cluster và AppProject/Application
-vào cluster quản lý Argo. Không áp dụng cả thư mục candidate. Merge riêng phần
+Platform operator cài CRD/controller, áp dụng namespace vào đúng context mỗi cluster và
+AppProject/Application vào cluster quản lý Argo. Argo quản lý mesh namespaced bằng Application riêng
+`ecommerce-<environment>-mesh`, từ thư mục `bootstrap/<environment>/mesh`. Merge riêng phần
 `deploy/gitops/argocd-health.patch.yaml` vào `argocd-cm` hiện có để Argo đợi ESO Ready;
 không thay toàn bộ ConfigMap đang sử dụng. Cấp Argo repo credential chỉ đọc và quyền cluster
 trong đúng namespace; AppProject không cho phép cluster resource hay data StatefulSet.
@@ -157,9 +158,9 @@ Giữ các version và key giải mã cũ trong thời hạn rollback; prune-las
 
 Ingress phải xóa/ghi lại forwarding header từ client trước khi gửi gateway. API và webhook
 đi trực tiếp ingress → gateway; trang web đi frontend. Không công khai dashboard hoặc cổng actuator.
-Default-deny đi cùng caller policy nội bộ; egress cho DNS, collector, CIDR data và HTTPS public.
-Nếu dùng NodeLocal DNS, private STS/object storage hoặc cloud metadata cho identity, cần review
-policy cụ thể tương ứng trước khi xác nhận `transport_security_verified`.
+Default-deny đi cùng policy L4/L7 và egress theo từng workload. CNI mở HBONE, DNS và các
+đích data private khai báo trong profile. Provider Internet đi qua egress waypoint theo hostname
+và principal. Nếu dùng NodeLocal DNS hoặc private STS, khai báo đúng resolver và endpoint tương ứng.
 
 Tạo GitHub App cài **chỉ vào GitOps repo** với Contents write, Pull requests write, Actions read.
 Lưu `GITOPS_APP_ID` và `GITOPS_APP_PRIVATE_KEY` trong GitHub environments `staging`/`delivery`
@@ -167,7 +168,9 @@ của source repo. Token App được tạo ngắn hạn; `GITHUB_TOKEN` source 
 Grant source repository quyền đọc các package GHCR cần dùng.
 
 Argo account CI chỉ được `applications, get` cho đúng `ecommerce-staging/ecommerce-staging`
-hoặc `ecommerce-production/ecommerce-production`; không có sync/update/delete/exec. Lưu token
+hoặc `ecommerce-production/ecommerce-production`, cùng Application mesh tương ứng
+`ecommerce-<environment>-mesh/ecommerce-<environment>-mesh`. Quyền chỉ đọc gồm application
+và managed resources phục vụ xác minh. Lưu token
 staging ở source environment staging; token production ở GitOps environment production.
 Hạn chế deployment branch của các GitHub environment về `main`. Environment `delivery` chỉ chuẩn bị
 PR, còn `production` của GitOps chỉ đọc health; không đặt approval trước hai công việc này.
@@ -180,6 +183,50 @@ GitOps repo cần bật Allow auto-merge. Repo dùng required review cho mọi P
 20 phút cho PR merge và Argo hội tụ. Auto-merge chỉ có tác dụng sau khi mọi rule đạt.
 Nếu hết thời gian, merge PR được review rồi chạy lại manual CD Staging với CI run ID đó.
 Không hạ rule production để làm auto-merge staging nhanh hơn.
+
+## Nghiệm thu transport
+
+1. Cài Gateway API, Istio base, istiod, Istio CNI và ztunnel theo version/digest đã review.
+   Dùng [phiên bản và Helm values local](../../deploy/mesh/versions.yaml) làm baseline. Khai báo
+   trust domain, DNS suffix, collector và phạm vi trust phù hợp với cluster đích. Đảm bảo
+   CNI thực thi NetworkPolicy và có metrics-server cho HPA waypoint. Tầng platform enroll
+   ingress controller, Prometheus và collector vào ambient. Xác nhận các hop chỉ nhận traffic
+   từ đúng workload và collector dùng Service HTTP 4318 trong mesh.
+2. Điền `transport.endpoints`. Mỗi dòng có `name`, `kind`, hostname DNS `host`, `port`,
+   `clients` và `cidrs`. CIDR private phải trỏ tới địa chỉ/subnet thật của đích.
+   Danh sách `cidrs` rỗng đưa endpoint qua egress waypoint. Dùng DNS thực của đủ Kafka broker,
+   endpoint Redis, database, Temporal, Elasticsearch, object storage, SES/SQS, Stripe và media.
+   Lượt E2E staging còn cần `deployment-checks` gọi Stripe và HTTPS storefront.
+   Với PostgreSQL, khai báo cả caller runtime và từng `migration-<service>` có quyền tới database.
+   Nếu platform lấy credential qua STS, khai báo đường `cloud-identity`.
+3. Chọn `transport.temporal.mode` là `tls` cho TLS + API key hoặc `mtls` cho client cert.
+   Điền namespace Temporal tường minh. ExternalSecret `temporal-client` lấy `api_key` hoặc
+   `client_certificate` và `client_key` theo secret version đã review. Với CA riêng, cấu hình
+   `data_ca_pem` và `temporal.use_data_ca` nếu Temporal dùng CA đó. Kiểm tra server
+   yêu cầu TLS và xác thực đúng danh tính. Self-hosted Temporal còn cần quyền API theo
+   namespace và danh tính client. Xác nhận runtime và migration PostgreSQL dùng `verify-full`,
+   Kafka broker dùng `SASL_SSL`, Redis áp ACL từng service và Search dùng HTTPS.
+4. Sau khi CD Staging xuất `staging-proof.json`, kiểm tra từ workload thật trên staging.
+   Đối chiếu ztunnel, waypoint policy và kết nối xuyên node. Kiểm caller đúng/sai, listener
+   plaintext, Pod IP nghiệp vụ, truy cập trực tiếp Internet, trạng thái mất/khôi phục waypoint,
+   gRPC Product nhiều replica và đủ ba task queue của Order. Với từng cặp endpoint/client,
+   ghi lại TLS đã xác minh, danh tính tại đích và kết quả ca âm phù hợp. Dùng nguồn quan sát
+   đã lọc secret để phân biệt policy deny, lỗi xác thực và timeout. Diễn tập xoay credential
+   rồi kiểm kết nối mới. Dùng Stripe sandbox cho luồng mua hàng, thanh toán và hoàn tiền.
+5. Dùng công cụ sau để liệt kê các check ID bắt buộc. Truyền thêm `--checks checks.json` để
+   tạo báo cáo từ kết quả đã quan sát. File checks là object theo check ID, mỗi dòng có
+   `result` và `evidence`. `evidence` là liên kết HTTPS tới bằng chứng đã lọc secret.
+
+       python tools/cd/transport_evidence.py --gitops . --staging-proof staging-proof.json
+
+   PR báo cáo dưới `transport-evidence/staging/<release-id>/` để CODEOWNERS review. Promotion
+   tìm báo cáo trên GitOps main và đối chiếu phiên bản platform, hai bundle hash, state, source
+   revision, GitOps revision, run ID và tuổi proof. Báo cáo cũ được lưu bất biến. Nếu staging,
+   profile hoặc platform revision đổi, chuẩn bị lại candidate và kiểm chứng lại.
+6. Sau full sync production, workflow health đối chiếu policy, Service và waypoint đang được
+   Argo theo dõi với release. Xác minh TLS và danh tính trên đích production bằng kiểm tra chỉ
+   đọc trước khi nghiệm thu. Chỉ rollback tới bundle có mesh tương thích platform hiện tại và
+   proof production hợp lệ, đồng thời đáp ứng hợp đồng schema/workflow.
 
 ## Migration, kiểm tra và promotion
 

@@ -10,6 +10,7 @@ import (
 // ClientConfig configures the shared Redis connection.
 type ClientConfig struct {
 	Addrs        []string
+	Username     string
 	Password     string
 	DB           int
 	PoolSize     int
@@ -28,6 +29,7 @@ type ClientConfig struct {
 func NewClient(cfg ClientConfig) redis.UniversalClient {
 	options := &redis.UniversalOptions{
 		Addrs:        cfg.Addrs,
+		Username:     cfg.Username,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,

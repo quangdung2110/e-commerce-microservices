@@ -81,6 +81,8 @@ func (d DatabaseConfig) DSN() string {
 }
 
 type RedisConfig struct {
+	Username     string        `mapstructure:"username"`
+	TLSEnabled   bool          `mapstructure:"tls_enabled"`
 	Host         string        `mapstructure:"host"`
 	Port         int           `mapstructure:"port"`
 	Password     string        `mapstructure:"password"`
@@ -99,7 +101,8 @@ type RedisConfig struct {
 func (r RedisConfig) Addr() string { return fmt.Sprintf("%s:%d", r.Host, r.Port) }
 
 type KafkaConfig struct {
-	Brokers []string `mapstructure:"brokers"`
+	TLSEnabled bool     `mapstructure:"tls_enabled"`
+	Brokers    []string `mapstructure:"brokers"`
 	// AuthTopic carries USER_VERIFIED_SUCCESS and USER_DELETED.
 	AuthTopic string `mapstructure:"auth_topic"`
 	// AuthDLQTopic parks what the consumer cannot process. Nothing is redriven
@@ -338,6 +341,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.connect_timeout", "5s")
 	v.SetDefault("database.statement_timeout", "5s")
 
+	v.SetDefault("redis.username", "")
+	v.SetDefault("redis.tls_enabled", false)
 	v.SetDefault("redis.host", "localhost")
 	v.SetDefault("redis.port", 6379)
 	v.SetDefault("redis.db", 0)
@@ -351,6 +356,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("kafka.enabled", true)
 	v.SetDefault("kafka.consumer_enabled", true)
+	v.SetDefault("kafka.tls_enabled", false)
 	v.SetDefault("kafka.brokers", []string{"localhost:9092"})
 	v.SetDefault("kafka.auth_topic", "t.auth.events")
 	v.SetDefault("kafka.auth_dlq_topic", "t.auth.events.dlq")

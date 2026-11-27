@@ -20,9 +20,11 @@ sys.path.insert(0, str(CD))
 from common import ROOT, catalog, expected_images, now, read_json, sha, tree_sha, validate_manifest, write_json
 from delivery import bootstrap, candidate_path, prepare_stage, prepare_promotion, prepare_rollback
 from e2e import Scenario
-from observe import evaluate
+from observe import evaluate, require_platform
 from render import external_secret, render_environment, required_versions, validate_config
-from validate_gitops import validate
+from validate_gitops import bundle, validate
+from transport import dependency_clients, platform_resources
+from transport_evidence import expected_checks
 
 sys.path.insert(0, str(ROOT / "contracts/tools"))
 import verify_providers
@@ -35,9 +37,23 @@ def configuration():
     for env, profile in config["environments"].items():
         profile.update(cluster_server="https://" + env + ".cluster.test", domain=env + ".shop.test", media_origin="https://media." + env + ".shop.test",
                        database_ca_pem="-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", ingress_class="nginx", ingress_namespace="ingress-system",
-                       ingress_selector={"app.kubernetes.io/name": "ingress-nginx"}, trusted_proxy_cidrs=["10.1.0.0/24"], external_data_cidrs=["10.2.0.0/24"],
+                       ingress_selector={"app.kubernetes.io/name": "ingress-nginx"}, trusted_proxy_cidrs=["10.1.0.0/24"],
                        observability_namespace="observability", otlp_endpoint="http://otel-collector.observability.svc.cluster.local:4318", secret_store="platform-secrets")
-        profile["secret_versions"] = {k: "immutable-v1" for k in required_versions(catalog(), env)}
+        endpoints = []
+        public = {"stripe": "api.stripe.com", "media": "media." + profile["domain"], "storefront": profile["domain"],
+                  "ses": f"ses.{env}.shop.test", "sqs": f"sqs.{env}.shop.test", "object-storage": f"s3.{env}.shop.test"}
+        private_ports = {"postgres": 5432, "redis": 6379, "kafka": 9093, "temporal": 7233, "elasticsearch": 9200}
+        for kind, clients in dependency_clients(catalog(), env).items():
+            if kind in public:
+                endpoints.append({"name": kind, "kind": kind, "host": public[kind], "port": 443, "clients": sorted(clients), "cidrs": []})
+            elif kind in private_ports:
+                endpoints.append({"name": kind, "kind": kind, "host": f"{kind}.{env}.data.test", "port": private_ports[kind],
+                                  "clients": sorted(clients), "cidrs": [f"10.2.0.{len(endpoints) + 1}/32"]})
+        profile["transport"].update(platform_revision="d" * 40, ingress_service_account="ingress-nginx", collector_service="otel-collector",
+                       collector_service_account="otel-collector", collector_selector={"app.kubernetes.io/name": "otel-collector"},
+                       prometheus_service_account="prometheus", prometheus_selector={"app.kubernetes.io/name": "prometheus"},
+                       temporal={"mode": "mtls" if env == "production" else "tls", "namespace": "order-" + env}, endpoints=endpoints)
+        profile["secret_versions"] = {k: "immutable-v1" for k in required_versions(catalog(), env, profile)}
     return config
 
 
@@ -62,12 +78,23 @@ class DeliveryTests(unittest.TestCase):
     def stage(self, release="release-one", revision="a" * 40, compatible=None):
         return prepare_stage(self.config, manifest(revision), self.root, release, "b" * 40, compatible or [])
 
-    def proof(self, release="release-one", environment="staging", run="456"):
+    def proof(self, release="release-one", environment="staging", run="456", with_transport=True):
         path = self.root / "candidates" / release
         state = read_json(path / environment / "state.json")
-        return {"environment": environment, "release_id": release, "verification_run_id": run, "verified_at": now(),
-                "bundle_sha256": tree_sha(path / environment), "production_bundle_sha256": tree_sha(path / "production"),
-                "state_sha256": state["state_sha256"], "source_repository": self.config["source_repository"], "source_revision": state["source_revision"]}
+        profile = read_json(path / environment / "profile.json")
+        proof = {"environment": environment, "release_id": release, "verification_run_id": run, "verified_at": now(),
+                 "bundle_sha256": tree_sha(path / environment), "production_bundle_sha256": tree_sha(path / "production"),
+                 "state_sha256": state["state_sha256"], "source_repository": self.config["source_repository"],
+                 "source_revision": state["source_revision"], "transport_sha256": state["transport_sha256"], "gitops_revision": "a" * 40,
+                 "platform_revision": profile["transport"]["platform_revision"]}
+        if with_transport and environment == "staging":
+            report = {k: proof[k] for k in ("environment", "release_id", "verified_at", "state_sha256", "source_revision",
+                                           "transport_sha256", "platform_revision", "production_bundle_sha256",
+                                           "gitops_revision", "verification_run_id")}
+            report.update(schema_version=1, staging_bundle_sha256=proof["bundle_sha256"], checks={
+                check: {"result": "passed", "evidence": "https://evidence.shop.test/fixture"} for check in expected_checks(profile)})
+            write_json(self.root / "transport-evidence/staging" / release / (sha(report) + ".json"), report)
+        return proof
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.root), *args]).decode().strip()
@@ -122,6 +149,44 @@ class DeliveryTests(unittest.TestCase):
         profile["secret_prefix"] += "-rotated"
         moved = external_secret("auth-service", {"DB_PASSWORD": "DB_PASSWORD"}, profile)
         self.assertNotEqual(new["metadata"]["name"], moved["metadata"]["name"])
+
+    def test_transport_evidence_is_required_and_covers_each_dependency(self):
+        self.stage()
+        proof = self.proof(with_transport=False)
+        with self.assertRaisesRegex(ValueError, "transport evidence"):
+            prepare_promotion(self.config, self.root, proof, "456")
+        proof = self.proof()
+        report_path = next((self.root / "transport-evidence/staging/release-one").glob("*.json"))
+        report = read_json(report_path)
+        del report["checks"]["temporal/order-service"]
+        report_path.unlink()
+        write_json(report_path.with_name(sha(report) + ".json"), report)
+        with self.assertRaisesRegex(ValueError, "every required check"):
+            prepare_promotion(self.config, self.root, proof, "456")
+
+    def test_rendered_transport_carries_workload_scope_and_order_tls(self):
+        self.stage()
+        path = self.root / "environments/staging"
+        docs = list(yaml.safe_load_all((path / "resources.yaml").read_text(encoding="utf-8")))
+        resources = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+        self.assertNotIn(("NetworkPolicy", "application-egress"), resources)
+        self.assertEqual({"networking.k8s.io/v1"}, {d["apiVersion"] for d in docs if d["kind"] == "NetworkPolicy"})
+        self.assertEqual({"security.istio.io/v1"}, {d["apiVersion"] for d in docs if d["kind"] == "AuthorizationPolicy"})
+        product = resources["Service", "product-service"]
+        self.assertEqual("grpc", next(p["appProtocol"] for p in product["spec"]["ports"] if p["name"] == "grpc"))
+        order = resources["Deployment", "order-service"]["spec"]["template"]["spec"]
+        env = {e["name"]: e.get("value") for e in order["containers"][0]["env"]}
+        self.assertEqual("tls", env["TEMPORAL_TLS_MODE"])
+        self.assertEqual("temporal.staging.data.test:7233", env["TEMPORAL_TARGET"])
+        self.assertTrue(env["TEMPORAL_API_KEY_FILE"].startswith("/etc/temporal-client/"))
+        migration = resources["Job", "migration-order-service"]["spec"]["template"]["spec"]
+        self.assertEqual("deployment-migrations", migration["serviceAccountName"])
+        self.assertFalse(any(p.get("port") == 7233 for r in resources["NetworkPolicy", "egress-frontend"]["spec"]["egress"] for p in r["ports"]))
+        self.assertTrue(any(p.get("port") == 7233 for r in resources["NetworkPolicy", "egress-order-service"]["spec"]["egress"] for p in r["ports"]))
+        removed = [d for d in docs if d["metadata"]["name"] != "egress-order-service"]
+        (path / "resources.yaml").write_text(yaml.safe_dump_all(removed), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Transport policy digest"):
+            bundle(path, self.config, "staging")
 
     def test_stage_and_promote_preserve_both_frozen_bundles(self):
         metadata = self.stage()
@@ -227,6 +292,31 @@ class DeliveryTests(unittest.TestCase):
         self.commit()
         with self.assertRaises(ValueError):
             validate(self.root, base)
+
+    def test_mesh_platform_must_be_programmed_with_the_current_gateway_configuration(self):
+        profile = self.config["environments"]["staging"]
+        objects = platform_resources(profile)
+        waypoints = [obj for obj in objects if obj["kind"] == "Gateway"]
+        self.assertEqual(2, len(waypoints))
+        options = next(obj for obj in objects if obj["kind"] == "ConfigMap")
+        container_defaults = yaml.safe_load(options["data"]["deployment"])["spec"]["template"]["spec"]
+        self.assertEqual("RuntimeDefault", container_defaults["securityContext"]["seccompProfile"]["type"])
+        for obj in objects:
+            obj["metadata"]["generation"] = 2
+            if obj["kind"] == "Gateway":
+                self.assertEqual(options["metadata"]["name"], obj["spec"]["infrastructure"]["parametersRef"]["name"])
+                obj["status"] = {"conditions": [{"type": "Programmed", "status": "True", "observedGeneration": 2}]}
+            if obj["kind"] == "HorizontalPodAutoscaler":
+                obj["status"] = {"currentReplicas": 2}
+        application = {"status": {"sync": {"status": "Synced"}}}
+        managed = {"items": [{"kind": obj["kind"], "name": obj["metadata"]["name"], "liveState": obj} for obj in objects]}
+        with patch("observe.os.environ", {"ARGOCD_AUTH_TOKEN": "test-token"}):
+            with patch("observe.argo_get", side_effect=[application, managed]):
+                require_platform(self.config, "staging")
+            waypoints[0]["status"]["conditions"][0]["observedGeneration"] = 1
+            with patch("observe.argo_get", side_effect=[application, managed]):
+                with self.assertRaisesRegex(RuntimeError, "Waypoint is not programmed"):
+                    require_platform(self.config, "staging")
 
     def test_observer_requires_exact_live_images_replicas_and_hook(self):
         self.stage()

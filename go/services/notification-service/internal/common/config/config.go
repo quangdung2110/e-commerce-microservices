@@ -149,6 +149,8 @@ func (d DatabaseConfig) DSN() string {
 }
 
 type RedisConfig struct {
+	Username     string        `mapstructure:"username"`
+	TLSEnabled   bool          `mapstructure:"tls_enabled"`
 	Host         string        `mapstructure:"host"`
 	Port         int           `mapstructure:"port"`
 	Password     string        `mapstructure:"password"`
@@ -166,9 +168,10 @@ func (r RedisConfig) Addr() string { return fmt.Sprintf("%s:%d", r.Host, r.Port)
 // KafkaConfig lists every topic Notification reads or writes and the consumer
 // group per source (01-lanes.md §5, D-19).
 type KafkaConfig struct {
-	Brokers  []string `mapstructure:"brokers"`
-	ClientID string   `mapstructure:"client_id"`
-	Version  string   `mapstructure:"version"`
+	TLSEnabled bool     `mapstructure:"tls_enabled"`
+	Brokers    []string `mapstructure:"brokers"`
+	ClientID   string   `mapstructure:"client_id"`
+	Version    string   `mapstructure:"version"`
 
 	// SASL/SCRAM-SHA-512 principal of the service (mesh ADR-003). An empty
 	// username keeps PLAINTEXT, for tests and a standalone broker.
@@ -649,6 +652,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.pools.api", 10)
 	v.SetDefault("database.pools.jobs", 3)
 
+	v.SetDefault("redis.username", "")
+	v.SetDefault("redis.tls_enabled", false)
 	v.SetDefault("redis.host", "localhost")
 	v.SetDefault("redis.port", 6379)
 	v.SetDefault("redis.db", 0)
@@ -659,6 +664,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("redis.write_timeout", "1s")
 	v.SetDefault("redis.key_prefix", "notification")
 
+	v.SetDefault("kafka.tls_enabled", false)
 	v.SetDefault("kafka.brokers", []string{"localhost:9092"})
 	v.SetDefault("kafka.client_id", "notification-service")
 	v.SetDefault("kafka.version", "3.5.0")

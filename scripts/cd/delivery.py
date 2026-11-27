@@ -11,6 +11,7 @@ import shutil
 import yaml
 
 from common import ROOT, SHA, catalog, compatible_revisions, now, read_json, run, sha, tree_sha, validate_manifest, verify_images, write_json
+from transport_evidence import reviewed_report
 from render import bootstrap_resources, render_environment, secret_contract, validate_config, write_bundle
 
 BUNDLE_FILES = ("resources.yaml", "state.json", "profile.json", "kustomization.yaml")
@@ -103,9 +104,11 @@ def prepare_promotion(config, gitops, proof, verification_run):
         raise ValueError("Staging moved or the tested candidate/configuration does not match")
     if state_id(load_state(gitops, "production")) != metadata["previous_production_state"]:
         raise ValueError("Production changed after candidate creation; stage a new candidate")
+    evidence = reviewed_report(gitops, path, metadata, proof, config["proof_max_age_hours"])
     copy_bundle(path / "production", inside(gitops, "environments/production"))
     write_json(inside(gitops, "operations/production.json"), {"operation": "promote", "release_id": proof["release_id"],
-               "expected_previous_state": metadata["previous_production_state"], "verification_run_id": str(verification_run), "prepared_at": now()})
+               "expected_previous_state": metadata["previous_production_state"], "verification_run_id": str(verification_run),
+                "transport_evidence_sha256": evidence, "prepared_at": now()})
     return metadata
 
 
@@ -126,6 +129,10 @@ def prepare_rollback(config, gitops, proof, verification_run):
     if (proof.get("source_repository") != config["source_repository"] or proof.get("bundle_sha256") != metadata["production_bundle_sha256"] or proof["state_sha256"] != target["state_sha256"] or
             proof["source_revision"] != target["source_revision"]):
         raise ValueError("Rollback target differs from verified production state")
+    platform_revision = config["environments"]["production"]["transport"]["platform_revision"]
+    if (target.get("schema_version") != 2 or profile.get("transport", {}).get("platform_revision") != platform_revision
+            or proof.get("platform_revision") != platform_revision or proof.get("transport_sha256") != target["transport_sha256"]):
+        raise ValueError("Rollback requires a verified transport policy for the current mesh platform")
     if target["source_revision"] not in current["rollback_compatible_revisions"]:
         raise ValueError("Current release has not declared schema/workflow compatibility with this rollback target")
     copy_bundle(path / "production", inside(gitops, "environments/production"), rollback=True)
@@ -186,7 +193,7 @@ def bootstrap(config, output):
     write_json(output / "config.json", config)
     (output / ".gitattributes").write_text("* text eol=lf\n", encoding="utf-8", newline="\n")
     write_json(output / "deploy/gitops/catalog.json", {"schema_version": 1, "components": catalog()})
-    secret_contracts = {env: secret_contract(catalog(), env) for env in ("staging", "production")}
+    secret_contracts = {env: secret_contract(catalog(), env, config["environments"][env]) for env in ("staging", "production")}
     from progressive import canary_enabled
     for env in secret_contracts:
         if canary_enabled(config["environments"][env]):
@@ -200,10 +207,15 @@ def bootstrap(config, output):
         platform.mkdir(parents=True)
         (platform / "namespace.yaml").write_text(yaml.safe_dump(resources["namespace"], sort_keys=False), encoding="utf-8", newline="\n")
         (platform / "argocd.yaml").write_text(yaml.safe_dump_all(resources["argocd"], sort_keys=False), encoding="utf-8", newline="\n")
+        mesh = platform / "mesh"
+        mesh.mkdir()
+        (mesh / "resources.yaml").write_text(yaml.safe_dump_all(resources["mesh"], sort_keys=False), encoding="utf-8", newline="\n")
+        kustomization = {"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization", "resources": ["resources.yaml"]}
+        (mesh / "kustomization.yaml").write_text(yaml.safe_dump(kustomization, sort_keys=False), encoding="utf-8", newline="\n")
         target = output / "environments" / environment
         target.mkdir(parents=True)
         (target / "kustomization.yaml").write_text("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: []\n", encoding="utf-8", newline="\n")
-    for file in ("common.py", "render.py", "observe.py", "validate_gitops.py", "progressive.py", "slo.py"):
+    for file in ("common.py", "render.py", "observe.py", "validate_gitops.py", "progressive.py", "slo.py", "transport.py", "transport_evidence.py"):
         target = output / "tools/cd" / file
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "scripts/cd" / file, target)

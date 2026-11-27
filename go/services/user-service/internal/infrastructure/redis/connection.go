@@ -9,6 +9,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 
@@ -21,8 +22,9 @@ import (
 
 // NewClient opens the Redis client shared by every adapter.
 func NewClient(ctx context.Context, cfg config.RedisConfig) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{
+	options := &redis.Options{
 		Addr:         cfg.Addr(),
+		Username:     cfg.Username,
 		Password:     cfg.Password,
 		DB:           cfg.DB,
 		PoolSize:     cfg.PoolSize,
@@ -30,7 +32,11 @@ func NewClient(ctx context.Context, cfg config.RedisConfig) (*redis.Client, erro
 		DialTimeout:  cfg.DialTimeout,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
-	})
+	}
+	if cfg.TLSEnabled {
+		options.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(options)
 
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()

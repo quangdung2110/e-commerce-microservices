@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import yaml
 import progressive
+import transport
 
 from common import ROOT, REPOSITORY, catalog, sha, write_json
 
@@ -17,25 +18,27 @@ TOOLS = ("database-migrations", "deployment-checks")
 E2E_PROPERTIES = ("E2E_EMAIL", "E2E_PASSWORD", "E2E_ADMIN_EMAIL", "E2E_ADMIN_PASSWORD", "E2E_ADDRESS_ID", "E2E_SKU_ID", "E2E_STRIPE_SECRET_KEY", "E2E_WEBHOOK_SECRET")
 
 
-def secret_contract(components, environment):
+def secret_contract(components, environment, profile):
     result = {name: {key: key for key in component["runtime_properties"]} for name, component in components.items() if component["runtime_properties"]}
     for name, component in components.items():
         if component.get("migration"):
             keys = ("FLYWAY_URL", "FLYWAY_USER", "FLYWAY_PASSWORD") if component["migration"] == "flyway" else ("MIGRATE_DATABASE_URL",)
             result["migration-" + name] = {key: key for key in keys}
     result["registry"] = {".dockerconfigjson": "dockerconfigjson"}
+    result["temporal-client"] = temporal_secret_properties(profile)
     if environment == "staging":
         result["checks-e2e"] = {key: key for key in E2E_PROPERTIES}
     return result
 
 
-def required_versions(components, environment):
-    keys = {n for n, c in components.items() if c["runtime_properties"]}
-    keys |= {"migration-" + n for n, c in components.items() if c.get("migration")}
-    keys.add("registry")
-    if environment == "staging":
-        keys.add("checks-e2e")
-    return keys
+def temporal_secret_properties(profile):
+    if profile["transport"]["temporal"]["mode"] == "mtls":
+        return {"tls.crt": "client_certificate", "tls.key": "client_key"}
+    return {"api-key": "api_key"}
+
+
+def required_versions(components, environment, profile):
+    return set(secret_contract(components, environment, profile))
 
 
 def validate_config(config, activation=False):
@@ -76,18 +79,22 @@ def validate_config(config, activation=False):
             raise ValueError("Configure ClusterSecretStore and ingress controller identity")
         if not p.get("observability_namespace") or not (p.get("otlp_endpoint") or "").startswith(("https://", "http://")):
             raise ValueError("Configure observability namespace and collector")
-        for key in ("trusted_proxy_cidrs", "external_data_cidrs"):
-            if not p.get(key):
-                raise ValueError(f"Configure {key}")
-            for cidr in p[key]:
-                if ipaddress.ip_network(cidr).prefixlen == 0:
-                    raise ValueError("Data/trusted-proxy CIDRs must not trust the entire Internet")
+        if not p.get("trusted_proxy_cidrs") or any(ipaddress.ip_network(cidr).prefixlen == 0 for cidr in p["trusted_proxy_cidrs"]):
+            raise ValueError("Configure trusted proxy CIDRs")
+        transport.validate_profile(p, environment, components)
+        ca_bundle = p["transport"].get("data_ca_pem")
+        if ca_bundle:
+            certificates = re.findall(r"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----", ca_bundle)
+            if not certificates or re.sub(r"\s+", "", ca_bundle) != re.sub(r"\s+", "", "".join(certificates)):
+                raise ValueError("Data CA bundle must contain only PEM certificates")
+            for certificate in certificates:
+                ssl.PEM_cert_to_DER_cert(certificate)
         if type(p.get("replicas")) is not int or p["replicas"] < 2 or not 0 <= p.get("sampling", -1) <= 1:
             raise ValueError("At least two replicas and an explicit sampling ratio are required")
         versions = p.get("secret_versions", {})
         progressive.validate(p)
         ssl.PEM_cert_to_DER_cert(p.get("database_ca_pem") or "")
-        version_keys = required_versions(components, environment) | ({"operations-metrics"} if progressive.canary_enabled(p) else set())
+        version_keys = required_versions(components, environment, p) | ({"operations-metrics"} if progressive.canary_enabled(p) else set())
         if any(not isinstance(versions.get(k), str) or not versions[k].strip() or versions[k].lower() in ("latest", "current", "awscurrent", "awsprevious")
                for k in version_keys):
             raise ValueError(f"Pin every runtime/migration/registry secret version for {environment}")
@@ -101,8 +108,8 @@ def validate_config(config, activation=False):
     if prod_ops.get("slo", {}).get("enforce") and not progressive.settings(config["environments"]["staging"]).get("slo", {}).get("enforce"):
         raise ValueError("Enforce the staging SLO gate before enabling it for production")
     if activation and not all(config.get("readiness", {}).get(k) is True for k in (
-            "payment_production_cipher_implemented", "transport_security_verified", "gateway_shared_rate_limits_verified", "backup_restore_drill_passed")):
-        raise ValueError("Activation blocked: implement Payment crypto, verify transports/shared rate limits, and drill restore first")
+            "payment_production_cipher_implemented", "gateway_shared_rate_limits_verified", "backup_restore_drill_passed")):
+        raise ValueError("Activation blocked: implement Payment crypto, verify shared rate limits, and drill restore first")
 
 
 def resource(kind, name, namespace, spec=None, api="v1", wave=0):
@@ -187,9 +194,14 @@ def workload(name, component, image, profile, state_hash):
     account = resource("ServiceAccount", name, ns, wave=-20)
     account["automountServiceAccountToken"] = False
     account["metadata"]["annotations"].update(profile.get("service_account_annotations", {}).get(name, {}))
-    ports = [{"name": n, "port": 80 if name == "api-gateway" and n == "web" else p, "targetPort": n}
-             for n, p in component["ports"].items()]
+    ports = [{"name": n, "port": 80 if name == "api-gateway" and n == "web" else p, "targetPort": n,
+              "appProtocol": "grpc" if n == "grpc" else "http"} for n, p in component["ports"].items()]
     service = resource("Service", name, ns, {"selector": labels, "ports": ports}, wave=-20)
+    if name not in transport.DIRECT:
+        service["metadata"]["labels"] = {"istio.io/use-waypoint": transport.WAYPOINT}
+        labels = {**labels, transport.WORKLOAD_LABEL: "true"}
+        if name == progressive.SERVICE and progressive.enabled(profile):
+            labels["istio.io/use-waypoint"] = transport.WAYPOINT
     pod = pod_spec(image, profile, name)
     container = pod["containers"][0]
     # Explicit env entries permit Kubernetes $(VAR) expansion in the Kafka JAAS config.
@@ -215,6 +227,40 @@ def workload(name, component, image, profile, state_hash):
         pod["volumes"].append({"name": "next-cache", "emptyDir": {"sizeLimit": "256Mi"}})
         container["volumeMounts"].append({"name": "next-cache", "mountPath": "/app/.next/cache"})
     extra = []
+    if name == "order-service":
+        temporal = profile["transport"]["temporal"]
+        endpoint = next(e for e in profile["transport"]["endpoints"] if e["kind"] == "temporal")
+        certificate = external_secret("temporal-client", temporal_secret_properties(profile), profile)
+        mount = "/etc/temporal-client"
+        pod["volumes"].append({"name": "temporal-client", "secret": {
+            "secretName": certificate["spec"]["target"]["name"], "defaultMode": 0o440}})
+        container["volumeMounts"].append({"name": "temporal-client", "mountPath": mount, "readOnly": True})
+        settings = {"TEMPORAL_TARGET": f"{endpoint['host']}:{endpoint['port']}", "TEMPORAL_NAMESPACE": temporal["namespace"],
+                    "TEMPORAL_TLS_MODE": temporal["mode"]}
+        if temporal["mode"] == "mtls":
+            settings.update(TEMPORAL_TLS_CERT_FILE=mount + "/tls.crt", TEMPORAL_TLS_KEY_FILE=mount + "/tls.key")
+        else:
+            settings["TEMPORAL_API_KEY_FILE"] = mount + "/api-key"
+        if temporal.get("use_data_ca"):
+            settings["TEMPORAL_TLS_CA_FILE"] = "/etc/data-ca/ca.crt"
+        container["env"] += [{"name": k, "value": v} for k, v in settings.items()]
+        extra.append(certificate)
+    ca_bundle = profile["transport"].get("data_ca_pem")
+    if ca_bundle:
+        pod["volumes"].append({"name": "data-ca", "configMap": {"name": "data-ca-" + sha(ca_bundle)[:10]}})
+        container["volumeMounts"].append({"name": "data-ca", "mountPath": "/etc/data-ca", "readOnly": True})
+        ca_file = "/etc/data-ca/ca.crt"
+        settings = {}
+        if component["kind"] == "go":
+            settings["SSL_CERT_FILE"] = ca_file
+        if "SPRING_KAFKA_SECURITY_PROTOCOL" in component["env"]:
+            settings.update(SPRING_KAFKA_SSL_TRUSTSTORETYPE="PEM", SPRING_KAFKA_SSL_TRUSTSTORELOCATION="file:" + ca_file)
+        if name in {"checkout-service", "order-service", "promotion-service"}:
+            settings.update(SPRING_SSL_BUNDLE_PEM_DATA_TRUSTSTORE_CERTIFICATE="file:" + ca_file,
+                            SPRING_DATA_REDIS_SSL_BUNDLE="data")
+        if name == "search-service":
+            settings["SEARCH_ELASTICSEARCH_CA_FILE"] = ca_file
+        container["env"] += [{"name": k, "value": v} for k, v in settings.items()]
     if name == "api-gateway":
         config_name = "gateway-config-" + state_hash[:10]
         cm = resource("ConfigMap", config_name, ns, wave=-20)
@@ -226,11 +272,11 @@ def workload(name, component, image, profile, state_hash):
     pod["topologySpreadConstraints"] = [{"maxSkew": 1, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "DoNotSchedule", "labelSelector": {"matchLabels": labels}}]
     deployment = resource("Deployment", name, ns, {"replicas": profile["replicas"], "revisionHistoryLimit": 3,
         "progressDeadlineSeconds": 900, "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1}},
-        "selector": {"matchLabels": labels}, "template": {"metadata": {"labels": labels,
+        "selector": {"matchLabels": {transport.APP_LABEL: name}}, "template": {"metadata": {"labels": labels,
         "annotations": {"delivery.ecommerce/state-sha256": state_hash}}, "spec": pod}}, api="apps/v1")
     if progressive.canary_enabled(profile) and name == progressive.SERVICE:
         deployment = progressive.convert(deployment, profile)
-    pdb = resource("PodDisruptionBudget", name, ns, {"maxUnavailable": 1, "selector": {"matchLabels": labels}}, api="policy/v1")
+    pdb = resource("PodDisruptionBudget", name, ns, {"maxUnavailable": 1, "selector": {"matchLabels": {transport.APP_LABEL: name}}}, api="policy/v1")
     return [account, service, *extra, deployment, pdb]
 
 
@@ -238,70 +284,40 @@ def migration_job(name, component, image, profile, state_hash):
     key = "migration-" + name
     properties = ["FLYWAY_URL", "FLYWAY_USER", "FLYWAY_PASSWORD"] if component["migration"] == "flyway" else ["MIGRATE_DATABASE_URL"]
     secret = external_secret(key, {k: k for k in properties}, profile)
-    pod = pod_spec(image, profile, "deployment-checks")
+    pod = pod_spec(image, profile, transport.MIGRATIONS)
     pod["restartPolicy"] = "Never"
     pod["containers"][0]["name"] = "migrate"
     pod["containers"][0]["env"] = [{"name": "MIGRATION_SERVICE", "value": name}]
     pod["containers"][0]["envFrom"] = [{"secretRef": {"name": secret["spec"]["target"]["name"]}}]
     pod["containers"][0]["resources"] = {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}}
     job = resource("Job", key, profile["namespace"], {"backoffLimit": 0, "activeDeadlineSeconds": 600,
-        "template": {"metadata": {"labels": {"app.kubernetes.io/name": "deployment-checks", "delivery.ecommerce/role": "migration"}}, "spec": pod}}, api="batch/v1", wave=-10)
+        "template": {"metadata": {"labels": {transport.APP_LABEL: transport.MIGRATIONS,
+            transport.MIGRATION_LABEL: name, "delivery.ecommerce/role": "migration"}}, "spec": pod}}, api="batch/v1", wave=-10)
     job["metadata"]["labels"] = {"delivery.ecommerce/role": "migration"}
     job["metadata"]["annotations"].update({"argocd.argoproj.io/hook": "Sync", "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded"})
     return [secret, job]
 
 
-def network_policies(profile):
-    ns = profile["namespace"]
-    default = resource("NetworkPolicy", "default-deny", ns, {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}, api="networking.k8s.io/v1", wave=-20)
-    same = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": ns}}, "podSelector": {}}
-    egress = [{"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}}], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
-              {"to": [same]},
-              {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": profile["observability_namespace"]}}}], "ports": [{"protocol": "TCP", "port": 4317}, {"protocol": "TCP", "port": 4318}]},
-              {"to": [{"ipBlock": {"cidr": cidr}} for cidr in profile["external_data_cidrs"]], "ports": [{"protocol": "TCP", "port": p} for p in (443, 5432, 6379, 9092, 9093, 9200, 7233)]},
-              {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]}}], "ports": [{"protocol": "TCP", "port": 443}]}]
-    policies = [default, resource("NetworkPolicy", "application-egress", ns, {"podSelector": {}, "policyTypes": ["Egress"], "egress": egress}, api="networking.k8s.io/v1", wave=-20)]
-    originals = list(yaml.safe_load_all((ROOT / "deploy/k8s/services/networkpolicies.yaml").read_text(encoding="utf-8")))
-    for original in originals:
-        if not original or not original["metadata"]["name"].startswith("allow-"):
-            continue
-        name = original["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"]
-        name = "api-gateway" if name == "traefik" else name
-        if name not in catalog() or name in ("frontend", "api-gateway"):
-            continue
-        spec = copy.deepcopy(original["spec"])
-        spec["podSelector"]["matchLabels"]["app.kubernetes.io/name"] = name
-        for rule in spec.get("ingress", []):
-            for peer in rule.get("from", []):
-                namespace = peer.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name")
-                if namespace in ("edge", "ecommerce"):
-                    peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"] = ns
-                elif namespace == "observability":
-                    peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"] = profile["observability_namespace"]
-                labels = peer.get("podSelector", {}).get("matchLabels", {})
-                if labels.get("app.kubernetes.io/name") == "traefik":
-                    labels["app.kubernetes.io/name"] = "api-gateway"
-        # Health/contract checks are isolated to the signed checker workload in this namespace.
-        check_port = catalog()[name]["ports"][catalog()[name]["probe_port"]]
-        spec.setdefault("ingress", []).append({"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "deployment-checks"}}}], "ports": [{"protocol": "TCP", "port": check_port}]})
-        policies.append(resource("NetworkPolicy", "allow-" + name, ns, spec, api="networking.k8s.io/v1", wave=-20))
-    ingress_peer = {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": profile["ingress_namespace"]}}, "podSelector": {"matchLabels": profile["ingress_selector"]}}
-    for name, port in (("frontend", 3000), ("api-gateway", 8080)):
-        peers = [ingress_peer, {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "deployment-checks"}}}]
-        if name == "api-gateway":
-            peers.append({"podSelector": {"matchLabels": {"app.kubernetes.io/name": "frontend"}}})
-        policies.append(resource("NetworkPolicy", "ingress-" + name, ns, {"podSelector": {"matchLabels": {"app.kubernetes.io/name": name}}, "policyTypes": ["Ingress"], "ingress": [{"from": peers, "ports": [{"protocol": "TCP", "port": port}]}]}, api="networking.k8s.io/v1", wave=-20))
-    policies.append(resource("NetworkPolicy", "gateway-health", ns, {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "api-gateway"}}, "policyTypes": ["Ingress"], "ingress": [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "deployment-checks"}}}, {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": profile["observability_namespace"]}}, "podSelector": {"matchLabels": {"app.kubernetes.io/name": "prometheus"}}}], "ports": [{"protocol": "TCP", "port": 8090}]}]}, api="networking.k8s.io/v1", wave=-20))
-    return policies
+def provider_probes():
+    probes = yaml.safe_load((ROOT / "contracts/tools/provider-probes.yaml").read_text(encoding="utf-8"))
+    allowed = {"product-export-page", "product-category-export-page", "product-snapshot-for-search", "product-snapshot-unknown",
+               "product-detail-for-bff", "product-detail-unknown-slug", "review-pdp-summary", "review-pdp-summary-wrong-caller",
+               "inventory-availability-for-bff", "inventory-allocation-preview", "inventory-allocation-preview-invalid",
+               "promotion-discount-without-code", "order-submission-unknown-token", "payment-unknown-transaction", "payment-wrong-caller"}
+    probes["probes"] = [probe for probe in probes["probes"] if probe["id"] in allowed]
+    return probes
 
 
 def render_environment(config, environment, images, release_id, revision, configuration_revision, source_run, rollback_revisions):
     components = catalog()
     p = config["environments"][environment]
-    state = {"schema_version": 1, "environment": environment, "release_id": release_id,
+    probes = provider_probes()
+    security = transport.mesh_network_policies(p, components) + transport.mesh_application_resources(p, components, probes)
+    state = {"schema_version": 2, "environment": environment, "release_id": release_id,
              "source_repository": config["source_repository"], "source_revision": revision,
              "configuration_revision": configuration_revision, "source_run_id": str(source_run),
              "namespace": p["namespace"], "profile_sha256": sha(p), "images": images,
+             "transport_sha256": transport.transport_digest(security),
              "rollback_compatible_revisions": rollback_revisions}
     if progressive.enabled(p):
         state["workload_kinds"] = progressive.workload_kinds(p)
@@ -311,6 +327,10 @@ def render_environment(config, environment, images, release_id, revision, config
     ca = resource("ConfigMap", "database-ca-" + sha(p["database_ca_pem"])[:10], p["namespace"], wave=-20)
     ca["data"] = {"ca.crt": p["database_ca_pem"]}
     resources.append(ca)
+    if data_ca := p["transport"].get("data_ca_pem"):
+        ca = resource("ConfigMap", "data-ca-" + sha(data_ca)[:10], p["namespace"], wave=-20)
+        ca["data"] = {"ca.crt": data_ca}
+        resources.append(ca)
     registry = external_secret("registry", {".dockerconfigjson": "dockerconfigjson"}, p,
                                target_name=p["image_pull_secret"], secret_type="kubernetes.io/dockerconfigjson")
     resources.append(registry)
@@ -330,10 +350,11 @@ def render_environment(config, environment, images, release_id, revision, config
         if progressive.canary_enabled(p):
             metrics_secret = external_secret("operations-metrics", {"authorization": "authorization"}, p)
             resources += [metrics_secret, progressive.analysis_template(p, metrics_secret["spec"]["target"]["name"], resource)]
-    account = resource("ServiceAccount", "deployment-checks", p["namespace"], wave=-20)
-    account["automountServiceAccountToken"] = False
-    resources.append(account)
-    resources.extend(network_policies(p))
+    for name in (transport.CHECKS, transport.MIGRATIONS):
+        account = resource("ServiceAccount", name, p["namespace"], wave=-20)
+        account["automountServiceAccountToken"] = False
+        resources.append(account)
+    resources.extend(security)
     paths = [{"path": path, "pathType": kind, "backend": {"service": {"name": service, "port": {"number": port}}}}
              for path, kind, service, port in (("/api", "Prefix", "api-gateway", 80), ("/media", "Prefix", "api-gateway", 80),
                 ("/v1/payments/webhook/stripe", "Exact", "api-gateway", 80), ("/", "Prefix", "frontend", 3000))]
@@ -341,12 +362,6 @@ def render_environment(config, environment, images, release_id, revision, config
         "tls": [{"hosts": [p["domain"]], "secretName": p["tls_secret"]}],
         "rules": [{"host": p["domain"], "http": {"paths": paths}}]}, api="networking.k8s.io/v1"))
     # The ingress controller must redirect plaintext HTTP to HTTPS; issuer/TLS Secret are platform-owned.
-    probes = yaml.safe_load((ROOT / "contracts/tools/provider-probes.yaml").read_text(encoding="utf-8"))
-    allowed = {"product-export-page", "product-category-export-page", "product-snapshot-for-search", "product-snapshot-unknown",
-               "product-detail-for-bff", "product-detail-unknown-slug", "review-pdp-summary", "review-pdp-summary-wrong-caller",
-               "inventory-availability-for-bff", "inventory-allocation-preview", "inventory-allocation-preview-invalid",
-               "promotion-discount-without-code", "order-submission-unknown-token", "payment-unknown-transaction", "payment-wrong-caller"}
-    probes["probes"] = [probe for probe in probes["probes"] if probe["id"] in allowed]
     checks_config = {"environment": environment, "state_sha256": state_hash,
         "health": [{"name": name, "url": f"http://{name}:{component['ports'][component['probe_port']]}{component['ready']}"}
                    for name, component in components.items()], "frontend": "http://frontend:3000/help/about"}
@@ -392,14 +407,17 @@ def bootstrap_resources(config):
     for environment in ENVIRONMENTS:
         p = config["environments"][environment]
         namespace = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": p["namespace"], "labels": {
-            "pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/audit": "restricted", "pod-security.kubernetes.io/warn": "restricted"}}}
+            "pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/audit": "restricted",
+            "pod-security.kubernetes.io/warn": "restricted", "istio.io/dataplane-mode": "ambient"}}}
         project = {"apiVersion": "argoproj.io/v1alpha1", "kind": "AppProject", "metadata": {"name": "ecommerce-" + environment, "namespace": "argocd"}, "spec": {
             "sourceRepos": ["https://github.com/" + config["gitops_repository"] + ".git"],
             "destinations": [{"server": p["cluster_server"], "namespace": p["namespace"]}],
             "clusterResourceWhitelist": [], "namespaceResourceWhitelist": [
                 {"group": group, "kind": kind} for group, kind in (("", "ServiceAccount"), ("", "Service"), ("", "ConfigMap"),
                     ("apps", "Deployment"), ("batch", "Job"), ("policy", "PodDisruptionBudget"), ("networking.k8s.io", "Ingress"),
-                    ("networking.k8s.io", "NetworkPolicy"), ("external-secrets.io", "ExternalSecret"))]}}
+                    ("networking.k8s.io", "NetworkPolicy"), ("external-secrets.io", "ExternalSecret"),
+                    ("security.istio.io", "AuthorizationPolicy"), ("networking.istio.io", "ServiceEntry"),
+                    ("networking.istio.io", "VirtualService"), ("networking.istio.io", "DestinationRule"))]}}
         if progressive.enabled(p):
             project["spec"]["namespaceResourceWhitelist"] += [{"group": "monitoring.coreos.com", "kind": k} for k in ("PodMonitor", "PrometheusRule")]
         if progressive.canary_enabled(p):
@@ -408,5 +426,15 @@ def bootstrap_resources(config):
             "project": project["metadata"]["name"], "source": {"repoURL": "https://github.com/" + config["gitops_repository"] + ".git", "targetRevision": "main", "path": "environments/" + environment},
             "destination": {"server": p["cluster_server"], "namespace": p["namespace"]},
             "syncPolicy": {"automated": {"prune": True, "selfHeal": True, "allowEmpty": False}, "syncOptions": ["PruneLast=true", "FailOnSharedResource=true"]}}}
-        result[environment] = {"namespace": namespace, "argocd": [project, app]}
+        mesh_project = copy.deepcopy(project)
+        mesh_project["metadata"]["name"] = "ecommerce-" + environment + "-mesh"
+        mesh_project["spec"]["namespaceResourceWhitelist"] = [{"group": group, "kind": kind}
+            for group, kind in (("", "ConfigMap"), ("security.istio.io", "PeerAuthentication"), ("gateway.networking.k8s.io", "Gateway"),
+                                ("policy", "PodDisruptionBudget"), ("autoscaling", "HorizontalPodAutoscaler"))]
+        mesh_app = copy.deepcopy(app)
+        mesh_app["metadata"]["name"] = mesh_project["metadata"]["name"]
+        mesh_app["spec"]["project"] = mesh_project["metadata"]["name"]
+        mesh_app["spec"]["source"]["path"] = f"bootstrap/{environment}/mesh"
+        result[environment] = {"namespace": namespace, "argocd": [project, app, mesh_project, mesh_app],
+                               "mesh": transport.platform_resources(p)}
     return result

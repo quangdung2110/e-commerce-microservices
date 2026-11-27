@@ -40,7 +40,13 @@ public record OrderProperties(
 
     public record Temporal(boolean enabled, String target, String namespace, boolean workerEnabled,
                            String checkoutQueue, String refundQueue, String reconciliationQueue,
-                           Duration activityTimeout, int activityMaxAttempts) {
+                           Duration activityTimeout, int activityMaxAttempts, TemporalTransport transport) {
+    }
+
+    public enum TemporalTlsMode { PLAINTEXT, TLS, MTLS }
+
+    public record TemporalTransport(TemporalTlsMode mode, String caFile, String certFile, String keyFile,
+                                    String apiKeyFile) {
     }
 
     /**

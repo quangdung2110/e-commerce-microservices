@@ -9,7 +9,6 @@
   "proof_max_age_hours": 24,
   "readiness": {
     "payment_production_cipher_implemented": false,
-    "transport_security_verified": false,
     "gateway_shared_rate_limits_verified": false,
     "backup_restore_drill_passed": false
   },
@@ -24,7 +23,6 @@
       "ingress_namespace": null,
       "ingress_selector": null,
       "trusted_proxy_cidrs": [],
-      "external_data_cidrs": [],
       "observability_namespace": null,
       "otlp_endpoint": null,
       "sampling": 0.1,
@@ -38,8 +36,50 @@
       "operations": {
         "enabled": false,
         "prometheus_url": null,
-        "slo": {"approved": false, "enforce": false, "availability": 0.999, "latency_success": 0.99, "latency_seconds": 1, "minimum_requests": 1000, "window_days": 30, "minimum_window_coverage": 0.99, "max_scrape_age_seconds": 90},
-        "canary": {"enabled": false, "service": "product-detail-bff", "replicas": 5, "steps": [20, 50, 100], "pause_seconds": 60, "analysis_interval_seconds": 60, "analysis_count": 3, "minimum_requests": 30}
+        "slo": {
+          "approved": false,
+          "enforce": false,
+          "availability": 0.999,
+          "latency_success": 0.99,
+          "latency_seconds": 1,
+          "minimum_requests": 1000,
+          "window_days": 30,
+          "minimum_window_coverage": 0.99,
+          "max_scrape_age_seconds": 90
+        },
+        "canary": {
+          "enabled": false,
+          "service": "product-detail-bff",
+          "replicas": 5,
+          "steps": [
+            20,
+            50,
+            100
+          ],
+          "pause_seconds": 60,
+          "analysis_interval_seconds": 60,
+          "analysis_count": 3,
+          "minimum_requests": 30
+        }
+      },
+      "transport": {
+        "platform_revision": null,
+        "trust_domain": "cluster.local",
+        "cluster_dns_suffix": "cluster.local",
+        "ingress_service_account": null,
+        "prometheus_service_account": null,
+        "prometheus_selector": {},
+        "collector_service_account": null,
+        "collector_service": null,
+        "collector_selector": {},
+        "additional_dns_cidrs": [],
+        "data_ca_pem": null,
+        "temporal": {
+          "mode": null,
+          "namespace": null,
+          "use_data_ca": false
+        },
+        "endpoints": []
       }
     },
     "production": {
@@ -52,7 +92,6 @@
       "ingress_namespace": null,
       "ingress_selector": null,
       "trusted_proxy_cidrs": [],
-      "external_data_cidrs": [],
       "observability_namespace": null,
       "otlp_endpoint": null,
       "sampling": 0.05,
@@ -66,8 +105,50 @@
       "operations": {
         "enabled": false,
         "prometheus_url": null,
-        "slo": {"approved": false, "enforce": false, "availability": 0.999, "latency_success": 0.99, "latency_seconds": 1, "minimum_requests": 1000, "window_days": 30, "minimum_window_coverage": 0.99, "max_scrape_age_seconds": 90},
-        "canary": {"enabled": false, "service": "product-detail-bff", "replicas": 5, "steps": [20, 50, 100], "pause_seconds": 60, "analysis_interval_seconds": 60, "analysis_count": 3, "minimum_requests": 30}
+        "slo": {
+          "approved": false,
+          "enforce": false,
+          "availability": 0.999,
+          "latency_success": 0.99,
+          "latency_seconds": 1,
+          "minimum_requests": 1000,
+          "window_days": 30,
+          "minimum_window_coverage": 0.99,
+          "max_scrape_age_seconds": 90
+        },
+        "canary": {
+          "enabled": false,
+          "service": "product-detail-bff",
+          "replicas": 5,
+          "steps": [
+            20,
+            50,
+            100
+          ],
+          "pause_seconds": 60,
+          "analysis_interval_seconds": 60,
+          "analysis_count": 3,
+          "minimum_requests": 30
+        }
+      },
+      "transport": {
+        "platform_revision": null,
+        "trust_domain": "cluster.local",
+        "cluster_dns_suffix": "cluster.local",
+        "ingress_service_account": null,
+        "prometheus_service_account": null,
+        "prometheus_selector": {},
+        "collector_service_account": null,
+        "collector_service": null,
+        "collector_selector": {},
+        "additional_dns_cidrs": [],
+        "data_ca_pem": null,
+        "temporal": {
+          "mode": null,
+          "namespace": null,
+          "use_data_ca": false
+        },
+        "endpoints": []
       }
     }
   }

@@ -5,6 +5,7 @@ package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -169,6 +170,10 @@ func baseConfig(cfg config.KafkaConfig) (*sarama.Config, error) {
 	saramaCfg.ClientID = cfg.ClientID
 	if saramaCfg.ClientID == "" {
 		saramaCfg.ClientID = "notification-service"
+	}
+	if cfg.TLSEnabled {
+		saramaCfg.Net.TLS.Enable = true
+		saramaCfg.Net.TLS.Config = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	applySASL(saramaCfg, cfg.SASLUsername, cfg.SASLPassword)
 	return saramaCfg, nil
